@@ -9,7 +9,7 @@ public enum Theme42 {
     public static let sidebarWidth: CGFloat = 180
 
     public enum App {
-        case pdf, doc, xls, img
+        case pdf, doc, xls, img, ppt
 
         public var name: String {
             switch self {
@@ -17,6 +17,7 @@ public enum Theme42 {
             case .doc: return "DOC42"
             case .xls: return "XLS42"
             case .img: return "IMG42"
+            case .ppt: return "PPT42"
             }
         }
 
@@ -27,6 +28,7 @@ public enum Theme42 {
             case .doc: return (hex(0x4FA3FF), hex(0x1659D6))
             case .xls: return (hex(0x3FD486), hex(0x0E8A4A))
             case .img: return (hex(0xB57CFF), hex(0x6A2BD9))
+            case .ppt: return (hex(0xFFB547), hex(0xE5671A))
             }
         }
 
