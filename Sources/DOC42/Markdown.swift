@@ -168,11 +168,20 @@ enum MarkdownWriter {
 
     /// Footnote numbers of the text being written (GitHub "[^n]" footnotes).
     private static var noteNumbers: [ObjectIdentifier: Int] = [:]
+    /// Comments by the index where their text ends.
+    private static var commentEnds: [Int: [DocComment]] = [:]
 
     static func write(_ text: NSAttributedString) -> String {
         let notes = Notes.all(in: text)
         noteNumbers = Dictionary(notes.enumerated().map { (ObjectIdentifier($0.element.1), $0.offset + 1) }) { a, _ in a }
-        defer { noteNumbers = [:] }
+        commentEnds = [:]
+        let ns = text.string as NSString
+        for (r, c) in CLI.commentsOf(text) {
+            var end = NSMaxRange(r)
+            while end > r.location + 1, [10, 13, 0x2029].contains(ns.character(at: end - 1)) { end -= 1 }
+            commentEnds[end, default: []].append(c)
+        }
+        defer { noteNumbers = [:]; commentEnds = [:] }
         var body = writeBody(text)
         if !notes.isEmpty {
             body += "\n" + notes.enumerated().map { "[^\($0.offset + 1)]: " + escape($0.element.1.text) }.joined(separator: "\n") + "\n"
@@ -297,6 +306,14 @@ enum MarkdownWriter {
             p.strike = ((attrs[.strikethroughStyle] as? Int) ?? 0) != 0
             if let link = attrs[.link] { p.link = (link as? URL)?.absoluteString ?? (link as? String) }
             if let last = pieces.last, last.sameLook(p), last.link != "\u{0}img" { pieces[pieces.count - 1].text += p.text } else { pieces.append(p) }
+            // Comments as HTML comments right after their text.
+            if let list = commentEnds.removeValue(forKey: NSMaxRange(r)) {
+                for c in list {
+                    let body = ((c.author.isEmpty ? "" : c.author + ": ") + c.text + (c.resolved ? " (resolved)" : ""))
+                        .replacingOccurrences(of: "--", with: "–").replacingOccurrences(of: "\n", with: " ")
+                    pieces.append(Piece(text: "<!-- comment: \(body) -->", code: true, link: "\u{0}img"))
+                }
+            }
         }
         var out = ""
         for p in pieces {

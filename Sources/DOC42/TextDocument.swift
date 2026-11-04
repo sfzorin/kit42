@@ -7,6 +7,8 @@ final class TextDocument: NSDocument {
     let storage = NSTextStorage()
     /// Page size, margins, header and footer (saved to .docx).
     var setup = PageSetup() { didSet { editor?.setupDidChange() } }
+    /// Track changes is on: edits are recorded as insertions and deletions (saved to .docx).
+    var trackChanges = false
 
     override init() {
         super.init()
@@ -85,6 +87,7 @@ final class TextDocument: NSDocument {
             extras.setup.margins = NSEdgeInsets(top: m(.topMargin, d.top), left: m(.leftMargin, d.left), bottom: m(.bottomMargin, d.bottom), right: m(.rightMargin, d.right))
         }
         if extras.hasSetup { setup = extras.setup }
+        trackChanges = extras.trackRevisions
         if type == .officeOpenXML || type == .docFormat || type == .openDocument || type == .rtf { ListMarkers.insert(into: text) }
         storage.setAttributedString(text)
     }
@@ -105,10 +108,10 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(storage)) }   // footnotes as [^n]
+    func markdownData() -> Data { encode(MarkdownWriter.write(Revisions.accepted(storage))) }   // footnotes as [^n]
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
-        if type == .plain { return encode(Notes.flatten(storage).string) }
+        if type == .plain { return encode(Notes.flatten(Revisions.accepted(storage)).string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
             o.pageSize = setup.size
@@ -119,11 +122,25 @@ final class TextDocument: NSDocument {
             o.columns = setup.columns
             o.columnSpacing = setup.columnSpacing
             o.paragraphStyle = Styles.wordStyle
+            o.trackRevisions = trackChanges
             return DocxWriter.data(storage, options: o)
         }
-        // Other formats have no footnotes: references become numbers, notes a list at the end.
-        let storage = Notes.flatten(self.storage)
+        // Tracked changes are accepted. Other formats have no footnotes (ODT has): references become numbers,
+        // notes a list at the end. Comments go to ODT, RTF and HTML through markers (Annotations.swift).
+        let accepted = Revisions.accepted(self.storage)
+        var comments: [DocComment] = [], notes: [DocNote] = []
+        var storage: NSAttributedString
+        switch type {
+        case .openDocument:
+            (storage, comments, notes) = CommentMarkers.insert(accepted, notes: true)
+            storage = Notes.flatten(storage)   // (only section geometry left to drop)
+        case .rtf, .html:
+            (storage, comments, _) = CommentMarkers.insert(Notes.flatten(accepted), notes: false, clamp: type == .html)
+        default:
+            storage = Notes.flatten(accepted)
+        }
         let range = NSRange(location: 0, length: storage.length)
+        if type == .html { return CommentMarkers.finishHTML(try storage.data(from: range, documentAttributes: [.documentType: type, .characterEncoding: String.Encoding.utf8.rawValue]), comments: comments) }
         var attrs: [NSAttributedString.DocumentAttributeKey: Any] = [.documentType: type]
         if type == .html { attrs[.characterEncoding] = String.Encoding.utf8.rawValue }
         if type == .rtf || type == .openDocument {
@@ -135,19 +152,22 @@ final class TextDocument: NSDocument {
             attrs[.leftMargin] = setup.margins.left
             attrs[.rightMargin] = setup.margins.right
             let data = try text.data(from: NSRange(location: 0, length: text.length), documentAttributes: attrs)
-            if type == .rtf { return RtfFormat.finish(data, pictures: pictures, setup: setup) }
+            if type == .rtf {
+                let rtf = RtfFormat.finish(data, pictures: pictures, setup: setup)
+                return comments.isEmpty ? rtf : Data(RtfFormat.finishAnnotations(String(decoding: rtf, as: UTF8.self), comments: comments).utf8)
+            }
             var borders = false
             storage.enumerateAttribute(.paragraphStyle, in: range) { v, _, stop in
                 if let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.width(for: .border, edge: .minX) > 0 { borders = true; stop.pointee = true }
             }
-            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders)
+            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes)
         }
         return try storage.data(from: range, documentAttributes: attrs)
     }
 
     /// Paginated PDF of the document: exactly the pages shown on screen.
     func pdfData() -> Data {
-        let view = offscreenPages()
+        let view = offscreenPages(accepted: true)
         defer { view.detach() }
         // Sections in another size or orientation: each page as its own sheet.
         if view.hasMixedPageSizes { return view.pdfData() }
@@ -174,22 +194,31 @@ final class TextDocument: NSDocument {
                 let g = v.layoutManager.glyphRange(for: tv.textContainer!)
                 let chars = v.layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
                 Swift.print(i, j, c.frame, "chars", chars, "notes", c.notes.map(\.0), (storage.string as NSString).substring(with: NSRange(location: chars.location, length: min(20, chars.length))).debugDescription)
+                if ProcessInfo.processInfo.environment["K42_DEBUG"] == "lines" {
+                    v.layoutManager.enumerateLineFragments(forGlyphRange: g) { rect, _, _, glyphs, _ in
+                        let cr = v.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+                        Swift.print("   line", rect, (self.storage.string as NSString).substring(with: NSRange(location: cr.location, length: min(12, cr.length))).debugDescription)
+                    }
+                }
             }
         }
         v.detach()
     }
 
-    func offscreenPages() -> PagedView {
-        let view = PagedView(storage: storage, setup: setup) { tv in
+    /// Pages of the document laid out offscreen; `accepted`: with every tracked change accepted (PDF, printing).
+    func offscreenPages(accepted: Bool = false) -> PagedView {
+        let text = accepted && Revisions.has(storage) ? NSTextStorage(attributedString: Revisions.accepted(storage)) : storage
+        let view = PagedView(storage: text, setup: setup) { tv in
             tv.backgroundColor = .white
             tv.drawsBackground = false
         }
+        view.ownedStorage = text   // layout managers don't retain their storage
         view.layoutAll()
         return view
     }
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
-        let view = offscreenPages()
+        let view = offscreenPages(accepted: true)
         if view.hasMixedPageSizes, let pdf = PDFDocument(data: view.pdfData()),
            let op = pdf.printOperation(for: pageInfo(), scalingMode: .pageScaleNone, autoRotate: true) {
             view.detach()

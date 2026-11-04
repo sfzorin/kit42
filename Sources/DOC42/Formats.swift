@@ -100,6 +100,9 @@ enum OdtFormat {
             }
         }
 
+        // Comments and footnotes → markers (the system reader drops them).
+        markAnnotations(root, extras: &extras)
+
         // Headings and the title keep their Word style through the system reader.
         for p in descendants(root, named: "h") + descendants(root, named: "p") {
             var word: String?
@@ -158,7 +161,8 @@ enum OdtFormat {
     }
 
     /// Adds pictures, page layout, header and footer to the system writer's .odt.
-    static func finish(_ data: Data, pictures: [ImageMarkers.Picture], setup: PageSetup, tableBorders: Bool) -> Data {
+    static func finish(_ data: Data, pictures: [ImageMarkers.Picture], setup: PageSetup, tableBorders: Bool,
+                       comments: [DocComment] = [], notes: [DocNote] = []) -> Data {
         guard var zip = try? ZipArchive(data: data), let contentData = zip["content.xml"],
               var content = String(data: contentData, encoding: .utf8) else { return data }
         // The system writer drops cell borders.
@@ -183,7 +187,7 @@ enum OdtFormat {
             """
         }
         out += ns.substring(from: last)
-        content = out
+        content = finishAnnotations(out, comments: comments, notes: notes)
         zip["content.xml"] = Data(content.utf8)
 
         if !pictures.isEmpty, let manifestData = zip["META-INF/manifest.xml"], var manifest = String(data: manifestData, encoding: .utf8),
@@ -266,6 +270,8 @@ enum RtfFormat {
         out.reserveCapacity(b.count)
         var n = 0
         var i = 0
+        var annotationStarts = Set<String>()
+        var annotationAuthor = "", annotationInitials = ""
         while i < b.count {
             let c = b[i]
             if c == UInt8(ascii: "\\"), i + 1 < b.count {     // escaped character or control word: copy as is
@@ -285,6 +291,27 @@ enum RtfFormat {
                 i = end
             case "nonshppict":
                 i = groupEnd(b, i)
+            // Word annotations (comments): range marks, author, then the annotation itself.
+            case "*atrfstart", "*atrfend":
+                let end = groupEnd(b, i)
+                let id = annotationText(b, i..<end, codepage: codepage)
+                if word == "*atrfstart" { annotationStarts.insert(id) }
+                out += Array("{\\uc0\\u-8182 \(word == "*atrfstart" ? "c" : "C")r\(id)\\u-8181 }".utf8)
+                i = end
+            case "*atnid", "*atnauthor":
+                let end = groupEnd(b, i)
+                if word == "*atnid" { annotationInitials = annotationText(b, i..<end, codepage: codepage) } else { annotationAuthor = annotationText(b, i..<end, codepage: codepage) }
+                i = end
+            case "*annotation":
+                let end = groupEnd(b, i)
+                let source = String(decoding: b[i..<end], as: UTF8.self)
+                let ref = match(source, "\\\\atnref ?([^}]*)\\}")?.trimmingCharacters(in: .whitespaces) ?? "\(annotationStarts.count + 1)"
+                let when = match(source, "\\\\atndate ?(-?\\d+)").flatMap(Int.init).flatMap { RtfFormat.date(dttm: $0) } ?? Date()
+                let text = annotationText(b, i..<end, codepage: codepage)
+                extras.comments["r" + ref] = DocComment(author: annotationAuthor, initials: annotationInitials.isEmpty ? nil : annotationInitials, date: when, text: text)
+                if !annotationStarts.contains(ref) { out += Array("{\\uc0\\u-8182 cr\(ref)\\u-8181 \\u-8182 Cr\(ref)\\u-8181 }".utf8) }
+                annotationAuthor = ""; annotationInitials = ""
+                i = end
             case "header", "headerr", "footer", "footerr":
                 let end = groupEnd(b, i)
                 let fields = String(decoding: b[i..<end], as: UTF8.self)
@@ -302,6 +329,14 @@ enum RtfFormat {
             }
         }
         return (Data(out), extras)
+    }
+
+    /// Visible text of a {\*\destination …} group (its own control word left out).
+    private static func annotationText(_ b: [UInt8], _ range: Range<Int>, codepage: Int) -> String {
+        guard range.count > 2 else { return "" }
+        var s = plainText(b, (range.lowerBound + 1)..<(range.upperBound - 1), codepage: codepage)
+        if s.hasPrefix("*") { s.removeFirst() }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Adds pictures and header/footer to the system writer's RTF.

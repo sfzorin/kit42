@@ -12,6 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Autosave every 30 s to a backup location (not over the file): documents survive a crash.
         NSDocumentController.shared.autosavingDelay = 30
+        // K42_APPEARANCE=dark|light: UI checks in either appearance, whatever the system uses.
+        switch ProcessInfo.processInfo.environment["K42_APPEARANCE"] {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
         NSApp.mainMenu = MenuBar.build(Cmd.menuBar)
     }
 

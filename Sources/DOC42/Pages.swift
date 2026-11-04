@@ -46,6 +46,8 @@ struct PageSetup: Equatable {
 /// footnotes take space at the bottom of the page that has their reference.
 final class PagedView: NSView, NSLayoutManagerDelegate {
     let layoutManager = DocLayoutManager()
+    /// A storage only this view uses (offscreen copies), kept alive with it.
+    var ownedStorage: NSTextStorage?
     private(set) var cards: [PageCard] = []
     private let configure: (NSTextView) -> Void
     static let gap: CGFloat = 28
@@ -115,6 +117,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         guard let storage = note.object as? NSTextStorage, storage.editedMask.contains(.editedAttributes) || storage.editedMask.contains(.editedCharacters) else { return }
         sectionCache = nil
         layoutManager.notesChanged()
+        editCount += 1
         churn = 0
         scheduleReconcile()
     }
@@ -294,6 +297,8 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                 let wanted = setup(at: start)
                 if !card.setup.sameGeometry(wanted) {
                     card.setup = wanted
+                    card.balanceKey = ""
+                    card.balancedHeight = nil
                     card.setColumns(wanted.columns, containerIndex: first, in: self)
                     card.setNotes([])
                     card.noteHeight = 0
@@ -338,6 +343,8 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                     }
                 }
                 if changed { break }
+                // 4. The last page of a multi-column section balances its columns.
+                if balanceColumns(card, start: start, end: end) { changed = true; break }
                 i += 1
             }
             // Empty pages left at the end (a removal asked for while pages were being added).
@@ -351,6 +358,57 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             churn += 1
         }
         relayout()
+    }
+
+    /// Edits so far (column balance is redone after each).
+    private var editCount = 0
+
+    /// Columns of equal height on the page that ends a multi-column section (as Word and Writer do before a
+    /// continuous break or at the end): the smallest height that still keeps the rest of the section on the page.
+    /// Returns whether the page changed.
+    private func balanceColumns(_ card: PageCard, start: Int, end: Int) -> Bool {
+        guard let storage = layoutManager.textStorage else { return false }
+        let old = card.balancedHeight
+        let sectionEnd = sections.first { $0.index >= start }?.index ?? storage.length
+        // Last character of the section's text (not the break, not trailing paragraph marks).
+        let ns = storage.string as NSString
+        var lastChar = min(sectionEnd, storage.length) - 1
+        while lastChar >= start, [10, 13, 0x0C, 0x2029].contains(ns.character(at: lastChar)) { lastChar -= 1 }
+        guard card.textViews.count > 1, lastChar >= start, end > sectionEnd || end >= storage.length else {
+            card.balanceKey = ""
+            card.balancedHeight = nil
+            return old != nil
+        }
+        let full = card.fullColumnHeight
+        let key = "\(start):\(sectionEnd):\(editCount):\(full):\(card.setup.columnWidth)"
+        if card.balanceKey == key { return false }
+        card.balanceKey = key
+        guard let last = card.textViews.last?.textContainer else { return false }
+        for tv in card.textViews { tv.textContainer?.exclusionPaths = [] }
+        func fits(_ h: CGFloat) -> Bool {
+            card.balancedHeight = h
+            layoutManager.ensureLayout(for: last)
+            let g = layoutManager.glyphRange(for: last)
+            guard NSMaxRange(layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)) > lastChar else { return false }
+            // The text ends within `h` (the last column's extra room is for the break only).
+            let glyph = layoutManager.glyphIndexForCharacter(at: lastChar)
+            guard layoutManager.textContainer(forGlyphAt: glyph, effectiveRange: nil, withoutAdditionalLayout: true) === last else { return true }
+            return layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil, withoutAdditionalLayout: true).maxY <= h + 0.5
+        }
+        guard fits(full) else {
+            card.balancedHeight = nil
+            return true
+        }
+        var lo: CGFloat = 8, hi = full
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            if fits(mid) { hi = mid } else { lo = mid }
+        }
+        let h = hi + 1 >= full ? nil : hi + 0.5
+        if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil { Swift.print("balance", start, sectionEnd, full, h as Any) }
+        _ = fits(h ?? full)
+        card.balancedHeight = h
+        return true
     }
 
     // MARK: NSLayoutManagerDelegate
@@ -385,12 +443,46 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
         guard let storage = lm.textStorage, glyphRange.length == 1 else { return false }
         let c = lm.characterIndexForGlyph(at: glyphRange.location)
-        guard c > 0, c < storage.length, (storage.string as NSString).character(at: c) == 10,
-              storage.attribute(.docSection, at: c - 1, effectiveRange: nil) != nil else { return false }
+        let ns = storage.string as NSString
+        guard c > 0, c < storage.length else { return false }
+        let afterBreak = ns.character(at: c) == 10 && storage.attribute(.docSection, at: c - 1, effectiveRange: nil) != nil
+        // A section break alone on its line takes no room either (balanced columns end with the text).
+        let loneBreak = ns.character(at: c) == 0x0C && ns.character(at: c - 1) == 10 && storage.attribute(.docSection, at: c, effectiveRange: nil) != nil
+        guard afterBreak || loneBreak else { return false }
         lineFragmentRect.pointee.size.height = 0.01
         lineFragmentUsedRect.pointee.size.height = 0.01
         baselineOffset.pointee = 0
         return true
+    }
+
+    /// Final view of tracked changes: deleted text takes no room.
+    var hidesDeletions = false {
+        didSet {
+            guard hidesDeletions != oldValue, let storage = layoutManager.textStorage, Revisions.has(storage) else { return }
+            let full = NSRange(location: 0, length: storage.length)
+            layoutManager.invalidateGlyphs(forCharacterRange: full, changeInLength: 0, actualCharacterRange: nil)
+            layoutManager.invalidateLayout(forCharacterRange: full, actualCharacterRange: nil)
+            scheduleReconcile()
+        }
+    }
+
+    func layoutManager(_ lm: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+                       characterIndexes charIndexes: UnsafePointer<Int>, font aFont: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
+        guard hidesDeletions, let storage = lm.textStorage, glyphRange.length > 0 else { return 0 }
+        let count = glyphRange.length
+        let first = charIndexes[0], last = charIndexes[count - 1]
+        guard first < storage.length else { return 0 }
+        var any = false
+        storage.enumerateAttribute(.docRevision, in: NSRange(location: first, length: min(storage.length, last + 1) - first)) { v, _, stop in
+            if (v as? DocRevision)?.kind == .deletion { any = true; stop.pointee = true }
+        }
+        guard any else { return 0 }
+        var out = Array(UnsafeBufferPointer(start: props, count: count))
+        for i in 0..<count where charIndexes[i] < storage.length {
+            if (storage.attribute(.docRevision, at: charIndexes[i], effectiveRange: nil) as? DocRevision)?.kind == .deletion { out[i] = .null }
+        }
+        out.withUnsafeBufferPointer { lm.setGlyphs(glyphs, properties: $0.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange) }
+        return count
     }
 
     // MARK: Printing (one sheet per page card)
@@ -450,6 +542,8 @@ final class PageCard: NSView {
     init(setup: PageSetup) {
         self.setup = setup
         super.init(frame: NSRect(origin: .zero, size: setup.size))
+        // Paper stays white with black text in dark mode (like Pages and Word): text views, selection, caret.
+        appearance = NSAppearance(named: .aqua)
         wantsLayer = true
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOpacity = 0.16
@@ -478,9 +572,18 @@ final class PageCard: NSView {
         positionColumns()
     }
 
+    /// Column height on the last page of a multi-column section (columns balanced), nil: full height.
+    var balancedHeight: CGFloat? { didSet { if balancedHeight != oldValue { positionColumns() } } }
+    var balanceKey = ""
+
+    /// Text height available on the page (footnotes taken off).
+    var fullColumnHeight: CGFloat { max(36, setup.textSize.height - noteHeight) }
+
     func positionColumns() {
-        let w = setup.columnWidth, h = max(36, setup.textSize.height - noteHeight)
+        let w = setup.columnWidth
         for (j, tv) in textViews.enumerated() {
+            // Balanced: the last column has room below for the (zero-height) section break line.
+            let h = min(fullColumnHeight, balancedHeight.map { $0 + (j == textViews.count - 1 ? 40 : 0) } ?? .greatestFiniteMagnitude)
             let size = NSSize(width: w, height: h)
             if tv.textContainer?.size != size { tv.textContainer?.size = size }
             tv.frame = NSRect(x: setup.margins.left + CGFloat(j) * (w + setup.columnSpacing), y: setup.margins.top, width: w, height: h)
@@ -573,6 +676,37 @@ final class PageTextView: NSTextView {
     override func cancelOperation(_ sender: Any?) {
         if editor?.cancelFormatPainter() == true { return }
         super.cancelOperation(sender)
+    }
+
+    // Track changes applies to the user's own edits (typing, deleting, pasting, dropping), not to commands.
+    static var userEditing = 0
+    /// The edit deletes forward (the cursor stays after a tracked deletion).
+    static var forwardDelete = false
+
+    static func userEdit(forward: Bool = false, _ body: () -> Void) {
+        userEditing += 1
+        let wasForward = forwardDelete
+        forwardDelete = forward
+        defer { userEditing -= 1; forwardDelete = wasForward }
+        body()
+    }
+
+    override func keyDown(with event: NSEvent) { Self.userEdit { super.keyDown(with: event) } }
+    override func insertText(_ string: Any, replacementRange: NSRange) { Self.userEdit { super.insertText(string, replacementRange: replacementRange) } }
+    override func deleteBackward(_ sender: Any?) { Self.userEdit { super.deleteBackward(sender) } }
+    override func deleteForward(_ sender: Any?) { Self.userEdit(forward: true) { super.deleteForward(sender) } }
+    override func deleteWordForward(_ sender: Any?) { Self.userEdit(forward: true) { super.deleteWordForward(sender) } }
+    override func deleteToEndOfLine(_ sender: Any?) { Self.userEdit(forward: true) { super.deleteToEndOfLine(sender) } }
+    override func deleteToEndOfParagraph(_ sender: Any?) { Self.userEdit(forward: true) { super.deleteToEndOfParagraph(sender) } }
+    override func cut(_ sender: Any?) { Self.userEdit { super.cut(sender) } }
+    override func paste(_ sender: Any?) { Self.userEdit { super.paste(sender) } }
+    override func pasteAsPlainText(_ sender: Any?) { Self.userEdit { super.pasteAsPlainText(sender) } }
+    override func pasteAsRichText(_ sender: Any?) { Self.userEdit { super.pasteAsRichText(sender) } }
+    override func delete(_ sender: Any?) { Self.userEdit(forward: true) { super.delete(sender) } }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        var ok = false
+        Self.userEdit { ok = super.performDragOperation(sender) }
+        return ok
     }
 }
 

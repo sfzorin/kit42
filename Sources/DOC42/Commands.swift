@@ -7,7 +7,7 @@ enum Cmd {
 
     static let exportPDF = Command(L("Export as PDF…"), #selector(W.exportPDFAction(_:)), symbol: "doc.richtext", shortcut: Shortcut("e", [.command, .option]))
 
-    static let exportAs = Command(L("Export As…"), #selector(W.exportAsAction(_:)), shortcut: Shortcut("e", [.command, .shift]))
+    static let exportAs = Command(L("Export As…"), #selector(W.exportAsAction(_:)), shortcut: Shortcut("e", [.command, .option, .shift]))
     static let find = Command(L("Find…"), #selector(W.findAction(_:)), shortcut: Shortcut("f"))
     static let findReplace = Command(L("Find and Replace…"), #selector(W.findReplaceAction(_:)), symbol: "text.magnifyingglass",
                                      shortcut: Shortcut("f", [.command, .option]))
@@ -41,6 +41,17 @@ enum Cmd {
     static let resolveComment = Command(L("Resolve Comment"), #selector(W.resolveCommentAction(_:)))
     static let deleteComment = Command(L("Delete Comment"), #selector(W.deleteCommentAction(_:)))
     static let toggleComments = Command(L("Hide Comments"), #selector(W.toggleCommentsAction(_:)))
+    // Review (track changes)
+    static let trackChanges = Command(L("Track Changes"), #selector(W.toggleTrackChangesAction(_:)), symbol: "pencil.line",
+                                      shortcut: Shortcut("e", [.command, .shift]), toolTip: L("Record insertions and deletions"), label: L("Track"))
+    static let trackChangesItem = Command(L("Track Changes"), #selector(W.toggleTrackChangesAction(_:)), symbol: "pencil.line")
+    static let showMarkup = Command(L("Show Markup"), #selector(W.toggleMarkupAction(_:)))
+    static let nextChange = Command(L("Next Change"), #selector(W.nextChangeAction(_:)), symbol: "chevron.down")
+    static let previousChange = Command(L("Previous Change"), #selector(W.previousChangeAction(_:)), symbol: "chevron.up")
+    static let acceptChange = Command(L("Accept Change"), #selector(W.acceptChangeAction(_:)), symbol: "checkmark")
+    static let rejectChange = Command(L("Reject Change"), #selector(W.rejectChangeAction(_:)), symbol: "xmark")
+    static let acceptAllChanges = Command(L("Accept All Changes"), #selector(W.acceptAllChangesAction(_:)))
+    static let rejectAllChanges = Command(L("Reject All Changes"), #selector(W.rejectAllChangesAction(_:)))
     static let specialCharacter = Command(L("Special Character…"), #selector(W.specialCharacterAction(_:)), symbol: "character")
     static let characterViewer = Command(L("Emoji & Symbols"), #selector(W.characterViewerAction(_:)))
     static let insertTOC = Command(L("Table of Contents"), #selector(W.insertTOCAction(_:)), symbol: "list.bullet.indent")
@@ -103,6 +114,7 @@ enum Cmd {
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "DOC42")
         spec.fileExtras = [.command(exportPDF), .command(exportAs)]
+        spec.editExtras = [.command(trackChanges)]
         spec.find = [.command(find), .command(findReplace), .separator, .command(findNext), .command(findPrevious),
                      .command(useSelectionForFind), .separator, .command(replaceBar)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator, .command(formatBar), .command(ruler), .command(toggleComments)]
@@ -118,7 +130,11 @@ enum Cmd {
                        .command(bulletList), .command(numberedList), .command(indent), .command(outdent),
                        .command(paragraph), .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
                        .command(formatPainter), .command(removeHighlight), .command(clearFormatting)]
-        spec.custom = [(L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
+        spec.custom = [(L("Review"), [.command(trackChangesItem), .command(showMarkup), .separator,
+                                       .command(nextChange), .command(previousChange), .separator,
+                                       .command(acceptChange), .command(rejectChange), .command(acceptAllChanges), .command(rejectAllChanges), .separator,
+                                       .command(comment), .command(resolveComment), .command(deleteComment), .command(toggleComments)]),
+                       (L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
                         + [.separator, .command(deleteTable)]),
                        (L("Document"), [.command(documentSetup), .submenu(L("Margins"), margins.menuElements),
                                          .submenu(L("Orientation"), [.command(portrait), .command(landscape)]),
@@ -131,7 +147,7 @@ enum Cmd {
 
     static var toolbar: [ToolbarElement] {
         [
-            .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(footnote), .command(comment),
+            .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(footnote), .command(comment), .command(trackChanges),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
             .command(formatBar), .command(print), .command(exportPDF),
