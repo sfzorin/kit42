@@ -658,3 +658,5 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         }
     }
 }
+
+extension ImageWindowController: PanelHiding {}

@@ -1,8 +1,21 @@
 # Suite42 — PDF42 · DOC42 · XLS42 · IMG42
 
-Local macOS apps for documents, sharing one design and menu system (Kit42).
-No dependencies: AppKit, PDFKit, Security; works offline. Interface in English, Russian and Turkish
-(language is chosen on the welcome screen, shared by all the apps).
+A small native office suite for macOS: four apps that look and work alike, share one menu system and design
+(the Kit42 library), need no internet and no third-party libraries — only AppKit, PDFKit, Core Image, Vision and
+Security from macOS. Interface in English, Russian and Turkish.
+
+| App | For | Opens | Saves |
+|---|---|---|---|
+| **PDF42** | reading, editing, signing PDFs | PDF, images | PDF (also signed, compressed, password-protected), DOCX, RTF, HTML, TXT, PNG/JPEG |
+| **DOC42** | documents | DOCX, DOC, RTF, ODT, Markdown, TXT, HTML | the same + PDF |
+| **XLS42** | spreadsheets | XLSX, XLS (97–2003), ODS, CSV/TSV | XLSX, ODS, CSV, PDF |
+| **IMG42** | viewing and quick editing of images | JPEG, PNG, HEIC, AVIF, WebP, GIF, TIFF, PSD, RAW, SVG, PDF, … | the original format, PNG, JPEG, HEIC, TIFF, AVIF |
+
+**По-русски.** Набор из четырёх программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
+Markdown), XLS42 (таблицы Excel/ODS/CSV) и IMG42 (просмотр и простая правка изображений). Работают без интернета,
+интерфейс на английском, русском и турецком.
+
+## Install
 
 ```bash
 git clone https://github.com/sfzorin/kit42.git && cd kit42
@@ -10,7 +23,8 @@ git clone https://github.com/sfzorin/kit42.git && cd kit42
 ./build.sh PDF42 install    # one app, plus a copy in /Applications
 ```
 
-Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
+Requires macOS 14+ and the Xcode Command Line Tools (Swift 5.9+). To make an app the default one for a file type:
+Finder › Get Info › Open with › Change All.
 
 ## PDF42 — PDF
 
@@ -42,7 +56,10 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
   (incremental update). Visible signature (select a placed signature image first, or bottom right of the page)
   and RFC 3161 trusted timestamp (default TSA: DigiCert). Verification (⌥⌘V) and a status banner on open.
 - Thumbnails: drag to reorder pages, multi-select, drop PDFs/images to insert.
-- OCR (⌥⌘T): Vision (ru/en/tr) adds an invisible searchable text layer to scans. Reduce file size. Print selected pages.
+- OCR (⌥⌘T): Vision (ru/en/tr) adds an invisible searchable text layer to scans. Print selected pages.
+- Reduce File Size (File menu): pictures are downsampled (100 / 150 / 220 dpi) and re-encoded as JPEG, text and vector
+  graphics stay untouched; the resulting size of every level is shown before choosing (a 17 MB scan → 2–8 MB). Save a
+  compressed copy or compress the open document; a file is never made bigger. CLI: `--compress in out [smallest|balanced|high]`.
 - Export: Word (.docx), RTF, HTML, text, PNG/JPEG pages (72–300 dpi), copy with a password.
 - Import: open PNG/JPEG/HEIC/TIFF as PDF, "New PDF from Images…", insert images as pages.
 
@@ -154,7 +171,13 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 
 ## Common
 
+- Interface language (English, Russian, Turkish) is chosen on the welcome screen and shared by all apps; system panels
+  (Print, Save, toolbar items) follow it too.
+- Any panel can be hidden: View › Hide All Panels (⇧⌘\\) leaves only the document; View › Show Toolbar (⌥⌘T),
+  Show Toolbar Labels (icons only makes the toolbar half as tall) and each app's own bars. In full screen (⌃⌘F) the
+  bars slide in only when the pointer reaches the top edge.
 - Autosave every 30 s to a backup location: documents survive a crash.
+- `scripts/check_strings.py` — finds UI strings without a Russian/Turkish translation.
 - Distribution to other Macs: `DEVELOPER_ID="Developer ID Application: …" ./scripts/sign_and_notarize.sh`
   (needs an Apple Developer account; see the script header).
 
@@ -169,3 +192,7 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

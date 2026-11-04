@@ -72,7 +72,6 @@ enum Cmd {
     static let sortOrders: [Command] = SortOrder.allCases.map { Command($0.title, #selector(W.sortAction(_:)), tag: $0.rawValue) }
     static let backgrounds: [Command] = Background.allCases.map { Command($0.title, #selector(W.backgroundAction(_:)), tag: $0.rawValue) }
     /// Also wired by Kit42's shared View menu item (same selector) once it lands; listed here for IMG42 meanwhile.
-    static let hideAllPanels = Command(L("Hide All Panels"), #selector(W.toggleAllPanelsAction(_:)), shortcut: Shortcut("\\", [.command, .shift]))
     static let wrap = Command(L("Loop Through Folder"), #selector(W.toggleWrapAction(_:)))
 
     static let welcome = Command(L("Welcome Window"), #selector(A.showWelcomeAction(_:)), shortcut: Shortcut("0", [.command, .shift]))
@@ -91,7 +90,7 @@ enum Cmd {
                            .separator, .command(trash)]
         spec.editExtras = [.command(copyText), .separator, .command(cropToSelection), .command(deleteSelection), .command(invertSelection), .command(deselect)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .command(zoomToFit), .separator,
-                     .command(markupBar), .command(filmstrip), .command(info), .command(adjust), .command(hideAllPanels), .separator,
+                     .command(markupBar), .command(filmstrip), .command(info), .command(adjust), .separator,
                      .submenu(L("Sort By"), sortOrders.menuElements), .submenu(L("Background"), backgrounds.menuElements), .command(wrap),
                      .separator, .command(slideshow)]
         spec.custom = [
