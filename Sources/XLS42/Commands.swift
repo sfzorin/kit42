@@ -11,6 +11,32 @@ enum Cmd {
     static let exportCSV = Command(L("Export Sheet as CSV…"), #selector(W.exportCSVAction(_:)))
     static let importCSV = Command(L("Import CSV as Sheet…"), #selector(W.importCSVAction(_:)))
 
+    // Data & objects
+    static let replace = Command(L("Find and Replace…"), #selector(W.findReplaceAction(_:)), symbol: "arrow.left.arrow.right",
+                                 shortcut: Shortcut("f", [.command, .option]))
+    static let hideRows = Command(L("Hide Rows"), #selector(W.hideRowsAction(_:)), symbol: "eye.slash", shortcut: Shortcut("9", [.command, .control]))
+    static let unhideRows = Command(L("Unhide Rows"), #selector(W.unhideRowsAction(_:)), symbol: "eye", shortcut: Shortcut("9", [.command, .control, .shift]))
+    static let hideColumns = Command(L("Hide Columns"), #selector(W.hideColumnsAction(_:)), shortcut: Shortcut("0", [.command, .control]))
+    static let unhideColumns = Command(L("Unhide Columns"), #selector(W.unhideColumnsAction(_:)), shortcut: Shortcut("0", [.command, .control, .shift]))
+    static let filter = Command(L("Filter"), #selector(W.toggleFilterAction(_:)), symbol: "line.3.horizontal.decrease.circle",
+                                shortcut: Shortcut("l", [.command, .shift]), toolTip: L("Filter rows by values"))
+    static let setPrintArea = Command(L("Set Print Area"), #selector(W.setPrintAreaAction(_:)), symbol: "printer")
+    static let clearPrintArea = Command(L("Clear Print Area"), #selector(W.clearPrintAreaAction(_:)))
+    static let defineName = Command(L("Define Name…"), #selector(W.defineNameAction(_:)), symbol: "tag", shortcut: Shortcut("n", [.command, .control]))
+    static let comment = Command(L("Comment…"), #selector(W.editCommentAction(_:)), symbol: "text.bubble", shortcut: Shortcut("m", [.command, .option]))
+    static let deleteComment = Command(L("Delete Comment"), #selector(W.deleteCommentAction(_:)))
+    static let conditionalRules: [Command] = [L("Greater Than…"), L("Less Than…"), L("Between…"), L("Equal To…"), L("Text Contains…"), L("Duplicate Values")]
+        .enumerated().map { Command($0.element, #selector(W.conditionalRuleAction(_:)), tag: $0.offset) }
+    static let colorScale = Command(L("Colour Scale"), #selector(W.colorScaleAction(_:)), symbol: "paintpalette")
+    static let dataBars = Command(L("Data Bars"), #selector(W.dataBarAction(_:)), symbol: "chart.bar.fill")
+    static let clearRules = Command(L("Clear Rules from Selection"), #selector(W.clearRulesAction(_:)))
+    static let insertPicture = Command(L("Picture…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]))
+    static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature", shortcut: Shortcut("k", [.command, .shift]))
+    static let charts: [Command] = [(L("Column Chart"), "chart.bar"), (L("Bar Chart"), "chart.bar.xaxis"), (L("Line Chart"), "chart.xyaxis.line"),
+                                    (L("Area Chart"), "chart.line.uptrend.xyaxis"), (L("Pie Chart"), "chart.pie"), (L("Scatter Chart"), "chart.dots.scatter")]
+        .enumerated().map { Command($0.element.0, #selector(W.insertChartAction(_:)), symbol: $0.element.1, tag: $0.offset) }
+    static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
+
     // Edit (context menu)
     static let cut = Command(L("Cut"), #selector(NSText.cut(_:)), symbol: "scissors")
     static let copy = Command(L("Copy"), #selector(NSText.copy(_:)), symbol: "doc.on.doc")
@@ -21,7 +47,8 @@ enum Cmd {
                           .command(insertRows), .command(insertColumns), .command(deleteRows), .command(deleteColumns), .separator,
                           .command(clear), .command(clearFormats), .separator,
                           .command(sortAscending), .command(sortDescending), .separator,
-                          .command(merge), .command(freeze)])
+                          .command(merge), .command(freeze), .separator,
+                          .command(comment), .command(hideRows), .command(unhideRows), .command(defineName)])
     }
 
     // Edit
@@ -88,19 +115,26 @@ enum Cmd {
 
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "XLS42")
-        spec.fileExtras = [.command(exportPDF), .command(exportCSV), .separator, .command(importCSV)]
+        spec.fileExtras = [.command(exportPDF), .command(exportCSV), .separator, .command(importCSV), .separator,
+                           .command(setPrintArea), .command(clearPrintArea)]
         spec.editExtras = [.command(clear), .command(clearFormats), .separator, .command(fillDown), .command(fillRight)]
-        spec.find = [.command(find), .command(findNext), .command(goToCell)]
+        spec.find = [.command(find), .command(findNext), .command(replace), .command(goToCell)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator,
                      .command(formatBar), .command(gridlines), .separator,
                      .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]
-        spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum)]
+        spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum),
+                       .command(defineName), .separator, .command(insertPicture), .command(stamps), .submenu(L("Chart"), charts.menuElements),
+                       .separator, .command(comment), .command(deleteComment)]
         spec.format = [.command(bold), .command(italic), .command(underline), .command(strike), .separator,
                        .command(alignLeft), .command(alignCenter), .command(alignRight), .command(wrap), .command(merge), .separator,
                        .submenu(L("Number"), numberFormats.menuElements + [.separator, .command(increaseDecimals), .command(decreaseDecimals)]),
                        .submenu(L("Borders"), [.command(bordersAll), .command(bordersOutside), .command(bordersBottom), .command(bordersNone)]),
-                       .command(noFill), .separator, .command(clearFormats)]
-        spec.custom = [(L("Table"), [.command(sortAscending), .command(sortDescending), .separator,
+                       .command(noFill), .separator,
+                       .submenu(L("Conditional Formatting"), conditionalRules.menuElements + [.separator, .command(colorScale), .command(dataBars),
+                                                                                              .separator, .command(clearRules)]),
+                       .separator, .command(clearFormats)]
+        spec.custom = [(L("Table"), [.command(sortAscending), .command(sortDescending), .command(filter), .separator,
+                                     .command(hideRows), .command(unhideRows), .command(hideColumns), .command(unhideColumns), .separator,
                                      .command(deleteRows), .command(deleteColumns), .separator,
                                      .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)])]
         spec.help = [.command(functions), .command(welcome)]
@@ -109,10 +143,10 @@ enum Cmd {
 
     static var toolbar: [ToolbarElement] {
         [
-            .command(autoSum), .command(sortAscending), .command(freeze),
+            .command(autoSum), .command(sortAscending), .command(filter), .command(freeze),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
-            .command(formatBar), .command(exportPDF),
+            .command(formatBar), .command(print), .command(exportPDF),
             .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
         ]
     }

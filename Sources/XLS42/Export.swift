@@ -7,62 +7,37 @@ enum SheetExport {
     enum Scope: Int { case sheet, workbook, selection }
     enum Orientation: Int { case auto, portrait, landscape }
 
-    struct Options {
-        var scope: Scope = .sheet
-        var orientation: Orientation = .auto
-        var fitWidth = true
-        var gridlines = true
+    /// Print/export settings, shared by the PDF dialog and the print panel (KVO for live preview).
+    final class Options: NSObject {
+        @objc dynamic var scopeIndex = 0          // Scope raw value
+        @objc dynamic var orientationIndex = 0    // Orientation raw value
+        @objc dynamic var fitWidth = true
+        @objc dynamic var gridlines = true
+        @objc dynamic var repeatTitles = true     // frozen rows repeat on every page
+        @objc dynamic var pageNumbers = true
+
+        var scope: Scope { get { Scope(rawValue: scopeIndex) ?? .sheet } set { scopeIndex = newValue.rawValue } }
+        var orientation: Orientation { get { Orientation(rawValue: orientationIndex) ?? .auto } set { orientationIndex = newValue.rawValue } }
+
+        static let keys = ["scopeIndex", "orientationIndex", "fitWidth", "gridlines", "repeatTitles", "pageNumbers"]
 
         static var saved: Options {
+            let o = Options()
             let d = UserDefaults.standard
-            var o = Options()
-            o.scope = Scope(rawValue: d.integer(forKey: "pdf.scope")) ?? .sheet
-            o.orientation = Orientation(rawValue: d.integer(forKey: "pdf.orientation")) ?? .auto
-            if d.object(forKey: "pdf.fit") != nil { o.fitWidth = d.bool(forKey: "pdf.fit") }
-            if d.object(forKey: "pdf.grid") != nil { o.gridlines = d.bool(forKey: "pdf.grid") }
+            for key in keys where d.object(forKey: "print." + key) != nil { o.setValue(d.object(forKey: "print." + key), forKey: key) }
             return o
         }
 
         func save() {
-            let d = UserDefaults.standard
-            d.set(scope.rawValue, forKey: "pdf.scope")
-            d.set(orientation.rawValue, forKey: "pdf.orientation")
-            d.set(fitWidth, forKey: "pdf.fit")
-            d.set(gridlines, forKey: "pdf.grid")
+            for key in Self.keys { UserDefaults.standard.set(value(forKey: key), forKey: "print." + key) }
         }
-    }
-
-    /// Detached grid laid out for printing one sheet.
-    static func printView(_ sheet: Sheet, range: CellRange?, options: Options, info: NSPrintInfo) -> GridView {
-        let view = GridView(frame: .zero)
-        view.sheetOverride = sheet
-        view.printMode = true
-        view.printGridlines = options.gridlines
-        view.printRange = range
-        view.zoom = 0.75   // 1 pt on paper per Excel point
-        view.rebuildLayout()
-        let r = range ?? sheet.usedRange ?? CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0))
-        let width = view.x(r.end.col + 1) - view.x(r.start.col)
-
-        let portraitWidth = min(info.paperSize.width, info.paperSize.height) - info.leftMargin - info.rightMargin
-        switch options.orientation {
-        case .portrait: info.orientation = .portrait
-        case .landscape: info.orientation = .landscape
-        case .auto: info.orientation = width > portraitWidth * 1.1 ? .landscape : .portrait
-        }
-        let pageWidth = info.paperSize.width - info.leftMargin - info.rightMargin
-        if options.fitWidth, width > pageWidth {
-            view.zoom = max(0.2, 0.75 * pageWidth / width)
-            view.rebuildLayout()
-        }
-        return view
     }
 
     static func printInfo(from base: NSPrintInfo) -> NSPrintInfo {
         let info = base.copy() as! NSPrintInfo
-        info.leftMargin = 36; info.rightMargin = 36; info.topMargin = 40; info.bottomMargin = 40
-        info.horizontalPagination = .automatic
-        info.verticalPagination = .automatic
+        info.leftMargin = 36; info.rightMargin = 36; info.topMargin = 36; info.bottomMargin = 30
+        info.horizontalPagination = .clip
+        info.verticalPagination = .clip
         info.isHorizontallyCentered = false
         info.isVerticallyCentered = false
         info.scalingFactor = 1
@@ -71,21 +46,10 @@ enum SheetExport {
 
     /// Multi-page PDF of the chosen sheets.
     static func pdf(_ wb: Workbook, activeSheet: Int, selection: CellRange?, options: Options, base: NSPrintInfo) -> Data {
-        let indices: [Int]
-        switch options.scope {
-        case .workbook: indices = Array(wb.sheets.indices)
-        default: indices = [activeSheet]
-        }
-        let merged = PDFDocument()
-        for i in indices {
-            let sheet = wb.sheets[i]
-            guard options.scope == .selection || sheet.usedRange != nil else { continue }
-            let info = printInfo(from: base)
-            let view = printView(sheet, range: options.scope == .selection ? selection : nil, options: options, info: info)
-            guard let part = PDFDocument(data: PaginatedPDF.render(view, info: info)) else { continue }
-            for p in 0..<part.pageCount { if let page = part.page(at: p) { merged.insert(page, at: merged.pageCount) } }
-        }
-        return merged.dataRepresentation() ?? Data()
+        let info = printInfo(from: base)
+        let view = SheetPrintView(workbook: wb, activeSheet: activeSheet, selection: selection, options: options)
+        view.prepare(info)
+        return PaginatedPDF.render(view, info: info)
     }
 
     // MARK: - CSV

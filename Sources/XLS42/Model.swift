@@ -184,6 +184,16 @@ struct Sheet {
     var frozenRows = 0
     var frozenCols = 0
     var showGridlines = true
+    /// Range printed/exported for this sheet (Excel _xlnm.Print_Area).
+    var printArea: CellRange?
+    /// AutoFilter header range; rows hidden by the filter and the allowed values per column.
+    var autoFilter: CellRange?
+    var filterHidden: Set<Int> = []
+    var filterValues: [Int: Set<String>] = [:]
+    var comments: [CellRef: String] = [:]
+    var conditionalFormats: [ConditionalFormat] = []
+    var images: [SheetImage] = []
+    var charts: [SheetChart] = []
 
     init(name: String) { self.name = name }
 
@@ -193,7 +203,9 @@ struct Sheet {
     }
 
     func width(_ col: Int) -> CGFloat { columnWidths[col] ?? defaultColumnWidth }
-    func height(_ row: Int) -> CGFloat { rowHeights[row] ?? defaultRowHeight }
+    func height(_ row: Int) -> CGFloat { filterHidden.contains(row) ? 0 : rowHeights[row] ?? defaultRowHeight }
+    func isRowHidden(_ row: Int) -> Bool { height(row) == 0 }
+    func isColumnHidden(_ col: Int) -> Bool { width(col) == 0 }
 
     var usedRange: CellRange? {
         guard !cells.isEmpty else { return nil }
@@ -204,8 +216,46 @@ struct Sheet {
     func merge(containing ref: CellRef) -> CellRange? { merges.first { $0.contains(ref) } }
 }
 
+/// Conditional formatting rule (subset of Excel's): comparisons, text contains, colour scale, data bar.
+struct ConditionalFormat {
+    enum Kind {
+        case cellIs(op: String, values: [String])   // greaterThan, lessThan, between, equal, notEqual, …
+        case containsText(String)
+        case expression(String)                       // formula relative to the range's top-left cell
+        case colorScale([NSColor])                    // 2 or 3 colours, min → max
+        case dataBar(NSColor)
+        case duplicates
+    }
+    var range: CellRange
+    var kind: Kind
+    var fill: NSColor?
+    var textColor: NSColor?
+    var bold = false
+}
+
+/// Picture placed over cells (top-left anchor cell + offset, size in points).
+struct SheetImage {
+    var anchor: CellRef
+    var offset: CGPoint = .zero
+    var size: CGSize
+    var data: Data
+}
+
+/// Chart drawn over cells, with series read from ranges.
+struct SheetChart {
+    enum Kind: String { case bar, column, line, pie, area, scatter }
+    struct Series { var name: String; var categories: String?; var values: String }
+    var kind: Kind
+    var title: String
+    var series: [Series]
+    var anchor: CellRef
+    var size: CGSize
+}
+
 struct Workbook {
     var sheets: [Sheet] = [Sheet(name: "Лист1")]
+    /// Defined names: name → reference or formula text without "=" (e.g. "Лист1!$A$1:$A$10").
+    var names: [String: String] = [:]
     /// Excel serial dates: 1900 system (default) or 1904.
     var date1904 = false
 

@@ -289,7 +289,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     /// Selection limited to the used area (whole-column selections).
-    private var clampedSelection: CellRange {
+    var clampedSelection: CellRange {
         let s = grid.selection
         guard let used = sheet.usedRange else { return CellRange(s.start, s.start) }
         let end = CellRef(row: min(s.end.row, max(used.end.row, s.start.row)), col: min(s.end.col, max(used.end.col, s.start.col)))
@@ -449,7 +449,15 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     private func modifyStyle(_ name: String, _ body: (inout CellStyle) -> Void) {
-        modifyCells(name) { body(&$0.style) }
+        guard let doc else { return }
+        let range = clampedSelection
+        doc.change(name, recalc: false) { wb in
+            for ref in range.cells {
+                var cell = wb.sheets[sheetIndex][ref]
+                body(&cell.style)
+                wb.sheets[sheetIndex][ref] = cell
+            }
+        }
     }
 
     @objc func clearContents(_ sender: Any?) {
@@ -875,6 +883,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     // MARK: - Export
+
+    /// Selection for printing (limited to the used area).
+    var printSelection: CellRange { clampedSelection }
 
     @objc func exportPDFAction(_ sender: Any?) {
         guard let doc, let window else { return }

@@ -29,6 +29,7 @@ final class Calculator {
     private(set) var workbook: Workbook
     private var cache: [Int: [CellRef: Value]] = [:]
     private var visiting = Set<[Int]>()
+    private var nameDepth = 0
     private static var parsed: [String: Expr] = [:]
     private static let parseLock = NSLock()
 
@@ -129,7 +130,12 @@ final class Calculator {
             let up = n.uppercased()
             if up == "TRUE" { return .value(.bool(true)) }
             if up == "FALSE" { return .value(.bool(false)) }
-            throw XLError.name
+            // Defined names (workbook scope), resolved by their formula text.
+            guard let def = workbook.names.first(where: { $0.key.caseInsensitiveCompare(n) == .orderedSame })?.value,
+                  nameDepth < 20, let e = Self.expression("=" + def) else { throw XLError.name }
+            nameDepth += 1
+            defer { nameDepth -= 1 }
+            return try evalThrowing(e, sheet: sheet, at: at)
         case .ref(let sheetName, let p):
             let s = try sheetIndex(sheetName, sheet)
             return .matrix(Matrix(rows: 1, cols: 1, values: [value(sheet: s, ref: CellRef(row: p.row, col: p.col))]),

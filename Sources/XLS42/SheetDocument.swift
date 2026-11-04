@@ -37,10 +37,11 @@ final class SheetDocument: NSDocument {
     }
 
     /// Applies an undoable change to the workbook, recalculates and refreshes the window.
-    func change(_ name: String, _ body: (inout Workbook) -> Void) {
+    func change(_ name: String, recalc: Bool = true, _ body: (inout Workbook) -> Void) {
         let old = workbook
         body(&workbook)
-        workbook = Calculator.recalculate(workbook)
+        // Formatting-only changes don't need a recalculation (big sheets stay fast).
+        if recalc { workbook = Calculator.recalculate(workbook) }
         undoManager?.beginUndoGrouping()
         undoManager?.registerUndo(withTarget: self) { $0.restore(old, name: name) }
         undoManager?.setActionName(name)
@@ -64,11 +65,17 @@ final class SheetDocument: NSDocument {
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
         editor?.grid.commitEdit(move: nil)
+        let options = SheetExport.Options.saved
+        if options.scope == .selection, editor == nil { options.scope = .sheet }
         let info = SheetExport.printInfo(from: printInfo)
-        let index = editor?.sheetIndex ?? 0
-        let view = SheetExport.printView(workbook.sheets[index], range: nil, options: .saved, info: info)
+        let view = SheetPrintView(workbook: workbook, activeSheet: editor?.sheetIndex ?? 0,
+                                  selection: editor?.printSelection, options: options)
+        view.prepare(info)
         let op = NSPrintOperation(view: view, printInfo: info)
         op.jobTitle = displayName
+        op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsPageSetupAccessory])
+        op.printPanel.addAccessoryController(SheetPrintAccessory(options: options))
         return op
     }
+
 }

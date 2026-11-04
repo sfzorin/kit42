@@ -27,14 +27,27 @@ enum XLSX {
 
         let theme = themeColors(xml("xl/theme/theme1.xml"))
         let styles = readStyles(xml("xl/styles.xml"), theme: theme)
+        let dxfs = readDxfs(xml("xl/styles.xml"), theme: theme)
         let shared = (xml("xl/sharedStrings.xml")?.children("si") ?? []).map(\.allText)
 
         for s in workbookXML.child("sheets")?.children("sheet") ?? [] {
             let name = s.attr("name") ?? "Sheet\(wb.sheets.count + 1)"
             guard let rid = s.attr("id"), let path = rels[rid], let root = xml(path) else { continue }
-            wb.sheets.append(readSheet(root, name: name, styles: styles, shared: shared))
+            var sheet = readSheet(root, name: name, styles: styles, shared: shared)
+            readExtras(&sheet, root: root, path: path, zip: zip, dxfs: dxfs, theme: theme)
+            wb.sheets.append(sheet)
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
+        for d in workbookXML.child("definedNames")?.children("definedName") ?? [] {
+            guard let name = d.attr("name"), let text = d.stringValue, !text.isEmpty else { continue }
+            if name == "_xlnm.Print_Area", let i = d.attr("localSheetId").flatMap(Int.init), i < wb.sheets.count {
+                let first = String(text.split(separator: ",").first ?? "")
+                let refPart = first.split(separator: "!").last.map(String.init) ?? first
+                wb.sheets[i].printArea = CellRange(refPart.replacingOccurrences(of: "$", with: ""))
+            } else if !name.hasPrefix("_xlnm.") {
+                wb.names[name] = text
+            }
+        }
         return wb
     }
 
@@ -259,11 +272,10 @@ enum XLSX {
         <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
         <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
         """
+        ct += "<Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"vml\" ContentType=\"application/vnd.openxmlformats-officedocument.vmlDrawing\"/>"
         for i in 1...sheetCount {
             ct += "<Override PartName=\"/xl/worksheets/sheet\(i).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
         }
-        ct += "</Types>"
-        zip["[Content_Types].xml"] = Data(ct.utf8)
 
         zip["_rels/.rels"] = Data("""
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -277,6 +289,8 @@ enum XLSX {
         <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>XLS42</Application></Properties>
         """.utf8)
 
+        var counters = Counters()
+        var dxfs: [Dxf] = []
         var workbook = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -289,17 +303,36 @@ enum XLSX {
         for (i, sheet) in wb.sheets.enumerated() {
             workbook += "<sheet name=\"\(xmlEscape(sheet.name))\" sheetId=\"\(i + 1)\" r:id=\"rId\(i + 1)\"/>"
             wbRels += "<Relationship Id=\"rId\(i + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet\(i + 1).xml\"/>"
-            zip["xl/worksheets/sheet\(i + 1).xml"] = Data(sheetXML(sheet, styleIndex: styleIndex, selected: i == 0).utf8)
+            let extras = writeExtras(sheet, sheetNumber: i + 1, zip: &zip, counters: &counters, dxfs: &dxfs)
+            ct += extras.types
+            zip["xl/worksheets/sheet\(i + 1).xml"] = Data(sheetXML(sheet, styleIndex: styleIndex, selected: i == 0, extras: extras).utf8)
         }
-        workbook += "</sheets><calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/></workbook>"
+        ct += "</Types>"
+        zip["[Content_Types].xml"] = Data(ct.utf8)
+        workbook += "</sheets>"
+        var defined: [String] = wb.names.sorted { $0.key < $1.key }.map { "<definedName name=\"\(xmlEscape($0.key))\">\(xmlEscape($0.value))</definedName>" }
+        for (i, sheet) in wb.sheets.enumerated() {
+            func absolute(_ r: CellRange) -> String {
+                "\(Formula.sheetPrefix(sheet.name))$\(CellRef.columnName(r.start.col))$\(r.start.row + 1):$\(CellRef.columnName(r.end.col))$\(r.end.row + 1)"
+            }
+            if let area = sheet.printArea {
+                defined.append("<definedName name=\"_xlnm.Print_Area\" localSheetId=\"\(i)\">\(xmlEscape(absolute(area)))</definedName>")
+            }
+            if let f = sheet.autoFilter {
+                defined.append("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"\(i)\" hidden=\"1\">\(xmlEscape(absolute(f)))</definedName>")
+            }
+        }
+        if !defined.isEmpty { workbook += "<definedNames>" + defined.joined() + "</definedNames>" }
+        workbook += "<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/></workbook>"
         wbRels += "<Relationship Id=\"rId\(sheetCount + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>"
         zip["xl/workbook.xml"] = Data(workbook.utf8)
         zip["xl/_rels/workbook.xml.rels"] = Data(wbRels.utf8)
-        zip["xl/styles.xml"] = Data(stylesXML(styleList).utf8)
+        zip["xl/styles.xml"] = Data(stylesXML(styleList, dxfs: dxfs).utf8)
         return zip.data()
     }
 
-    private static func sheetXML(_ sheet: Sheet, styleIndex: [CellStyle: Int], selected: Bool) -> String {
+    private static func sheetXML(_ sheet: Sheet, styleIndex: [CellStyle: Int], selected: Bool,
+                                 extras: (filter: String, conditional: String, tail: String, types: String)) -> String {
         var x = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -322,10 +355,11 @@ enum XLSX {
         }
         x += "<sheetData>"
         let byRow = Dictionary(grouping: sheet.cells.keys, by: \.row)
-        let rows = Set(byRow.keys).union(sheet.rowHeights.keys).sorted()
+        let rows = Set(byRow.keys).union(sheet.rowHeights.keys).union(sheet.filterHidden).sorted()
         for r in rows {
             x += "<row r=\"\(r + 1)\""
-            if let h = sheet.rowHeights[r] { x += h == 0 ? " hidden=\"1\"" : " ht=\"\(fmt(h))\" customHeight=\"1\"" }
+            if sheet.filterHidden.contains(r) { x += " hidden=\"1\"" }
+            else if let h = sheet.rowHeights[r] { x += h == 0 ? " hidden=\"1\"" : " ht=\"\(fmt(h))\" customHeight=\"1\"" }
             x += ">"
             for ref in (byRow[r] ?? []).sorted() {
                 let cell = sheet.cells[ref]!
@@ -354,15 +388,16 @@ enum XLSX {
             }
             x += "</row>"
         }
-        x += "</sheetData>"
+        x += "</sheetData>" + extras.filter
         if !sheet.merges.isEmpty {
             x += "<mergeCells count=\"\(sheet.merges.count)\">" + sheet.merges.map { "<mergeCell ref=\"\($0.a1)\"/>" }.joined() + "</mergeCells>"
         }
-        x += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>"
+        x += extras.conditional
+        x += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>" + extras.tail + "</worksheet>"
         return x
     }
 
-    private static func stylesXML(_ styles: [CellStyle]) -> String {
+    private static func stylesXML(_ styles: [CellStyle], dxfs: [Dxf]) -> String {
         var fonts: [String] = [], fills: [String] = ["<fill><patternFill patternType=\"none\"/></fill>", "<fill><patternFill patternType=\"gray125\"/></fill>"]
         var borders: [String] = ["<border><left/><right/><top/><bottom/><diagonal/></border>"]
         var numFmts: [String: Int] = [:]
@@ -422,7 +457,7 @@ enum XLSX {
         x += "<borders count=\"\(borders.count)\">" + borders.joined() + "</borders>"
         x += "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
         x += "<cellXfs count=\"\(xfs.count)\">" + xfs.joined() + "</cellXfs>"
-        x += "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>"
+        x += "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>" + dxfsXML(dxfs) + "</styleSheet>"
         return x
     }
 
@@ -433,7 +468,7 @@ enum XLSX {
         return String(format: "%.17g", d)
     }
 
-    private static func argb(_ c: NSColor) -> String {
+    static func argb(_ c: NSColor) -> String {
         let rgb = c.usingColorSpace(.sRGB) ?? c
         return String(format: "FF%02X%02X%02X", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
     }

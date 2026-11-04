@@ -34,6 +34,10 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     /// Sheet drawn when printing a sheet other than the one on screen.
     var sheetOverride: Sheet?
+    var workbookOverride: Workbook?
+    var sheetIndexOverride: Int?
+    var workbook: Workbook { workbookOverride ?? controller?.doc?.workbook ?? Workbook() }
+    var sheetIndex: Int { sheetIndexOverride ?? controller?.sheetIndex ?? 0 }
     var sheet: Sheet { sheetOverride ?? controller?.sheet ?? Sheet(name: "") }
 
     // Printing
@@ -68,6 +72,8 @@ final class GridView: NSView, NSTextFieldDelegate {
         rowOffsets.reserveCapacity(rowCount + 1)
         for r in 0..<rowCount { rowOffsets.append(rowOffsets[r] + floor(sheet.height(r) * scale)) }
         setFrameSize(NSSize(width: colOffsets[colCount] + 1, height: rowOffsets[rowCount] + 1))
+        removeAllToolTips()
+        if !printMode, !sheet.comments.isEmpty { addToolTip(bounds, owner: self, userData: nil) }
         needsDisplay = true
         controller?.headersNeedDisplay()
         if isEditing, let ref = editingCell { positionEditor(ref) }
@@ -140,14 +146,32 @@ final class GridView: NSView, NSTextFieldDelegate {
 
         let merges = sheet.merges.filter { rect($0).intersects(dirty) }
         let merged = Set(merges.flatMap { $0.count < 5000 ? $0.cells : [] })
+        let rules = sheet.conditionalFormats.isEmpty ? nil : ConditionalEngine(sheet: sheet, workbook: workbook, sheetIndex: sheetIndex)
+        func display(_ ref: CellRef) -> Cell? {
+            guard var cell = sheet.cells[ref] else { return nil }
+            rules?.apply(&cell, at: ref)
+            return cell
+        }
 
         // Fills (cover the gridlines under them, like Excel)
-        for r in r0...r1 {
+        for r in r0...r1 where !sheet.isRowHidden(r) {
             for c in c0...c1 {
                 let ref = CellRef(row: r, col: c)
-                guard let fill = sheet.cells[ref]?.style.fill, !merged.contains(ref) else { continue }
+                guard let fill = display(ref)?.style.fill, !merged.contains(ref) else { continue }
                 fill.setFill()
                 rect(ref).insetBy(dx: -0.5, dy: -0.5).fill()
+            }
+        }
+        // Data bars
+        if let rules {
+            for r in r0...r1 where !sheet.isRowHidden(r) {
+                for c in c0...c1 {
+                    let ref = CellRef(row: r, col: c)
+                    guard let (fraction, color) = rules.bar(at: ref) else { continue }
+                    let cr = rect(ref).insetBy(dx: 2, dy: 2)
+                    let bar = NSRect(x: cr.minX, y: cr.minY, width: cr.width * fraction, height: cr.height)
+                    NSGradient(starting: color.withAlphaComponent(0.85), ending: color.withAlphaComponent(0.25))?.draw(in: bar, angle: 0)
+                }
             }
         }
         for m in merges {
@@ -157,10 +181,10 @@ final class GridView: NSView, NSTextFieldDelegate {
 
         // Text (with overflow into empty neighbours)
         let scanFrom = max(0, c0 - 30)
-        for r in r0...r1 {
+        for r in r0...r1 where !sheet.isRowHidden(r) {
             for c in scanFrom...c1 {
                 let ref = CellRef(row: r, col: c)
-                guard let cell = sheet.cells[ref], !cell.value.isEmpty || cell.isFormula else { continue }
+                guard let cell = display(ref), !cell.value.isEmpty || cell.isFormula else { continue }
                 if merged.contains(ref) && !merges.contains(where: { $0.start == ref }) { continue }
                 if isEditing, editingCell == ref { continue }
                 drawText(cell, at: ref, row: r, visibleMaxCol: c1)
@@ -180,7 +204,98 @@ final class GridView: NSView, NSTextFieldDelegate {
             }
         }
 
+        // Comment markers, filter buttons, floating objects
+        if !printMode {
+            NSColor.systemRed.setFill()
+            for (ref, _) in sheet.comments where rect(ref).intersects(dirty) {
+                let r = rect(ref)
+                let tri = NSBezierPath()
+                tri.move(to: NSPoint(x: r.maxX - 6, y: r.minY))
+                tri.line(to: NSPoint(x: r.maxX, y: r.minY))
+                tri.line(to: NSPoint(x: r.maxX, y: r.minY + 6))
+                tri.close()
+                tri.fill()
+            }
+            if let f = sheet.autoFilter, f.start.row >= r0 - 1, f.start.row <= r1 {
+                for c in f.cols { drawFilterButton(c, row: f.start.row, active: sheet.filterValues[c] != nil) }
+            }
+        }
+        drawObjects(dirty)
         if !printMode { drawSelection() }
+        if let target = fillTarget {
+            let path = NSBezierPath(rect: rect(target).insetBy(dx: 0.5, dy: 0.5))
+            path.setLineDash([4, 3], count: 2, phase: 0)
+            path.lineWidth = 1.5
+            NSColor.controlAccentColor.setStroke()
+            path.stroke()
+        }
+    }
+
+    // MARK: - Filter buttons, objects
+
+    func filterButtonRect(_ col: Int, row: Int) -> NSRect {
+        let r = rect(CellRef(row: row, col: col))
+        let size = min(r.height - 2, 16)
+        return NSRect(x: r.maxX - size - 2, y: r.maxY - size - 1, width: size, height: size)
+    }
+
+    private func drawFilterButton(_ col: Int, row: Int, active: Bool) {
+        let b = filterButtonRect(col, row: row)
+        let path = NSBezierPath(roundedRect: b, xRadius: 3, yRadius: 3)
+        (active ? NSColor.controlAccentColor : NSColor.white).setFill()
+        path.fill()
+        NSColor(white: 0.7, alpha: 1).setStroke()
+        path.lineWidth = 0.5
+        path.stroke()
+        let symbol = active ? "line.3.horizontal.decrease" : "chevron.down"
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: b.height * 0.5, weight: .bold)) {
+            let tinted = NSImage(size: img.size, flipped: false) { r in
+                img.draw(in: r)
+                (active ? NSColor.white : NSColor.darkGray).set()
+                r.fill(using: .sourceAtop)
+                return true
+            }
+            tinted.draw(in: NSRect(x: b.midX - img.size.width / 2, y: b.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
+        }
+    }
+
+    enum FloatingObject: Equatable { case image(Int), chart(Int) }
+    var selectedObject: FloatingObject? { didSet { needsDisplay = true } }
+
+    func objectRect(_ o: FloatingObject) -> NSRect {
+        switch o {
+        case .image(let i):
+            let img = sheet.images[i]
+            let a = rect(img.anchor).origin
+            return NSRect(x: a.x + img.offset.x * scale, y: a.y + img.offset.y * scale, width: img.size.width * scale, height: img.size.height * scale)
+        case .chart(let i):
+            let ch = sheet.charts[i]
+            let a = rect(ch.anchor).origin
+            return NSRect(x: a.x, y: a.y, width: ch.size.width * scale, height: ch.size.height * scale)
+        }
+    }
+
+    var objects: [FloatingObject] { sheet.images.indices.map { .image($0) } + sheet.charts.indices.map { .chart($0) } }
+
+    private func drawObjects(_ dirty: NSRect) {
+        for o in objects {
+            let r = objectRect(o)
+            guard r.intersects(dirty) else { continue }
+            switch o {
+            case .image(let i):
+                NSImage(data: sheet.images[i].data)?.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            case .chart(let i):
+                ChartRenderer.draw(sheet.charts[i], in: r, workbook: workbook, sheet: sheetIndex, scale: scale * 0.75)
+            }
+            if o == selectedObject, !printMode {
+                NSColor.controlAccentColor.setStroke()
+                let border = NSBezierPath(rect: r.insetBy(dx: -1, dy: -1))
+                border.lineWidth = 1.5
+                border.stroke()
+                NSColor.controlAccentColor.setFill()
+                NSRect(x: r.maxX - 4, y: r.maxY - 4, width: 8, height: 8).fill()
+            }
+        }
     }
 
     private func displayAlignment(_ cell: Cell) -> NSTextAlignment {
@@ -468,8 +583,40 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     private var dragging = false
 
+    private enum Drag { case none, select, fill, moveObject(NSPoint, NSRect), resizeObject(NSRect) }
+    private var drag: Drag = .none
+    private(set) var fillTarget: CellRange?
+
+    private var handleRect: NSRect {
+        let r = rect(expandedSelection)
+        return NSRect(x: r.maxX - 6, y: r.maxY - 6, width: 12, height: 12)
+    }
+
     override func mouseDown(with event: NSEvent) {
-        let ref = cell(at: gridPoint(event))
+        let point = gridPoint(event)
+        let ref = cell(at: point)
+        if !isEditing {
+            // Floating objects (topmost first)
+            if let o = objects.reversed().first(where: { objectRect($0).insetBy(dx: -4, dy: -4).contains(point) }) {
+                selectedObject = o
+                let r = objectRect(o)
+                drag = NSRect(x: r.maxX - 8, y: r.maxY - 8, width: 14, height: 14).contains(point) ? .resizeObject(r) : .moveObject(point, r)
+                window?.makeFirstResponder(self)
+                dragging = true
+                return
+            }
+            selectedObject = nil
+            if let f = sheet.autoFilter, ref.row == f.start.row, f.cols.contains(ref.col), filterButtonRect(ref.col, row: ref.row).contains(point) {
+                controller?.showFilter(column: ref.col, from: toViewport(filterButtonRect(ref.col, row: ref.row).origin))
+                return
+            }
+            if handleRect.contains(point) {
+                drag = .fill
+                dragging = true
+                return
+            }
+        }
+        drag = .select
         if isEditing, editor.stringValue.hasPrefix("="), canInsertReference {
             refAnchor = ref
             insertReference(CellRange(ref, ref))
@@ -490,7 +637,36 @@ final class GridView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with event: NSEvent) {
         guard dragging else { return }
         autoscroll(with: event)
-        let ref = cell(at: gridPoint(event))
+        let point = gridPoint(event)
+        switch drag {
+        case .fill:
+            let ref = cell(at: point)
+            let s = selection
+            var t = s
+            let down = ref.row - s.end.row, up = s.start.row - ref.row, right = ref.col - s.end.col, left = s.start.col - ref.col
+            let best = max(down, up, right, left)
+            if best <= 0 { t = s }
+            else if best == down { t = CellRange(s.start, CellRef(row: ref.row, col: s.end.col)) }
+            else if best == up { t = CellRange(CellRef(row: ref.row, col: s.start.col), s.end) }
+            else if best == right { t = CellRange(s.start, CellRef(row: s.end.row, col: ref.col)) }
+            else { t = CellRange(CellRef(row: s.start.row, col: ref.col), s.end) }
+            fillTarget = t == s ? nil : t
+            needsDisplay = true
+            return
+        case .moveObject(let start, let original):
+            controller?.previewObject(selectedObject, frame: original.offsetBy(dx: point.x - start.x, dy: point.y - start.y))
+            return
+        case .resizeObject(let original):
+            var w = max(20, point.x - original.minX), h = max(20, point.y - original.minY)
+            if case .image = selectedObject, original.height > 0 {
+                let ratio = original.width / original.height
+                if w / h > ratio { h = w / ratio } else { w = h * ratio }
+            }
+            controller?.previewObject(selectedObject, frame: NSRect(x: original.minX, y: original.minY, width: w, height: h))
+            return
+        default: break
+        }
+        let ref = cell(at: point)
         if isEditing, let a = refAnchor {
             insertReference(CellRange(a, ref))
             return
@@ -500,6 +676,16 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     override func mouseUp(with event: NSEvent) {
         dragging = false
+        switch drag {
+        case .fill:
+            if let t = fillTarget { controller?.autoFill(from: selection, to: t) }
+            fillTarget = nil
+            needsDisplay = true
+        case .moveObject(_, let original), .resizeObject(let original):
+            controller?.commitObject(selectedObject, original: original)
+        default: break
+        }
+        drag = .none
         if isEditing { window?.makeFirstResponder(editor); refAnchor = nil }
     }
 
@@ -530,7 +716,8 @@ final class GridView: NSView, NSTextFieldDelegate {
         case 13, 3: advance(rows: shift ? -1 : 1, cols: 0)
         case 9: advance(rows: 0, cols: shift ? -1 : 1)
         case 25: advance(rows: 0, cols: -1)
-        case 127, NSDeleteFunctionKey: controller?.clearContents(nil)
+        case 127, NSDeleteFunctionKey:
+            if let o = selectedObject { controller?.deleteObject(o); selectedObject = nil } else { controller?.clearContents(nil) }
         case NSF2FunctionKey: beginEdit(initial: nil)
         case 27: break
         default:
@@ -712,6 +899,12 @@ final class CellEditorField: NSTextField {
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
+}
+
+extension GridView: NSViewToolTipOwner {
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        sheet.comments[cell(at: point)] ?? ""
+    }
 }
 
 // MARK: - Headers
