@@ -12,7 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        _ = NSDocumentController.shared
+        // Autosave every 30 s to a backup location (not over the file): documents survive a crash.
+        NSDocumentController.shared.autosavingDelay = 30
         NSApp.mainMenu = MenuBar.build(Cmd.menuBar)
     }
 
