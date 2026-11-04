@@ -158,6 +158,7 @@ enum DocxStyles {
         }
 
         markFields(body)
+        markDropCaps(body)
         markTables(body, styles: styles)
         markFootnotesCommentsLinks(body, zip: zip, rels: rels, extras: &extras)
         extras.info = coreProperties(zip)
@@ -199,6 +200,18 @@ enum DocxStyles {
             if let d = defaultPPr { inheritedP.append(d) }
             inheritedP += styleChain.compactMap { $0.child("pPr") }
             merge(into: pPr, from: inheritedP, skip: ["pStyle", "rPr", "sectPr", "pPrChange"])
+            // Borders and background of the paragraph (not of table cells): a marker, the system reader drops them.
+            if (p.parent as? XMLElement)?.localName != "tc", let q = paragraphBoxPayload(pPr) {
+                p.insertChild(mark("q", q), at: pPr.index + 1)
+            }
+            // Centre, right and decimal tab stops (the system reader keeps only left ones).
+            if let tabs = pPr.child("tabs")?.children("tab"), tabs.contains(where: { ["center", "right", "decimal", "end"].contains($0.attr("val") ?? "") }) {
+                let spec = tabs.compactMap { t -> String? in
+                    guard let pos = t.attr("pos"), let v = t.attr("val"), v != "clear" else { return nil }
+                    return (["center": "c", "right": "r", "end": "r", "decimal": "d"][v] ?? "l") + pos
+                }.joined(separator: ",")
+                if !spec.isEmpty { p.insertChild(mark("T", spec), at: pPr.index + 1) }
+            }
             // List format marker: restored by `restoreLists` after reading.
             if let numPr = pPr.child("numPr"), let numId = numPr.child("numId")?.attr("val") {
                 let level = numPr.child("ilvl")?.attr("val").flatMap(Int.init) ?? 0
@@ -228,6 +241,13 @@ enum DocxStyles {
                 // The system reader takes <w:b w:val="0"/> for bold: switched-off toggles are left out.
                 for case let e as XMLElement in rPr.children ?? [] where ["b", "bCs", "i", "iCs", "strike", "dstrike", "caps", "smallCaps", "vanish"].contains(e.localName ?? "") && !onOff(e) {
                     e.detach()
+                }
+                if let u = rPr.child("u"), ["none", "0", "false"].contains(u.attr("val") ?? "single") { u.detach() }
+                // Capitals and small capitals (dropped by the system reader): markers around the run.
+                let effects = ["caps", "smallCaps"].filter { rPr.child($0) != nil }
+                if !effects.isEmpty, let parent = r.parent as? XMLElement {
+                    parent.insertChild(mark("e", effects.joined(separator: ",")), at: r.index)
+                    parent.insertChild(mark("E"), at: r.index + 1)
                 }
             }
         }
@@ -273,7 +293,7 @@ enum DocxStyles {
                 style.textLists = []
             } else {
                 // The list of every level up to this one (shared by all paragraphs of the numbering).
-                let numId = ns.substring(with: m.range(at: 1))
+                let numId = String(key.split(separator: ":")[0])
                 style.textLists = (0...level).map { k in
                     let lk = "\(numId):\(k)"
                     if let l = lists[lk] { return l }
@@ -305,7 +325,8 @@ enum DocxStyles {
         }
         // "%1." → "{decimal}."; outer levels ("%1.%2.") are the enclosing lists' markers, only this level's part stays.
         var own = f.text
-        if let r = own.range(of: "%\(level + 1)") { own = String(own[r.lowerBound...]) }
+        // Text after the last reference to an outer level (and its separator) belongs to this level.
+        if level > 0, let r = own.range(of: "%[1-\(level)][.)\\-]?", options: [.regularExpression, .backwards]) { own = String(own[r.upperBound...]) }
         var s = own.replacingOccurrences(of: "%\(level + 1)", with: token)
         s = s.replacingOccurrences(of: "%[0-9]\\.?", with: "", options: .regularExpression)
         return NSTextList.MarkerFormat(rawValue: s.contains(token) ? s : token + ".")
@@ -332,7 +353,6 @@ enum DocxStyles {
             let wrapper = FileWrapper(regularFileWithContents: data)
             wrapper.preferredFilename = "image\(n).png"
             attachment.fileWrapper = wrapper
-            attachment.image = image
             attachment.bounds = NSRect(origin: .zero, size: size)
             attachment.attachmentCell = ImageCell(imageCell: image)
             let attrs = text.attributes(at: m.range.location, effectiveRange: nil).filter { $0.key == .paragraphStyle }

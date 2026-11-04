@@ -1,6 +1,13 @@
 import AppKit
 import Kit42
 
+extension NSTextAttachment {
+    /// The attachment's picture (with an ImageCell the cell holds it: a set `image` would replace the cell).
+    var picture: NSImage? {
+        image ?? (attachmentCell as? NSTextAttachmentCell)?.image ?? fileWrapper?.regularFileContents.flatMap { NSImage(data: $0) }
+    }
+}
+
 /// Draws a picture with its crop and border; a floating picture takes no room in the line (the page shows it).
 final class ImageCell: NSTextAttachmentCell {
     static func props(_ lm: NSLayoutManager?, _ i: Int) -> DocImage? {
@@ -11,18 +18,18 @@ final class ImageCell: NSTextAttachmentCell {
     override func cellFrame(for textContainer: NSTextContainer, proposedLineFragment lineFrag: NSRect, glyphPosition position: NSPoint,
                             characterIndex charIndex: Int) -> NSRect {
         if Self.props(textContainer.layoutManager, charIndex)?.isFloating == true { return NSRect(x: 0, y: 0, width: 0.01, height: 0.01) }
-        let size = attachment?.bounds.size ?? image?.size ?? .zero
+        let size = (attachment?.bounds.size.width ?? 0) > 0 ? attachment!.bounds.size : (image?.size ?? .zero)
         return NSRect(origin: .zero, size: size)
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?, characterIndex charIndex: Int, layoutManager: NSLayoutManager) {
         let p = Self.props(layoutManager, charIndex)
         guard p?.isFloating != true else { return }
-        Self.drawPicture(attachment?.image ?? image, in: cellFrame, props: p, flipped: controlView?.isFlipped ?? true)
+        Self.drawPicture(image ?? attachment?.picture, in: cellFrame, props: p, flipped: controlView?.isFlipped ?? true)
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        Self.drawPicture(attachment?.image ?? image, in: cellFrame, props: nil, flipped: controlView?.isFlipped ?? true)
+        Self.drawPicture(image ?? attachment?.picture, in: cellFrame, props: nil, flipped: controlView?.isFlipped ?? true)
     }
 
     override func wantsToTrackMouse() -> Bool { false }
@@ -99,9 +106,9 @@ extension PagedView {
                 }
                 p.fromParagraph = false
             }
-            let size = a.bounds.size.width > 0 ? a.bounds.size : (a.image?.size ?? NSSize(width: 100, height: 100))
+            let size = a.bounds.size.width > 0 ? a.bounds.size : (a.picture?.size ?? NSSize(width: 100, height: 100))
             let rect = NSRect(x: card.setup.margins.left + p.offset.x, y: card.setup.margins.top + p.offset.y, width: size.width, height: size.height)
-            out.append((rect, p.wrap, r.location, a.image, p))
+            out.append((rect, p.wrap, r.location, a.picture, p))
         }
         card.setFloats(out.map { ($0.0, $0.3, $0.4, $0.2) })
         return out.map { ($0.0, $0.1, $0.2) }
@@ -216,7 +223,7 @@ extension DocWindowController {
         if let i = extras2.imageIndex, i < storage.length, storage.attribute(.attachment, at: i, effectiveRange: nil) is NSTextAttachment { return i }
         let sel = textView.selectedRange()
         for i in [sel.location, sel.location - 1] where i >= 0 && i < storage.length {
-            if let a = storage.attribute(.attachment, at: i, effectiveRange: nil) as? NSTextAttachment, a.image != nil,
+            if let a = storage.attribute(.attachment, at: i, effectiveRange: nil) as? NSTextAttachment, a.picture != nil,
                storage.attribute(.docNote, at: i, effectiveRange: nil) == nil, storage.attribute(.docField, at: i, effectiveRange: nil) == nil { return i }
         }
         return nil
@@ -270,10 +277,14 @@ extension DocWindowController {
               let old = storage.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment else { return }
         let props = (storage.attribute(.docImage, at: index, effectiveRange: nil) as? DocImage)?.duplicate() ?? DocImage()
         let a = NSTextAttachment()
+        let picture = old.picture
         a.fileWrapper = old.fileWrapper
-        a.image = old.image
-        a.bounds = old.bounds
-        a.attachmentCell = ImageCell(imageCell: old.image)
+        if a.fileWrapper == nil, let tiff = picture?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            a.fileWrapper = FileWrapper(regularFileWithContents: png)
+            a.fileWrapper?.preferredFilename = "image.png"
+        }
+        a.bounds = old.bounds.width > 0 ? old.bounds : NSRect(origin: .zero, size: picture?.size ?? .zero)
+        a.attachmentCell = ImageCell(imageCell: picture)
         body(a, props)
         let r = NSRange(location: index, length: 1)
         guard textView.shouldChangeText(in: r, replacementString: nil) else { return }
@@ -321,7 +332,7 @@ extension DocWindowController {
               let a = storage.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment else { NSSound.beep(); return }
         let p = (storage.attribute(.docImage, at: index, effectiveRange: nil) as? DocImage) ?? DocImage()
         let k = DocRuler.cm
-        let size = a.bounds.size.width > 0 ? a.bounds.size : (a.image?.size ?? .zero)
+        let size = a.bounds.size.width > 0 ? a.bounds.size : (a.picture?.size ?? .zero)
         let width = NSTextField(string: Self.num(size.width / k)), height = NSTextField(string: Self.num(size.height / k))
         let ratio = NSButton(checkboxWithTitle: L("Keep proportions"), target: nil, action: nil)
         ratio.state = .on

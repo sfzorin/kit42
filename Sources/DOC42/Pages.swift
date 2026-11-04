@@ -107,8 +107,9 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     }
 
     /// Fields whose value changed since they were laid out (page numbers after repagination) are laid out again.
-    func refreshFields(force: Bool = false) {
-        guard let storage = layoutManager.textStorage else { return }
+    @discardableResult
+    func refreshFields(force: Bool = false, schedule: Bool = true) -> Bool {
+        guard let storage = layoutManager.textStorage else { return false }
         var stale: [NSRange] = []
         storage.enumerateAttribute(.docField, in: NSRange(location: 0, length: storage.length)) { v, r, _ in
             guard let f = v as? DocField, !f.fixed else { return }
@@ -118,8 +119,11 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             layoutManager.invalidateLayout(forCharacterRange: r, actualCharacterRange: nil)
             layoutManager.invalidateDisplay(forCharacterRange: r)
         }
-        if !stale.isEmpty { scheduleReconcile() }
+        if !stale.isEmpty, schedule { scheduleReconcile() }
+        return !stale.isEmpty
     }
+
+    private var fieldPasses = 0
 
     /// Setup of the last section (and header/footer of every page).
     var setup: PageSetup {
@@ -158,6 +162,8 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     // MARK: Sections
 
     private var sectionCache: [(index: Int, section: DocSection)]?
+    /// Row groups pushed to the next column: container → (first character of the group, room left empty).
+    var keptGroups: [ObjectIdentifier: (start: Int, rect: NSRect)] = [:]
 
     /// Section breaks in text order.
     var sections: [(index: Int, section: DocSection)] {
@@ -186,6 +192,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     @objc private func storageEdited(_ note: Notification) {
         guard let storage = note.object as? NSTextStorage, storage.editedMask.contains(.editedAttributes) || storage.editedMask.contains(.editedCharacters) else { return }
         sectionCache = nil
+        keptGroups = [:]
         layoutManager.notesChanged()
         editCount += 1
         churn = 0
@@ -264,9 +271,17 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         let visibleWidth = enclosingScrollView?.contentView.bounds.width ?? 0
         if viewMode == .web, let c = cards.first, abs(c.setup.size.width - webWidth) > 1 { applySetup(); return }
         let pageWidth = cards.map(\.setup.size.width).max() ?? setup.size.width
+        let breaks = sections
         for (i, card) in cards.enumerated() {
             card.number = i + 1
             card.total = cards.count
+            if let c = card.textViews.first?.textContainer, layoutManager.textStorage != nil {
+                let g = layoutManager.glyphRange(for: c)
+                if g.length > 0 {
+                    let start = layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil).location
+                    card.sectionIndex = breaks.firstIndex { $0.index >= start } ?? breaks.count
+                }
+            }
             card.firstOfSection = i == 0 || cards[i - 1].sectionIndex != card.sectionIndex
         }
         switch viewMode {
@@ -304,6 +319,35 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             setFrameSize(NSSize(width: width, height: y))
         }
         onLayout?()
+    }
+
+    /// Table rows joined by a merged cell (row span) can't be split over two pages (TextKit stretches the rows):
+    /// when such a group starts in this column but doesn't end in it, the column ends above the group.
+    func keepMergedRowsTogether(_ c: NSTextContainer) -> NSRect? {
+        guard let storage = layoutManager.textStorage, viewMode != .web else { return nil }
+        let g = layoutManager.glyphRange(for: c)
+        guard g.length > 0 else { return nil }
+        let chars = layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
+        // Already pushed: the group now starts the next column (keep the push, or it would come back and forth).
+        if let kept = keptGroups[ObjectIdentifier(c)], kept.start == NSMaxRange(chars) { return kept.rect }
+        var result: NSRect?
+        storage.enumerateAttribute(.paragraphStyle, in: chars) { v, r, stop in
+            guard let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.rowSpan > 1,
+                  let grid = TableGrid(storage, at: r.location) else { return }
+            let rows = b.startingRow..<(b.startingRow + b.rowSpan)
+            let group = grid.cells.filter { rows.contains($0.row) }
+            guard let first = group.map(\.range.location).min(), let end = group.map({ NSMaxRange($0.range) }).max(), end > NSMaxRange(chars) else { return }
+            let fg = layoutManager.glyphIndexForCharacter(at: first)
+            guard NSLocationInRange(fg, g) else { return }
+            let y = layoutManager.lineFragmentRect(forGlyphAt: fg, effectiveRange: nil, withoutAdditionalLayout: true).minY
+            // A group taller than a page is left to split.
+            guard y > 1 else { return }
+            result = NSRect(x: -10, y: y, width: c.size.width + 20, height: c.size.height - y + 10)
+            keptGroups[ObjectIdentifier(c)] = (first, result!)
+            stop.pointee = true
+        }
+        if result == nil { keptGroups[ObjectIdentifier(c)] = nil }
+        return result
     }
 
     /// Web layout: the page grows (or shrinks) with the text.
@@ -463,6 +507,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                         wanted = [NSRect(x: -10, y: -10, width: c.size.width + 20, height: c.size.height + 20)]
                     } else {
                         wanted = dropCaps(in: c).map(\.rect)
+                        if let k = keepMergedRowsTogether(c) { wanted.append(k) }
                         let origin = tv.frame.origin
                         for f in floats where f.wrap != .behind && f.wrap != .inFront && f.wrap != .inline {
                             var r = f.rect.offsetBy(dx: -origin.x, dy: -origin.y)
@@ -494,7 +539,17 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             churn += 1
         }
         relayout()
-        refreshFields()
+        if full {
+            // Offscreen pages (PDF, printing) are drawn right after: settle page numbers now.
+            if fieldPasses < 3, refreshFields(schedule: false) {
+                fieldPasses += 1
+                reconciling = false
+                reconcile(full: true)
+                fieldPasses = 0
+            }
+        } else {
+            refreshFields()
+        }
     }
 
     /// Edits so far (column balance is redone after each).
@@ -931,7 +986,9 @@ final class DocLayoutManager: NSLayoutManager {
         guard let storage = textStorage, index < storage.length else { return nil }
         let g = glyphIndexForCharacter(at: index)
         guard g < numberOfGlyphs else { return nil }
-        let line = lineFragmentRect(forGlyphAt: g, effectiveRange: nil, withoutAdditionalLayout: true)
+        // The letter's own glyph is null (not shown): the line is the one of the next glyph.
+        let next = g + 1 < numberOfGlyphs ? g + 1 : g
+        let line = lineFragmentRect(forGlyphAt: next, effectiveRange: nil, withoutAdditionalLayout: true)
         let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont ?? Styles.normal.font
         let p = storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle
         let lineHeight = defaultLineHeight(for: font) * max(1, p?.lineHeightMultiple ?? 1)
@@ -939,7 +996,6 @@ final class DocLayoutManager: NSLayoutManager {
         var attrs: [NSAttributedString.Key: Any] = [.font: capFont]
         attrs[.foregroundColor] = storage.attribute(.foregroundColor, at: index, effectiveRange: nil) ?? NSColor.black
         let letter = NSAttributedString(string: (storage.string as NSString).substring(with: NSRange(location: index, length: 1)), attributes: attrs)
-        let next = g + 1 < numberOfGlyphs ? g + 1 : g
         let baseline = line.minY + location(forGlyphAt: next).y
         let top = baseline - font.capHeight - capFont.ascender + capFont.capHeight
         return (NSRect(x: p?.firstLineHeadIndent ?? 0, y: line.minY, width: ceil(letter.size().width) + 4, height: lineHeight * CGFloat(lines) - 2), letter, top)

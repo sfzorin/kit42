@@ -111,36 +111,109 @@ enum Cmd {
 
     static let welcome = Command(L("Welcome Window"), #selector(A.showWelcomeAction(_:)), shortcut: Shortcut("0", [.command, .shift]))
 
+    // Writer-like commands: styles, navigator, fields, numbering, tables, pictures, page look, view.
+    static func fkey(_ code: Int) -> String { String(Character(UnicodeScalar(UInt32(code))!)) }
+    static let stylesPanel = Command(L("Styles"), #selector(W.toggleStylesAction(_:)), symbol: "paintpalette", shortcut: Shortcut("t"),
+                                     toolTip: L("Styles panel"), label: L("Styles"))
+    static let navigator = Command(L("Navigator"), #selector(W.toggleNavigatorAction(_:)), symbol: "list.bullet.rectangle",
+                                   shortcut: Shortcut(fkey(NSF5FunctionKey), []), toolTip: L("Headings, tables, images, bookmarks, comments…"), label: L("Navigator"))
+    static let statusBar = Command(L("Hide Status Bar"), #selector(W.toggleStatusBarAction(_:)))
+    static let viewModes: [Command] = [L("Single Page"), L("Book View (Two Pages)"), L("Multiple Pages"), L("Web Layout")].enumerated().map {
+        Command($0.element, #selector(W.viewModeAction(_:)), symbol: ["doc", "book", "square.grid.2x2", "globe"][$0.offset], tag: $0.offset)
+    }
+    static let fields: [Command] = [L("Page Number"), L("Page Count"), L("Date"), L("Time"), L("Title"), L("Author"), L("File Name"), L("Chapter")]
+        .enumerated().map { Command($0.element, #selector(W.insertFieldAction(_:)), tag: $0.offset) }
+    static let moreFields = Command(L("More Fields…"), #selector(W.moreFieldsAction(_:)))
+    static let updateFields = Command(L("Update Fields"), #selector(W.updateFieldsAction(_:)), shortcut: Shortcut(fkey(NSF9FunctionKey), []))
+    static let caption = Command(L("Caption…"), #selector(W.insertCaptionAction(_:)))
+    static let bookmark = Command(L("Bookmark…"), #selector(W.insertBookmarkAction(_:)))
+    static let crossReference = Command(L("Cross-reference…"), #selector(W.insertCrossReferenceAction(_:)))
+    static let editHeader = Command(L("Edit Header"), #selector(W.editHeaderAction(_:)))
+    static let editFooter = Command(L("Edit Footer"), #selector(W.editFooterAction(_:)))
+    static let character = Command(L("Character…"), #selector(W.characterAction(_:)), symbol: "textformat", shortcut: Shortcut("t", [.command, .shift]))
+    static let bulletsNumbering = Command(L("Bullets and Numbering…"), #selector(W.bulletsAndNumberingAction(_:)), symbol: "list.number")
+    static let outlineNumbering = Command(L("Outline Numbering…"), #selector(W.outlineNumberingAction(_:)))
+    static let demote = Command(L("Demote One Level"), #selector(W.demoteListAction(_:)))
+    static let promote = Command(L("Promote One Level"), #selector(W.promoteListAction(_:)))
+    static let borders = Command(L("Borders and Background…"), #selector(W.paragraphBordersAction(_:)))
+    static let dropCap = Command(L("Drop Cap…"), #selector(W.dropCapAction(_:)))
+    static let newStyle = Command(L("New Style from Selection…"), #selector(W.newStyleAction(_:)))
+    static let updateStyle = Command(L("Update Style to Match Selection"), #selector(W.updateStyleAction(_:)))
+    static let modifyStyle = Command(L("Modify Style…"), #selector(W.modifyStyleAction(_:)))
+    static let characterStyles: [Command] = [L("Default Character Style"), L("Emphasis"), L("Strong"), L("Code")].enumerated().map {
+        Command($0.element, #selector(W.applyCharacterStyleAction(_:)), tag: $0.offset)
+    }
+    static let pageBackground = Command(L("Background Colour…"), #selector(W.pageBackgroundAction(_:)))
+    static let watermark = Command(L("Watermark…"), #selector(W.watermarkAction(_:)))
+    static let hyphenation = Command(L("Hyphenation"), #selector(W.toggleHyphenationAction(_:)))
+    static let imageWrap: [Command] = W.wrapTitles.enumerated().map { Command($0.element, #selector(W.imageWrapAction(_:)), tag: $0.offset) }
+    static let imageProperties = Command(L("Image Properties…"), #selector(W.imagePropertiesAction(_:)))
+    static let mergeCells = Command(L("Merge Cells"), #selector(W.mergeCellsAction(_:)), symbol: "rectangle.compress.vertical")
+    static let splitCells = Command(L("Split Cells…"), #selector(W.splitCellsAction(_:)), symbol: "rectangle.split.2x1")
+    static let tableProperties = Command(L("Table Properties…"), #selector(W.tablePropertiesAction(_:)), symbol: "tablecells")
+    static let autoFormats: [Command] = W.autoFormats.enumerated().map { Command($0.element, #selector(W.tableAutoFormatAction(_:)), tag: $0.offset) }
+    static let sortTable = Command(L("Sort…"), #selector(W.sortTableAction(_:)), symbol: "arrow.up.arrow.down")
+    static let tableFormula = Command(L("Formula…"), #selector(W.tableFormulaAction(_:)), symbol: "function")
+    static let textToTable = Command(L("Convert Text to Table…"), #selector(W.textToTableAction(_:)))
+    static let tableToText = Command(L("Convert Table to Text"), #selector(W.tableToTextAction(_:)))
+    static let properties = Command(L("Properties…"), #selector(W.documentPropertiesAction(_:)))
+    static let exportPDFOptions = Command(L("Export as PDF…"), #selector(W.exportPDFAction(_:)))
+
+    /// F11 also opens the Styles panel (as in Writer), from a hidden item.
+    static var stylesF11: MenuElement {
+        let item = NSMenuItem(title: L("Styles"), action: #selector(W.toggleStylesAction(_:)), keyEquivalent: fkey(NSF11FunctionKey))
+        item.keyEquivalentModifierMask = []
+        item.isHidden = true
+        item.allowsKeyEquivalentWhenHidden = true
+        return .item(item)
+    }
+
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "DOC42")
-        spec.fileExtras = [.command(exportPDF), .command(exportAs)]
+        spec.fileExtras = [.command(exportPDF), .command(exportAs), .separator, .command(properties)]
         spec.editExtras = [.command(trackChanges)]
         spec.find = [.command(find), .command(findReplace), .separator, .command(findNext), .command(findPrevious),
                      .command(useSelectionForFind), .separator, .command(replaceBar)]
-        spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator, .command(formatBar), .command(ruler), .command(toggleComments)]
+        spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator] + viewModes.menuElements + [.separator,
+                     .command(formatBar), .command(ruler), .command(statusBar), .command(toggleComments), .separator,
+                     .command(navigator), .command(stylesPanel), stylesF11]
         spec.insert = [.command(insertImage), .command(insertTable), .command(stamps), .separator,
-                       .command(link), .command(removeLink), .separator,
+                       .command(link), .command(removeLink), .command(bookmark), .command(crossReference), .separator,
                        .command(footnote), .command(editFootnote), .command(deleteFootnote), .separator,
                        .command(comment), .command(resolveComment), .command(deleteComment), .separator,
+                       .submenu(L("Field"), fields.menuElements + [.separator, .command(moreFields), .command(updateFields)]),
+                       .command(caption), .separator,
+                       .submenu(L("Header and Footer"), [.command(headerFooter), .command(editHeader), .command(editFooter), .separator, .command(pageNumbers)]),
+                       .separator,
                        .command(specialCharacter), .command(characterViewer), .command(date), .separator,
                        .command(pageBreak), .command(sectionBreak), .separator, .command(insertTOC), .command(updateTOC)]
-        spec.format = [.submenu(L("Style"), styles.menuElements), .separator,
+        spec.format = [.command(character), .command(paragraph), .command(bulletsNumbering), .command(outlineNumbering),
+                       .command(borders), .command(dropCap), .separator,
+                       .submenu(L("Styles"), [.command(stylesPanel), .separator, .command(newStyle), .command(updateStyle), .command(modifyStyle), .separator]
+                                + styles.menuElements + [.separator] + characterStyles.menuElements),
+                       .submenu(L("Page"), [.command(documentSetup), .submenu(L("Margins"), margins.menuElements),
+                                            .submenu(L("Orientation"), [.command(portrait), .command(landscape)]), .separator,
+                                            .command(pageBackground), .command(watermark), .separator, .command(headerFooter)]),
+                       .submenu(L("Columns"), columns.menuElements), .command(hyphenation),
+                       .submenu(L("Image"), [.submenu(L("Wrap"), imageWrap.menuElements), .command(imageProperties)]), .separator,
                        .command(bold), .command(italic), .command(underline), .command(strike), .command(bigger), .command(smaller), .separator,
                        .command(alignLeft), .command(alignCenter), .command(alignRight), .command(justify), .separator,
-                       .command(bulletList), .command(numberedList), .command(indent), .command(outdent),
-                       .command(paragraph), .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
+                       .command(bulletList), .command(numberedList), .command(demote), .command(promote), .command(indent), .command(outdent),
+                       .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
                        .command(formatPainter), .command(removeHighlight), .command(clearFormatting)]
         spec.custom = [(L("Review"), [.command(trackChangesItem), .command(showMarkup), .separator,
                                        .command(nextChange), .command(previousChange), .separator,
                                        .command(acceptChange), .command(rejectChange), .command(acceptAllChanges), .command(rejectAllChanges), .separator,
                                        .command(comment), .command(resolveComment), .command(deleteComment), .command(toggleComments)]),
                        (L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
-                        + [.separator, .command(deleteTable)]),
+                        + [.separator, .command(mergeCells), .command(splitCells), .separator, .command(tableProperties),
+                           .submenu(L("AutoFormat"), autoFormats.menuElements), .command(sortTable), .command(tableFormula), .separator,
+                           .command(textToTable), .command(tableToText), .separator, .command(deleteTable)]),
                        (L("Document"), [.command(documentSetup), .submenu(L("Margins"), margins.menuElements),
                                          .submenu(L("Orientation"), [.command(portrait), .command(landscape)]),
                                          .submenu(L("Columns"), columns.menuElements), .command(sectionBreak), .separator,
                                          .command(headerFooter), .command(pageNumbers), .separator,
-                                         .command(insertTOC), .command(updateTOC), .separator, .command(statistics)])]
+                                         .command(insertTOC), .command(updateTOC), .separator, .command(statistics), .command(properties)])]
         spec.help = [.command(welcome)]
         return spec
     }
@@ -150,7 +223,7 @@ enum Cmd {
             .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(footnote), .command(comment), .command(trackChanges),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
-            .command(formatBar), .command(print), .command(exportPDF),
+            .command(stylesPanel), .command(navigator), .command(formatBar), .command(print), .command(exportPDF),
             .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
         ]
     }

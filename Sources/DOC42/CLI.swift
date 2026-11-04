@@ -64,8 +64,10 @@ enum CLI {
         if let a = arg("--demo", 1) {
             let doc = TextDocument()
             doc.storage.setAttributedString(demo())
-            let pages = doc.offscreenPages()
+            addWriterFeatures(doc)
             let storage = doc.storage
+            numberDemoHeadings(doc)
+            let pages = doc.offscreenPages()
             TOC.make(storage, paged: pages, at: firstBodyParagraph(storage)) { range, text, attributeRanges in
                 if !attributeRanges.isEmpty, let text {
                     for r in attributeRanges { storage.addAttribute(.docBookmark, value: text.attribute(.docBookmark, at: r.location, effectiveRange: nil)!, range: r) }
@@ -75,6 +77,19 @@ enum CLI {
             }
             pages.detach()
             try save(doc, a[0])
+            return true
+        }
+        // --pdf in out [--pages 1-2] [--quality 0.5] [--comments] [--no-bookmarks]: Export as PDF with options.
+        if let a = arg("--pdf", 2) {
+            let doc = try open(a[0])
+            var o = PDFOptions()
+            o.pages = arg("--pages", 1)?[0] ?? ""
+            o.quality = arg("--quality", 1).flatMap { Double($0[0]) }.map { CGFloat($0) } ?? 1
+            o.comments = args.contains("--comments")
+            o.bookmarks = !args.contains("--no-bookmarks")
+            let data = doc.pdfData(o)
+            try data.write(to: URL(fileURLWithPath: a[1]))
+            print("pdf: \(data.count) bytes")
             return true
         }
         if let a = arg("--dump", 1) {
@@ -167,6 +182,7 @@ enum CLI {
             if let v { print("bookmark \(v): \(ns.substring(with: r).trimmingCharacters(in: .newlines))") }
         }
         if let r = TOC.range(in: s) { print("toc:\n" + ns.substring(with: r).replacingOccurrences(of: "\t", with: " .... ")) }
+        dumpWriterFeatures(doc, pages)
     }
 
     static func commentsOf(_ s: NSAttributedString) -> [(NSRange, DocComment)] {

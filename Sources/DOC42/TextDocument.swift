@@ -135,10 +135,21 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(Revisions.accepted(storage))) }   // footnotes as [^n]
+    func markdownData() -> Data { encode(MarkdownWriter.write(Fields.flatten(Revisions.accepted(storage), info: fieldInfo))) }   // footnotes as [^n]
+
+    /// Header and footer as plain text and page numbers, for formats without rich headers (ODT, RTF).
+    var plainSetup: PageSetup {
+        var s = setup
+        guard let hf = setup.hf else { return s }
+        s.header = HeaderFooter.plain(hf.header).0
+        let (footer, page) = HeaderFooter.plain(hf.footer)
+        s.footer = footer
+        s.pageNumbers = page || HeaderFooter.plain(hf.header).1
+        return s
+    }
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
-        if type == .plain { return encode(Notes.flatten(Revisions.accepted(storage)).string) }
+        if type == .plain { return encode(Notes.flatten(Fields.flatten(Revisions.accepted(storage), info: fieldInfo)).string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
             o.pageSize = setup.size
@@ -168,7 +179,8 @@ final class TextDocument: NSDocument {
         }
         // Tracked changes are accepted. Other formats have no footnotes (ODT has): references become numbers,
         // notes a list at the end. Comments go to ODT, RTF and HTML through markers (Annotations.swift).
-        let accepted = Revisions.accepted(self.storage)
+        let accepted = Fields.flatten(Revisions.accepted(self.storage), info: fieldInfo)
+        let setup = plainSetup
         var comments: [DocComment] = [], notes: [DocNote] = []
         var storage: NSAttributedString
         switch type {
@@ -207,13 +219,8 @@ final class TextDocument: NSDocument {
     }
 
     /// Paginated PDF of the document: exactly the pages shown on screen.
-    func pdfData() -> Data {
-        let view = offscreenPages(accepted: true)
-        defer { view.detach() }
-        // Sections in another size or orientation: each page as its own sheet.
-        if view.hasMixedPageSizes { return view.pdfData() }
-        return PaginatedPDF.render(view, info: pageInfo())
-    }
+    /// (Sections in another size or orientation: each page as its own sheet; see pdfData(_:).)
+    func pdfData() -> Data { pdfData(PDFOptions()) }
 
     /// Paper = page size, no extra margins: each page card is one sheet.
     func pageInfo() -> NSPrintInfo {
@@ -254,6 +261,11 @@ final class TextDocument: NSDocument {
             tv.drawsBackground = false
         }
         view.ownedStorage = text   // layout managers don't retain their storage
+        let info = fieldInfo
+        view.info = { info }
+        view.background = background
+        view.watermark = watermark
+        view.layoutManager.hyphenationFactor = hyphenate ? 0.9 : 0
         view.layoutAll()
         return view
     }

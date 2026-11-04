@@ -776,6 +776,23 @@ public enum DocxWriter {
             for k in r.location..<NSMaxRange(m.range) { x += commentMarks(k, end: false) }
             body = NSRange(location: NSMaxRange(m.range), length: NSMaxRange(r) - NSMaxRange(m.range))
         }
+        // A drop cap: its letter in a framed paragraph of its own, before this one (as Word writes it).
+        var dropCap = ""
+        if body.length > 1, let lines = text.attribute(.docDropCap, at: body.location, effectiveRange: nil) as? Int, lines > 1 {
+            let attrs = text.attributes(at: body.location, effectiveRange: nil)
+            let font = attrs[.font] as? NSFont ?? .systemFont(ofSize: 12)
+            let p = attrs[.paragraphStyle] as? NSParagraphStyle
+            let line = font.pointSize * 1.2 * max(1, p?.lineHeightMultiple ?? 1)
+            let size = (line * CGFloat(lines - 1) + font.capHeight) / max(0.5, font.capHeight / font.pointSize)
+            var a = attrs
+            a[.font] = NSFontManager.shared.convert(font, toSize: size)
+            a[.docDropCap] = nil
+            let letter = (text.string as NSString).substring(with: NSRange(location: body.location, length: 1))
+            dropCap = "<w:p><w:pPr><w:keepNext/><w:framePr w:dropCap=\"drop\" w:lines=\"\(lines)\" w:wrap=\"around\" w:vAnchor=\"text\" w:hAnchor=\"text\"/>"
+                + "<w:spacing w:before=\"0\" w:after=\"0\" w:line=\"\(Int((line * CGFloat(lines) * 20).rounded()))\" w:lineRule=\"exact\"/><w:textAlignment w:val=\"baseline\"/></w:pPr>"
+                + runXML(letter, a) + "</w:p>"
+            body = NSRange(location: body.location + 1, length: body.length - 1)
+        }
         if body.length == 0 {
             x += commentMarks(body.location, end: false) + commentMarks(body.location, end: true)
         } else {
@@ -813,7 +830,7 @@ public enum DocxWriter {
         }
         if fieldEnd { x += "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>" }
         if let (id, _) = bookmark { x += "<w:bookmarkEnd w:id=\"\(id)\"/>" }
-        return x + "</w:p>"
+        return dropCap + x + "</w:p>"
     }
 
     private static func paragraphProperties(_ p: NSParagraphStyle?, style: String? = nil, leader: Bool = false, sectPr: String? = nil,
@@ -825,9 +842,27 @@ public enum DocxWriter {
         var x = "<w:pPr>"
         if let style { x += "<w:pStyle w:val=\"\(xmlEscape(style))\"/>" }
         if let numPr { x += numPr }
+        // Paragraph borders and background: a text block that is not a table cell.
+        if let b = p.textBlocks.last, !(b is NSTextTableBlock) {
+            let pad = b.width(for: .padding, edge: .minY)
+            var edges = ""
+            for (name, e) in [("top", NSRectEdge.minY), ("left", .minX), ("bottom", .maxY), ("right", .maxX)] {
+                let w = b.width(for: .border, edge: e)
+                guard w > 0 else { continue }
+                edges += "<w:\(name) w:val=\"single\" w:sz=\"\(max(2, Int((w * 8).rounded())))\" w:space=\"\(Int(pad.rounded()))\" w:color=\"\(hex(b.borderColor(for: e) ?? .black))\"/>"
+            }
+            if !edges.isEmpty { x += "<w:pBdr>\(edges)</w:pBdr>" }
+            if let bg = b.backgroundColor, bg.alphaComponent > 0 { x += "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"\(hex(bg))\"/>" }
+        }
         let twip = { (pt: CGFloat) in Int((pt * 20).rounded()) }
         if leader, let stop = p.tabStops.last(where: { $0.alignment == .right }) ?? p.tabStops.last {
             x += "<w:tabs><w:tab w:val=\"\(stop.alignment == .right ? "right" : "left")\" w:leader=\"dot\" w:pos=\"\(twip(stop.location))\"/></w:tabs>"
+        } else if p.textLists.isEmpty, !p.tabStops.isEmpty, p.tabStops != NSParagraphStyle.default.tabStops {
+            // Tab stops set on the paragraph (headers and footers: centre and right).
+            x += "<w:tabs>" + p.tabStops.map { t -> String in
+                let kind = t.alignment == .center ? "center" : t.alignment == .right ? "right" : t.options[.columnTerminators] != nil ? "decimal" : "left"
+                return "<w:tab w:val=\"\(kind)\" w:pos=\"\(twip(t.location))\"/>"
+            }.joined() + "</w:tabs>"
         }
         if p.minimumLineHeight > 0, p.minimumLineHeight == p.maximumLineHeight {
             x += "<w:spacing w:before=\"\(twip(p.paragraphSpacingBefore))\" w:after=\"\(twip(p.paragraphSpacing))\" w:line=\"\(twip(p.minimumLineHeight))\" w:lineRule=\"exact\"/>"
@@ -1073,6 +1108,8 @@ public extension NSAttributedString.Key {
     static let docAllCaps = NSAttributedString.Key("Kit42.caps")
     /// true: small capitals (w:smallCaps).
     static let docSmallCaps = NSAttributedString.Key("Kit42.smallCaps")
+    /// Drop cap on a paragraph's first letter: the number of lines it spans (Int); a w:framePr dropCap paragraph.
+    static let docDropCap = NSAttributedString.Key("Kit42.dropCap")
 }
 
 extension DocxWriter {

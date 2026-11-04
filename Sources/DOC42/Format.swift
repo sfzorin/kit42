@@ -2,10 +2,6 @@ import AppKit
 import CoreText
 import Kit42
 
-extension NSAttributedString.Key {
-    /// Drop cap on a paragraph's first character: the number of lines it spans (Int).
-    static let docDropCap = NSAttributedString.Key("DOC42.dropCap")
-}
 
 extension DocWindowController {
     // MARK: - Character dialog
@@ -194,6 +190,7 @@ extension DocWindowController {
             b.setBorderColor(o.color, for: e)
         }
         b.setWidth(o.padding, type: .absoluteValueType, for: .padding)
+        b.setValue(100, type: .percentageValueType, for: .width)
         b.backgroundColor = o.background
         return b
     }

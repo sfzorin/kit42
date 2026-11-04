@@ -30,7 +30,7 @@ enum HeaderFooter {
         guard let s, s.length > 0 else { return ("", false) }
         var page = false
         s.enumerateAttribute(.docField, in: NSRange(location: 0, length: s.length)) { v, _, _ in if (v as? DocField)?.kind == .page { page = true } }
-        let text = Fields.flatten(Fields.resolve(s, FieldContext(page: 1, pages: 1, info: DocInfo(), storage: nil)).attributedSubstring(from: NSRange(location: 0, length: s.length)))
+        let text = Fields.resolve(s, FieldContext(page: 1, pages: 1, info: DocInfo(), storage: nil))
         var str = text.string
         if page { str = str.replacingOccurrences(of: "\\s*1\\s*$", with: "", options: .regularExpression) }
         return (str.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces), page)

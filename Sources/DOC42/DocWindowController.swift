@@ -621,7 +621,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             wrapper.preferredFilename = "image.png"
             attachment.fileWrapper = wrapper
         }
-        attachment.image = image
         attachment.bounds = NSRect(origin: .zero, size: size)
         let s = NSMutableAttributedString(attachment: attachment)
         s.addAttributes(textView.typingAttributes.filter { $0.key == .paragraphStyle }, range: NSRange(location: 0, length: s.length))
@@ -695,7 +694,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         ("Markdown (.md)", "md", nil), (L("Plain Text"), "txt", .plain),
     ]
 
-    @objc func exportPDFAction(_ sender: Any?) { export(formatIndex: 0) }
+
     @objc func exportAsAction(_ sender: Any?) { export(formatIndex: UserDefaults.standard.integer(forKey: "doc.exportFormat")) }
 
     private func export(formatIndex: Int) {
