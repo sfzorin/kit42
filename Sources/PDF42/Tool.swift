@@ -4,6 +4,7 @@ import PDFKit
 
 enum Tool: Int, CaseIterable {
     case select, highlight, underline, strikeOut, ink, rectangle, oval, whiteout, text, note
+    case editText, textField, checkBox, choiceField
 
     var title: String {
         switch self {
@@ -17,6 +18,10 @@ enum Tool: Int, CaseIterable {
         case .whiteout: return L("Whiteout")
         case .text: return L("Text Box")
         case .note: return L("Note")
+        case .editText: return L("Edit Text")
+        case .textField: return L("Text Field")
+        case .checkBox: return L("Checkbox")
+        case .choiceField: return L("Dropdown List")
         }
     }
 
@@ -32,6 +37,10 @@ enum Tool: Int, CaseIterable {
         case .whiteout: return "eraser"
         case .text: return "character.textbox"
         case .note: return "note.text"
+        case .editText: return "character.cursor.ibeam"
+        case .textField: return "rectangle.and.pencil.and.ellipsis"
+        case .checkBox: return "checkmark.square"
+        case .choiceField: return "filemenu.and.selection"
         }
     }
 
@@ -46,6 +55,11 @@ enum Tool: Int, CaseIterable {
     }
 
     var isTextMarkup: Bool { self == .highlight || self == .underline || self == .strikeOut }
+
+    /// Tools that place new AcroForm fields.
+    var isFormField: Bool { self == .textField || self == .checkBox || self == .choiceField }
+
+    var fieldKind: PDFTools.FieldKind { self == .checkBox ? .checkBox : self == .choiceField ? .choice : .text }
 }
 
 extension PDFAnnotation {
@@ -63,7 +77,7 @@ extension PDFAnnotation {
     /// Annotations PDFView should keep handling itself (form fields, links, popups).
     var isSystemHandled: Bool { isKind(.widget) || isKind(.link) || isKind(.popup) }
 
-    var isResizable: Bool { isKind(.freeText) || isKind(.square) || isKind(.circle) || isKind(.stamp) }
+    var isResizable: Bool { !(self is PageOverlay) && (isKind(.freeText) || isKind(.square) || isKind(.circle) || isKind(.stamp) || isKind(.widget)) }
 
     var keepsAspectRatio: Bool { isKind(.stamp) }
 }

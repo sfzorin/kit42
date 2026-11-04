@@ -12,6 +12,8 @@ enum Cmd {
                 shortcut: tool.rawValue < 9 ? Shortcut("\(tool.rawValue + 1)") : nil, tag: tool.rawValue)
     }
     static func tool(_ t: Tool) -> Command { tools[t.rawValue] }
+    static let markupTools = tools.filter { !(Tool(rawValue: $0.tag)?.isFormField ?? false) }
+    static let formTools = tools.filter { Tool(rawValue: $0.tag)?.isFormField ?? false }
 
     // File
     static let exportProtected = Command(L("Export with Password…"), #selector(W.exportWithPasswordAction(_:)), symbol: "lock.doc")
@@ -25,6 +27,12 @@ enum Cmd {
                                        shortcut: Shortcut("p", [.command, .option]))
     static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
     static let createFromImages = Command(L("New PDF from Images…"), #selector(A.newFromImagesAction(_:)), symbol: "photo.stack")
+    static let mergeFiles = Command(L("Merge Files…"), #selector(A.mergeFilesAction(_:)), symbol: "doc.on.doc",
+                                    shortcut: Shortcut("m", [.command, .option]))
+    static let split = Command(L("Split…"), #selector(W.splitAction(_:)), symbol: "scissors")
+    static let compare = Command(L("Compare With…"), #selector(W.compareAction(_:)), symbol: "doc.text.magnifyingglass",
+                                 toolTip: L("Compare the text with another PDF"), label: L("Compare"))
+    static let clearCompare = Command(L("Remove Comparison Highlights"), #selector(W.clearCompareHighlightsAction(_:)))
 
     // Edit
     static let deleteAnnotation = Command(L("Delete Annotation"), #selector(W.deleteSelectedAnnotation(_:)),
@@ -72,6 +80,10 @@ enum Cmd {
                                      shortcut: Shortcut(Shortcut.backspace, [.command, .option]))
     static let movePageUp = Command(L("Move Up"), #selector(W.movePageUpAction(_:)), shortcut: Shortcut(Shortcut.upArrow, [.command, .shift]))
     static let movePageDown = Command(L("Move Down"), #selector(W.movePageDownAction(_:)), shortcut: Shortcut(Shortcut.downArrow, [.command, .shift]))
+    static let watermark = Command(L("Watermark…"), #selector(W.watermarkAction(_:)), symbol: "drop.halffull",
+                                   toolTip: L("Add a watermark"), label: L("Watermark"))
+    static let pageNumbers = Command(L("Page Numbers…"), #selector(W.pageNumbersAction(_:)), symbol: "number")
+    static let removeWatermarks = Command(L("Remove Watermarks and Page Numbers"), #selector(W.removeWatermarksAction(_:)))
     static let extractPages = Command(L("Extract to New Document"), #selector(W.extractPagesAction(_:)), shortcut: Shortcut("e", [.command, .option]))
 
     // Signature
@@ -87,8 +99,10 @@ enum Cmd {
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "PDF42")
         spec.fileExtras = [.command(exportAs), .command(exportImages), .command(exportProtected), .command(reduceSize), .separator,
-                           .command(createFromImages), .command(recognizeText), .separator, .command(printSelected)]
-        spec.editExtras = [.command(replaceText), .command(highlightSelection), .command(deleteAnnotation)]
+                           .command(createFromImages), .command(mergeFiles), .command(split), .separator,
+                           .command(compare), .command(clearCompare), .separator,
+                           .command(recognizeText), .separator, .command(printSelected)]
+        spec.editExtras = [.command(tool(.editText)), .command(replaceText), .command(highlightSelection), .command(deleteAnnotation)]
         spec.find = [.command(find), .command(findNext), .command(findPrevious)]
         spec.view = [.command(thumbnails), .command(outline), .separator,
                      .command(zoomIn), .command(zoomOut), .command(actualSize), .command(zoomToFit), .command(fitWidth), .separator]
@@ -98,10 +112,12 @@ enum Cmd {
                        .command(tool(.text)), .command(tool(.note)), .separator,
                        .command(insertBlank), .command(insertFromFile)]
         spec.custom = [
-            (L("Markup"), tools.menuElements),
+            (L("Markup"), markupTools.menuElements),
+            (L("Form"), formTools.menuElements),
             (L("Page"), [.command(rotateLeft), .command(rotateRight), .separator,
                           .command(deletePages), .command(movePageUp), .command(movePageDown), .separator,
-                          .command(extractPages)]),
+                          .command(extractPages), .separator,
+                          .command(watermark), .command(pageNumbers), .command(removeWatermarks)]),
             (L("Signature"), [.command(sign), .command(verify), .separator,
                          .command(importCertificate), .command(createCertificate)]),
         ]

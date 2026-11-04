@@ -44,8 +44,9 @@ enum PDFCompressor {
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("PDF42-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: out) }
         guard doc.write(to: out, withOptions: [PDFDocumentWriteOption(rawValue: "QuartzFilter"): filter]),
-              let data = try? Data(contentsOf: out), !data.isEmpty, data.count < original else { return nil }
-        return data
+              let raw = try? Data(contentsOf: out), !raw.isEmpty else { return nil }
+        let data = AcroFormFixer.ensureFields(raw)   // form fields stay fillable elsewhere, as when saving
+        return data.count < original ? data : nil
     }
 
     static func sizeText(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
@@ -63,7 +64,9 @@ extension EditorWindowController {
         guard let pdf, let window else { return }
         prepareForSave()
         let original = currentDocumentSize
-        let snapshot = pdf.dataRepresentation().flatMap(PDFDocument.init(data:)) ?? pdf
+        // Watermarks, page numbers and edited text are drawn into the pages first, as when saving.
+        let baked = PageOverlay.bakedDocument(pdf)
+        let snapshot = baked.dataRepresentation().flatMap(PDFDocument.init(data:)) ?? baked
 
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 330, height: 26), pullsDown: false)
         popup.addItems(withTitles: PDFCompressor.Level.allCases.map(\.title))

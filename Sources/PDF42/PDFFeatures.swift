@@ -111,7 +111,8 @@ extension EditorWindowController {
         let indices = sidebar.thumbnails.selectedPages.map { pdf.index(for: $0) }.filter { $0 != NSNotFound }
         let chosen = indices.isEmpty ? [pdf.index(for: pdfView.currentPage ?? pdf.page(at: 0)!)] : indices.sorted()
         let part = PDFDocument()
-        for i in chosen { if let p = pdf.page(at: i)?.copy() as? PDFPage { part.insert(p, at: part.pageCount) } }
+        let source = PageOverlay.bakedDocument(pdf)
+        for i in chosen { if let p = source.page(at: i)?.copy() as? PDFPage { part.insert(p, at: part.pageCount) } }
         guard let op = part.printOperation(for: pdfDoc?.printInfo ?? .shared, scalingMode: .pageScaleToFit, autoRotate: true) else { return }
         op.jobTitle = pdfDoc?.displayName ?? "PDF42"
         op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsCopies])

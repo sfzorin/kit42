@@ -27,7 +27,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         .group([.tool(Cmd.tool(.select))]),
         .tools([Cmd.tool(.highlight), Cmd.tool(.underline), Cmd.tool(.strikeOut)]),
         .tools([Cmd.tool(.ink), Cmd.tool(.rectangle), Cmd.tool(.oval), Cmd.tool(.whiteout)]),
-        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .command(Cmd.replaceText)]),
+        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .tool(Cmd.tool(.editText))]),
+        .tools([Cmd.tool(.textField), Cmd.tool(.checkBox), Cmd.tool(.choiceField)]),
         .group([.view(colorButton), .view(widthButton)]),
     ])
 
@@ -35,6 +36,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     private let widths: [CGFloat] = [1, 2, 3, 5, 8, 12]
     private var fontSize: CGFloat = 14
     private var warnedSignedEdit = false
+
+    /// Open "Compare With…" results for this document.
+    var compareWindow: CompareWindowController?
 
     private var searchResults: [PDFSelection] = []
     private var searchIndex = -1
@@ -275,7 +279,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         pdfView.tool = tool
         markupStrip.select(tag: tool.rawValue)
         colorButton.color = colors[tool] ?? tool.defaultColor
-        colorButton.isEnabled = tool != .whiteout
+        colorButton.isEnabled = tool != .whiteout && !tool.isFormField
         pdfView.color = colorButton.color ?? tool.defaultColor
         if tool != .select, !markupStrip.isShown { markupStrip.isShown = true }
     }
@@ -420,6 +424,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     func editAnnotationText(_ annotation: PDFAnnotation, on page: PDFPage) {
+        if let edited = annotation as? EditedTextOverlay { editPageText(edited, on: page); return }
         guard annotation.isKind(.freeText) || annotation.isKind(.text) else { return }
         let isText = annotation.isKind(.freeText)
         let currentFont = annotation.font ?? Self.textFont(fontSize)
@@ -453,10 +458,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @objc func replaceSelectedTextAction(_ sender: Any?) {
         guard let selection = pdfView.currentSelection, let original = selection.string,
               !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            let alert = NSAlert()
-            alert.messageText = L("Select some text")
-            alert.informativeText = L("Select text on the page with the Select tool, then choose “Edit Selected Text” (⌘E).")
-            alert.beginSheetModal(for: window!)
+            // Nothing selected: switch to the Edit Text tool (click a line of text to edit it).
+            setTool(.editText)
+            banner.show(.info, L("Click a line of text to edit it. ⌥-click edits one word. Return applies, Esc cancels."))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.updateSignatureBanner() }
+            return
+        }
+        // One line: edit it in place, in the original font.
+        if selection.selectionsByLine().count == 1, selection.pages.count == 1, let page = selection.pages.first {
+            pdfView.clearSelection()
+            editPageText(selection, on: page)
             return
         }
         let attributes = selection.attributedString?.attributes(at: 0, effectiveRange: nil) ?? [:]
@@ -573,7 +584,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let base: Data
         if alreadySigned, !doc.isDocumentEdited, let original = doc.originalData {
             base = original
-        } else if let data = pdf.dataRepresentation() {
+        } else if let data = PageOverlay.bakedData(pdf).map(AcroFormFixer.ensureFields) {
             base = data
         } else { return }
         if let (a, p) = removedStamp { p.addAnnotation(a) }
@@ -671,7 +682,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         panel.beginSheetModal(for: window) { [self] response in
             guard response == .OK, let url = panel.url else { return }
             prepareForSave()
-            let ok = pdf.write(to: url, withOptions: [.userPasswordOption: p1.stringValue, .ownerPasswordOption: p1.stringValue])
+            let ok = PageOverlay.bakedDocument(pdf).write(to: url, withOptions: [.userPasswordOption: p1.stringValue, .ownerPasswordOption: p1.stringValue])
             if !ok { presentError(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)) }
         }
     }
@@ -871,13 +882,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: - Pages (undoable)
 
-    private var currentIndex: Int {
+    var currentIndex: Int {
         guard let pdf, let page = pdfView.currentPage else { return 0 }
         return pdf.index(for: page)
     }
 
     /// Pages selected in the thumbnail sidebar, or the current page.
-    private var targetIndices: [Int] {
+    var targetIndices: [Int] {
         guard let pdf else { return [] }
         let selected = sidebar.thumbnails.selectedPages.map { pdf.index(for: $0) }.filter { $0 != NSNotFound }
         return selected.count > 1 ? selected.sorted() : [currentIndex]
@@ -1022,8 +1033,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         guard let pdf else { return }
         prepareForSave()
         let newPDF = PDFDocument()
+        let source = PageOverlay.bakedDocument(pdf)
         for i in targetIndices {
-            if let page = pdf.page(at: i)?.copy() as? PDFPage { newPDF.insert(page, at: newPDF.pageCount) }
+            if let page = source.page(at: i)?.copy() as? PDFPage { newPDF.insert(page, at: newPDF.pageCount) }
         }
         let doc = PDFDoc(pdf: newPDF)
         NSDocumentController.shared.addDocument(doc)
@@ -1063,6 +1075,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return !searchResults.isEmpty
         case #selector(verifySignaturesAction(_:)):
             return true
+        case #selector(removeWatermarksAction(_:)):
+            return hasRemovableOverlays
+        case #selector(clearCompareHighlightsAction(_:)):
+            return hasCompareHighlights
+        case #selector(splitAction(_:)):
+            return pdf.pageCount > 1
         default:
             break
         }

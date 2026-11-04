@@ -8,11 +8,14 @@ final class EditorPDFView: PDFView {
 
     var tool: Tool = .select {
         didSet {
+            inlineEditor?.end(commit: true)
             if tool != .select { selectAnnotation(nil) }
             clearSelection()
         }
     }
     var color: NSColor = .systemRed
+    /// In-place editor of page text (Edit Text tool), while open.
+    var inlineEditor: InlineTextEditor?
     var lineWidth: CGFloat = 2
 
     private(set) var selectedAnnotation: PDFAnnotation?
@@ -83,7 +86,10 @@ final class EditorPDFView: PDFView {
 
     private func hitAnnotation(on page: PDFPage, at point: CGPoint) -> PDFAnnotation? {
         for annotation in page.annotations.reversed() where !isMarker(annotation) {
-            if annotation.isSystemHandled { continue }
+            // Form tools pick widgets (move, resize, delete); otherwise PDFView handles them (filling).
+            if annotation.isSystemHandled, !(tool.isFormField && annotation.isKind(.widget)) { continue }
+            if let o = annotation as? PageOverlay, !o.allowsPicking { continue }
+            if annotation is TemporaryHighlight { continue }
             if annotation.bounds.insetBy(dx: -2, dy: -2).contains(point) { return annotation }
         }
         return nil
@@ -112,6 +118,8 @@ final class EditorPDFView: PDFView {
             }
         case .highlight, .underline, .strikeOut:
             super.mouseMoved(with: event)
+        case .editText:
+            NSCursor.iBeam.set()
         default:
             NSCursor.crosshair.set()
         }
@@ -178,7 +186,48 @@ final class EditorPDFView: PDFView {
 
         case .note:
             editor?.createNote(on: page, at: point)
+
+        case .editText:
+            if let edited = hitAnnotation(on: page, at: point) as? EditedTextOverlay {
+                editor?.editPageText(edited, on: page)
+            } else if let run = textRun(on: page, at: point, word: event.modifierFlags.contains(.option)) {
+                editor?.editPageText(run, on: page)
+            } else {
+                NSSound.beep()
+            }
+
+        case .textField, .checkBox, .choiceField:
+            if hitsHandle(point, on: page), let a = selectedAnnotation {
+                drag = .resize
+                dragOriginalBounds = a.bounds
+                return
+            }
+            if let widget = hitAnnotation(on: page, at: point) {
+                selectAnnotation(widget, on: page)
+                drag = .move
+                dragOriginalBounds = widget.bounds
+                return
+            }
+            selectAnnotation(nil)
+            drag = .create
+            let preview = PDFAnnotation(bounds: CGRect(origin: point, size: CGSize(width: 1, height: 1)), forType: .square, withProperties: nil)
+            let border = PDFBorder()
+            border.lineWidth = 1
+            border.style = .dashed
+            border.dashPattern = [3, 2]
+            preview.border = border
+            preview.color = .controlAccentColor
+            page.addAnnotation(preview)
+            tempAnnotation = preview
         }
+    }
+
+    /// The line of page text under `point` (or just the word with ⌥), nil over empty space.
+    private func textRun(on page: PDFPage, at point: CGPoint, word: Bool) -> PDFSelection? {
+        guard let s = word ? page.selectionForWord(at: point) : page.selectionForLine(at: point),
+              !(s.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              s.bounds(for: page).insetBy(dx: -3, dy: -3).contains(point) else { return nil }
+        return s
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -253,6 +302,9 @@ final class EditorPDFView: PDFView {
                 style(annotation)
                 annotation.add(localPath(inkPoints, origin: bounds.origin))
                 editor?.add(annotation, to: page, name: L("Drawing"))
+            } else if tool.isFormField {
+                guard let temp = tempAnnotation else { return }
+                editor?.createFormField(tool.fieldKind, in: temp.bounds, on: page)
             } else {
                 guard let temp = tempAnnotation, temp.bounds.width > 4, temp.bounds.height > 4 else { return }
                 let annotation = PDFAnnotation(bounds: temp.bounds, forType: tool == .oval ? .circle : .square, withProperties: nil)
