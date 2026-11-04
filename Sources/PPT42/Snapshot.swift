@@ -110,6 +110,7 @@ extension DeckWindowController {
         case "type": canvas.editor.textView.insertText(arg.replacingOccurrences(of: "\\n", with: "\n"), replacementRange: canvas.editor.textView.selectedRange())
         case "selecttext": canvas.editor.textView.selectAll(nil)
         case "endedit": commitEditing()
+        case "dumpedit": print("editor active=\(canvas.editor.isActive) text=\(canvas.editor.textView.string.debugDescription) sel=\(selection)")
         case "undo": commitEditing(); doc?.undoManager?.undo()
         case "redo": doc?.undoManager?.redo()
         case "copy": copyObjects(cut: false)

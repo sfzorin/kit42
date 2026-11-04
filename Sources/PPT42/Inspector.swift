@@ -133,8 +133,7 @@ final class InspectorController: NSViewController {
         g.columnSpacing = 10
         g.column(at: 0).xPlacement = .trailing
         g.rowAlignment = .none
-        g.column(at: 0).yPlacement = .center
-        g.column(at: 1).yPlacement = .center
+        for i in 0..<g.numberOfRows { g.row(at: i).yPlacement = .center }
         g.column(at: 0).width = 78
         return g
     }
@@ -176,7 +175,7 @@ final class InspectorController: NSViewController {
         bgAll.bezelStyle = .rounded
         popup(transKind, TransitionKind.allCases.map(Transitions.name), #selector(transitionChanged), width: 110)
         field(transDuration, #selector(transitionChanged), width: 44)
-        popup(transDirection, [L("From Right"), L("From Left"), L("From Bottom"), L("From Top")], #selector(transitionChanged), width: 110)
+        popup(transDirection, [L("From Right"), L("From Left"), L("From Bottom"), L("From Top")], #selector(transitionChanged), width: 140)
         hideSlide.target = self
         hideSlide.action = #selector(hideChanged)
         popup(themePopup, Themes.names, #selector(themeChanged))
@@ -318,8 +317,7 @@ final class InspectorController: NSViewController {
         let k = bgKind.indexOfSelectedItem
         bgColor.isHidden = !(k == 2 || k == 3)
         bgColor2.isHidden = k != 3
-        bgAngle.isEnabled = k == 3
-        if k != 3 { bgAngle.stringValue = "" }
+        setRowHidden(bgAngle, k != 3)
         bgAll.isEnabled = !master && slide != nil
         let t = slide?.transition ?? Transition()
         transKind.selectItem(at: TransitionKind.allCases.firstIndex(of: t.kind) ?? 0)
@@ -394,6 +392,12 @@ final class InspectorController: NSViewController {
             autofitPopup.selectItem(at: af == .none ? 0 : af == .shrink ? 1 : 2)
             autofitPopup.isEnabled = o?.text != nil
         }
+    }
+
+    /// Hides the grid row holding `view`.
+    private func setRowHidden(_ view: NSView, _ hidden: Bool) {
+        guard let stack = view.superview, let grid = stack.superview as? NSGridView, let cell = grid.cell(for: stack) else { return }
+        cell.row?.isHidden = hidden
     }
 
     // MARK: - Slide actions

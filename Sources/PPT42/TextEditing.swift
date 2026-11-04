@@ -24,6 +24,16 @@ final class SlideTextView: NSTextView {
 
     override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
 
+    // Text typed after a bullet must not become part of the marker.
+    override var typingAttributes: [NSAttributedString.Key: Any] {
+        get { super.typingAttributes }
+        set {
+            var n = newValue
+            n.removeValue(forKey: .pptMarker)
+            super.typingAttributes = n
+        }
+    }
+
     override func keyDown(with event: NSEvent) {
         // ⌘↩ ends editing.
         if event.keyCode == 36, event.modifierFlags.contains(.command) { editor?.end(); return }
@@ -87,6 +97,7 @@ final class TextEditController: NSObject, NSTextViewDelegate {
     /// Starts editing an object's text (or a table cell) at a point (slide coordinates).
     func begin(_ o: SlideObject, cell: (Int, Int)? = nil, at point: CGPoint?, selectAll: Bool = false) {
         guard let canvas, let owner = canvas.owner else { return }
+        if o.kind == .table, cell == nil, o.table != nil { begin(o, cell: (0, 0), at: point, selectAll: selectAll); return }
         end()
         objectID = o.id
         self.cell = cell
@@ -249,6 +260,12 @@ final class TextEditController: NSObject, NSTextViewDelegate {
 
     // MARK: - Changes while typing
 
+    func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+        var t = textView.typingAttributes
+        if t[.pptMarker] != nil { t.removeValue(forKey: .pptMarker); textView.typingAttributes = t }
+        return true
+    }
+
     func textDidChange(_ notification: Notification) {
         guard !normalizing, !textView.hasMarkedText() else { layout(); return }
         normalizeMarkers()
@@ -338,6 +355,8 @@ final class TextEditController: NSObject, NSTextViewDelegate {
         guard let storage = textView.textStorage, let c = context else { return }
         let r = textView.selectedRange()
         if r.length == 0 {
+            // An empty paragraph keeps the formatting as its end properties.
+            if let s = textView.textStorage, (s.string as NSString).paragraphRange(for: r).length <= 3 { applyPara { _, _, end in f(&end) } }
             var t = textView.typingAttributes
             var props = (t[.pptRun] as? RunBox)?.props ?? RunProps()
             f(&props)
@@ -351,8 +370,6 @@ final class TextEditController: NSObject, NSTextViewDelegate {
             if props.underline != true { t.removeValue(forKey: .underlineStyle) }
             if props.strike != true { t.removeValue(forKey: .strikethroughStyle) }
             textView.typingAttributes = t
-            // An empty paragraph keeps the formatting as its end properties.
-            applyPara { _, _, end in f(&end) }
             return
         }
         storage.beginEditing()

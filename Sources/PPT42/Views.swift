@@ -250,8 +250,8 @@ final class OutlineEditor: NSTextView, NSTextViewDelegate {
         typingAttributes = [.font: Self.bodyFont, .foregroundColor: NSColor.labelColor]
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
         // Slide numbers and icons in the left margin.
         guard let lm = layoutManager, let tc = textContainer else { return }
         let ns = string as NSString
@@ -265,7 +265,7 @@ final class OutlineEditor: NSTextView, NSTextViewDelegate {
                 var rect = lm.lineFragmentRect(forGlyphAt: min(g.location, max(0, lm.numberOfGlyphs - 1)), effectiveRange: nil)
                 if lm.numberOfGlyphs == 0 || r.location >= ns.length { rect = lm.extraLineFragmentRect }
                 _ = tc
-                let y = rect.minY + textContainerInset.height
+                let y = rect.maxY - lm.defaultLineHeight(for: Self.titleFont) + textContainerInset.height
                 let num = NSAttributedString(string: "\(n)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: NSColor.tertiaryLabelColor])
                 num.draw(at: CGPoint(x: 14, y: y + 5))
                 NSColor.tertiaryLabelColor.setStroke()

@@ -417,10 +417,13 @@ extension DeckWindowController {
     @objc func deleteAction(_ sender: Any?) {
         if mode == .sorter || window?.firstResponder === thumbnails.table { deleteSlideAction(sender); return }
         guard !selection.isEmpty else { return }
-        let ids = Set(selection)
-        changeSlide(L("Delete")) { s in s.objects.removeAll { ids.contains($0.id) } }
+        let ids = Set(selection), i = current
+        guard deck.slides.indices.contains(i) else { return }
+        doc?.change(L("Delete")) { d in
+            d.slides[i].objects.removeAll { ids.contains($0.id) }
+            d.pruneMedia()
+        }
         selection = []
-        doc?.change(L("Delete")) { $0.pruneMedia() }
     }
 
     @objc func duplicateAction(_ sender: Any?) {
@@ -965,6 +968,7 @@ final class LayoutPicker: NSViewController {
             let b = NSButton(title: Themes.displayName(layout), image: LayoutIcons.icon(layout, deck: deck, width: 104), target: self, action: #selector(pick(_:)))
             b.tag = i
             b.imagePosition = .imageAbove
+            b.imageScaling = .scaleNone
             b.bezelStyle = .accessoryBarAction
             b.showsBorderOnlyWhileMouseInside = true
             b.font = .systemFont(ofSize: 11)
