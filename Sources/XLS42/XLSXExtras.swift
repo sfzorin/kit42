@@ -100,6 +100,20 @@ extension XLSX {
                 sheet.comments[ref] = comment.child("text")?.allText.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
+        // Hyperlinks: external targets in the relationships, places in the workbook as location.
+        if let links = root.child("hyperlinks") {
+            let raw = rawRelations(zip, relsPath)
+            for h in links.children("hyperlink") {
+                guard let range = h.attr("ref").flatMap(CellRange.init) else { continue }
+                var target: String?
+                if let id = h.attr("id"), let t = raw[id] { target = t + (h.attr("location").map { "#" + $0 } ?? "") }
+                else if let loc = h.attr("location") { target = "#" + loc }
+                if let target { for ref in range.cells.prefix(1000) { sheet.hyperlinks[ref] = target } }
+            }
+        }
+        if let breaks = root.child("rowBreaks") {
+            for b in breaks.children("brk") { if let id = b.attr("id").flatMap(Int.init), id > 0 { sheet.rowBreaks.insert(id) } }
+        }
         // Drawings: pictures and charts
         guard let drawingID = root.child("drawing")?.attr("id"), let (_, drawingPath) = rels[drawingID],
               let data = zip[drawingPath], let drawing = (try? XMLDocument(data: data))?.rootElement() else { return }
@@ -136,6 +150,14 @@ extension XLSX {
                 sheet.charts.append(chart)
             }
         }
+    }
+
+    /// Relationship targets as written (external URLs aren't paths).
+    static func rawRelations(_ zip: ZipArchive, _ path: String) -> [String: String] {
+        guard let data = zip[path], let root = (try? XMLDocument(data: data))?.rootElement() else { return [:] }
+        var out: [String: String] = [:]
+        for r in root.children("Relationship") { if let id = r.attr("Id"), let t = r.attr("Target") { out[id] = t } }
+        return out
     }
 
     static func relations(_ zip: ZipArchive, _ path: String, base: String) -> [String: (String, String)] {
@@ -365,6 +387,22 @@ extension XLSX {
             rels.append("<Relationship Id=\"rIdComments\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments\(n).xml\"/>")
             rels.append("<Relationship Id=\"rIdVml\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing\(n).vml\"/>")
             tail += "<legacyDrawing r:id=\"rIdVml\"/>"
+        }
+        if !sheet.hyperlinks.isEmpty {
+            conditional += "<hyperlinks>"
+            for (k, (ref, target)) in sheet.hyperlinks.sorted(by: { $0.key < $1.key }).enumerated() {
+                if target.hasPrefix("#") {
+                    conditional += "<hyperlink ref=\"\(ref.a1)\" location=\"\(xmlEscape(String(target.dropFirst())))\"/>"
+                } else {
+                    rels.append("<Relationship Id=\"rIdLink\(k + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"\(xmlEscape(target))\" TargetMode=\"External\"/>")
+                    conditional += "<hyperlink ref=\"\(ref.a1)\" r:id=\"rIdLink\(k + 1)\"/>"
+                }
+            }
+            conditional += "</hyperlinks>"
+        }
+        if !sheet.rowBreaks.isEmpty {
+            let breaks = sheet.rowBreaks.sorted()
+            tail = "<rowBreaks count=\"\(breaks.count)\" manualBreakCount=\"\(breaks.count)\">" + breaks.map { "<brk id=\"\($0)\" max=\"16383\" man=\"1\"/>" }.joined() + "</rowBreaks>" + tail
         }
         if !rels.isEmpty { zip["xl/worksheets/_rels/sheet\(sheetNumber).xml.rels"] = Data(relsXML(rels).utf8) }
         return (filter, conditional, tail, types)

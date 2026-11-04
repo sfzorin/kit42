@@ -35,6 +35,8 @@ enum XLSX {
             let name = s.attr("name") ?? "Sheet\(wb.sheets.count + 1)"
             guard let rid = s.attr("id"), let path = rels[rid], let root = xml(path) else { continue }
             var sheet = readSheet(root, name: name, styles: styles, shared: shared)
+            sheet.hidden = s.attr("state") == "hidden" || s.attr("state") == "veryHidden"
+            if let tab = root.child("sheetPr")?.child("tabColor") { sheet.tabColor = color(tab, theme: theme) }
             readExtras(&sheet, root: root, path: path, zip: zip, dxfs: dxfs, theme: theme)
             wb.sheets.append(sheet)
             sheetPaths.append(path)
@@ -186,6 +188,7 @@ enum XLSX {
             s.bold = f.child("b").map { $0.attr("val") != "0" } ?? false
             s.italic = f.child("i").map { $0.attr("val") != "0" } ?? false
             s.underline = f.child("u").map { $0.attr("val") != "none" } ?? false
+            s.doubleUnderline = f.child("u").map { $0.attr("val") == "double" || $0.attr("val") == "doubleAccounting" } ?? false
             s.strike = f.child("strike").map { $0.attr("val") != "0" } ?? false
             if let sz = f.child("sz")?.attr("val").flatMap(Double.init) { s.fontSize = CGFloat(sz) }
             s.fontName = f.child("name")?.attr("val")
@@ -203,6 +206,11 @@ enum XLSX {
                 return BorderSide(style: style, color: e.child("color").flatMap { color($0, theme: theme) } ?? .black)
             }
         }
+        // Named cell styles: cellStyleXfs index → name.
+        var styleNames: [Int: String] = [:]
+        for cs in root.child("cellStyles")?.children("cellStyle") ?? [] {
+            if let id = cs.attr("xfId").flatMap(Int.init), let name = cs.attr("name"), id > 0 { styleNames[id] = name }
+        }
         return (root.child("cellXfs")?.children("xf") ?? []).map { xf in
             var s = xf.attr("fontId").flatMap(Int.init).flatMap { $0 < fonts.count ? fonts[$0] : nil } ?? CellStyle()
             if let id = xf.attr("fillId").flatMap(Int.init), id < fills.count { s.fill = fills[id] }
@@ -211,11 +219,15 @@ enum XLSX {
             }
             if let id = xf.attr("numFmtId").flatMap(Int.init) { s.numberFormat = formats[id] ?? "General" }
             if let p = xf.child("protection"), p.attr("locked") == "0" || p.attr("locked") == "false" { s.locked = false }
+            if let p = xf.child("protection"), p.attr("hidden") == "1" || p.attr("hidden") == "true" { s.hiddenFormula = true }
+            s.styleName = xf.attr("xfId").flatMap(Int.init).flatMap { styleNames[$0] }
             if let a = xf.child("alignment") {
                 s.hAlign = a.attr("horizontal")
                 if let v = a.attr("vertical") { s.vAlign = v }
                 s.wrap = a.attr("wrapText") == "1" || a.attr("wrapText") == "true"
                 s.indent = a.attr("indent").flatMap(Int.init) ?? 0
+                if let r = a.attr("textRotation").flatMap(Int.init) { s.rotation = r > 90 && r <= 180 ? 90 - r : r }
+                s.shrink = a.attr("shrinkToFit") == "1" || a.attr("shrinkToFit") == "true"
             }
             return s
         }
@@ -329,12 +341,13 @@ enum XLSX {
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
         """
         var pivotCaches: [String] = [], pivotRels = ""
+        let firstVisible = wb.sheets.firstIndex { !$0.hidden } ?? 0
         for (i, sheet) in wb.sheets.enumerated() {
-            workbook += "<sheet name=\"\(xmlEscape(sheet.name))\" sheetId=\"\(i + 1)\" r:id=\"rId\(i + 1)\"/>"
+            workbook += "<sheet name=\"\(xmlEscape(sheet.name))\" sheetId=\"\(i + 1)\"\(sheet.hidden ? " state=\"hidden\"" : "") r:id=\"rId\(i + 1)\"/>"
             wbRels += "<Relationship Id=\"rId\(i + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet\(i + 1).xml\"/>"
             let extras = writeExtras(sheet, sheetNumber: i + 1, zip: &zip, counters: &counters, dxfs: &dxfs)
             ct += extras.types
-            zip["xl/worksheets/sheet\(i + 1).xml"] = Data(sheetXML(sheet, styleIndex: styleIndex, selected: i == 0, extras: extras).utf8)
+            zip["xl/worksheets/sheet\(i + 1).xml"] = Data(sheetXML(sheet, styleIndex: styleIndex, selected: i == firstVisible, extras: extras).utf8)
             if let spec = sheet.pivot,
                let part = PivotFiles.writeXLSX(spec, workbook: wb, sheetNumber: i + 1, n: pivotCaches.count + 1, zip: &zip) {
                 ct += part.types
@@ -351,6 +364,7 @@ enum XLSX {
         ct += "</Types>"
         zip["[Content_Types].xml"] = Data(ct.utf8)
         workbook += "</sheets>"
+        if firstVisible > 0 { workbook = workbook.replacingOccurrences(of: "<bookViews><workbookView/>", with: "<bookViews><workbookView activeTab=\"\(firstVisible)\" firstSheet=\"\(firstVisible)\"/>") }
         var defined: [String] = wb.names.sorted { $0.key < $1.key }.map { "<definedName name=\"\(xmlEscape($0.key))\">\(xmlEscape($0.value))</definedName>" }
         for (i, sheet) in wb.sheets.enumerated() {
             func absolute(_ r: CellRange) -> String {
@@ -391,6 +405,7 @@ enum XLSX {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
         """
+        if let tab = sheet.tabColor { x += "<sheetPr><tabColor rgb=\"\(argb(tab))\"/></sheetPr>" }
         if let used = sheet.usedRange { x += "<dimension ref=\"A1:\(used.end.a1)\"/>" }
         x += "<sheetViews><sheetView workbookViewId=\"0\"\(sheet.showGridlines ? "" : " showGridLines=\"0\"")\(selected ? " tabSelected=\"1\"" : "")>"
         if sheet.frozenRows > 0 || sheet.frozenCols > 0 {
@@ -492,6 +507,7 @@ enum XLSX {
         var borders: [String] = ["<border><left/><right/><top/><bottom/><diagonal/></border>"]
         var numFmts: [String: Int] = [:]
         var xfs: [String] = []
+        var namedStyles: [(name: String, xf: String)] = []
         func index(_ list: inout [String], _ item: String) -> Int {
             if let i = list.firstIndex(of: item) { return i }
             list.append(item)
@@ -503,7 +519,7 @@ enum XLSX {
             if s.bold { font += "<b/>" }
             if s.italic { font += "<i/>" }
             if s.strike { font += "<strike/>" }
-            if s.underline { font += "<u/>" }
+            if s.doubleUnderline { font += "<u val=\"double\"/>" } else if s.underline { font += "<u/>" }
             font += "<sz val=\"\(fmt(s.fontSize))\"/>"
             if let c = s.textColor { font += "<color rgb=\"\(argb(c))\"/>" }
             font += "<name val=\"\(xmlEscape(s.fontName ?? "Calibri"))\"/></font>"
@@ -520,15 +536,21 @@ enum XLSX {
             else if let id = numFmts[s.numberFormat] { numFmtId = id }
             else { numFmtId = 164 + numFmts.count; numFmts[s.numberFormat] = numFmtId }
 
-            var xf = "<xf numFmtId=\"\(numFmtId)\" fontId=\"\(fontId)\" fillId=\"\(fillId)\" borderId=\"\(borderId)\" xfId=\"0\""
+            let xfId = s.styleName.map { name -> Int in
+                if let i = namedStyles.firstIndex(where: { $0.name == name }) { return i + 1 }
+                namedStyles.append((name, "<xf numFmtId=\"\(numFmtId)\" fontId=\"\(fontId)\" fillId=\"\(fillId)\" borderId=\"\(borderId)\"/>"))
+                return namedStyles.count
+            } ?? 0
+            var xf = "<xf numFmtId=\"\(numFmtId)\" fontId=\"\(fontId)\" fillId=\"\(fillId)\" borderId=\"\(borderId)\" xfId=\"\(xfId)\""
             xf += numFmtId != 0 ? " applyNumberFormat=\"1\"" : ""
             xf += fontId != 0 ? " applyFont=\"1\"" : ""
             xf += fillId != 0 ? " applyFill=\"1\"" : ""
             xf += borderId != 0 ? " applyBorder=\"1\"" : ""
-            let hasAlign = s.hAlign != nil || s.vAlign != "bottom" || s.wrap || s.indent > 0
+            let hasAlign = s.hAlign != nil || s.vAlign != "bottom" || s.wrap || s.indent > 0 || s.rotation != 0 || s.shrink
+            let hasProtection = !s.locked || s.hiddenFormula
             if hasAlign { xf += " applyAlignment=\"1\"" }
-            if !s.locked { xf += " applyProtection=\"1\"" }
-            if hasAlign || !s.locked {
+            if hasProtection { xf += " applyProtection=\"1\"" }
+            if hasAlign || hasProtection {
                 xf += ">"
                 if hasAlign {
                     xf += "<alignment"
@@ -536,9 +558,11 @@ enum XLSX {
                     if s.vAlign != "bottom" { xf += " vertical=\"\(s.vAlign)\"" }
                     if s.wrap { xf += " wrapText=\"1\"" }
                     if s.indent > 0 { xf += " indent=\"\(s.indent)\"" }
+                    if s.rotation != 0 { xf += " textRotation=\"\(s.rotation < 0 ? 90 - s.rotation : s.rotation)\"" }
+                    if s.shrink { xf += " shrinkToFit=\"1\"" }
                     xf += "/>"
                 }
-                if !s.locked { xf += "<protection locked=\"0\"/>" }
+                if hasProtection { xf += "<protection\(s.locked ? "" : " locked=\"0\"")\(s.hiddenFormula ? " hidden=\"1\"" : "")/>" }
                 xf += "</xf>"
             } else { xf += "/>" }
             xfs.append(xf)
@@ -552,9 +576,14 @@ enum XLSX {
         x += "<fonts count=\"\(fonts.count)\">" + fonts.joined() + "</fonts>"
         x += "<fills count=\"\(fills.count)\">" + fills.joined() + "</fills>"
         x += "<borders count=\"\(borders.count)\">" + borders.joined() + "</borders>"
-        x += "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
+        x += "<cellStyleXfs count=\"\(namedStyles.count + 1)\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>" + namedStyles.map(\.xf).joined() + "</cellStyleXfs>"
         x += "<cellXfs count=\"\(xfs.count)\">" + xfs.joined() + "</cellXfs>"
-        x += "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>" + dxfsXML(dxfs) + "</styleSheet>"
+        x += "<cellStyles count=\"\(namedStyles.count + 1)\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/>"
+        for (i, n) in namedStyles.enumerated() {
+            let builtin = CellStyles.builtinIds[n.name].map { " builtinId=\"\($0)\"" } ?? " customBuiltin=\"1\""
+            x += "<cellStyle name=\"\(xmlEscape(n.name))\" xfId=\"\(i + 1)\"\(builtin)/>"
+        }
+        x += "</cellStyles>" + dxfsXML(dxfs) + "</styleSheet>"
         return x
     }
 

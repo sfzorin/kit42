@@ -35,6 +35,13 @@ enum ODS {
                 if e.localName == "default-style", e.attr("family") == "table-cell" { styles["__default"] = styleInfo(e) }
             }
         }
+        // Table styles with table:display="false" hide their sheet.
+        var hiddenTableStyles = Set<String>()
+        for container in [stylesRoot?.child("automatic-styles"), content.child("automatic-styles")] {
+            for e in container?.children("style") ?? [] where e.attr("family") == "table" && e.child("table-properties")?.attr("display") == "false" {
+                if let n = e.attr("name") { hiddenTableStyles.insert(n) }
+            }
+        }
         func resolved(_ name: String?) -> CellStyle {
             var chain: [StyleInfo] = []
             var n = name
@@ -59,6 +66,7 @@ enum ODS {
         let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
             var sheet = Sheet(name: table.attr("name") ?? "Sheet\(wb.sheets.count + 1)")
+            if let st = table.attr("style-name"), hiddenTableStyles.contains(st) { sheet.hidden = true }
             if table.attr("protected") == "true" {
                 // LibreOffice may chain two digests (legacy Excel hash, then SHA-1).
                 let digests = [table.attr("protection-key-digest-algorithm") ?? sha1Digest, table.attr("protection-key-digest-algorithm-2")]
@@ -148,6 +156,10 @@ enum ODS {
                             }
                             sheet[ref] = cell
                             if let comment { sheet.comments[ref] = comment }
+                            if let a = cellXML.children("p").lazy.compactMap({ $0.child("a") }).first, var href = a.attr("href") {
+                                if href.hasPrefix("#") { href = "#" + Self.placeFromODF(String(href.dropFirst())) }
+                                sheet.hyperlinks[ref] = href
+                            }
                         }
                         let colSpan = Int(cellXML.attr("number-columns-spanned") ?? "1") ?? 1
                         let rowSpan = Int(cellXML.attr("number-rows-spanned") ?? "1") ?? 1
@@ -192,6 +204,10 @@ enum ODS {
                     if items["HorizontalSplitMode"] == "2" { wb.sheets[i].frozenCols = Int(items["HorizontalSplitPosition"] ?? "0") ?? 0 }
                     if items["VerticalSplitMode"] == "2" { wb.sheets[i].frozenRows = Int(items["VerticalSplitPosition"] ?? "0") ?? 0 }
                     if items["ShowGrid"] == "false" { wb.sheets[i].showGridlines = false }
+                    if let tab = items["TabColor"].flatMap(Int.init), tab >= 0, tab <= 0xFFFFFF {
+                        let rgb = tab & 0xFFFFFF
+                        wb.sheets[i].tabColor = NSColor(srgbRed: CGFloat(rgb >> 16) / 255, green: CGFloat((rgb >> 8) & 0xFF) / 255, blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+                    }
                 }
             }
         }
@@ -248,6 +264,12 @@ enum ODS {
     }
 
     /// OpenFormula "of:=SUM([.A1:.B2];['Лист 1'.C3])" → Excel "=SUM(A1:B2;'Лист 1'!C3)".
+    /// "Sheet2.A1" / "'My sheet'.B2" → "Sheet2!A1".
+    static func placeFromODF(_ s: String) -> String {
+        if let r = rangeFromODF(s) { return (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range }
+        return s
+    }
+
     static func excelFormula(_ f: String) -> String {
         var s = f
         for prefix in ["of:", "oooc:", "msoxl:"] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
@@ -341,6 +363,7 @@ enum ODS {
             if let size = length(t.attr("font-size")) { info.style.fontSize = size }
             if let name = t.attr("font-name") ?? t.attr("font-family") { info.style.fontName = name.trimmingCharacters(in: CharacterSet(charactersIn: "'")) }
             if let u = t.attr("text-underline-style"), u != "none" { info.style.underline = true }
+            if t.attr("text-underline-type") == "double" { info.style.doubleUnderline = true; info.style.underline = true }
             if let l = t.attr("text-line-through-style"), l != "none" { info.style.strike = true }
         }
         if let p = e.child("table-cell-properties") {
@@ -352,7 +375,13 @@ enum ODS {
             if let b = p.attr("border-bottom") { info.style.bottom = border(b) }
             switch p.attr("vertical-align") { case "top": info.style.vAlign = "top"; case "middle": info.style.vAlign = "center"; default: break }
             if p.attr("wrap-option") == "wrap" { info.style.wrap = true }
-            if let protect = p.attr("cell-protect") { info.style.locked = protect != "none" && protect != "hidden-and-printable" }
+            if let protect = p.attr("cell-protect") {
+                info.style.locked = protect != "none" && protect != "hidden-and-printable" && protect != "formula-hidden"
+                info.style.hiddenFormula = protect.contains("formula-hidden")
+            }
+            if let a = p.attr("rotation-angle").flatMap(Double.init), a != 0 { let r = Int(a.rounded()) % 360; info.style.rotation = r > 90 ? (r >= 270 ? r - 360 : 90) : r }
+            if p.attr("direction") == "ttb" { info.style.rotation = 255 }
+            if p.attr("shrink-to-fit") == "true" { info.style.shrink = true }
         }
         if let p = e.child("paragraph-properties") {
             switch p.attr("text-align") {
@@ -384,6 +413,11 @@ enum ODS {
         if b.vAlign != d.vAlign { s.vAlign = b.vAlign }
         if b.wrap { s.wrap = true }
         if b.locked != d.locked { s.locked = b.locked }
+        if b.hiddenFormula { s.hiddenFormula = true }
+        if b.rotation != 0 { s.rotation = b.rotation }
+        if b.shrink { s.shrink = true }
+        if b.doubleUnderline { s.doubleUnderline = true }
+        if b.styleName != nil { s.styleName = b.styleName }
         for (k, v) in [(\CellStyle.left, b.left), (\CellStyle.right, b.right), (\CellStyle.top, b.top), (\CellStyle.bottom, b.bottom)] where v != nil {
             s[keyPath: k] = v
         }
@@ -461,14 +495,17 @@ enum ODS {
                 x += " fo:border-left=\"\(b(s.left))\" fo:border-right=\"\(b(s.right))\" fo:border-top=\"\(b(s.top))\" fo:border-bottom=\"\(b(s.bottom))\""
             }
             if s.wrap { x += " fo:wrap-option=\"wrap\"" }
-            if !s.locked { x += " style:cell-protect=\"none\"" }
+            if !s.locked || s.hiddenFormula { x += " style:cell-protect=\"\(s.hiddenFormula ? (s.locked ? "protected formula-hidden" : "formula-hidden") : "none")\"" }
+            if s.rotation == 255 { x += " style:direction=\"ttb\"" } else if s.rotation != 0 { x += " style:rotation-angle=\"\((s.rotation + 360) % 360)\"" }
+            if s.shrink { x += " style:shrink-to-fit=\"true\"" }
             x += " style:vertical-align=\"\(s.vAlign == "center" ? "middle" : s.vAlign == "top" ? "top" : "bottom")\"/>"
             if let h = s.hAlign { x += "<style:paragraph-properties fo:text-align=\"\(h == "center" ? "center" : h == "right" ? "end" : h == "justify" ? "justify" : "start")\"/>" }
             x += "<style:text-properties fo:font-size=\"\(Value.formatGeneral(Double(s.fontSize)))pt\""
             if let fn = s.fontName { x += " style:font-name=\"\(xmlEscape(fn))\" fo:font-family=\"\(xmlEscape(fn))\"" }
             if s.bold { x += " fo:font-weight=\"bold\"" }
             if s.italic { x += " fo:font-style=\"italic\"" }
-            if s.underline { x += " style:text-underline-style=\"solid\" style:text-underline-width=\"auto\" style:text-underline-color=\"font-color\"" }
+            if s.underline || s.doubleUnderline { x += " style:text-underline-style=\"solid\" style:text-underline-width=\"auto\" style:text-underline-color=\"font-color\"" }
+            if s.doubleUnderline { x += " style:text-underline-type=\"double\"" }
             if s.strike { x += " style:text-line-through-style=\"solid\"" }
             if let c = s.textColor { x += " fo:color=\"#\(hex(c))\"" }
             x += "/></style:style>"
@@ -494,6 +531,12 @@ enum ODS {
         var validations = ""
         for (si, sheet) in wb.sheets.enumerated() {
             var t = "<table:table table:name=\"\(xmlEscape(sheet.name))\""
+            if sheet.hidden {
+                if !auto.contains("style:name=\"taHidden\"") {
+                    auto += "<style:style style:name=\"taHidden\" style:family=\"table\"><style:table-properties table:display=\"false\"/></style:style>"
+                }
+                t += " table:style-name=\"taHidden\""
+            }
             if let area = sheet.printArea { t += " table:print-ranges=\"\(xmlEscape(odfRange(sheet.name, area)))\"" }
             if let p = sheet.protection {
                 t += " table:protected=\"true\""
@@ -571,7 +614,7 @@ enum ODS {
         xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" \
         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" \
         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" \
-        xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" \
+        xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xlink="http://www.w3.org/1999/xlink" \
         xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
@@ -582,6 +625,9 @@ enum ODS {
             tables += "<config:config-item-map-entry config:name=\"\(xmlEscape(s.name))\">"
             if s.frozenCols > 0 { tables += "<config:config-item config:name=\"HorizontalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"HorizontalSplitPosition\" config:type=\"int\">\(s.frozenCols)</config:config-item><config:config-item config:name=\"PositionRight\" config:type=\"int\">\(s.frozenCols)</config:config-item>" }
             if s.frozenRows > 0 { tables += "<config:config-item config:name=\"VerticalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"VerticalSplitPosition\" config:type=\"int\">\(s.frozenRows)</config:config-item><config:config-item config:name=\"PositionBottom\" config:type=\"int\">\(s.frozenRows)</config:config-item>" }
+            if let tab = s.tabColor, let rgb = Int(XLSX.argb(tab).dropFirst(2), radix: 16) {
+                tables += "<config:config-item config:name=\"TabColor\" config:type=\"int\">\(rgb)</config:config-item>"
+            }
             tables += "<config:config-item config:name=\"ShowGrid\" config:type=\"boolean\">\(s.showGridlines)</config:config-item></config:config-item-map-entry>"
         }
         let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings \(ns)><office:settings><config:config-item-set config:name=\"ooo:view-settings\"><config:config-item-map-indexed config:name=\"Views\"><config:config-item-map-entry><config:config-item-map-named config:name=\"Tables\">\(tables)</config:config-item-map-named></config:config-item-map-entry></config:config-item-map-indexed></config:config-item-set></office:settings></office:document-settings>"
@@ -642,6 +688,13 @@ enum ODS {
         x += ">"
         if let comment = sheet.comments[ref] {
             x += "<office:annotation>" + comment.split(separator: "\n", omittingEmptySubsequences: false).map { "<text:p>\(xmlEscape(String($0)))</text:p>" }.joined() + "</office:annotation>"
+        }
+        if let link = sheet.hyperlinks[ref] {
+            // Places in the workbook: "#Sheet.A1" in ODF.
+            var href = link
+            if href.hasPrefix("#") { href = "#" + href.dropFirst().replacingOccurrences(of: "!", with: ".") }
+            x += "<text:p><text:a xlink:type=\"simple\" xlink:href=\"\(xmlEscape(href))\">\(xmlEscape(text.isEmpty ? link : text))</text:a></text:p>"
+            return x + "</table:table-cell>"
         }
         if !text.isEmpty { x += text.split(separator: "\n", omittingEmptySubsequences: false).map { "<text:p>\(xmlEscape(String($0)))</text:p>" }.joined() }
         return x + "</table:table-cell>"
