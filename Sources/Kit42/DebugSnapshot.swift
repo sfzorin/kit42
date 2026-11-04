@@ -3,8 +3,28 @@ import AppKit
 /// Development aid: `K42_SNAPSHOT=/path/out.png` renders the front window (with toolbar) to a PNG
 /// after `K42_SNAPSHOT_DELAY` seconds (default 2), then quits.
 public enum DebugSnapshot {
+    /// `K42_APPEARANCE=dark|light` forces the app appearance (dark mode checks). Installed by
+    /// `Localization.register(rows:)`, which every app calls first in main.swift, so it applies
+    /// before the first window without app changes.
+    static let appearanceHook: Void = {
+        guard ProcessInfo.processInfo.environment["K42_APPEARANCE"] != nil else { return }
+        NotificationCenter.default.addObserver(forName: NSApplication.willFinishLaunchingNotification, object: nil, queue: .main) { _ in
+            applyAppearanceIfRequested()
+        }
+        if NSApp != nil { applyAppearanceIfRequested() }
+    }()
+
+    public static func applyAppearanceIfRequested() {
+        switch ProcessInfo.processInfo.environment["K42_APPEARANCE"]?.lowercased() {
+        case "dark": NSApp?.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp?.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
+    }
+
     public static func scheduleIfRequested(prepare: (() -> Void)? = nil) {
         let env = ProcessInfo.processInfo.environment
+        applyAppearanceIfRequested()
         guard let path = env["K42_SNAPSHOT"] else { return }
         let delay = Double(env["K42_SNAPSHOT_DELAY"] ?? "") ?? 2
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {

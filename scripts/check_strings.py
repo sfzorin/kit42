@@ -41,5 +41,11 @@ for app in ["Kit42", "PDF42", "DOC42", "XLS42", "IMG42"]:
         print(f"{app}: no translation: {key!r} ({f})"); problems += 1
     for u in unwrapped:
         print(f"{app}: not localized: {u}"); problems += 1
+# Quick Look extensions (sandboxed, follow the system language): PL("…") with rows in Previews42/Strings.swift.
+ql = table(root / "Previews42/Strings.swift")
+for f in sorted((root / "Previews42").glob("*.swift")):
+    for m in re.finditer(r'\bPL\(\s*' + lit, f.read_text()):
+        if m.group(1) not in ql:
+            print(f"Previews42: no translation: {m.group(1)!r} ({f.name})"); problems += 1
 print("OK" if problems == 0 else f"{problems} problems")
 sys.exit(1 if problems else 0)

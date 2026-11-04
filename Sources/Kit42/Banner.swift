@@ -28,6 +28,7 @@ public final class BannerView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let button = NSButton(title: "", target: nil, action: nil)
     private var handler: (() -> Void)?
+    private var style: Style = .info
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -68,7 +69,8 @@ public final class BannerView: NSView {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     public func show(_ style: Style, _ text: String, action: String? = nil, handler: (() -> Void)? = nil) {
-        layer?.backgroundColor = style.color.withAlphaComponent(0.12).cgColor
+        self.style = style
+        updateTint()
         icon.image = Theme42.symbol(style.symbol, size: 14, weight: .semibold)
         icon.contentTintColor = style.color
         label.stringValue = text
@@ -79,6 +81,18 @@ public final class BannerView: NSView {
     }
 
     public func hide() { isHidden = true }
+
+    /// Layer colours are not dynamic: resolve the system colour for the current appearance.
+    private func updateTint() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = style.color.withAlphaComponent(0.14).cgColor
+        }
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateTint()
+    }
 
     @objc private func tapped() { handler?() }
 }

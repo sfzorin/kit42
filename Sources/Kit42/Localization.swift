@@ -54,6 +54,7 @@ public enum Localization {
     /// Compact registration: each row is [en, ru, tr].
     public static func register(rows: [[String]]) {
         _ = systemLanguageApplied
+        _ = DebugSnapshot.appearanceHook
         for row in rows where row.count == 3 {
             tables[row[0]] = [.ru: row[1], .tr: row[2]]
         }
