@@ -35,6 +35,24 @@ enum Cmd {
     static let charts: [Command] = [(L("Column Chart"), "chart.bar"), (L("Bar Chart"), "chart.bar.xaxis"), (L("Line Chart"), "chart.xyaxis.line"),
                                     (L("Area Chart"), "chart.line.uptrend.xyaxis"), (L("Pie Chart"), "chart.pie"), (L("Scatter Chart"), "chart.dots.scatter")]
         .enumerated().map { Command($0.element.0, #selector(W.insertChartAction(_:)), symbol: $0.element.1, tag: $0.offset) }
+    static let insertFunction = Command(L("Function…"), #selector(W.insertFunctionAction(_:)), symbol: "function",
+                                        shortcut: Shortcut("f", [.command, .shift]), toolTip: L("Insert Function"), label: L("Function"))
+    static let validation = Command(L("Validation…"), #selector(W.validationAction(_:)), symbol: "checkmark.shield",
+                                    toolTip: L("Allowed values and drop-down lists for the selected cells"), label: L("Validation"))
+    static let clearValidation = Command(L("Clear Validation"), #selector(W.clearValidationAction(_:)))
+    static let pivot = Command(L("Pivot Table…"), #selector(W.pivotTableAction(_:)), symbol: "tablecells.badge.ellipsis",
+                               toolTip: L("Summarize the data in a pivot table on a new sheet"), label: L("Pivot"))
+    static let refreshPivot = Command(L("Refresh Pivot Table"), #selector(W.refreshPivotAction(_:)), symbol: "arrow.clockwise")
+    static let group = Command(L("Group"), #selector(W.groupAction(_:)), symbol: "rectangle.stack.badge.plus",
+                               shortcut: Shortcut(Shortcut.rightArrow, [.command, .option, .shift]), toolTip: L("Group rows or columns (outline)"), label: L("Group"))
+    static let ungroup = Command(L("Ungroup"), #selector(W.ungroupAction(_:)), symbol: "rectangle.stack.badge.minus",
+                                 shortcut: Shortcut(Shortcut.leftArrow, [.command, .option, .shift]))
+    static let collapseAll = Command(L("Collapse All Groups"), #selector(W.collapseAllAction(_:)))
+    static let expandAll = Command(L("Expand All Groups"), #selector(W.expandAllAction(_:)))
+    static let protectSheet = Command(L("Protect Sheet…"), #selector(W.protectSheetAction(_:)), symbol: "lock")
+    static let locked = Command(L("Locked"), #selector(W.toggleLockedAction(_:)), symbol: "lock.square")
+    static let pasteSpecial = Command(L("Paste Special…"), #selector(W.pasteSpecialAction(_:)), symbol: "doc.on.clipboard.fill",
+                                      shortcut: Shortcut("v", [.command, .option]))
     static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
 
     // Edit (context menu)
@@ -43,7 +61,7 @@ enum Cmd {
     static let paste = Command(L("Paste"), #selector(NSText.paste(_:)), symbol: "doc.on.clipboard")
 
     static var contextMenu: NSMenu {
-        MenuBar.menu("", [.command(cut), .command(copy), .command(paste), .separator,
+        MenuBar.menu("", [.command(cut), .command(copy), .command(paste), .command(pasteSpecial), .separator,
                           .command(insertRows), .command(insertColumns), .command(deleteRows), .command(deleteColumns), .separator,
                           .command(clear), .command(clearFormats), .separator,
                           .command(sortAscending), .command(sortDescending), .separator,
@@ -117,12 +135,12 @@ enum Cmd {
         var spec = MenuBarSpec(appName: "XLS42")
         spec.fileExtras = [.command(exportPDF), .command(exportCSV), .separator, .command(importCSV), .separator,
                            .command(setPrintArea), .command(clearPrintArea)]
-        spec.editExtras = [.command(clear), .command(clearFormats), .separator, .command(fillDown), .command(fillRight)]
+        spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator, .command(fillDown), .command(fillRight)]
         spec.find = [.command(find), .command(findNext), .command(replace), .command(goToCell)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator,
                      .command(formatBar), .command(gridlines), .separator,
                      .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]
-        spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum),
+        spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum), .command(insertFunction),
                        .command(defineName), .separator, .command(insertPicture), .command(stamps), .submenu(L("Chart"), charts.menuElements),
                        .separator, .command(comment), .command(deleteComment)]
         spec.format = [.command(bold), .command(italic), .command(underline), .command(strike), .separator,
@@ -132,18 +150,24 @@ enum Cmd {
                        .command(noFill), .separator,
                        .submenu(L("Conditional Formatting"), conditionalRules.menuElements + [.separator, .command(colorScale), .command(dataBars),
                                                                                               .separator, .command(clearRules)]),
+                       .submenu(L("Protection"), [.command(locked), .separator, .command(protectSheet)]),
                        .separator, .command(clearFormats)]
         spec.custom = [(L("Table"), [.command(sortAscending), .command(sortDescending), .command(filter), .separator,
                                      .command(hideRows), .command(unhideRows), .command(hideColumns), .command(unhideColumns), .separator,
                                      .command(deleteRows), .command(deleteColumns), .separator,
-                                     .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)])]
+                                     .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]),
+                       (L("Data"), [.command(validation), .command(clearValidation), .separator,
+                                    .command(pivot), .command(refreshPivot), .separator,
+                                    .command(group), .command(ungroup), .command(collapseAll), .command(expandAll), .separator,
+                                    .command(protectSheet)])]
         spec.help = [.command(functions), .command(welcome)]
         return spec
     }
 
     static var toolbar: [ToolbarElement] {
         [
-            .command(autoSum), .command(sortAscending), .command(filter), .command(freeze),
+            .command(autoSum), .command(insertFunction), .command(sortAscending), .command(filter), .command(freeze),
+            .command(validation), .command(pivot), .command(group),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
             .command(formatBar), .command(print), .command(exportPDF),

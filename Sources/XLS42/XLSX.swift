@@ -67,15 +67,28 @@ enum XLSX {
         }
         for col in root.child("cols")?.children("col") ?? [] {
             guard let min = col.attr("min").flatMap(Int.init), let max = col.attr("max").flatMap(Int.init) else { continue }
-            let hidden = col.attr("hidden") == "1"
-            let w = hidden ? 0 : columnPoints(col.attr("width").flatMap(Double.init) ?? 8.43)
-            for c in min...Swift.min(max, min + 1000) { sheet.columnWidths[c - 1] = w }
+            let hidden = col.attr("hidden") == "1" || col.attr("hidden") == "true"
+            let level = col.attr("outlineLevel").flatMap(Int.init) ?? 0
+            // Columns hidden by a collapsed group keep their width.
+            let w = hidden && level == 0 ? 0 : columnPoints(col.attr("width").flatMap(Double.init) ?? 8.43)
+            for c in min...Swift.min(max, min + 1000) {
+                if col.attr("width") != nil || hidden { sheet.columnWidths[c - 1] = w }
+                if level > 0 { sheet.colLevels[c - 1] = Swift.min(level, Sheet.maxOutlineLevel) }
+                if level > 0 && hidden { sheet.outlineHiddenCols.insert(c - 1) }
+            }
         }
 
         var sharedFormulas: [String: (String, CellRef)] = [:]
         for row in root.child("sheetData")?.children("row") ?? [] {
             let r = (row.attr("r").flatMap(Int.init) ?? 1) - 1
-            if row.attr("hidden") == "1" { sheet.rowHeights[r] = 0 }
+            let level = row.attr("outlineLevel").flatMap(Int.init) ?? 0
+            if level > 0 { sheet.rowLevels[r] = min(level, Sheet.maxOutlineLevel) }
+            if row.attr("hidden") == "1" || row.attr("hidden") == "true" {
+                if level > 0 {
+                    sheet.outlineHiddenRows.insert(r)
+                    if row.attr("customHeight") == "1", let ht = row.attr("ht").flatMap(Double.init), ht > 0 { sheet.rowHeights[r] = CGFloat(ht) }
+                } else { sheet.rowHeights[r] = 0 }
+            }
             else if row.attr("customHeight") == "1" || row.attr("ht") != nil, let ht = row.attr("ht").flatMap(Double.init) {
                 sheet.rowHeights[r] = CGFloat(ht)
             }
@@ -183,6 +196,7 @@ enum XLSX {
                 (s.left, s.right, s.top, s.bottom) = (borders[id][0], borders[id][1], borders[id][2], borders[id][3])
             }
             if let id = xf.attr("numFmtId").flatMap(Int.init) { s.numberFormat = formats[id] ?? "General" }
+            if let p = xf.child("protection"), p.attr("locked") == "0" || p.attr("locked") == "false" { s.locked = false }
             if let a = xf.child("alignment") {
                 s.hAlign = a.attr("horizontal")
                 if let v = a.attr("vertical") { s.vAlign = v }
@@ -344,22 +358,39 @@ enum XLSX {
             x += "<pane\(sheet.frozenCols > 0 ? " xSplit=\"\(sheet.frozenCols)\"" : "")\(sheet.frozenRows > 0 ? " ySplit=\"\(sheet.frozenRows)\"" : "") topLeftCell=\"\(top)\" activePane=\"bottomRight\" state=\"frozen\"/>"
         }
         x += "</sheetView></sheetViews>"
-        x += "<sheetFormatPr defaultRowHeight=\"\(fmt(sheet.defaultRowHeight))\" defaultColWidth=\"\(columnChars(sheet.defaultColumnWidth))\"/>"
-        if !sheet.columnWidths.isEmpty {
+        x += "<sheetFormatPr defaultRowHeight=\"\(fmt(sheet.defaultRowHeight))\" defaultColWidth=\"\(columnChars(sheet.defaultColumnWidth))\""
+        if sheet.maxRowLevel > 0 { x += " outlineLevelRow=\"\(sheet.maxRowLevel)\"" }
+        if sheet.maxColLevel > 0 { x += " outlineLevelCol=\"\(sheet.maxColLevel)\"" }
+        x += "/>"
+        // A summary row/column right after a collapsed group carries collapsed="1".
+        func collapsed(_ i: Int, rows: Bool) -> Bool {
+            i > 0 && sheet.isOutlineHidden(i - 1, rows: rows) && !sheet.isOutlineHidden(i, rows: rows) && sheet.level(i - 1, rows: rows) > sheet.level(i, rows: rows)
+        }
+        let colKeys = Set(sheet.columnWidths.keys).union(sheet.colLevels.keys).union(sheet.outlineHiddenCols)
+            .union(sheet.outlineHiddenCols.map { $0 + 1 }.filter { collapsed($0, rows: false) })
+        if !colKeys.isEmpty {
             x += "<cols>"
-            for col in sheet.columnWidths.keys.sorted() {
-                let w = sheet.columnWidths[col]!
-                x += "<col min=\"\(col + 1)\" max=\"\(col + 1)\" width=\"\(columnChars(w))\" customWidth=\"1\"\(w == 0 ? " hidden=\"1\"" : "")/>"
+            for col in colKeys.sorted() {
+                let w = sheet.columnWidths[col] ?? sheet.defaultColumnWidth
+                let hidden = w == 0 || sheet.outlineHiddenCols.contains(col)
+                x += "<col min=\"\(col + 1)\" max=\"\(col + 1)\" width=\"\(columnChars(w))\"\(sheet.columnWidths[col] != nil ? " customWidth=\"1\"" : "")"
+                if hidden { x += " hidden=\"1\"" }
+                if let l = sheet.colLevels[col] { x += " outlineLevel=\"\(l)\"" }
+                if collapsed(col, rows: false) { x += " collapsed=\"1\"" }
+                x += "/>"
             }
             x += "</cols>"
         }
         x += "<sheetData>"
         let byRow = Dictionary(grouping: sheet.cells.keys, by: \.row)
-        let rows = Set(byRow.keys).union(sheet.rowHeights.keys).union(sheet.filterHidden).sorted()
+        let rows = Set(byRow.keys).union(sheet.rowHeights.keys).union(sheet.filterHidden).union(sheet.rowLevels.keys)
+            .union(sheet.outlineHiddenRows).union(sheet.outlineHiddenRows.map { $0 + 1 }.filter { collapsed($0, rows: true) }).sorted()
         for r in rows {
             x += "<row r=\"\(r + 1)\""
-            if sheet.filterHidden.contains(r) { x += " hidden=\"1\"" }
-            else if let h = sheet.rowHeights[r] { x += h == 0 ? " hidden=\"1\"" : " ht=\"\(fmt(h))\" customHeight=\"1\"" }
+            if sheet.filterHidden.contains(r) || sheet.outlineHiddenRows.contains(r) { x += " hidden=\"1\"" }
+            if let h = sheet.rowHeights[r] { x += h == 0 ? (sheet.filterHidden.contains(r) || sheet.outlineHiddenRows.contains(r) ? "" : " hidden=\"1\"") : " ht=\"\(fmt(h))\" customHeight=\"1\"" }
+            if let l = sheet.rowLevels[r] { x += " outlineLevel=\"\(l)\"" }
+            if collapsed(r, rows: true) { x += " collapsed=\"1\"" }
             x += ">"
             for ref in (byRow[r] ?? []).sorted() {
                 let cell = sheet.cells[ref]!
@@ -388,7 +419,16 @@ enum XLSX {
             }
             x += "</row>"
         }
-        x += "</sheetData>" + extras.filter
+        x += "</sheetData>"
+        if let p = sheet.protection {
+            x += "<sheetProtection"
+            if let h = p.passwordHash { x += " password=\"\(h)\"" }
+            if let h = p.sha512Hash, let salt = p.sha512Salt {
+                x += " algorithmName=\"SHA-512\" hashValue=\"\(h)\" saltValue=\"\(salt)\" spinCount=\"\(p.spinCount)\""
+            }
+            x += " sheet=\"1\" objects=\"1\" scenarios=\"1\"/>"
+        }
+        x += extras.filter
         if !sheet.merges.isEmpty {
             x += "<mergeCells count=\"\(sheet.merges.count)\">" + sheet.merges.map { "<mergeCell ref=\"\($0.a1)\"/>" }.joined() + "</mergeCells>"
         }
@@ -436,13 +476,20 @@ enum XLSX {
             xf += fillId != 0 ? " applyFill=\"1\"" : ""
             xf += borderId != 0 ? " applyBorder=\"1\"" : ""
             let hasAlign = s.hAlign != nil || s.vAlign != "bottom" || s.wrap || s.indent > 0
-            if hasAlign {
-                xf += " applyAlignment=\"1\"><alignment"
-                if let h = s.hAlign { xf += " horizontal=\"\(h)\"" }
-                if s.vAlign != "bottom" { xf += " vertical=\"\(s.vAlign)\"" }
-                if s.wrap { xf += " wrapText=\"1\"" }
-                if s.indent > 0 { xf += " indent=\"\(s.indent)\"" }
-                xf += "/></xf>"
+            if hasAlign { xf += " applyAlignment=\"1\"" }
+            if !s.locked { xf += " applyProtection=\"1\"" }
+            if hasAlign || !s.locked {
+                xf += ">"
+                if hasAlign {
+                    xf += "<alignment"
+                    if let h = s.hAlign { xf += " horizontal=\"\(h)\"" }
+                    if s.vAlign != "bottom" { xf += " vertical=\"\(s.vAlign)\"" }
+                    if s.wrap { xf += " wrapText=\"1\"" }
+                    if s.indent > 0 { xf += " indent=\"\(s.indent)\"" }
+                    xf += "/>"
+                }
+                if !s.locked { xf += "<protection locked=\"0\"/>" }
+                xf += "</xf>"
             } else { xf += "/>" }
             xfs.append(xf)
         }

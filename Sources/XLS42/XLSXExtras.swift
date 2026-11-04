@@ -22,6 +22,31 @@ extension XLSX {
     }
 
     static func readExtras(_ sheet: inout Sheet, root: XMLElement, path: String, zip: ZipArchive, dxfs: [Dxf], theme: [NSColor]) {
+        // Sheet protection
+        if let p = root.child("sheetProtection"), p.attr("sheet") == "1" || p.attr("sheet") == "true" {
+            var prot = SheetProtection(passwordHash: p.attr("password"))
+            if p.attr("algorithmName") == "SHA-512" {
+                prot.sha512Hash = p.attr("hashValue")
+                prot.sha512Salt = p.attr("saltValue")
+                prot.spinCount = p.attr("spinCount").flatMap(Int.init) ?? 100_000
+            }
+            sheet.protection = prot
+        }
+        // Data validation
+        for dv in root.child("dataValidations")?.children("dataValidation") ?? [] {
+            let ranges = (dv.attr("sqref") ?? "").split(separator: " ").compactMap { CellRange(String($0)) }
+            guard !ranges.isEmpty, let type = dv.attr("type"), let kind = DataValidation.Kind(rawValue: type) else { continue }
+            var v = DataValidation(ranges: ranges, kind: kind)
+            v.op = dv.attr("operator") ?? "between"
+            v.formula1 = dv.child("formula1")?.stringValue ?? ""
+            v.formula2 = dv.child("formula2")?.stringValue ?? ""
+            v.allowBlank = dv.attr("allowBlank") == "1" || dv.attr("allowBlank") == "true"
+            v.showDropdown = !(dv.attr("showDropDown") == "1" || dv.attr("showDropDown") == "true")   // inverted in the file format
+            v.errorStyle = dv.attr("errorStyle") ?? "stop"
+            v.errorTitle = dv.attr("errorTitle") ?? ""
+            v.errorMessage = dv.attr("error") ?? ""
+            sheet.validations.append(v)
+        }
         // AutoFilter
         if let af = root.child("autoFilter"), let range = af.attr("ref").flatMap(CellRange.init) {
             sheet.autoFilter = range
@@ -196,6 +221,24 @@ extension XLSX {
             }
             conditional += "<conditionalFormatting sqref=\"\(rule.range.a1)\">\(body)</conditionalFormatting>"
             priority += 1
+        }
+        if !sheet.validations.isEmpty {
+            conditional += "<dataValidations count=\"\(sheet.validations.count)\">"
+            for v in sheet.validations {
+                conditional += "<dataValidation type=\"\(v.kind.rawValue)\""
+                if v.kind != .list && v.kind != .custom && v.op != "between" { conditional += " operator=\"\(v.op)\"" }
+                conditional += " errorStyle=\"\(v.errorStyle)\""
+                if v.allowBlank { conditional += " allowBlank=\"1\"" }
+                if v.kind == .list && !v.showDropdown { conditional += " showDropDown=\"1\"" }
+                conditional += " showErrorMessage=\"1\""
+                if !v.errorTitle.isEmpty { conditional += " errorTitle=\"\(xmlEscape(v.errorTitle))\"" }
+                if !v.errorMessage.isEmpty { conditional += " error=\"\(xmlEscape(v.errorMessage))\"" }
+                conditional += " sqref=\"\(v.ranges.map(\.a1).joined(separator: " "))\">"
+                conditional += "<formula1>\(xmlEscape(v.formula1))</formula1>"
+                if v.usesSecondValue && v.kind != .list && v.kind != .custom && !v.formula2.isEmpty { conditional += "<formula2>\(xmlEscape(v.formula2))</formula2>" }
+                conditional += "</dataValidation>"
+            }
+            conditional += "</dataValidations>"
         }
 
         var rels: [String] = []

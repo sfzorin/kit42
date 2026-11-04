@@ -7,6 +7,16 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     private lazy var columnHeader = HeaderView(grid: grid, columns: true)
     private lazy var rowHeader = HeaderView(grid: grid, columns: false)
     private lazy var freezeOverlay = FreezeOverlay(grid: grid)
+    private lazy var rowGutter = OutlineGutter(grid: grid, columns: false)
+    private lazy var colGutter = OutlineGutter(grid: grid, columns: true)
+    private var rowGutterWidth: NSLayoutConstraint?
+    private var colGutterHeight: NSLayoutConstraint?
+    private let signatureHint = NSTextField(labelWithString: "")
+    var functionWizard: FunctionWizard?
+    var findPanel: FindReplacePanel?
+    /// Tests: refusals and validation errors are recorded instead of shown.
+    var suppressAlerts = false
+    var lastAlertMessage: String?
     private let toolbarController = ToolbarController(identifier: "XLS42.toolbar", elements: Cmd.toolbar)
     private let nameBox = NSTextField()
     private let formulaField = NSTextField()
@@ -126,13 +136,31 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let root = NSView()
         let corner = CornerView()
         corner.onClick = { [weak self] in self?.grid.selectAllCells() }
-        for v in [scrollView, freezeOverlay, bottomBackground, line, columnHeader, rowHeader, corner] as [NSView] {
+        signatureHint.drawsBackground = true
+        signatureHint.backgroundColor = NSColor(srgbRed: 1, green: 0.99, blue: 0.88, alpha: 1)
+        signatureHint.isBordered = true
+        signatureHint.isHidden = true
+        signatureHint.lineBreakMode = .byTruncatingTail
+        for v in [scrollView, freezeOverlay, bottomBackground, line, columnHeader, rowHeader, corner, rowGutter, colGutter, signatureHint] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
+        let rgw = rowGutter.widthAnchor.constraint(equalToConstant: 0), cgh = colGutter.heightAnchor.constraint(equalToConstant: 0)
+        rowGutterWidth = rgw
+        colGutterHeight = cgh
         NSLayoutConstraint.activate([
-            corner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
-            corner.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            rgw, cgh,
+            colGutter.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            colGutter.leadingAnchor.constraint(equalTo: rowGutter.trailingAnchor),
+            colGutter.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            rowGutter.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            rowGutter.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            rowGutter.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            signatureHint.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 1),
+            signatureHint.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 120),
+            signatureHint.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -10),
+            corner.topAnchor.constraint(equalTo: colGutter.bottomAnchor),
+            corner.leadingAnchor.constraint(equalTo: rowGutter.trailingAnchor),
             corner.widthAnchor.constraint(equalToConstant: 46),
             corner.heightAnchor.constraint(equalToConstant: 22),
             columnHeader.topAnchor.constraint(equalTo: corner.topAnchor),
@@ -140,7 +168,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             columnHeader.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             columnHeader.heightAnchor.constraint(equalTo: corner.heightAnchor),
             rowHeader.topAnchor.constraint(equalTo: corner.bottomAnchor),
-            rowHeader.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            rowHeader.leadingAnchor.constraint(equalTo: rowGutter.trailingAnchor),
             rowHeader.widthAnchor.constraint(equalTo: corner.widthAnchor),
             rowHeader.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
             freezeOverlay.topAnchor.constraint(equalTo: scrollView.topAnchor),
@@ -178,9 +206,11 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         nameBox.translatesAutoresizingMaskIntoConstraints = false
         nameBox.widthAnchor.constraint(equalToConstant: 90).isActive = true
 
-        let fx = NSTextField(labelWithString: "fx")
+        let fx = NSButton(title: "fx", target: self, action: #selector(insertFunctionAction(_:)))
+        fx.isBordered = false
         fx.font = NSFont(descriptor: NSFont.systemFont(ofSize: 13).fontDescriptor.withSymbolicTraits(.italic), size: 13)
-        fx.textColor = .secondaryLabelColor
+        fx.contentTintColor = .secondaryLabelColor
+        fx.toolTip = L("Insert Function…")
 
         formulaField.font = .systemFont(ofSize: 13)
         formulaField.bezelStyle = .roundedBezel
@@ -227,19 +257,42 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     func headersNeedDisplay() {
         columnHeader.needsDisplay = true
         rowHeader.needsDisplay = true
+        rowGutter.needsDisplay = true
+        colGutter.needsDisplay = true
     }
 
     func workbookDidChange() {
         if sheetIndex >= (doc?.workbook.sheets.count ?? 1) { sheetIndex = max(0, (doc?.workbook.sheets.count ?? 1) - 1) }
         reloadTabs()
         grid.rebuildLayout()
+        updateOutlineGutters()
         selectionDidChange()
     }
+
+    /// Shows the grouping gutters only when the sheet has outline levels.
+    func updateOutlineGutters() {
+        let w = OutlineGutter.thickness(sheet.maxRowLevel), h = OutlineGutter.thickness(sheet.maxColLevel)
+        if rowGutterWidth?.constant != w { rowGutterWidth?.constant = w }
+        if colGutterHeight?.constant != h { colGutterHeight?.constant = h }
+        rowGutter.leading = h + 22
+        colGutter.leading = 46
+        headersNeedDisplay()
+    }
+
+    func showSignatureHint(_ text: NSAttributedString) {
+        signatureHint.attributedStringValue = text
+        signatureHint.isHidden = false
+    }
+
+    func hideSignatureHint() { signatureHint.isHidden = true }
 
     func selectionDidChange() {
         let sel = grid.selection
         nameBox.stringValue = sel.count > 1 && sel.end.row < RefPart.maxRow ? sel.a1 : grid.active.a1
-        if !grid.isEditing { formulaField.stringValue = sheet[grid.active].input }
+        if !grid.isEditing {
+            formulaField.stringValue = sheet[grid.active].input
+            hideSignatureHint()
+        }
         let style = sheet[grid.active].style
         fontPopup.selectItem(withTitle: style.fontName ?? "Calibri")
         if fontPopup.selectedItem == nil, let name = style.fontName { fontPopup.addItem(withTitle: name); fontPopup.selectItem(withTitle: name) }
@@ -284,8 +337,12 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         window?.subtitle = sheet.name
     }
 
+    /// Caret in the formula bar while it is being edited.
+    var formulaCaret: NSRange? { window?.firstResponder === formulaField.currentEditor() ? formulaField.currentEditor()?.selectedRange : nil }
+
     func editorTextChanged(_ text: String) {
         if window?.firstResponder !== formulaField.currentEditor() { formulaField.stringValue = text }
+        updateSignatureHint(text)
     }
 
     /// Selection limited to the used area (whole-column selections).
@@ -328,6 +385,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         sheetIndex = index
         reloadTabs()
         grid.rebuildLayout()
+        updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
     }
 
@@ -340,6 +398,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         sheetIndex = sender.tag
         reloadTabs()
         grid.rebuildLayout()
+        updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
     }
 
@@ -430,6 +489,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         }
         let current = sheet[ref]
         guard current.input != input else { return }
+        guard guardEditable(CellRange(ref, ref)), validateInput(input, at: ref) else { selectionDidChange(); return }
         doc.change(L("Typing")) { wb in
             var cell = wb.sheets[sheetIndex][ref]
             cell.input = input
@@ -446,8 +506,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     private func modifyCells(_ name: String, _ body: (inout Cell) -> Void) {
-        guard let doc else { return }
         let range = clampedSelection
+        guard let doc, guardEditable(range) else { return }
         doc.change(name) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]
@@ -458,8 +518,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     private func modifyStyle(_ name: String, _ body: (inout CellStyle) -> Void) {
-        guard let doc else { return }
         let range = clampedSelection
+        guard let doc, guardEditable(range) else { return }
         doc.change(name, recalc: false) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]
@@ -482,7 +542,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     // MARK: - Clipboard
 
-    private struct Clip {
+    struct Clip {
         var origin: CellRef
         var rows: Int
         var cols: Int
@@ -490,7 +550,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         var changeCount: Int
     }
 
-    private static var clip: Clip?
+    static var clip: Clip?
 
     @objc func copy(_ sender: Any?) {
         let range = clampedSelection
@@ -513,6 +573,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func cut(_ sender: Any?) {
+        guard guardEditable(clampedSelection) else { return }
         copy(sender)
         clearContents(sender)
     }
@@ -522,6 +583,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let dest = grid.active
         let pb = NSPasteboard.general
         if let clip = Self.clip, clip.changeCount == pb.changeCount {
+            guard guardEditable(CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))) else { return }
             doc.change(L("Paste")) { wb in
                 for (offset, cell) in clip.cells {
                     let target = CellRef(row: dest.row + offset.row, col: dest.col + offset.col)
@@ -534,6 +596,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             }
             grid.selection = CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))
         } else if let text = pb.string(forType: .string) {
+            guard guardEditable(nil) else { return }
             let rows = text.replacingOccurrences(of: "\r", with: "").split(separator: "\n", omittingEmptySubsequences: false)
             doc.change(L("Paste")) { wb in
                 for (r, line) in rows.enumerated() where !(r == rows.count - 1 && line.isEmpty) {
@@ -557,8 +620,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func fillRight(_ sender: Any?) { fill(down: false) }
 
     private func fill(down: Bool) {
-        guard let doc else { return }
         let range = clampedSelection
+        guard let doc, guardEditable(range) else { return }
         guard down ? range.rows.count > 1 : range.cols.count > 1 else { return }
         doc.change(down ? L("Fill Down") : L("Fill Right")) { wb in
             for ref in range.cells {
@@ -659,7 +722,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func mergeAction(_ sender: Any?) {
-        guard let doc else { return }
+        guard let doc, guardEditable(nil) else { return }
         let range = clampedSelection
         let existing = sheet.merges.filter { $0 == range || range.contains($0.start) }
         doc.change(L("Merge Cells")) { wb in
@@ -678,6 +741,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func bordersAction(_ sender: Any?) {
         let mode = commandTag(of: sender)   // 0 all, 1 outside, 2 bottom, 3 none
         let range = clampedSelection
+        guard guardEditable(range) else { return }
         let side = BorderSide(style: "thin", color: .black)
         doc?.change(L("Borders")) { wb in
             for ref in range.cells {
@@ -769,7 +833,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func deleteColumnsAction(_ sender: Any?) { shift(rows: false, insert: false) }
 
     private func shift(rows: Bool, insert: Bool) {
-        guard let doc else { return }
+        guard let doc, guardEditable(nil) else { return }
         let sel = grid.selection
         let index = rows ? sel.start.row : sel.start.col
         let n = rows ? sel.rows.count : sel.cols.count
@@ -794,12 +858,24 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             } else {
                 s.columnWidths = Dictionary(uniqueKeysWithValues: s.columnWidths.compactMap { k, v in moved(k).map { ($0, v) } })
             }
-            s.merges = s.merges.compactMap { m in
+            func movedRange(_ m: CellRange) -> CellRange? {
                 let a = rows ? m.start.row : m.start.col, b = rows ? m.end.row : m.end.col
                 guard let na = moved(a) ?? (count < 0 ? index : nil), let nb = moved(b) ?? (count < 0 ? index - 1 : nil), nb >= na else { return nil }
-                let r = rows ? CellRange(CellRef(row: na, col: m.start.col), CellRef(row: nb, col: m.end.col))
-                             : CellRange(CellRef(row: m.start.row, col: na), CellRef(row: m.end.row, col: nb))
-                return r.count > 1 ? r : nil
+                return rows ? CellRange(CellRef(row: na, col: m.start.col), CellRef(row: nb, col: m.end.col))
+                            : CellRange(CellRef(row: m.start.row, col: na), CellRef(row: m.end.row, col: nb))
+            }
+            s.merges = s.merges.compactMap { m in movedRange(m).flatMap { $0.count > 1 ? $0 : nil } }
+            s.validations = s.validations.compactMap { v in
+                var v = v
+                v.ranges = v.ranges.compactMap(movedRange)
+                return v.ranges.isEmpty ? nil : v
+            }
+            if rows {
+                s.rowLevels = Dictionary(uniqueKeysWithValues: s.rowLevels.compactMap { k, v in moved(k).map { ($0, v) } })
+                s.outlineHiddenRows = Set(s.outlineHiddenRows.compactMap(moved))
+            } else {
+                s.colLevels = Dictionary(uniqueKeysWithValues: s.colLevels.compactMap { k, v in moved(k).map { ($0, v) } })
+                s.outlineHiddenCols = Set(s.outlineHiddenCols.compactMap(moved))
             }
             wb.sheets[sheetIndex] = s
             for si in wb.sheets.indices {
@@ -834,7 +910,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func sortDescending(_ sender: Any?) { sort(ascending: false) }
 
     private func sort(ascending: Bool) {
-        guard let doc, let used = sheet.usedRange else { return }
+        guard let doc, let used = sheet.usedRange, guardEditable(nil) else { return }
         var range = clampedSelection
         let key = grid.active.col
         if range.count == 1 {
@@ -1016,6 +1092,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     func controlTextDidBeginEditing(_ obj: Notification) {
         if (obj.object as? NSTextField) === formulaField, !grid.isEditing {
             grid.beginEdit(initial: formulaField.stringValue)
+            guard grid.isEditing else {
+                // Refused (protected cell): give the text back.
+                formulaField.abortEditing()
+                formulaField.stringValue = sheet[grid.active].input
+                window?.makeFirstResponder(grid)
+                return
+            }
             window?.makeFirstResponder(formulaField)
         }
     }
@@ -1074,6 +1157,11 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             item.state = item.tag < Self.numberFormats.count && Self.numberFormats[item.tag].code == style.numberFormat ? .on : .off
         case #selector(fillDown(_:)): return grid.selection.rows.count > 1
         case #selector(fillRight(_:)): return grid.selection.cols.count > 1
+        case #selector(protectSheetAction(_:)): item.title = sheet.isProtected ? L("Unprotect Sheet…") : L("Protect Sheet…")
+        case #selector(toggleLockedAction(_:)): item.state = style.locked ? .on : .off
+        case #selector(refreshPivotAction(_:)): return sheet.pivot != nil
+        case #selector(clearValidationAction(_:)): return sheet.validations.contains { $0.ranges.contains { $0.intersects(grid.selection) } }
+        case #selector(collapseAllAction(_:)), #selector(expandAllAction(_:)): return sheet.maxRowLevel > 0 || sheet.maxColLevel > 0
         default: break
         }
         return true

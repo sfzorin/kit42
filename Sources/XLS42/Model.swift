@@ -125,6 +125,8 @@ struct CellStyle: Hashable {
     var wrap = false
     var indent = 0
     var numberFormat = "General"
+    /// Protected from editing while the sheet is protected (Excel default: locked).
+    var locked = true
     var left: BorderSide?
     var right: BorderSide?
     var top: BorderSide?
@@ -194,6 +196,16 @@ struct Sheet {
     var conditionalFormats: [ConditionalFormat] = []
     var images: [SheetImage] = []
     var charts: [SheetChart] = []
+    var validations: [DataValidation] = []
+    /// Outline (grouping) levels 1…7 of rows/columns, and the members hidden by collapsing a group.
+    var rowLevels: [Int: Int] = [:]
+    var colLevels: [Int: Int] = [:]
+    var outlineHiddenRows: Set<Int> = []
+    var outlineHiddenCols: Set<Int> = []
+    /// Sheet protection: when set, locked cells can't be edited.
+    var protection: SheetProtection?
+    /// Settings that produced this sheet as a pivot table (for Refresh; not saved to files).
+    var pivot: PivotSpec?
 
     init(name: String) { self.name = name }
 
@@ -202,8 +214,10 @@ struct Sheet {
         set { if newValue.isBlank { cells[ref] = nil } else { cells[ref] = newValue } }
     }
 
-    func width(_ col: Int) -> CGFloat { columnWidths[col] ?? defaultColumnWidth }
-    func height(_ row: Int) -> CGFloat { filterHidden.contains(row) ? 0 : rowHeights[row] ?? defaultRowHeight }
+    func width(_ col: Int) -> CGFloat { outlineHiddenCols.contains(col) ? 0 : columnWidths[col] ?? defaultColumnWidth }
+    func height(_ row: Int) -> CGFloat {
+        filterHidden.contains(row) || outlineHiddenRows.contains(row) ? 0 : rowHeights[row] ?? defaultRowHeight
+    }
     func isRowHidden(_ row: Int) -> Bool { height(row) == 0 }
     func isColumnHidden(_ col: Int) -> Bool { width(col) == 0 }
 
@@ -214,6 +228,50 @@ struct Sheet {
     }
 
     func merge(containing ref: CellRef) -> CellRange? { merges.first { $0.contains(ref) } }
+
+    func validation(at ref: CellRef) -> DataValidation? { validations.last { $0.ranges.contains { $0.contains(ref) } } }
+    var isProtected: Bool { protection != nil }
+    var maxRowLevel: Int { rowLevels.values.max() ?? 0 }
+    var maxColLevel: Int { colLevels.values.max() ?? 0 }
+}
+
+/// Data validation rule (Excel's subset): allowed values for a set of ranges.
+struct DataValidation {
+    enum Kind: String, CaseIterable { case list, whole, decimal, date, textLength, time, custom }
+    var ranges: [CellRange]
+    var kind: Kind
+    /// between, notBetween, equal, notEqual, greaterThan, lessThan, greaterThanOrEqual, lessThanOrEqual
+    var op = "between"
+    /// Formula text as stored in .xlsx, without "=": `"a,b,c"` (literal list), `$H$1:$H$5`, `10`, `45366`.
+    var formula1 = ""
+    var formula2 = ""
+    var allowBlank = true
+    var showDropdown = true
+    var errorStyle = "stop"   // stop, warning, information
+    var errorTitle = ""
+    var errorMessage = ""
+}
+
+/// Sheet protection; the password is kept only as hashes (Excel legacy 16-bit, ODF SHA-1).
+struct SheetProtection: Equatable {
+    var passwordHash: String?
+    var odsKey: String?
+    var odsDigest: String?
+    /// Modern Excel hash (`algorithmName="SHA-512"`), kept from opened files.
+    var sha512Hash: String?
+    var sha512Salt: String?
+    var spinCount = 100_000
+}
+
+/// Pivot table definition: grouped by row (and optional column) field, one aggregated value field.
+struct PivotSpec {
+    enum Aggregate: Int, CaseIterable { case sum, count, average, min, max }
+    var sourceSheet: String
+    var source: CellRange
+    var rowField: Int        // column offsets within `source`
+    var colField: Int?
+    var valueField: Int
+    var aggregate: Aggregate
 }
 
 /// Conditional formatting rule (subset of Excel's): comparisons, text contains, colour scale, data bar.

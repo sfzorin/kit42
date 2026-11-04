@@ -54,13 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    static let functionList = """
-    SUM PRODUCT AVERAGE AVERAGEA MIN MAX COUNT COUNTA COUNTBLANK MEDIAN MODE STDEV STDEV.S STDEV.P VAR VAR.S VAR.P \
-    LARGE SMALL RANK SUMPRODUCT SUMSQ SUBTOTAL · SUMIF SUMIFS COUNTIF COUNTIFS AVERAGEIF AVERAGEIFS MAXIFS MINIFS · \
-    IF IFS IFERROR IFNA AND OR XOR NOT SWITCH CHOOSE · VLOOKUP HLOOKUP XLOOKUP INDEX MATCH OFFSET INDIRECT ROW COLUMN ROWS COLUMNS · \
-    ABS SIGN INT TRUNC ROUND ROUNDUP ROUNDDOWN MROUND CEILING FLOOR EVEN ODD MOD POWER SQRT EXP LN LOG LOG10 PI RAND RANDBETWEEN FACT \
-    DEGREES RADIANS SIN COS TAN · LEN LEFT RIGHT MID UPPER LOWER PROPER TRIM CONCAT CONCATENATE TEXTJOIN SUBSTITUTE REPLACE \
-    FIND SEARCH REPT EXACT CHAR CODE T N TEXT VALUE · TODAY NOW DATE TIME YEAR MONTH DAY WEEKDAY HOUR MINUTE SECOND EDATE \
-    EOMONTH DAYS DATEDIF NETWORKDAYS WORKDAY · ISBLANK ISNUMBER ISTEXT ISLOGICAL ISERROR ISERR ISNA NA · PMT FV PV
-    """
+    /// Function names grouped by category (from the engine's catalog).
+    static var functionList: String {
+        FunctionCatalog.Category.allCases.map { c in
+            c.title + ": " + FunctionCatalog.all.filter { $0.category == c }.map(\.name).joined(separator: " ")
+        }.joined(separator: "\n\n") + "\n\n" + L("Insert › Function… lists them with descriptions.")
+    }
 }
