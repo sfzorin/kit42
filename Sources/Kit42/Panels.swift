@@ -27,6 +27,7 @@ public enum Panels {
         let splits = splitItems(window)
         if let s = saved.removeValue(forKey: key) {
             window.toolbar?.isVisible = s.toolbar
+            window.toolbar?.autosavesConfiguration = true
             for vc in window.titlebarAccessoryViewControllers { vc.isHidden = s.accessories[ObjectIdentifier(vc)] ?? vc.isHidden }
             for item in splits { item.animator().isCollapsed = s.sidebars[ObjectIdentifier(item)] ?? item.isCollapsed }
             extra(false)
@@ -35,6 +36,8 @@ public enum Panels {
         saved[key] = Saved(toolbar: window.toolbar?.isVisible ?? false,
                            accessories: Dictionary(uniqueKeysWithValues: window.titlebarAccessoryViewControllers.map { (ObjectIdentifier($0), $0.isHidden) }),
                            sidebars: Dictionary(uniqueKeysWithValues: splits.map { (ObjectIdentifier($0), $0.isCollapsed) }))
+        // Temporary: the hidden toolbar must not be remembered for the next launch.
+        window.toolbar?.autosavesConfiguration = false
         window.toolbar?.isVisible = false
         window.titlebarAccessoryViewControllers.forEach { $0.isHidden = true }
         splits.forEach { $0.animator().isCollapsed = true }

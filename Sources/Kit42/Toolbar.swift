@@ -31,8 +31,8 @@ public final class ToolbarController: NSObject, NSToolbarDelegate {
 
     public init(identifier: String, elements: [ToolbarElement]) {
         self.elements = elements
-        // ".2": saved layouts from before labels were shown start over once.
-        toolbar = NSToolbar(identifier: identifier + ".2")
+        // ".3": saved layouts start over once (labels shown; a test once saved the toolbar hidden).
+        toolbar = NSToolbar(identifier: identifier + ".3")
         super.init()
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
