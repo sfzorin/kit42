@@ -1,7 +1,7 @@
 import AppKit
 import Kit42
 
-/// Editing features beyond typing: fill handle, find & replace, hiding, filters, names,
+/// Editing features beyond typing: fill handle, hiding, filters, names,
 /// comments, conditional formatting, pictures and charts.
 extension SheetWindowController {
     // MARK: - Fill handle
@@ -9,7 +9,7 @@ extension SheetWindowController {
     /// Extends `source` over `target`: numbers and dates continue a series, text with a trailing
     /// number increments, formulas shift their relative references.
     func autoFill(from source: CellRange, to target: CellRange) {
-        guard let doc else { return }
+        guard let doc, guardEditable(target) else { return }
         let vertical = target.cols == source.cols
         let forward = vertical ? target.end.row > source.end.row : target.end.col > source.end.col
         doc.change(L("Fill")) { wb in
@@ -54,58 +54,13 @@ extension SheetWindowController {
         selectionDidChange()
     }
 
-    // MARK: - Find & replace
-
-    @objc func findReplaceAction(_ sender: Any?) {
-        guard let doc else { return }
-        grid.commitEdit(move: nil)
-        let find = NSTextField(string: UserDefaults.standard.string(forKey: "xls.find") ?? "")
-        let replace = NSTextField(string: UserDefaults.standard.string(forKey: "xls.replace") ?? "")
-        let matchCase = NSButton(checkboxWithTitle: L("Match case"), target: nil, action: nil)
-        let wholeCell = NSButton(checkboxWithTitle: L("Entire cell"), target: nil, action: nil)
-        let allSheets = NSButton(checkboxWithTitle: L("All sheets"), target: nil, action: nil)
-        let alert = NSAlert.form(L("Find and Replace"), ok: L("Replace All"),
-                                 rows: [(L("Find:"), find), (L("Replace with:"), replace), ("", matchCase), ("", wholeCell), ("", allSheets)])
-        alert.addButton(withTitle: L("Find Next"))
-        alert.window.initialFirstResponder = find
-        let response = alert.runModal()
-        let needle = find.stringValue
-        guard !needle.isEmpty, response != .alertSecondButtonReturn else { return }
-        UserDefaults.standard.set(needle, forKey: "xls.find")
-        UserDefaults.standard.set(replace.stringValue, forKey: "xls.replace")
-        let options: String.CompareOptions = matchCase.state == .on ? [] : [.caseInsensitive]
-        func matches(_ s: String) -> Bool {
-            wholeCell.state == .on ? s.compare(needle, options: options) == .orderedSame : s.range(of: needle, options: options) != nil
-        }
-        if response == .alertThirdButtonReturn {
-            let hits = sheet.cells.filter { matches($0.value.input) || matches(NumberFormat.format($0.value.value, $0.value.style.numberFormat).text) }.keys.sorted()
-            if let next = hits.first(where: { $0 > grid.active }) ?? hits.first { grid.select(next) } else { NSSound.beep() }
-            return
-        }
-        var count = 0
-        let sheets = allSheets.state == .on ? Array(doc.workbook.sheets.indices) : [sheetIndex]
-        doc.change(L("Replace")) { wb in
-            for si in sheets {
-                for (ref, cell) in wb.sheets[si].cells where matches(cell.input) {
-                    var c = cell
-                    c.input = wholeCell.state == .on ? replace.stringValue : cell.input.replacingOccurrences(of: needle, with: replace.stringValue, options: options)
-                    if !c.isFormula { c.value = XLSX.constant(c.input) }
-                    wb.sheets[si][ref] = c
-                    count += 1
-                }
-            }
-        }
-        let done = NSAlert()
-        done.messageText = L("Replaced: %d", count)
-        done.beginSheetModal(for: window!)
-    }
-
     // MARK: - Hide / unhide
 
     /// Whole selection (not clipped to data), unless it spans the entire sheet.
     private var selectedRows: ClosedRange<Int> { grid.selection.rows.count < 100_000 ? grid.selection.rows : clampedSelection.rows }
 
     @objc func hideRowsAction(_ sender: Any?) {
+        guard guardEditable(nil) else { return }
         let rows = selectedRows
         doc?.change(L("Hide Rows"), recalc: false) { wb in rows.forEach { wb.sheets[sheetIndex].rowHeights[$0] = 0 } }
     }
@@ -118,6 +73,7 @@ extension SheetWindowController {
     }
 
     @objc func hideColumnsAction(_ sender: Any?) {
+        guard guardEditable(nil) else { return }
         let cols = grid.selection.cols
         doc?.change(L("Hide Columns"), recalc: false) { wb in cols.forEach { wb.sheets[sheetIndex].columnWidths[$0] = 0 } }
     }

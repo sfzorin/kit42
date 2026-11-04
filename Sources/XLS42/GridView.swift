@@ -219,6 +219,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             if let f = sheet.autoFilter, f.start.row >= r0 - 1, f.start.row <= r1 {
                 for c in f.cols { drawFilterButton(c, row: f.start.row, active: sheet.filterValues[c] != nil) }
             }
+            if hasListDropdown(active), rect(active).intersects(dirty) || listButtonRect(active).intersects(dirty) { drawListButton(active) }
         }
         drawObjects(dirty)
         if !printMode { drawSelection() }
@@ -257,6 +258,33 @@ final class GridView: NSView, NSTextFieldDelegate {
             }
             tinted.draw(in: NSRect(x: b.midX - img.size.width / 2, y: b.midY - img.size.height / 2, width: img.size.width, height: img.size.height))
         }
+    }
+
+    /// Validation list arrow, just right of the active cell (as in Excel).
+    func listButtonRect(_ ref: CellRef) -> NSRect {
+        let r = rect(ref)
+        let size = min(max(r.height, 14), 18)
+        return NSRect(x: r.maxX + 1, y: r.maxY - size, width: size, height: size)
+    }
+
+    func hasListDropdown(_ ref: CellRef) -> Bool {
+        guard !printMode, let v = sheet.validation(at: ref) else { return false }
+        return v.kind == .list && v.showDropdown
+    }
+
+    private func drawListButton(_ ref: CellRef) {
+        let b = listButtonRect(ref)
+        NSColor(white: 0.96, alpha: 1).setFill()
+        b.fill()
+        NSColor(white: 0.6, alpha: 1).setStroke()
+        NSBezierPath(rect: b.insetBy(dx: 0.5, dy: 0.5)).stroke()
+        let tri = NSBezierPath()
+        tri.move(to: NSPoint(x: b.midX - 3.5, y: b.midY - 1.5))
+        tri.line(to: NSPoint(x: b.midX + 3.5, y: b.midY - 1.5))
+        tri.line(to: NSPoint(x: b.midX, y: b.midY + 2.5))
+        tri.close()
+        NSColor.darkGray.setFill()
+        tri.fill()
     }
 
     enum FloatingObject: Equatable { case image(Int), chart(Int) }
@@ -621,6 +649,10 @@ final class GridView: NSView, NSTextFieldDelegate {
                 controller?.showFilter(column: ref.col, from: toViewport(filterButtonRect(ref.col, row: ref.row).origin))
                 return
             }
+            if hasListDropdown(active), listButtonRect(active).contains(point) {
+                controller?.showValidationList(at: active)
+                return
+            }
             if handleRect.contains(point) {
                 drag = .fill
                 dragging = true
@@ -718,6 +750,8 @@ final class GridView: NSView, NSTextFieldDelegate {
         let from = shift ? lastExtent : active
         switch key {
         case NSUpArrowFunctionKey: move(to: cmd ? edge(from, dr: -1, dc: 0) : CellRef(row: from.row - 1, col: from.col), extend: shift)
+        case NSDownArrowFunctionKey where event.modifierFlags.contains(.option) && hasListDropdown(active):
+            controller?.showValidationList(at: active)
         case NSDownArrowFunctionKey: move(to: cmd ? edge(from, dr: 1, dc: 0) : CellRef(row: from.row + 1, col: from.col), extend: shift)
         case NSLeftArrowFunctionKey: move(to: cmd ? edge(from, dr: 0, dc: -1) : CellRef(row: from.row, col: from.col - 1), extend: shift)
         case NSRightArrowFunctionKey: move(to: cmd ? edge(from, dr: 0, dc: 1) : CellRef(row: from.row, col: from.col + 1), extend: shift)
@@ -788,6 +822,7 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     func beginEdit(initial: String?) {
         guard !isEditing else { return }
+        if let controller, !controller.guardEditable(CellRange(active, active)) { return }
         isEditing = true
         editingCell = active
         let cell = sheet[active]
@@ -842,6 +877,26 @@ final class GridView: NSView, NSTextFieldDelegate {
         editor.isHidden = true
         window?.makeFirstResponder(self)
         needsDisplay = true
+    }
+
+    var editorText: String { editor.stringValue }
+    /// Caret in the cell editor (or the formula bar) when a dialog took the focus.
+    var savedCaret: NSRange?
+    var editorCaret: NSRange? { editor.currentEditor()?.selectedRange }
+
+    /// Inserts text at the caret of the cell editor (function wizard while typing a formula).
+    func insertIntoEditor(_ text: String) {
+        guard isEditing else { return }
+        let current = editor.stringValue as NSString
+        // Making the editor first responder selects everything, so use the caret saved when the dialog opened.
+        var caret = savedCaret ?? NSRange(location: current.length, length: 0)
+        savedCaret = nil
+        if NSMaxRange(caret) > current.length { caret = NSRange(location: current.length, length: 0) }
+        window?.makeFirstResponder(editor)
+        editor.stringValue = current.replacingCharacters(in: caret, with: text)
+        editor.currentEditor()?.selectedRange = NSRange(location: caret.location + (text as NSString).length, length: 0)
+        positionEditor(editingCell ?? active)
+        controller?.editorTextChanged(editor.stringValue)
     }
 
     /// Text typed in the formula bar is mirrored into the cell editor.

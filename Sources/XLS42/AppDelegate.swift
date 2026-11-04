@@ -35,6 +35,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let xy = env["K42_SCROLL"]?.split(separator: ",").compactMap({ Double($0) }), xy.count == 2 {
                 editor.debugScroll(to: NSPoint(x: xy[0], y: xy[1]))
             }
+            // K42_ACTION=insertFunctionAction: sends a command (non-modal dialogs: wizard, find panel).
+            if let action = env["K42_ACTION"], let path = env["K42_SNAPSHOT"] {
+                NSApp.sendAction(NSSelectorFromString(action), to: editor, from: nil)
+                // The dialog itself goes to <snapshot>-dialog.png; a sheet is closed so the app can quit.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    guard let dialog = editor.window?.attachedSheet ?? editor.findPanel?.window ?? editor.functionWizard?.window,
+                          let frame = dialog.contentView?.superview, let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return }
+                    frame.cacheDisplay(in: frame.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-dialog.png")))
+                    if dialog.sheetParent != nil { editor.window?.endSheet(dialog) } else { dialog.orderOut(nil) }
+                }
+            }
         }
     }
 
@@ -54,13 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    static let functionList = """
-    SUM PRODUCT AVERAGE AVERAGEA MIN MAX COUNT COUNTA COUNTBLANK MEDIAN MODE STDEV STDEV.S STDEV.P VAR VAR.S VAR.P \
-    LARGE SMALL RANK SUMPRODUCT SUMSQ SUBTOTAL · SUMIF SUMIFS COUNTIF COUNTIFS AVERAGEIF AVERAGEIFS MAXIFS MINIFS · \
-    IF IFS IFERROR IFNA AND OR XOR NOT SWITCH CHOOSE · VLOOKUP HLOOKUP XLOOKUP INDEX MATCH OFFSET INDIRECT ROW COLUMN ROWS COLUMNS · \
-    ABS SIGN INT TRUNC ROUND ROUNDUP ROUNDDOWN MROUND CEILING FLOOR EVEN ODD MOD POWER SQRT EXP LN LOG LOG10 PI RAND RANDBETWEEN FACT \
-    DEGREES RADIANS SIN COS TAN · LEN LEFT RIGHT MID UPPER LOWER PROPER TRIM CONCAT CONCATENATE TEXTJOIN SUBSTITUTE REPLACE \
-    FIND SEARCH REPT EXACT CHAR CODE T N TEXT VALUE · TODAY NOW DATE TIME YEAR MONTH DAY WEEKDAY HOUR MINUTE SECOND EDATE \
-    EOMONTH DAYS DATEDIF NETWORKDAYS WORKDAY · ISBLANK ISNUMBER ISTEXT ISLOGICAL ISERROR ISERR ISNA NA · PMT FV PV
-    """
+    /// Function names grouped by category (from the engine's catalog).
+    static var functionList: String {
+        FunctionCatalog.Category.allCases.map { c in
+            c.title + ": " + FunctionCatalog.all.filter { $0.category == c }.map(\.name).joined(separator: " ")
+        }.joined(separator: "\n\n") + "\n\n" + L("Insert › Function… lists them with descriptions.")
+    }
 }

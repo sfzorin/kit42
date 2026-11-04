@@ -471,12 +471,20 @@ enum XLSReader {
                 _ = lastFormula
             case 0x007D:                                                                                                         // COLINFO
                 let first = u16(d, 0), last = min(u16(d, 2), first + 300), width = u16(d, 4), hidden = u16(d, 8) & 0x01 != 0
-                if last >= first { for c in first...last { sheet.columnWidths[c] = hidden ? 0 : XLSX.columnPoints(Double(width) / 256) } }
+                let level = min(Sheet.maxOutlineLevel, (u16(d, 8) >> 8) & 0x07)
+                if last >= first {
+                    for c in first...last {
+                        sheet.columnWidths[c] = hidden && level == 0 ? 0 : XLSX.columnPoints(Double(width) / 256)
+                        if level > 0 { sheet.colLevels[c] = level; if hidden { sheet.outlineHiddenCols.insert(c) } }
+                    }
+                }
             case 0x0055: sheet.defaultColumnWidth = XLSX.columnPoints(Double(u16(d, 0)) + 0.71)                                // DEFCOLWIDTH
             case 0x0225: if u16(d, 2) > 0 { sheet.defaultRowHeight = CGFloat(u16(d, 2)) / 20 }                                   // DEFAULTROWHEIGHT
             case 0x0208:                                                                                                         // ROW
-                let height = u16(d, 6) & 0x7FFF, grbit = u16(d, 12)
-                if grbit & 0x20 != 0 { sheet.rowHeights[row] = 0 }
+                let height = u16(d, 6) & 0x7FFF, grbit = u16(d, 12), level = grbit & 0x07
+                if level > 0 { sheet.rowLevels[row] = level }
+                if grbit & 0x20 != 0, level > 0 { sheet.outlineHiddenRows.insert(row) }
+                else if grbit & 0x20 != 0 { sheet.rowHeights[row] = 0 }
                 else if grbit & 0x40 != 0 || CGFloat(height) / 20 != sheet.defaultRowHeight { sheet.rowHeights[row] = CGFloat(height) / 20 }
             case 0x00E5:                                                                                                         // MERGEDCELLS
                 let n = u16(d, 0)

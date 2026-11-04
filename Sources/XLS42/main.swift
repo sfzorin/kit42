@@ -27,6 +27,14 @@ if let i = CommandLine.arguments.firstIndex(of: "--info"), CommandLine.arguments
         let formulas = s.cells.values.filter(\.isFormula).count
         let errors = s.cells.filter { $0.value.isFormula && $0.value.value.isError }.map { "\($0.key.a1)=\($0.value.input)→\($0.value.value.plain)" }
         print("[\(s.name)] cells \(s.cells.count) formulas \(formulas) merges \(s.merges.count) frozen \(s.frozenRows)x\(s.frozenCols) widths \(s.columnWidths.count) comments \(s.comments.count) printArea \(s.printArea?.a1 ?? "-") bold \(s.cells.values.filter(\.style.bold).count) fills \(s.cells.values.filter { $0.style.fill != nil }.count) errors \(errors.prefix(5))")
+        for v in s.validations { print("  validation \(v.ranges.map(\.a1).joined(separator: " ")): \(v.kind.rawValue) \(v.op) \(v.formula1) \(v.formula2) style \(v.errorStyle) \"\(v.errorMessage)\"") }
+        if !s.rowLevels.isEmpty || !s.colLevels.isEmpty {
+            print("  outline rows \(s.rowLevels.sorted { $0.key < $1.key }.map { "\($0.key + 1):\($0.value)" }) hidden \(s.outlineHiddenRows.sorted().map { $0 + 1 })"
+                  + " cols \(s.colLevels.sorted { $0.key < $1.key }.map { "\(CellRef.columnName($0.key)):\($0.value)" }) hidden \(s.outlineHiddenCols.sorted().map(CellRef.columnName))")
+        }
+        if let p = s.protection {
+            print("  protected hash \(p.passwordHash ?? "-") sha512 \(p.sha512Hash != nil) ods \(p.odsKey != nil); unlocked \(s.cells.filter { !$0.value.style.locked }.keys.sorted().map(\.a1))")
+        }
     }
     print("names", wb.names)
     exit(0)

@@ -53,7 +53,7 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - Displayed like Excel: column widths and row heights, fonts, fills, borders, merged cells, wrapped text,
   overflow into neighbouring cells, `###` for numbers that don't fit, theme colours.
 - Number formats: thousands separators, decimals, currency, %, dates and times, `[Red]`, sections `;`.
-- About 120 functions (Help › Supported Functions): SUM/SUMIF(S)/COUNTIF(S), IF/IFS/IFERROR, VLOOKUP/XLOOKUP/INDEX/MATCH,
+- 139 functions (Help › Supported Functions, Insert › Function…): SUM/SUMIF(S)/COUNTIF(S), IF/IFS/IFERROR, VLOOKUP/XLOOKUP/INDEX/MATCH,
   text, dates, statistics, PMT… Russian names (СУММ, ЕСЛИ, ВПР) are accepted too. References A1/$A$1, ranges,
   other sheets, whole columns; recalculation with cycle detection.
 - Editing: formula bar, cell references picked with the mouse, copy and paste with formula shifting, fill down/right,
@@ -66,6 +66,21 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
   AutoFilter with value checklist, defined names, comments, conditional formatting (value rules, text, duplicates,
   colour scales, data bars), pictures and charts (column, bar, line, area, pie, scatter) — all saved to .xlsx.
 - Printing: print area, frozen rows repeated on every page, page numbers, options in the print dialog.
+- Insert › Function… (also the `fx` button by the formula bar, ⇧⌘F): searchable list of all 139 functions grouped by
+  category, with signature, description (en/ru/tr), argument fields and a live result; while typing a formula the
+  signature of the current function is shown above the grid.
+- Data › Validation…: list (values or a range like `=$H$1:$H$5`, drop-down arrow in the cell, ⌥↓), whole number,
+  decimal, date, time, text length, custom formula; stop/warning/information messages. Saved to .xlsx and .ods.
+- Data › Pivot Table…: row field, optional column field, value field with Sum/Count/Average/Min/Max on a new sheet
+  with totals; Refresh Pivot Table re-runs it (settings are kept while the document is open, not saved in the file).
+- Data › Group / Ungroup (⌥⇧⌘→/←, up to 7 levels): +/− and level buttons in a gutter beside the headers;
+  outline levels and collapsed groups are saved to .xlsx, .ods and read from .xls.
+- Data › Protect Sheet… with optional password; Format › Protection › Locked per cell. Locked cells refuse edits
+  while the sheet is protected. .xlsx keeps the legacy password hash (and verifies Excel's SHA-512 hashes), .ods uses
+  SHA-256 or LibreOffice's Excel-hash key.
+- Find and Replace panel (⌥⌘F): Find Next / Replace / Replace All in the sheet or workbook, in formulas or values,
+  match case, entire cell; Replace All is one undo step. Edit › Paste Special… (⌥⌘V): all/values/formulas/formats,
+  add/subtract/multiply/divide, skip blanks, transpose.
 - Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas, formats) and `--uitest` (editing operations in a window).
 
 ## DOC42 — documents (.docx, .doc, .rtf, .odt, .md, .txt)

@@ -56,41 +56,67 @@ enum ODS {
 
         var wb = Workbook()
         wb.sheets = []
+        let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
             var sheet = Sheet(name: table.attr("name") ?? "Sheet\(wb.sheets.count + 1)")
+            if table.attr("protected") == "true" {
+                // LibreOffice may chain two digests (legacy Excel hash, then SHA-1).
+                let digests = [table.attr("protection-key-digest-algorithm") ?? sha1Digest, table.attr("protection-key-digest-algorithm-2")]
+                sheet.protection = SheetProtection(odsKey: table.attr("protection-key"), odsDigest: digests.compactMap { $0 }.joined(separator: " "))
+                if digests[1] == nil, digests[0] == legacyExcelDigest, let raw = table.attr("protection-key").flatMap({ Data(base64Encoded: $0) }), raw.count == 2 {
+                    sheet.protection?.passwordHash = String(format: "%02X%02X", raw[0], raw[1])
+                }
+            }
+            var validationCells: [String: [CellRef]] = [:]
             var col = 0
             var columnDefault: [Int: String] = [:]
-            for c in descendantsNamed(table, "table-column") {
+            for (c, level) in outlined(table, "table-column", group: "table-column-group") {
                 let n = min(Int(c.attr("number-columns-repeated") ?? "1") ?? 1, 1024)
                 let w = c.attr("style-name").flatMap { styles[$0]?.columnWidth }
                 let hidden = c.attr("visibility") == "collapse"
                 let defaultStyle = c.attr("default-cell-style-name").flatMap { $0 == "Default" ? nil : $0 }
                 for k in 0..<n where col + k < 1024 {
-                    if hidden { sheet.columnWidths[col + k] = 0 }
+                    if level > 0 { sheet.colLevels[col + k] = min(level, Sheet.maxOutlineLevel) }
+                    if hidden && level > 0 {
+                        sheet.outlineHiddenCols.insert(col + k)
+                        if let w, abs(w - sheet.defaultColumnWidth) > 0.5 { sheet.columnWidths[col + k] = w }
+                    }
+                    else if hidden { sheet.columnWidths[col + k] = 0 }
                     else if let w, abs(w - sheet.defaultColumnWidth) > 0.5, n < 1024 { sheet.columnWidths[col + k] = w }
                     if let defaultStyle { columnDefault[col + k] = defaultStyle }
                 }
                 col += n
             }
             var row = 0
-            for r in descendantsNamed(table, "table-row") {
+            for (r, level) in outlined(table, "table-row", group: "table-row-group") {
                 let repeatRows = Int(r.attr("number-rows-repeated") ?? "1") ?? 1
                 let cells = r.children ?? []
                 let rowHeight = r.attr("style-name").flatMap { styles[$0]?.rowHeight }
-                let hasContent = cells.contains { ($0 as? XMLElement).map { $0.attr("value-type") != nil || $0.attr("formula") != nil || !($0.children ?? []).isEmpty } ?? false }
+                let collapsed = r.attr("visibility") == "collapse"
+                if level > 0 {
+                    for k in 0..<min(repeatRows, 1000) {
+                        sheet.rowLevels[row + k] = min(level, Sheet.maxOutlineLevel)
+                        if collapsed { sheet.outlineHiddenRows.insert(row + k) }
+                    }
+                }
+                let hasContent = cells.contains { ($0 as? XMLElement).map {
+                    $0.attr("value-type") != nil || $0.attr("formula") != nil || $0.attr("content-validation-name") != nil || !($0.children ?? []).isEmpty } ?? false }
                 if !hasContent {
-                    if r.attr("visibility") == "collapse" { for k in 0..<min(repeatRows, 1000) { sheet.rowHeights[row + k] = 0 } }
+                    if collapsed && level == 0 { for k in 0..<min(repeatRows, 1000) { sheet.rowHeights[row + k] = 0 } }
                     row += repeatRows
                     continue
                 }
                 for k in 0..<min(repeatRows, 1000) {
                     let rr = row + k
-                    if r.attr("visibility") == "collapse" { sheet.rowHeights[rr] = 0 }
+                    if collapsed && level == 0 { sheet.rowHeights[rr] = 0 }
                     else if let rowHeight, abs(rowHeight - sheet.defaultRowHeight) > 0.6 { sheet.rowHeights[rr] = rowHeight }
                     var c = 0
                     for case let cellXML as XMLElement in cells {
                         let repeatCols = Int(cellXML.attr("number-columns-repeated") ?? "1") ?? 1
                         guard cellXML.localName == "table-cell" else { c += repeatCols; continue }
+                        if let name = cellXML.attr("content-validation-name"), validationRules[name] != nil {
+                            for kc in 0..<min(repeatCols, 1024) { validationCells[name, default: []].append(CellRef(row: rr, col: c + kc)) }
+                        }
                         let (value, formula) = cellValue(cellXML)
                         let comment = cellXML.child("annotation").map { a in
                             a.children("p").map(\.allTextODF).joined(separator: "\n")
@@ -124,6 +150,11 @@ enum ODS {
                     }
                 }
                 row += repeatRows
+            }
+            for (name, refs) in validationCells.sorted(by: { $0.key < $1.key }) {
+                guard var v = validationRules[name] else { continue }
+                v.ranges = ranges(refs)
+                sheet.validations.append(v)
             }
             if let ranges = table.attr("print-ranges") {
                 sheet.printArea = rangeFromODF(String(ranges.split(separator: " ").first ?? "")).flatMap { CellRange($0.range.replacingOccurrences(of: "$", with: "")) }
@@ -297,6 +328,7 @@ enum ODS {
             if let b = p.attr("border-bottom") { info.style.bottom = border(b) }
             switch p.attr("vertical-align") { case "top": info.style.vAlign = "top"; case "middle": info.style.vAlign = "center"; default: break }
             if p.attr("wrap-option") == "wrap" { info.style.wrap = true }
+            if let protect = p.attr("cell-protect") { info.style.locked = protect != "none" && protect != "hidden-and-printable" }
         }
         if let p = e.child("paragraph-properties") {
             switch p.attr("text-align") {
@@ -327,6 +359,7 @@ enum ODS {
         if b.hAlign != nil { s.hAlign = b.hAlign }
         if b.vAlign != d.vAlign { s.vAlign = b.vAlign }
         if b.wrap { s.wrap = true }
+        if b.locked != d.locked { s.locked = b.locked }
         for (k, v) in [(\CellStyle.left, b.left), (\CellStyle.right, b.right), (\CellStyle.top, b.top), (\CellStyle.bottom, b.bottom)] where v != nil {
             s[keyPath: k] = v
         }
@@ -404,6 +437,7 @@ enum ODS {
                 x += " fo:border-left=\"\(b(s.left))\" fo:border-right=\"\(b(s.right))\" fo:border-top=\"\(b(s.top))\" fo:border-bottom=\"\(b(s.bottom))\""
             }
             if s.wrap { x += " fo:wrap-option=\"wrap\"" }
+            if !s.locked { x += " style:cell-protect=\"none\"" }
             x += " style:vertical-align=\"\(s.vAlign == "center" ? "middle" : s.vAlign == "top" ? "top" : "bottom")\"/>"
             if let h = s.hAlign { x += "<style:paragraph-properties fo:text-align=\"\(h == "center" ? "center" : h == "right" ? "end" : h == "justify" ? "justify" : "start")\"/>" }
             x += "<style:text-properties fo:font-size=\"\(Value.formatGeneral(Double(s.fontSize)))pt\""
@@ -433,35 +467,69 @@ enum ODS {
         }
 
         var body = ""
-        for sheet in wb.sheets {
+        var validations = ""
+        for (si, sheet) in wb.sheets.enumerated() {
             var t = "<table:table table:name=\"\(xmlEscape(sheet.name))\""
             if let area = sheet.printArea { t += " table:print-ranges=\"\(xmlEscape(odfRange(sheet.name, area)))\"" }
-            t += ">"
-            let used = sheet.usedRange
-            let lastCol = max(used?.end.col ?? 0, sheet.columnWidths.keys.max() ?? 0)
-            for c in 0...lastCol {
-                let w = sheet.width(c)
-                t += "<table:table-column table:style-name=\"\(colStyle(w))\"\(w == 0 ? " table:visibility=\"collapse\"" : "")/>"
+            if let p = sheet.protection {
+                t += " table:protected=\"true\""
+                if let key = p.odsKey {
+                    let digests = (p.odsDigest ?? sha1Digest).split(separator: " ")
+                    t += " table:protection-key=\"\(key)\" table:protection-key-digest-algorithm=\"\(digests[0])\""
+                    if digests.count > 1 { t += " loext:protection-key-digest-algorithm-2=\"\(digests[1])\"" }
+                } else if let h = p.passwordHash, let key = legacyProtectionKey(h) {
+                    // From .xlsx: LibreOffice's encoding of the Excel hash keeps the password working.
+                    t += " table:protection-key=\"\(key)\" table:protection-key-digest-algorithm=\"\(legacyExcelDigest)\" loext:protection-key-digest-algorithm-2=\"\(sha1Digest)\""
+                }
             }
+            t += ">"
+            // Validation rules, clipped to a sane size (whole-column rules would mean a million rows).
+            var validationAt: [CellRef: String] = [:]
+            for (vi, v) in sheet.validations.enumerated() {
+                let name = "val\(si + 1)_\(vi + 1)"
+                validations += validationXML(v, name: name, sheet: sheet.name)
+                for range in v.ranges {
+                    let clipped = CellRange(range.start, CellRef(row: min(range.end.row, range.start.row + 9_999), col: min(range.end.col, range.start.col + 255)))
+                    for ref in clipped.cells { validationAt[ref] = name }
+                }
+            }
+            let used = sheet.usedRange
+            let lastCol = max(used?.end.col ?? 0, sheet.columnWidths.keys.max() ?? 0, sheet.colLevels.keys.max() ?? 0, validationAt.keys.map(\.col).max() ?? 0)
+            var openCols = 0
+            for c in 0...lastCol {
+                t += groupTags(sheet, c, rows: false, open: &openCols)
+                let w = sheet.width(c)
+                let style = colStyle(w == 0 ? (sheet.columnWidths[c].flatMap { $0 > 0 ? $0 : nil } ?? sheet.defaultColumnWidth) : w)
+                t += "<table:table-column table:style-name=\"\(style)\"\(w == 0 ? " table:visibility=\"collapse\"" : "")/>"
+            }
+            t += String(repeating: "</table:table-column-group>", count: openCols)
             let merged = Set(sheet.merges.flatMap { m in m.cells.filter { $0 != m.start } })
-            let lastRow = max(used?.end.row ?? 0, sheet.rowHeights.keys.max() ?? 0)
+            let lastRow = max(used?.end.row ?? 0, sheet.rowHeights.keys.max() ?? 0, sheet.rowLevels.keys.max() ?? 0, validationAt.keys.map(\.row).max() ?? 0)
+            var openRows = 0
             for r in 0...lastRow {
+                t += groupTags(sheet, r, rows: true, open: &openRows)
                 let h = sheet.height(r)
-                t += "<table:table-row table:style-name=\"\(rowStyle(h == 0 ? sheet.defaultRowHeight : h))\"\(h == 0 ? " table:visibility=\"collapse\"" : "")>"
+                let styleHeight = h == 0 ? (sheet.rowHeights[r].flatMap { $0 > 0 ? $0 : nil } ?? sheet.defaultRowHeight) : h
+                t += "<table:table-row table:style-name=\"\(rowStyle(styleHeight))\"\(h == 0 ? " table:visibility=\"collapse\"" : "")>"
                 var empty = 0
                 func flushEmpty() { if empty > 0 { t += "<table:table-cell\(empty > 1 ? " table:number-columns-repeated=\"\(empty)\"" : "")/>"; empty = 0 } }
                 for c in 0...lastCol {
                     let ref = CellRef(row: r, col: c)
                     if merged.contains(ref) { flushEmpty(); t += "<table:covered-table-cell/>"; continue }
-                    guard let cell = sheet.cells[ref] else { empty += 1; continue }
+                    guard let cell = sheet.cells[ref] else {
+                        if let v = validationAt[ref] { flushEmpty(); t += "<table:table-cell table:content-validation-name=\"\(v)\"/>" } else { empty += 1 }
+                        continue
+                    }
                     flushEmpty()
-                    t += cellXML(cell, ref: ref, sheet: sheet, style: styleName(cell.style))
+                    t += cellXML(cell, ref: ref, sheet: sheet, style: styleName(cell.style), validation: validationAt[ref])
                 }
                 t += "</table:table-row>"
             }
+            t += String(repeating: "</table:table-row-group>", count: openRows)
             t += "</table:table>"
             body += t
         }
+        if !validations.isEmpty { body = "<table:content-validations>\(validations)</table:content-validations>" + body }
         if !wb.names.isEmpty {
             body += "<table:named-expressions>"
             for (name, def) in wb.names.sorted(by: { $0.key < $1.key }) {
@@ -479,7 +547,8 @@ enum ODS {
         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" \
         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" \
         xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" \
-        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" office:version="1.3"
+        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
+        xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
         let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet>\(body)</office:spreadsheet></office:body></office:document-content>"
         let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
@@ -510,9 +579,10 @@ enum ODS {
         return zip.data()
     }
 
-    private static func cellXML(_ cell: Cell, ref: CellRef, sheet: Sheet, style: String?) -> String {
+    private static func cellXML(_ cell: Cell, ref: CellRef, sheet: Sheet, style: String?, validation: String? = nil) -> String {
         var x = "<table:table-cell"
         if let style { x += " table:style-name=\"\(style)\"" }
+        if let validation { x += " table:content-validation-name=\"\(validation)\"" }
         if let m = sheet.merges.first(where: { $0.start == ref }) {
             x += " table:number-columns-spanned=\"\(m.cols.count)\" table:number-rows-spanned=\"\(m.rows.count)\""
         }

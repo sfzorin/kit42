@@ -108,6 +108,7 @@ enum UITest {
               && s0?.autoFilter != nil && s0?.printArea == CellRange("A1:E5") && back?.names["Rate"] != nil,
               "comments \(s0?.comments.count ?? -1) cf \(s0?.conditionalFormats.count ?? -1) charts \(s0?.charts.count ?? -1) filter \(String(describing: s0?.autoFilter)) area \(String(describing: s0?.printArea))")
 
+        failed += features(w, doc)
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         exit(failed == 0 ? 0 : 1)
     }
