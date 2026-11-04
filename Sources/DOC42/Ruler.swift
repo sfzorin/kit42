@@ -9,6 +9,8 @@ final class DocRuler: NSView {
     static let cm: CGFloat = 28.3465
 
     weak var paged: PagedView?
+    /// Character index of the cursor: the ruler follows its page.
+    var location = 0
     /// Current margins and paragraph indents.
     var setup = PageSetup() { didSet { needsDisplay = true } }
     var paragraph: NSParagraphStyle = .default { didSet { needsDisplay = true } }
@@ -24,7 +26,7 @@ final class DocRuler: NSView {
 
     /// Page left edge (x in the ruler) and points → ruler pixels.
     private var geometry: (x: CGFloat, scale: CGFloat)? {
-        guard let paged, let card = paged.cards.first else { return nil }
+        guard let paged, let card = paged.card(at: location) ?? paged.cards.first else { return nil }
         let left = convert(NSPoint(x: card.frame.minX, y: 0), from: paged).x
         let right = convert(NSPoint(x: card.frame.maxX, y: 0), from: paged).x
         guard card.frame.width > 0 else { return nil }

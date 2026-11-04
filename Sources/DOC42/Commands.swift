@@ -9,6 +9,12 @@ enum Cmd {
 
     static let exportAs = Command(L("Export As…"), #selector(W.exportAsAction(_:)), shortcut: Shortcut("e", [.command, .shift]))
     static let find = Command(L("Find…"), #selector(W.findAction(_:)), shortcut: Shortcut("f"))
+    static let findReplace = Command(L("Find and Replace…"), #selector(W.findReplaceAction(_:)), symbol: "text.magnifyingglass",
+                                     shortcut: Shortcut("f", [.command, .option]))
+    static let findNext = Command(L("Find Next"), #selector(W.findNextAction(_:)), shortcut: Shortcut("g"))
+    static let findPrevious = Command(L("Find Previous"), #selector(W.findPreviousAction(_:)), shortcut: Shortcut("g", [.command, .shift]))
+    static let useSelectionForFind = Command(L("Use Selection for Find"), #selector(W.useSelectionForFindAction(_:)), shortcut: Shortcut("e"))
+    static let replaceBar = Command(L("Replace in Find Bar"), #selector(W.showReplaceBarAction(_:)))
 
     static let zoomIn = Command(L("Zoom In"), #selector(W.zoomInAction(_:)), symbol: "plus.magnifyingglass", shortcut: Shortcut("+"))
     static let zoomOut = Command(L("Zoom Out"), #selector(W.zoomOutAction(_:)), symbol: "minus.magnifyingglass", shortcut: Shortcut("-"))
@@ -23,6 +29,30 @@ enum Cmd {
                                 shortcut: Shortcut("k", [.command, .shift]), toolTip: L("Insert a signature or stamp"), label: L("Signature"))
     static let pageBreak = Command(L("Page Break"), #selector(W.insertPageBreakAction(_:)), shortcut: Shortcut("\r", [.command, .shift]))
     static let date = Command(L("Date"), #selector(W.insertDateAction(_:)))
+    static let sectionBreak = Command(L("Section Break (Next Page)"), #selector(W.insertSectionBreakAction(_:)))
+    static let link = Command(L("Link…"), #selector(W.insertLinkAction(_:)), symbol: "link", shortcut: Shortcut("k"), toolTip: L("Insert or edit a link"), label: L("Link"))
+    static let removeLink = Command(L("Remove Link"), #selector(W.removeLinkAction(_:)))
+    static let footnote = Command(L("Footnote"), #selector(W.insertFootnoteAction(_:)), symbol: "textformat.superscript",
+                                  shortcut: Shortcut("n", [.command, .option]), toolTip: L("Insert a footnote"), label: L("Footnote"))
+    static let editFootnote = Command(L("Edit Footnote…"), #selector(W.editFootnoteAction(_:)))
+    static let deleteFootnote = Command(L("Delete Footnote"), #selector(W.deleteFootnoteAction(_:)))
+    static let comment = Command(L("New Comment"), #selector(W.newCommentAction(_:)), symbol: "text.bubble",
+                                 shortcut: Shortcut("m", [.command, .option]), toolTip: L("Comment on the selection"), label: L("Comment"))
+    static let resolveComment = Command(L("Resolve Comment"), #selector(W.resolveCommentAction(_:)))
+    static let deleteComment = Command(L("Delete Comment"), #selector(W.deleteCommentAction(_:)))
+    static let toggleComments = Command(L("Hide Comments"), #selector(W.toggleCommentsAction(_:)))
+    static let specialCharacter = Command(L("Special Character…"), #selector(W.specialCharacterAction(_:)), symbol: "character")
+    static let characterViewer = Command(L("Emoji & Symbols"), #selector(W.characterViewerAction(_:)))
+    static let insertTOC = Command(L("Table of Contents"), #selector(W.insertTOCAction(_:)), symbol: "list.bullet.indent")
+    static let updateTOC = Command(L("Update Table of Contents"), #selector(W.updateTOCAction(_:)))
+    static let paragraph = Command(L("Paragraph…"), #selector(W.paragraphAction(_:)), symbol: "paragraphsign")
+    static let formatPainter = Command(L("Clone Formatting"), #selector(W.formatPainterAction(_:)), symbol: "paintbrush",
+                                       shortcut: Shortcut("c", [.command, .option]),
+                                       toolTip: L("Clone formatting: click, then select text (double-click to keep it on)"), label: L("Clone"))
+    static let statistics = Command(L("Statistics…"), #selector(W.statisticsAction(_:)), symbol: "chart.bar")
+    static let columns: [Command] = [L("One Column"), L("Two Columns"), L("Three Columns")].enumerated().map {
+        Command($0.element, #selector(W.columnsAction(_:)), symbol: ["rectangle", "rectangle.split.2x1", "rectangle.split.3x1"][$0.offset], tag: $0.offset)
+    }
 
     static let bold = Command(L("Bold"), #selector(W.toggleBold(_:)), symbol: "bold", shortcut: Shortcut("b"))
     static let italic = Command(L("Italic"), #selector(W.toggleItalic(_:)), symbol: "italic", shortcut: Shortcut("i"))
@@ -73,27 +103,35 @@ enum Cmd {
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "DOC42")
         spec.fileExtras = [.command(exportPDF), .command(exportAs)]
-        spec.find = [.command(find)]
-        spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator, .command(formatBar), .command(ruler)]
-        spec.insert = [.command(insertImage), .command(insertTable), .command(stamps), .separator, .command(pageBreak), .command(date)]
+        spec.find = [.command(find), .command(findReplace), .separator, .command(findNext), .command(findPrevious),
+                     .command(useSelectionForFind), .separator, .command(replaceBar)]
+        spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator, .command(formatBar), .command(ruler), .command(toggleComments)]
+        spec.insert = [.command(insertImage), .command(insertTable), .command(stamps), .separator,
+                       .command(link), .command(removeLink), .separator,
+                       .command(footnote), .command(editFootnote), .command(deleteFootnote), .separator,
+                       .command(comment), .command(resolveComment), .command(deleteComment), .separator,
+                       .command(specialCharacter), .command(characterViewer), .command(date), .separator,
+                       .command(pageBreak), .command(sectionBreak), .separator, .command(insertTOC), .command(updateTOC)]
         spec.format = [.submenu(L("Style"), styles.menuElements), .separator,
                        .command(bold), .command(italic), .command(underline), .command(strike), .command(bigger), .command(smaller), .separator,
                        .command(alignLeft), .command(alignCenter), .command(alignRight), .command(justify), .separator,
                        .command(bulletList), .command(numberedList), .command(indent), .command(outdent),
-                       .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
-                       .command(removeHighlight), .command(clearFormatting)]
+                       .command(paragraph), .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
+                       .command(formatPainter), .command(removeHighlight), .command(clearFormatting)]
         spec.custom = [(L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
                         + [.separator, .command(deleteTable)]),
                        (L("Document"), [.command(documentSetup), .submenu(L("Margins"), margins.menuElements),
-                                         .submenu(L("Orientation"), [.command(portrait), .command(landscape)]), .separator,
-                                         .command(headerFooter), .command(pageNumbers)])]
+                                         .submenu(L("Orientation"), [.command(portrait), .command(landscape)]),
+                                         .submenu(L("Columns"), columns.menuElements), .command(sectionBreak), .separator,
+                                         .command(headerFooter), .command(pageNumbers), .separator,
+                                         .command(insertTOC), .command(updateTOC), .separator, .command(statistics)])]
         spec.help = [.command(welcome)]
         return spec
     }
 
     static var toolbar: [ToolbarElement] {
         [
-            .command(insertImage), .command(insertTable), .command(stamps),
+            .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(footnote), .command(comment),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
             .command(formatBar), .command(print), .command(exportPDF),

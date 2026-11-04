@@ -26,6 +26,9 @@ if let i = CommandLine.arguments.firstIndex(of: "--export"), CommandLine.argumen
     exit(0)
 }
 
+// Test hooks: --stats, --toc, --replace, --demo, --dump (see CLI.swift).
+if try CLI.run(CommandLine.arguments) { exit(0) }
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

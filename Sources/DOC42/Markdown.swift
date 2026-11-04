@@ -166,7 +166,21 @@ enum MarkdownWriter {
     /// Where a picture read from Markdown came from: written back as the same link.
     static let sourceKey = NSAttributedString.Key("DOC42.imageSource")
 
+    /// Footnote numbers of the text being written (GitHub "[^n]" footnotes).
+    private static var noteNumbers: [ObjectIdentifier: Int] = [:]
+
     static func write(_ text: NSAttributedString) -> String {
+        let notes = Notes.all(in: text)
+        noteNumbers = Dictionary(notes.enumerated().map { (ObjectIdentifier($0.element.1), $0.offset + 1) }) { a, _ in a }
+        defer { noteNumbers = [:] }
+        var body = writeBody(text)
+        if !notes.isEmpty {
+            body += "\n" + notes.enumerated().map { "[^\($0.offset + 1)]: " + escape($0.element.1.text) }.joined(separator: "\n") + "\n"
+        }
+        return body
+    }
+
+    private static func writeBody(_ text: NSAttributedString) -> String {
         let ns = text.string as NSString
         var paragraphs: [NSRange] = []
         ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byParagraphs, .substringNotRequired]) { _, r, _, _ in
@@ -264,6 +278,10 @@ enum MarkdownWriter {
     private static func inline(_ text: NSAttributedString, _ range: NSRange, plainBold: Bool, plainItalic: Bool = false) -> String {
         var pieces: [Piece] = []
         text.enumerateAttributes(in: range) { attrs, r, _ in
+            if let note = attrs[.docNote] as? DocNote {
+                pieces.append(Piece(text: "[^\(noteNumbers[ObjectIdentifier(note)] ?? 1)]", code: true, link: "\u{0}img"))
+                return
+            }
             if let attachment = attrs[.attachment] as? NSTextAttachment {
                 if let source = attrs[sourceKey] as? String, !source.isEmpty {
                     pieces.append(Piece(text: "![](\(source))", code: true, link: "\u{0}img"))

@@ -1,5 +1,6 @@
 import AppKit
 import Kit42
+import PDFKit
 
 @objc(TextDocument)
 final class TextDocument: NSDocument {
@@ -74,6 +75,7 @@ final class TextDocument: NSDocument {
         DocxStyles.restoreImages(text, extras.images)
         DocxStyles.restoreStyles(text)
         DocxStyles.restoreLists(text, extras.lists)
+        DocxStyles.restoreMarks(text, extras)
         if type == .rtf, let a = attributes as? [NSAttributedString.DocumentAttributeKey: Any], data.range(of: Data("\\paperw".utf8)) != nil,
            let paper = a[.paperSize] as? NSSize, paper.width > 0, paper.height > 0 {
             extras.hasSetup = true
@@ -89,7 +91,7 @@ final class TextDocument: NSDocument {
 
     override func data(ofType typeName: String) throws -> Data {
         editor?.textView.breakUndoCoalescing()
-        if Self.isMarkdown(typeName) { return encode(MarkdownWriter.write(storage)) }
+        if Self.isMarkdown(typeName) { return markdownData() }
         return try exportData(Self.documentType(for: typeName))
     }
 
@@ -103,11 +105,10 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(storage)) }
+    func markdownData() -> Data { encode(MarkdownWriter.write(storage)) }   // footnotes as [^n]
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
-        let range = NSRange(location: 0, length: storage.length)
-        if type == .plain { return encode(storage.string) }
+        if type == .plain { return encode(Notes.flatten(storage).string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
             o.pageSize = setup.size
@@ -115,9 +116,14 @@ final class TextDocument: NSDocument {
             o.header = setup.header
             o.footer = setup.footer
             o.pageNumbers = setup.pageNumbers
+            o.columns = setup.columns
+            o.columnSpacing = setup.columnSpacing
             o.paragraphStyle = Styles.wordStyle
             return DocxWriter.data(storage, options: o)
         }
+        // Other formats have no footnotes: references become numbers, notes a list at the end.
+        let storage = Notes.flatten(self.storage)
+        let range = NSRange(location: 0, length: storage.length)
         var attrs: [NSAttributedString.DocumentAttributeKey: Any] = [.documentType: type]
         if type == .html { attrs[.characterEncoding] = String.Encoding.utf8.rawValue }
         if type == .rtf || type == .openDocument {
@@ -143,6 +149,8 @@ final class TextDocument: NSDocument {
     func pdfData() -> Data {
         let view = offscreenPages()
         defer { view.detach() }
+        // Sections in another size or orientation: each page as its own sheet.
+        if view.hasMixedPageSizes { return view.pdfData() }
         return PaginatedPDF.render(view, info: pageInfo())
     }
 
@@ -162,14 +170,16 @@ final class TextDocument: NSDocument {
     func debugPages() {
         let v = offscreenPages()
         for (i, c) in v.cards.enumerated() {
-            let g = v.layoutManager.glyphRange(for: c.textView.textContainer!)
-            let chars = v.layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
-            Swift.print(i, c.frame, "chars", chars, (storage.string as NSString).substring(with: NSRange(location: chars.location, length: min(20, chars.length))))
+            for (j, tv) in c.textViews.enumerated() {
+                let g = v.layoutManager.glyphRange(for: tv.textContainer!)
+                let chars = v.layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
+                Swift.print(i, j, c.frame, "chars", chars, "notes", c.notes.map(\.0), (storage.string as NSString).substring(with: NSRange(location: chars.location, length: min(20, chars.length))).debugDescription)
+            }
         }
         v.detach()
     }
 
-    private func offscreenPages() -> PagedView {
+    func offscreenPages() -> PagedView {
         let view = PagedView(storage: storage, setup: setup) { tv in
             tv.backgroundColor = .white
             tv.drawsBackground = false
@@ -180,6 +190,13 @@ final class TextDocument: NSDocument {
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
         let view = offscreenPages()
+        if view.hasMixedPageSizes, let pdf = PDFDocument(data: view.pdfData()),
+           let op = pdf.printOperation(for: pageInfo(), scalingMode: .pageScaleNone, autoRotate: true) {
+            view.detach()
+            op.jobTitle = displayName
+            op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsPageRange])
+            return op
+        }
         let op = NSPrintOperation(view: view, printInfo: pageInfo())
         op.jobTitle = displayName
         op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsPageRange])

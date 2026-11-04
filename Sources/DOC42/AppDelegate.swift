@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                let editor = NSApp.orderedWindows.compactMap({ $0.windowController as? DocWindowController }).first {
                 editor.setZoom(CGFloat(z))
             }
+            // K42_SCRIPT drives editor commands (UI checks), see TestScript.swift.
+            if let script = ProcessInfo.processInfo.environment["K42_SCRIPT"],
+               let editor = NSApp.orderedWindows.compactMap({ $0.windowController as? DocWindowController }).first {
+                editor.runTestScript(script)
+            }
         }
     }
 
