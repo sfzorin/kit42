@@ -94,11 +94,12 @@ final class Calculator {
     /// Runs on a thread with a large stack so long dependency chains don't overflow.
     static func recalculate(_ workbook: Workbook) -> Workbook {
         // Values spilled by the last calculation are recomputed.
+        // (The cells stay, empty, so ranges over the previous spill area still reach them.)
         var input = workbook
         for si in input.sheets.indices {
             input.sheets[si].spills = [:]
             for (ref, cell) in input.sheets[si].cells where cell.input.isEmpty && !cell.value.isEmpty {
-                input.sheets[si][ref].value = .empty
+                input.sheets[si].cells[ref]?.value = .empty
             }
         }
         var result = input
@@ -118,6 +119,10 @@ final class Calculator {
                 }
             }
             for (si, ranges) in calc.spillRanges { result.sheets[si].spills = ranges }
+            // Drop cells left over from a spill that shrank.
+            for si in result.sheets.indices {
+                for (ref, cell) in result.sheets[si].cells where cell.isBlank && calc.spilled[si]?[ref] == nil { result.sheets[si].cells[ref] = nil }
+            }
             done.signal()
         }
         thread.stackSize = 256 << 20
@@ -196,6 +201,14 @@ final class Calculator {
         return stored
     }
 
+    /// Bottom-right corner of the sheet's spilled results (evaluating its array formulas first).
+    private func spillExtent(sheet: Int) -> CellRef? {
+        guard anchors[sheet] != nil else { return nil }
+        _ = spillValue(sheet: sheet, ref: CellRef(row: RefPart.maxRow, col: RefPart.maxCol))
+        guard let ranges = spillRanges[sheet], !ranges.isEmpty else { return nil }
+        return CellRef(row: ranges.values.map(\.end.row).max()!, col: ranges.values.map(\.end.col).max()!)
+    }
+
     /// Value an empty cell gets from a spilling formula (evaluates the sheet's array formulas first).
     private func spillValue(sheet: Int, ref: CellRef) -> Value {
         guard let list = anchors[sheet] else { return .empty }
@@ -250,7 +263,11 @@ final class Calculator {
 
     func rangeMatrix(sheet s: Int, _ a: RefPart, _ b: RefPart) -> (Matrix, CellRef) {
         let sheet = workbook.sheets[s]
-        let used = sheet.usedRange
+        var used = sheet.usedRange
+        // Spilled results count as used cells (whole columns over a spill).
+        if let extent = spillExtent(sheet: s) {
+            used = used.map { CellRange($0.start, CellRef(row: max($0.end.row, extent.row), col: max($0.end.col, extent.col))) } ?? CellRange(extent, extent)
+        }
         var r1 = a.wholeColumn ? 0 : min(a.row, b.row)
         var r2 = a.wholeColumn ? (used?.end.row ?? 0) : max(a.row, b.row)
         var c1 = a.wholeRow ? 0 : min(a.col, b.col)

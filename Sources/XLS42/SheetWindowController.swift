@@ -616,8 +616,11 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             for c in range.cols {
                 let ref = CellRef(row: r, col: c)
                 var cell = sheet[ref]
-                // Values spilled by an array formula are copied as values.
-                if cell.input.isEmpty, !cell.value.isEmpty { cell.input = XLSX.inputText(for: cell.value, style: cell.style) }
+                // Spilled values: part of a copied spill re-spills from its formula, otherwise they're copied as values.
+                if cell.input.isEmpty, !cell.value.isEmpty {
+                    if let anchor = sheet.spills.first(where: { $0.value.contains(ref) })?.key, range.contains(anchor) { cell.value = .empty }
+                    else { cell.input = XLSX.inputText(for: cell.value, style: cell.style) }
+                }
                 cells[CellRef(row: r - range.start.row, col: c - range.start.col)] = cell
                 fields.append(NumberFormat.format(cell.value, cell.style.numberFormat).text)
             }

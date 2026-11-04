@@ -10,6 +10,20 @@ enum UITest {
         doc.showWindows()
         guard let w = doc.editor else { print("FAIL no window"); exit(1) }
         doc.undoManager?.groupsByEvent = false   // one undo step per change, as with separate user actions
+        // The tests copy and paste: keep the user's clipboard and put it back afterwards.
+        let pasteboard = NSPasteboard.general
+        let savedClipboard: [[(NSPasteboard.PasteboardType, Data)]] = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { t in item.data(forType: t).map { (t, $0) } }
+        }
+        func restoreClipboard() {
+            pasteboard.clearContents()
+            let items = savedClipboard.map { pairs -> NSPasteboardItem in
+                let item = NSPasteboardItem()
+                for (t, d) in pairs { item.setData(d, forType: t) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+        }
         var failed = 0
         func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String = "") {
             print(ok ? "ok  " : "FAIL", name, ok ? "" : detail())
@@ -109,6 +123,8 @@ enum UITest {
               "comments \(s0?.comments.count ?? -1) cf \(s0?.conditionalFormats.count ?? -1) charts \(s0?.charts.count ?? -1) filter \(String(describing: s0?.autoFilter)) area \(String(describing: s0?.printArea))")
 
         failed += features(w, doc)
+        failed += data(w, doc)
+        restoreClipboard()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         exit(failed == 0 ? 0 : 1)
     }
