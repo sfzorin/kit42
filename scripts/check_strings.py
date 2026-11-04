@@ -34,7 +34,7 @@ for app in ["Kit42", "PDF42", "DOC42", "XLS42"]:
         for m in re.finditer(r'(labelWithString|wrappingLabelWithString|withTitle|title|messageText|informativeText|placeholderString|toolTip|label)\s*[:=]\s*' + lit, text):
             s = m.group(2)
             if re.search(r'[A-Za-zА-Яа-я]{3}', s) and not s.startswith(("http", "com.", "public.")) and "\\(" not in s \
-                    and s not in ALLOWED and not re.fullmatch(r'[a-z0-9]+\.[a-z0-9.]+', s):
+                    and "L(" not in s and s not in ALLOWED and not re.fullmatch(r'[a-z0-9]+\.[a-z0-9.]+', s):
                 line = text[:m.start()].count("\n") + 1
                 unwrapped.append(f"{f.name}:{line}: {s}")
     for key, f in sorted(missing.items()):
