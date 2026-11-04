@@ -26,6 +26,15 @@ git clone https://github.com/sfzorin/kit42.git && cd kit42
 Requires macOS 14+ and the Xcode Command Line Tools (Swift 5.9+). To make an app the default one for a file type:
 Finder › Get Info › Open with › Change All.
 
+Quick Look (space bar in Finder) and Finder thumbnails come with the apps, for formats macOS shows as plain text or
+not at all: DOC42 brings Markdown (`.md` rendered like a document: headings, lists, task lists, tables, code,
+quotes, images next to the file), XLS42 brings OpenDocument spreadsheets (`.ods`: every sheet, merged cells,
+bold/italic, fills, column widths) and TSV as a table. Previews follow light/dark mode. The extensions live inside
+the app (`Contents/PlugIns`), so installing the app is enough; if Finder keeps the old look, run
+`qlmanage -r` (and `qlmanage -r cache` for thumbnails). When another app also previews a type (LibreOffice for
+`.ods`, for instance) macOS picks one of them; System Settings › General › Login Items & Extensions › Quick Look
+lets you switch extensions off.
+
 ## PDF42 — PDF
 
 - Reading: thumbnails and contents, zoom, display modes, search, go to page, forms, password-protected files.
@@ -177,6 +186,7 @@ Finder › Get Info › Open with › Change All.
   Show Toolbar Labels (icons only makes the toolbar half as tall) and each app's own bars. In full screen (⌃⌘F) the
   bars slide in only when the pointer reaches the top edge.
 - Autosave every 30 s to a backup location: documents survive a crash.
+- Dark mode everywhere; `K42_APPEARANCE=dark` (or `light`) forces it for one run, e.g. with `K42_SNAPSHOT`.
 - `scripts/check_strings.py` — finds UI strings without a Russian/Turkish translation.
 - Distribution to other Macs: `DEVELOPER_ID="Developer ID Application: …" ./scripts/sign_and_notarize.sh`
   (needs an Apple Developer account; see the script header).
@@ -189,6 +199,10 @@ Finder › Get Info › Open with › Change All.
 
 - `Sources/Kit42` — shared: commands, menu bar, toolbar, tool strip, banners, welcome window, localisation,
   signature library, certificates, ZIP.
+- `Sources/Previews42` — Quick Look rendering (Markdown → HTML/page, ODS/TSV → table); `Sources/QLPreview42` and
+  `Sources/QLThumbnail42` are the extension binaries that `build.sh` packs into `.appex` bundles
+  (Info.plist generated, ad-hoc signed with `Resources/QuickLook/Extension.entitlements`); `ql42render` renders the
+  same output to files for testing (`ql42render html file.md out.html`, `ql42render thumb file.ods 512 out.png`).
 - `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.

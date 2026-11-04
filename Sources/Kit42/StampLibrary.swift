@@ -202,7 +202,10 @@ public final class StampLibraryViewController: NSViewController {
         b.toolTip = L("Insert. Right-click to delete.")
         b.wantsLayer = true
         b.layer?.cornerRadius = Theme42.cornerRadius
+        // Stamps are ink on paper: the tile stays white in dark mode too, with a hairline edge.
         b.layer?.backgroundColor = NSColor.white.cgColor
+        b.layer?.borderWidth = 0.5
+        b.layer?.borderColor = NSColor(white: 0.5, alpha: 0.5).cgColor
         b.translatesAutoresizingMaskIntoConstraints = false
         b.widthAnchor.constraint(equalToConstant: 104).isActive = true
         b.heightAnchor.constraint(equalToConstant: 64).isActive = true

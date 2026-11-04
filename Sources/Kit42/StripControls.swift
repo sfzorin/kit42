@@ -318,7 +318,8 @@ final class SwatchButton: NSButton {
         let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2))
         color.setFill()
         circle.fill()
-        NSColor.black.withAlphaComponent(0.12).setStroke()
+        // Outline keeps black swatches visible in dark mode and white ones in light mode.
+        NSColor.labelColor.withAlphaComponent(0.25).setStroke()
         circle.lineWidth = 0.5
         circle.stroke()
         if isSelected || isHighlighted {

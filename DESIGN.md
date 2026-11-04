@@ -88,12 +88,21 @@ App-specific shortcuts use ⌥⌘ or ⇧⌘ so they don't collide with the share
 | `StampLibrary`, `StampLibraryViewController`, `ImageTools` | shared library of signatures and seals, background removal |
 | `CertificateStore`, `SigningIdentity` | certificates from the Keychain, .p12 import, self-signed creation |
 | `Theme42` | sizes, app accent colours, `NSAlert.form` |
-| `DebugSnapshot` | `K42_SNAPSHOT=out.png` — window snapshot for checking the UI |
+| `DebugSnapshot` | `K42_SNAPSHOT=out.png` — window snapshot for checking the UI; `K42_APPEARANCE=dark\|light` forces the appearance (hooked in `Localization.register`, before the first window) |
 
 ## Visual parameters
 
-- App accents (icon, details): PDF red `#F24D40→#B31433`, DOC blue `#408CFA→#1A47BF`, XLS green `#33BF73→#0D7A47`.
-- Icon: white sheet, coloured header with the format name, "42" in the corner (`scripts/make_icon.swift`).
+- App accents (icon, details; `Theme42.App.colors` = `make_icon.swift` palette): PDF red `#FF6A5C→#D81E35`,
+  DOC blue `#4FA3FF→#1659D6`, XLS green `#3FD486→#0E8A4A`, IMG purple `#B57CFF→#6A2BD9`.
+- Icons are drawn in code (`scripts/make_icon.swift`, redrawn by `build.sh` when the script changes, `./build.sh icons`
+  forces it; the `.icns` files are committed). Apple's grid: 1024 px canvas, 824 px squircle body (superellipse n = 5)
+  with 100 px margins and a soft drop shadow; body = vertical gradient of the app colour with a top light.
+  On it the same white sheet with a folded top-right corner; the sheet carries the app's mark: PDF — text lines and a
+  red "PDF" label, DOC — blue heading bar and text lines, XLS — green grid with header row, IMG — landscape photo.
+  ≤ 32 px use a simplified drawing (fewer, thicker marks).
+- Dark mode: only semantic colours (`labelColor`, `separatorColor`, `controlAccentColor` …) in Kit42 drawing; layer
+  colours (`cgColor`) are resolved again in `viewDidChangeEffectiveAppearance`. Paper-like things (stamp tiles,
+  document pages) stay white on purpose.
 - Tool strip 38 pt, banner 36 pt, sidebar 150–320 pt, spacing 8 pt, corner radius 8 pt.
 - Strip: groups are 28 pt capsules (radius 8, 4.5 % label fill, hairline border), 8 pt between groups;
   buttons 30×26, symbols 13 pt medium, hover 7 % fill, "on" = accent 18 % with accent icon.
@@ -108,3 +117,17 @@ App-specific shortcuts use ⌥⌘ or ⇧⌘ so they don't collide with the share
 2. `Commands.swift`: every `Command` plus `menuBar: MenuBarSpec` and `toolbar: [ToolbarElement]`.
 3. Window controller: actions `@objc func …(_ sender: Any?)`, validation via `validateMenuItem` / `validateToolbarItem`.
 4. `./build.sh <App>` — the icon is generated automatically.
+
+## Quick Look
+
+- Only formats macOS shows as plain text or not at all get extensions (checked with `qlmanage`): Markdown
+  (hosted by DOC42), `.ods` and `.tsv` (XLS42). `.docx/.xlsx/.xls/.csv/.rtf/.odt` are left to the system.
+- Previews are data-based HTML (`QLIsDataBasedPreview`) with `prefers-color-scheme` light/dark CSS; thumbnails are drawn
+  on white paper (portrait page for documents, zoomed grid for spreadsheets).
+- One binary per kind (`QLPreview42`, `QLThumbnail42`); `build.sh` writes each host's Info.plist with its
+  `QLSupportedContentTypes` (`QL_TYPES` in build.sh), bundle id `<app id>.preview|thumbnail`.
+- Extensions are sandboxed (`Resources/QuickLook/Extension.entitlements`) and signed before the app; the app is
+  signed without `--deep`, which would strip their entitlements.
+- Extension strings use `PL("…")` (rows in `Previews42/Strings.swift`) and follow the system language: the sandbox
+  cannot read the suite's language choice.
+
