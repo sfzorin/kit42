@@ -7,7 +7,7 @@ final class GridView: NSView, NSTextFieldDelegate {
     weak var controller: SheetWindowController?
 
     /// User zoom (1 = 100 %). Excel's 100 % equals 4/3 of the point sizes stored in the file.
-    var zoom: CGFloat = 1 { didSet { rebuildLayout() } }
+    var zoom: CGFloat = 1 { didSet { rebuildLayout(); controller?.zoomDidChange() } }
     var scale: CGFloat { zoom * 4 / 3 }
 
     private(set) var rowCount = 200
@@ -354,11 +354,14 @@ final class GridView: NSView, NSTextFieldDelegate {
         let formatted = NumberFormat.format(cell.value, cell.style.numberFormat)
         var text = formatted.text
         guard !text.isEmpty else { return }
-        let font = cell.style.font(scale: scale)
-        let color = palette.textColor(formatted.color ?? cell.style.textColor, fill: cell.style.fill)
+        var font = cell.style.font(scale: scale)
+        let isLink = sheet.hyperlinks[ref] != nil || (cell.isFormula && cell.input.uppercased().contains("HYPERLINK("))
+        var color = palette.textColor(formatted.color ?? cell.style.textColor, fill: cell.style.fill)
+        if isLink, cell.style.textColor == nil, formatted.color == nil { color = printMode ? .systemBlue : .linkColor }
         let align = displayAlignment(cell)
         var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        if cell.style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if cell.style.underline || (isLink && cell.style.textColor == nil) { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if cell.style.doubleUnderline { attrs[.underlineStyle] = NSUnderlineStyle.double.rawValue }
         if cell.style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
 
         let cellRect = rect(ref)
@@ -367,6 +370,33 @@ final class GridView: NSView, NSTextFieldDelegate {
 
         let isNumber: Bool = { if case .number = cell.value { return true }; return false }()
         var size = (text as NSString).size(withAttributes: attrs)
+        // Shrink to fit: a smaller font instead of overflowing.
+        if cell.style.shrink, !cell.style.wrap, size.width > cellRect.width - pad * 2, size.width > 0 {
+            font = NSFont(descriptor: font.fontDescriptor, size: max(4, font.pointSize * (cellRect.width - pad * 2) / size.width)) ?? font
+            attrs[.font] = font
+            size = (text as NSString).size(withAttributes: attrs)
+        }
+        // Rotated or stacked text, centred in the cell.
+        if cell.style.rotation != 0, let ctx = NSGraphicsContext.current?.cgContext {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: cellRect).addClip()
+            if cell.style.rotation == 255 {
+                let stacked = text.map(String.init).joined(separator: "\n")
+                let para = NSMutableParagraphStyle()
+                para.alignment = .center
+                attrs[.paragraphStyle] = para
+                let b = (stacked as NSString).boundingRect(with: NSSize(width: cellRect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin], attributes: attrs)
+                let top = cell.style.vAlign == "top" ? cellRect.minY : cell.style.vAlign == "center" ? cellRect.midY - b.height / 2 : cellRect.maxY - b.height
+                (stacked as NSString).draw(with: NSRect(x: cellRect.minX, y: top, width: cellRect.width, height: b.height), options: [.usesLineFragmentOrigin], attributes: attrs)
+            } else {
+                let angle = CGFloat(cell.style.rotation) * .pi / 180
+                ctx.translateBy(x: cellRect.midX, y: cellRect.midY)
+                ctx.rotate(by: -angle)
+                (text as NSString).draw(at: NSPoint(x: -size.width / 2, y: -size.height / 2), withAttributes: attrs)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            return
+        }
 
         if cell.style.wrap {
             let para = NSMutableParagraphStyle()
@@ -520,19 +550,20 @@ final class GridView: NSView, NSTextFieldDelegate {
     /// Page rectangles broken at row and column boundaries, down then across (like Excel).
     func pages(for page: NSSize) -> [NSRect] {
         let range = printRange ?? sheet.usedRange ?? CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0))
-        func breaks(_ start: Int, _ end: Int, _ offset: (Int) -> CGFloat, _ limit: CGFloat) -> [(CGFloat, CGFloat)] {
+        func breaks(_ start: Int, _ end: Int, _ offset: (Int) -> CGFloat, _ limit: CGFloat, manual: Set<Int> = []) -> [(CGFloat, CGFloat)] {
             var out: [(CGFloat, CGFloat)] = []
             var from = start
             while from <= end {
                 var to = from
-                while to + 1 <= end, offset(to + 2) - offset(from) <= limit { to += 1 }
+                // Manual page breaks (Subtotals › page break between groups) start a new page.
+                while to + 1 <= end, offset(to + 2) - offset(from) <= limit, !manual.contains(to + 1) { to += 1 }
                 out.append((offset(from), offset(to + 1)))
                 from = to + 1
             }
             return out
         }
         let cols = breaks(range.start.col, range.end.col, x, page.width)
-        let rows = breaks(range.start.row, range.end.row, y, page.height)
+        let rows = breaks(range.start.row, range.end.row, y, page.height, manual: sheet.rowBreaks)
         var rects: [NSRect] = []
         for c in cols {
             for r in rows { rects.append(NSRect(x: c.0, y: r.0, width: c.1 - c.0 + 1, height: r.1 - r.0 + 1)) }
@@ -544,20 +575,37 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     weak var overlay: FreezeOverlay?
 
-    var frozenWidth: CGFloat { printMode || sheet.frozenCols == 0 ? 0 : x(sheet.frozenCols) }
-    var frozenHeight: CGFloat { printMode || sheet.frozenRows == 0 ? 0 : y(sheet.frozenRows) }
+    /// View › Split: position of the split lines in the visible area, and the scroll offsets of the left/top panes.
+    var split: NSPoint?
+    var splitScroll = NSPoint.zero
+
+    /// Width/height of the left/top panes: frozen rows/columns, or the split position.
+    var frozenWidth: CGFloat {
+        if let split, !printMode { return split.x }
+        return printMode || sheet.frozenCols == 0 ? 0 : x(sheet.frozenCols)
+    }
+    var frozenHeight: CGFloat {
+        if let split, !printMode { return split.y }
+        return printMode || sheet.frozenRows == 0 ? 0 : y(sheet.frozenRows)
+    }
+    /// Grid offset of the left/top panes (frozen panes start at A1).
+    var paneOffset: NSPoint { split != nil && !printMode ? splitScroll : .zero }
     var scrollOrigin: NSPoint { enclosingScrollView?.contentView.bounds.origin ?? .zero }
     var viewportSize: NSSize { enclosingScrollView?.contentView.bounds.size ?? bounds.size }
 
     /// Grid point → point in the visible area (frozen rows/columns don't scroll).
     func toViewport(_ p: NSPoint) -> NSPoint {
-        let o = scrollOrigin
-        return NSPoint(x: p.x < frozenWidth ? p.x : p.x - o.x, y: p.y < frozenHeight ? p.y : p.y - o.y)
+        let o = scrollOrigin, po = paneOffset, fw = frozenWidth, fh = frozenHeight
+        if split != nil {
+            // Shown in the main pane when it's there, else in the left/top pane.
+            return NSPoint(x: p.x >= o.x + fw ? p.x - o.x : p.x - po.x, y: p.y >= o.y + fh ? p.y - o.y : p.y - po.y)
+        }
+        return NSPoint(x: p.x < fw ? p.x : p.x - o.x, y: p.y < fh ? p.y : p.y - o.y)
     }
 
     func fromViewport(_ v: NSPoint) -> NSPoint {
-        let o = scrollOrigin
-        return NSPoint(x: v.x < frozenWidth ? v.x : v.x + o.x, y: v.y < frozenHeight ? v.y : v.y + o.y)
+        let o = scrollOrigin, po = paneOffset
+        return NSPoint(x: v.x < frozenWidth ? v.x + po.x : v.x + o.x, y: v.y < frozenHeight ? v.y + po.y : v.y + o.y)
     }
 
     /// Grid point under the mouse, honouring frozen panes.
@@ -573,10 +621,14 @@ final class GridView: NSView, NSTextFieldDelegate {
         let clip = scroll.contentView
         var o = clip.bounds.origin
         let size = clip.bounds.size
-        if ref.col >= sheet.frozenCols {
+        // Split panes: a cell visible in the left/top pane needn't scroll the main pane.
+        let po = paneOffset
+        let inLeftPane = split != nil && r.minX >= po.x && r.maxX <= po.x + frozenWidth
+        let inTopPane = split != nil && r.minY >= po.y && r.maxY <= po.y + frozenHeight
+        if ref.col >= sheet.frozenCols, !inLeftPane {
             if r.minX - o.x < frozenWidth { o.x = r.minX - frozenWidth } else if r.maxX - o.x > size.width { o.x = r.maxX - size.width }
         }
-        if ref.row >= sheet.frozenRows {
+        if ref.row >= sheet.frozenRows, !inTopPane {
             if r.minY - o.y < frozenHeight { o.y = r.minY - frozenHeight } else if r.maxY - o.y > size.height { o.y = r.maxY - size.height }
         }
         o.x = max(0, min(o.x, frame.width - size.width))
@@ -669,6 +721,12 @@ final class GridView: NSView, NSTextFieldDelegate {
             }
         }
         drag = .select
+        if !isEditing, !event.modifierFlags.contains(.shift), event.clickCount == 1, let target = controller?.hyperlinkTarget(at: ref),
+           event.modifierFlags.contains(.command) || ref == active {
+            select(ref)
+            controller?.openHyperlink(target)
+            return
+        }
         if isEditing, editor.stringValue.hasPrefix("="), canInsertReference {
             refAnchor = ref
             insertReference(CellRange(ref, ref))
@@ -1016,14 +1074,18 @@ final class HeaderView: NSView {
         let o = grid.scrollOrigin, size = grid.viewportSize
         if isColumns {
             // Frozen columns stay put; the rest scroll and are clipped right of the freeze line.
-            var cols: [(Int, Bool)] = (0..<grid.sheet.frozenCols).map { ($0, true) }
+            let po = grid.paneOffset
+            var cols: [(Int, Bool)] = grid.split != nil && fw > 0
+                ? Array(grid.col(at: po.x)...grid.col(at: po.x + fw)).map { ($0, true) }
+                : (0..<grid.sheet.frozenCols).map { ($0, true) }
             let c0 = grid.col(at: o.x + fw), c1 = grid.col(at: o.x + size.width)
             if c1 >= c0 { cols += (max(c0, grid.sheet.frozenCols)...max(c1, grid.sheet.frozenCols)).map { ($0, false) } }
             for (c, frozen) in cols {
-                let x0 = frozen ? grid.x(c) : grid.x(c) - o.x
+                let x0 = frozen ? grid.x(c) - po.x : grid.x(c) - o.x
                 let r = NSRect(x: x0, y: 0, width: grid.x(c + 1) - grid.x(c), height: bounds.height)
                 NSGraphicsContext.saveGraphicsState()
                 if !frozen { NSBezierPath(rect: NSRect(x: fw, y: 0, width: bounds.width, height: bounds.height)).addClip() }
+                else { NSBezierPath(rect: NSRect(x: 0, y: 0, width: fw, height: bounds.height)).addClip() }
                 let selected = sel.cols.contains(c)
                 if selected {
                     NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
@@ -1040,14 +1102,18 @@ final class HeaderView: NSView {
             line.setFill()
             NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
         } else {
-            var rows: [(Int, Bool)] = (0..<grid.sheet.frozenRows).map { ($0, true) }
+            let po = grid.paneOffset
+            var rows: [(Int, Bool)] = grid.split != nil && fh > 0
+                ? Array(grid.row(at: po.y)...grid.row(at: po.y + fh)).map { ($0, true) }
+                : (0..<grid.sheet.frozenRows).map { ($0, true) }
             let r0 = grid.row(at: o.y + fh), r1 = grid.row(at: o.y + size.height)
             if r1 >= r0 { rows += (max(r0, grid.sheet.frozenRows)...max(r1, grid.sheet.frozenRows)).map { ($0, false) } }
             for (row, frozen) in rows {
-                let y0 = frozen ? grid.y(row) : grid.y(row) - o.y
+                let y0 = frozen ? grid.y(row) - po.y : grid.y(row) - o.y
                 let r = NSRect(x: 0, y: y0, width: bounds.width, height: grid.y(row + 1) - grid.y(row))
                 NSGraphicsContext.saveGraphicsState()
                 if !frozen { NSBezierPath(rect: NSRect(x: 0, y: fh, width: bounds.width, height: bounds.height)).addClip() }
+                else { NSBezierPath(rect: NSRect(x: 0, y: 0, width: bounds.width, height: fh)).addClip() }
                 let selected = sel.rows.contains(row)
                 if selected {
                     NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
@@ -1224,8 +1290,9 @@ final class FreezeOverlay: NSView {
         guard let grid else { return }
         let fw = grid.frozenWidth, fh = grid.frozenHeight
         SheetPalette.for(self).frozenLine.setFill()
-        if fw > 0 { NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
-        if fh > 0 { NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
+        let w: CGFloat = grid.split != nil ? 3 : 1
+        if fw > 0 { NSRect(x: fw - w / 2, y: 0, width: w, height: bounds.height).fill() }
+        if fh > 0 { NSRect(x: 0, y: fh - w / 2, width: bounds.width, height: w).fill() }
     }
 }
 
@@ -1248,11 +1315,32 @@ final class FrozenPane: NSView {
     private var offset: NSPoint {
         guard let grid else { return .zero }
         let o = grid.scrollOrigin
+        let po = grid.paneOffset
         switch kind {
-        case .corner: return .zero
-        case .top: return NSPoint(x: grid.frozenWidth + o.x, y: 0)
-        case .left: return NSPoint(x: 0, y: grid.frozenHeight + o.y)
+        case .corner: return po
+        case .top: return NSPoint(x: grid.frozenWidth + o.x, y: po.y)
+        case .left: return NSPoint(x: po.x, y: grid.frozenHeight + o.y)
         }
+    }
+
+    /// Split panes scroll on their own along their axis; the other direction moves the main pane.
+    override func scrollWheel(with event: NSEvent) {
+        guard let grid, grid.split != nil else { grid?.enclosingScrollView?.scrollWheel(with: event); return }
+        var s = grid.splitScroll
+        var dx = -event.scrollingDeltaX, dy = -event.scrollingDeltaY
+        if !event.hasPreciseScrollingDeltas { dx *= 10; dy *= 10 }
+        if kind != .top { s.x = max(0, min(grid.frame.width - grid.frozenWidth, s.x + dx)); dx = 0 }
+        if kind != .left { s.y = max(0, min(grid.frame.height - grid.frozenHeight, s.y + dy)); dy = 0 }
+        grid.splitScroll = s
+        if dx != 0 || dy != 0, let clip = grid.enclosingScrollView?.contentView {
+            var o = clip.bounds.origin
+            o.x = max(0, min(grid.frame.width - clip.bounds.width, o.x + dx))
+            o.y = max(0, min(grid.frame.height - clip.bounds.height, o.y + dy))
+            clip.scroll(to: o)
+            grid.enclosingScrollView?.reflectScrolledClipView(clip)
+        }
+        grid.overlay?.panesNeedDisplay()
+        grid.controller?.headersNeedDisplay()
     }
 
     override func draw(_ dirtyRect: NSRect) {

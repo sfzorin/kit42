@@ -6,7 +6,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     private let scrollView = NSScrollView()
     private lazy var columnHeader = HeaderView(grid: grid, columns: true)
     private lazy var rowHeader = HeaderView(grid: grid, columns: false)
-    private lazy var freezeOverlay = FreezeOverlay(grid: grid)
+    lazy var freezeOverlay = FreezeOverlay(grid: grid)
     private lazy var rowGutter = OutlineGutter(grid: grid, columns: false)
     private lazy var colGutter = OutlineGutter(grid: grid, columns: true)
     private var rowGutterWidth: NSLayoutConstraint?
@@ -17,11 +17,20 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     /// Tests: refusals and validation errors are recorded instead of shown.
     var suppressAlerts = false
     var lastAlertMessage: String?
+    /// Tests: the last hyperlink opened (links aren't opened while alerts are suppressed).
+    var lastOpenedLink: String?
+    /// Status bar: selection statistics and zoom (View › Status Bar).
+    let statusBar = NSVisualEffectView()
+    private var statusBarHeight: NSLayoutConstraint?
+    let zoomSlider = NSSlider(value: 100, minValue: 30, maxValue: 400, target: nil, action: nil)
+    let zoomLabel = NSTextField(labelWithString: "100%")
+    var statusBarHidden: Bool { statusBar.isHidden }
     private let toolbarController = ToolbarController(identifier: "XLS42.toolbar", elements: Cmd.toolbar)
     private let nameBox = NSTextField()
     private let formulaField = NSTextField()
     private let tabs = NSStackView()
     private let status = NSTextField(labelWithString: "")
+    private let sheetInfo = NSTextField(labelWithString: "")
     private lazy var fontPopup = stripPopUp(["Calibri", "Arial", "Helvetica Neue", "Times New Roman", "Georgia", "Verdana", "Courier New", "Menlo"],
                                             width: 128, toolTip: L("Font"), target: self, action: #selector(fontChanged(_:)))
     private lazy var sizeStepper: SizeStepper = {
@@ -56,7 +65,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
     private let formulaBar = NSTitlebarAccessoryViewController()
 
-    private(set) var sheetIndex = 0
+    var sheetIndex = 0
+    var statusBarHiddenBeforePanels: Bool?
     private var searchText = ""
 
     var doc: SheetDocument? { document as? SheetDocument }
@@ -123,8 +133,30 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         status.alignment = .right
         status.lineBreakMode = .byTruncatingHead
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let bottom = NSStackView(views: [tabs, NSView(), status])
+        let bottom = NSStackView(views: [tabs, NSView()])
         bottom.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 12)
+        // Status bar: selection statistics (right-click to choose them) and a zoom slider.
+        zoomSlider.target = self
+        zoomSlider.action = #selector(zoomSliderChanged(_:))
+        zoomSlider.controlSize = .small
+        zoomSlider.toolTip = L("Zoom")
+        zoomSlider.translatesAutoresizingMaskIntoConstraints = false
+        zoomSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        zoomLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        zoomLabel.textColor = .secondaryLabelColor
+        zoomLabel.alignment = .right
+        zoomLabel.translatesAutoresizingMaskIntoConstraints = false
+        zoomLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        status.menu = statusMenu
+        let statusRow = NSStackView(views: [sheetInfo, NSView(), status, zoomSlider, zoomLabel])
+        statusRow.spacing = 10
+        statusRow.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 12)
+        statusRow.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.material = .titlebar
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.addSubview(statusRow)
+        sheetInfo.font = .systemFont(ofSize: 11)
+        sheetInfo.textColor = .secondaryLabelColor
         bottom.translatesAutoresizingMaskIntoConstraints = false
         let bottomBackground = NSVisualEffectView()
         bottomBackground.material = .titlebar
@@ -142,15 +174,24 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         signatureHint.isBordered = true
         signatureHint.isHidden = true
         signatureHint.lineBreakMode = .byTruncatingTail
-        for v in [scrollView, freezeOverlay, bottomBackground, line, columnHeader, rowHeader, corner, rowGutter, colGutter, signatureHint] as [NSView] {
+        for v in [scrollView, freezeOverlay, bottomBackground, line, columnHeader, rowHeader, corner, rowGutter, colGutter, signatureHint, statusBar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
         let rgw = rowGutter.widthAnchor.constraint(equalToConstant: 0), cgh = colGutter.heightAnchor.constraint(equalToConstant: 0)
+        let sbh = statusBar.heightAnchor.constraint(equalToConstant: 22)
+        statusBarHeight = sbh
         rowGutterWidth = rgw
         colGutterHeight = cgh
         NSLayoutConstraint.activate([
-            rgw, cgh,
+            rgw, cgh, sbh,
+            statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            statusRow.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor),
+            statusRow.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor),
+            statusRow.topAnchor.constraint(equalTo: statusBar.topAnchor),
+            statusRow.bottomAnchor.constraint(equalTo: statusBar.bottomAnchor),
             colGutter.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
             colGutter.leadingAnchor.constraint(equalTo: rowGutter.trailingAnchor),
             colGutter.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -185,7 +226,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             line.bottomAnchor.constraint(equalTo: bottomBackground.topAnchor),
             bottomBackground.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             bottomBackground.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bottomBackground.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            bottomBackground.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
             bottomBackground.heightAnchor.constraint(equalToConstant: 30),
             bottom.leadingAnchor.constraint(equalTo: bottomBackground.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: bottomBackground.trailingAnchor),
@@ -318,24 +359,27 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     private func updateStatus() {
-        let sel = clampedSelection
-        guard sel.count > 1 else {
-            status.stringValue = ""
-            window?.subtitle = sheet.name
-            return
-        }
-        var sum = 0.0, count = 0, numeric = 0
-        for (ref, cell) in sheet.cells where sel.contains(ref) && !cell.value.isEmpty {
-            count += 1
-            if case .number(let d) = cell.value { sum += d; numeric += 1 }
-        }
-        var parts = [L("Count: %d", count)]
-        if numeric > 0 {
-            parts.append(L("Sum: %@", NumberFormat.general(sum)))
-            parts.append(L("Average: %@", NumberFormat.general(sum / Double(numeric))))
-        }
-        status.stringValue = parts.joined(separator: "   ")
+        status.stringValue = statusText(for: clampedSelection)
+        let visible = visibleSheets
+        sheetInfo.stringValue = L("Sheet %d of %d", (visible.firstIndex(of: sheetIndex) ?? 0) + 1, visible.count)
         window?.subtitle = sheet.name
+    }
+
+    /// Current status bar text (tests).
+    var statusBarText: String { status.stringValue }
+
+    @objc func zoomSliderChanged(_ sender: NSSlider) { grid.zoom = CGFloat((sender.doubleValue / 5).rounded() * 5 / 100) }
+
+    func zoomDidChange() {
+        zoomSlider.doubleValue = Double(grid.zoom * 100)
+        zoomLabel.stringValue = "\(Int((grid.zoom * 100).rounded()))%"
+    }
+
+    @objc func toggleStatusBarAction(_ sender: Any?) { setStatusBarHidden(!statusBar.isHidden) }
+
+    func setStatusBarHidden(_ hidden: Bool) {
+        statusBar.isHidden = hidden
+        statusBarHeight?.constant = hidden ? 0 : 22
     }
 
     /// Caret in the formula bar while it is being edited.
@@ -358,8 +402,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     private func reloadTabs() {
         tabs.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (i, s) in (doc?.workbook.sheets ?? []).enumerated() {
-            let b = NSButton(title: s.name, target: self, action: #selector(tabClicked(_:)))
+        for (i, s) in (doc?.workbook.sheets ?? []).enumerated() where !s.hidden {
+            let b = SheetTabButton(title: s.name, target: self, action: #selector(tabClicked(_:)))
+            b.tabColor = s.tabColor
             b.tag = i
             b.bezelStyle = .accessoryBarAction
             b.setButtonType(.pushOnPushOff)
@@ -368,6 +413,10 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             let menu = NSMenu()
             menu.addItem(withTitle: L("Rename…"), action: #selector(renameSheet(_:)), keyEquivalent: "").tag = i
             menu.addItem(withTitle: L("Duplicate"), action: #selector(duplicateSheet(_:)), keyEquivalent: "").tag = i
+            menu.addItem(withTitle: L("Move or Copy…"), action: #selector(moveCopySheetAction(_:)), keyEquivalent: "").tag = i + 1
+            menu.addItem(withTitle: L("Tab Colour…"), action: #selector(tabColorAction(_:)), keyEquivalent: "").tag = i + 1
+            menu.addItem(withTitle: L("Hide Sheet"), action: #selector(hideSheetAction(_:)), keyEquivalent: "").tag = i + 1
+            menu.addItem(withTitle: L("Show Sheet…"), action: #selector(showSheetAction(_:)), keyEquivalent: "")
             menu.addItem(.separator())
             menu.addItem(withTitle: L("Delete Sheet"), action: #selector(deleteSheet(_:)), keyEquivalent: "").tag = i
             menu.items.forEach { $0.target = self }
@@ -404,7 +453,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func addSheet(_ sender: Any?) {
-        guard let doc else { return }
+        guard let doc, guardStructure() else { return }
         var n = doc.workbook.sheets.count + 1
         while doc.workbook.sheetIndex(named: L("Sheet%d", n)) != nil { n += 1 }
         doc.change(L("New Sheet")) { $0.sheets.append(Sheet(name: L("Sheet%d", n))) }
@@ -412,9 +461,10 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         workbookDidChange()
     }
 
-    @objc private func renameSheet(_ sender: Any?) {
-        let i = commandTag(of: sender)
-        guard let doc, i < doc.workbook.sheets.count else { return }
+    @objc private func renameSheet(_ sender: Any?) { renameSheet(at: commandTag(of: sender)) }
+
+    func renameSheet(at i: Int) {
+        guard let doc, i < doc.workbook.sheets.count, guardStructure() else { return }
         let field = NSTextField(string: doc.workbook.sheets[i].name)
         let alert = NSAlert.form(L("Rename Sheet"), ok: L("Rename"), rows: [(L("Name:"), field)])
         alert.window.initialFirstResponder = field
@@ -453,7 +503,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     @objc private func duplicateSheet(_ sender: Any?) {
         let i = commandTag(of: sender)
-        guard let doc, i < doc.workbook.sheets.count else { return }
+        guard let doc, i < doc.workbook.sheets.count, guardStructure() else { return }
         var copy = doc.workbook.sheets[i]
         var n = 2
         while doc.workbook.sheetIndex(named: "\(copy.name) (\(n))") != nil { n += 1 }
@@ -463,9 +513,11 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         workbookDidChange()
     }
 
-    @objc private func deleteSheet(_ sender: Any?) {
-        let i = commandTag(of: sender)
-        guard let doc, doc.workbook.sheets.count > 1, i < doc.workbook.sheets.count else { NSSound.beep(); return }
+    @objc private func deleteSheet(_ sender: Any?) { deleteSheet(at: commandTag(of: sender)) }
+
+    func deleteSheet(at i: Int) {
+        guard let doc, guardStructure(), visibleSheets.count > 1 || doc.workbook.sheets[i].hidden, doc.workbook.sheets.count > 1,
+              i < doc.workbook.sheets.count else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.messageText = L("Delete sheet “%@”?", doc.workbook.sheets[i].name)
         alert.informativeText = L("You can undo this with ⌘Z.")
@@ -474,6 +526,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         doc.change(L("Delete Sheet")) { $0.sheets.remove(at: i) }
         sheetIndex = min(sheetIndex, doc.workbook.sheets.count - 1)
+        if doc.workbook.sheets[sheetIndex].hidden, let v = visibleSheets.last { sheetIndex = v }
         workbookDidChange()
     }
 
@@ -562,7 +615,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             var fields: [String] = []
             for c in range.cols {
                 let ref = CellRef(row: r, col: c)
-                let cell = sheet[ref]
+                var cell = sheet[ref]
+                // Values spilled by an array formula are copied as values.
+                if cell.input.isEmpty, !cell.value.isEmpty { cell.input = XLSX.inputText(for: cell.value, style: cell.style) }
                 cells[CellRef(row: r - range.start.row, col: c - range.start.col)] = cell
                 fields.append(NumberFormat.format(cell.value, cell.style.numberFormat).text)
             }
@@ -841,53 +896,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let n = rows ? sel.rows.count : sel.cols.count
         let count = insert ? n : -n
         let name = rows ? (insert ? L("Insert Rows") : L("Delete Rows")) : (insert ? L("Insert Columns") : L("Delete Columns"))
-        doc.change(name) { wb in
-            let sheetName = wb.sheets[sheetIndex].name
-            var s = wb.sheets[sheetIndex]
-            func moved(_ v: Int) -> Int? {
-                if count > 0 { return v >= index ? v + count : v }
-                if v >= index && v < index - count { return nil }
-                return v >= index - count ? v + count : v
-            }
-            var cells: [CellRef: Cell] = [:]
-            for (ref, cell) in s.cells {
-                guard let v = moved(rows ? ref.row : ref.col) else { continue }
-                cells[rows ? CellRef(row: v, col: ref.col) : CellRef(row: ref.row, col: v)] = cell
-            }
-            s.cells = cells
-            if rows {
-                s.rowHeights = Dictionary(uniqueKeysWithValues: s.rowHeights.compactMap { k, v in moved(k).map { ($0, v) } })
-            } else {
-                s.columnWidths = Dictionary(uniqueKeysWithValues: s.columnWidths.compactMap { k, v in moved(k).map { ($0, v) } })
-            }
-            func movedRange(_ m: CellRange) -> CellRange? {
-                let a = rows ? m.start.row : m.start.col, b = rows ? m.end.row : m.end.col
-                guard let na = moved(a) ?? (count < 0 ? index : nil), let nb = moved(b) ?? (count < 0 ? index - 1 : nil), nb >= na else { return nil }
-                return rows ? CellRange(CellRef(row: na, col: m.start.col), CellRef(row: nb, col: m.end.col))
-                            : CellRange(CellRef(row: m.start.row, col: na), CellRef(row: m.end.row, col: nb))
-            }
-            s.merges = s.merges.compactMap { m in movedRange(m).flatMap { $0.count > 1 ? $0 : nil } }
-            s.validations = s.validations.compactMap { v in
-                var v = v
-                v.ranges = v.ranges.compactMap(movedRange)
-                return v.ranges.isEmpty ? nil : v
-            }
-            if rows {
-                s.rowLevels = Dictionary(uniqueKeysWithValues: s.rowLevels.compactMap { k, v in moved(k).map { ($0, v) } })
-                s.outlineHiddenRows = Set(s.outlineHiddenRows.compactMap(moved))
-            } else {
-                s.colLevels = Dictionary(uniqueKeysWithValues: s.colLevels.compactMap { k, v in moved(k).map { ($0, v) } })
-                s.outlineHiddenCols = Set(s.outlineHiddenCols.compactMap(moved))
-            }
-            wb.sheets[sheetIndex] = s
-            for si in wb.sheets.indices {
-                let formulaSheet = wb.sheets[si].name
-                for (ref, cell) in wb.sheets[si].cells where cell.isFormula {
-                    wb.sheets[si].cells[ref]?.input = Formula.adjusted(cell.input, sheet: sheetName, formulaSheet: formulaSheet,
-                                                                       rows: rows, at: index, count: count)
-                }
-            }
-        }
+        doc.change(name) { DataTools.shiftCells(&$0, sheet: sheetIndex, rows: rows, at: index, count: count) }
     }
 
     // MARK: - Data
@@ -1066,7 +1075,15 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
     @objc func toggleFormulaBarAction(_ sender: Any?) { formulaBar.isHidden.toggle() }
-    @objc func toggleAllPanelsAction(_ sender: Any?) { Panels.toggleAll(in: window) }
+    @objc func toggleAllPanelsAction(_ sender: Any?) {
+        // The status bar hides with the other panels and comes back as it was.
+        let wasHidden = statusBar.isHidden
+        Panels.toggleAll(in: window) { [weak self] hidden in
+            guard let self else { return }
+            if hidden { self.statusBarHiddenBeforePanels = wasHidden; self.setStatusBarHidden(true) }
+            else { self.setStatusBarHidden(self.statusBarHiddenBeforePanels ?? false); self.statusBarHiddenBeforePanels = nil }
+        }
+    }
 
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
         Panels.fullScreenOptions   // bars slide in only at the top edge
@@ -1168,7 +1185,18 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             item.state = ["left", "center", "right"][max(0, min(2, item.tag))] == style.hAlign ? .on : .off
         case #selector(numberFormatAction(_:)):
             item.state = item.tag < Self.numberFormats.count && Self.numberFormats[item.tag].code == style.numberFormat ? .on : .off
-        case #selector(fillDown(_:)): return grid.selection.rows.count > 1
+        case #selector(toggleSplitAction(_:)): item.title = grid.split != nil ? L("Remove Split") : L("Split Window")
+        case #selector(toggleStatusBarAction(_:)): item.title = statusBar.isHidden ? L("Show Status Bar") : L("Hide Status Bar")
+        case #selector(hideSheetAction(_:)): return visibleSheets.count > 1 && !(doc?.workbook.structureProtected ?? false)
+        case #selector(showSheetAction(_:)): return doc?.workbook.sheets.contains { $0.hidden } ?? false
+        case #selector(protectWorkbookAction(_:)): item.state = doc?.workbook.structureProtected == true ? .on : .off
+        case #selector(removeHyperlinkAction(_:)): return sheet.hyperlinks[grid.active] != nil
+        case #selector(openHyperlinkAction(_:)): return hyperlinkTarget(at: grid.active) != nil
+        case #selector(resetFilterAction(_:)): return !sheet.filterHidden.isEmpty || !sheet.filterValues.isEmpty || !sheet.customFilters.isEmpty
+        case #selector(applyCellStyleAction(_:)):
+            item.state = item.tag < CellStyles.presets.count && CellStyles.presets[item.tag].name == (style.styleName ?? "Normal") ? .on : .off
+        case #selector(fillUpAction(_:)), #selector(fillDown(_:)): return grid.selection.rows.count > 1
+        case #selector(fillLeftAction(_:)): return grid.selection.cols.count > 1
         case #selector(fillRight(_:)): return grid.selection.cols.count > 1
         case #selector(protectSheetAction(_:)): item.title = sheet.isProtected ? L("Unprotect Sheet…") : L("Protect Sheet…")
         case #selector(toggleLockedAction(_:)): item.state = style.locked ? .on : .off

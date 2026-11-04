@@ -65,6 +65,7 @@ enum ODS {
 
         var wb = Workbook()
         wb.sheets = []
+        wb.structureProtected = spreadsheet.attr("structure-protected") == "true"
         let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
             var sheet = Sheet(name: table.attr("name") ?? "Sheet\(wb.sheets.count + 1)")
@@ -623,7 +624,7 @@ enum ODS {
         xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
-        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
+        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
         let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
         var tables = ""
         for s in wb.sheets {

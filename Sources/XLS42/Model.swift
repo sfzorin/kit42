@@ -359,6 +359,8 @@ struct Workbook {
     var names: [String: String] = [:]
     /// Excel serial dates: 1900 system (default) or 1904.
     var date1904 = false
+    /// Workbook structure protection: sheets can't be added, deleted, moved, renamed or hidden.
+    var structureProtected = false
 
     func sheetIndex(named name: String) -> Int? {
         sheets.firstIndex { $0.name.caseInsensitiveCompare(name) == .orderedSame }

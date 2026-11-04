@@ -15,6 +15,7 @@ enum XLSX {
         var wb = Workbook()
         wb.sheets = []
         wb.date1904 = workbookXML.child("workbookPr")?.attr("date1904").map { $0 == "1" || $0 == "true" } ?? false
+        wb.structureProtected = workbookXML.child("workbookProtection")?.attr("lockStructure").map { $0 == "1" || $0 == "true" } ?? false
 
         // Relationships: rId → target path
         var rels: [String: String] = [:]
@@ -334,7 +335,7 @@ enum XLSX {
         var workbook = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-        <workbookPr\(wb.date1904 ? " date1904=\"1\"" : "")/><bookViews><workbookView/></bookViews><sheets>
+        <workbookPr\(wb.date1904 ? " date1904=\"1\"" : "")/>\(wb.structureProtected ? "<workbookProtection lockStructure=\"1\"/>" : "")<bookViews><workbookView/></bookViews><sheets>
         """
         var wbRels = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
