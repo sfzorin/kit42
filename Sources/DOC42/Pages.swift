@@ -357,9 +357,6 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     func layoutManager(_ lm: NSLayoutManager, didCompleteLayoutFor textContainer: NSTextContainer?, atEnd layoutFinished: Bool) {
         let containers = lm.textContainers
-        if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil {
-            Swift.print("didComplete", containers.firstIndex { $0 === textContainer } ?? -1, "of", containers.count, "finished", layoutFinished, "changing", changingPages)
-        }
         if !layoutFinished || textContainer == nil {
             // Text left over: add a page after the last one.
             if let last = containers.last, textContainer === last || textContainer == nil {
