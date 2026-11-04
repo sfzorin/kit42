@@ -134,6 +134,17 @@ public enum ZipError: LocalizedError {
     }
 }
 
+/// zlib stream (RFC 1950): header + raw deflate + Adler-32, as PDF /FlateDecode expects.
+public func zlibCompress(_ data: Data) -> Data {
+    var out = Data([0x78, 0x9C])
+    out += ZipArchive.deflate(data) ?? Data()
+    var a: UInt32 = 1, b: UInt32 = 0
+    for byte in data { a = (a + UInt32(byte)) % 65521; b = (b + a) % 65521 }
+    let adler = b << 16 | a
+    out += Data([UInt8(adler >> 24), UInt8(adler >> 16 & 0xFF), UInt8(adler >> 8 & 0xFF), UInt8(adler & 0xFF)])
+    return out
+}
+
 enum CRC32 {
     static let table: [UInt32] = (0..<256).map { i in
         var c = UInt32(i)

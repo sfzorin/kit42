@@ -11,7 +11,7 @@ let args = CommandLine.arguments
 if args.count >= 3, args[1] == "--verify" {
     let data = try Data(contentsOf: URL(fileURLWithPath: args[2]))
     for s in PDFSignatureVerifier.verify(data) {
-        print("\(s.status) | \(s.signer) | \(s.summary) | whole=\(s.coversWholeFile) | \(s.reason ?? "-") | \(s.date.map { "\($0)" } ?? "-") | \(s.trustMessage ?? "")")
+        print("\(s.status) | \(s.signer) | whole=\(s.coversWholeFile) | \(s.reason ?? "-") | ts=\(s.timestamp.map { "\($0)" } ?? "none") | \(s.trustMessage ?? "")")
     }
     exit(0)
 }
@@ -20,7 +20,14 @@ if args.count >= 6, args[1] == "--sign" {
     let identity = try CertificateStore.importPKCS12(try Data(contentsOf: URL(fileURLWithPath: args[3])), password: args[4], toKeychain: false)
     // Same path as the UI: normalise with PDFKit unless the file is already signed.
     let base = PDFSignatureVerifier.verify(input).isEmpty ? PDFDocument(data: input)!.dataRepresentation()! : input
-    let signed = try PDFSigner.sign(base, options: .init(identity: identity, reason: "Signature test", location: "Moscow"))
+    var options = PDFSigner.Options(identity: identity, reason: "Signature test", location: "Moscow")
+    if args.contains("visible") {
+        let size = CGSize(width: 220, height: 72)
+        options.visible = (0, CGRect(x: 340, y: 40, width: size.width, height: size.height),
+                           EditorWindowController.signatureAppearance(size: size, image: nil, name: identity.name, reason: "Signature test", date: Date()))
+    }
+    if args.contains("tsa") { options.timestampURL = URL(string: "http://timestamp.digicert.com") }
+    let signed = try PDFSigner.sign(base, options: options)
     try signed.write(to: URL(fileURLWithPath: args[5]))
     print("signed \(signed.count) bytes")
     exit(0)
@@ -40,6 +47,17 @@ if args.count >= 4, args[1] == "--images-to-pdf" {
     for path in args.dropFirst(3) { if let img = NSImage(contentsOfFile: path), let p = PDFDoc.page(from: img) { pdf.insert(p, at: pdf.pageCount) } }
     pdf.write(to: URL(fileURLWithPath: args[2]))
     print("pages: \(pdf.pageCount)")
+    exit(0)
+}
+
+// PDF42 --ocr in.pdf out.pdf
+if args.count >= 4, args[1] == "--ocr" {
+    let pdf = PDFDocument(url: URL(fileURLWithPath: args[2]))!
+    for i in 0..<pdf.pageCount {
+        if let page = pdf.page(at: i), let ocr = EditorWindowController.ocrPage(page) { pdf.removePage(at: i); pdf.insert(ocr, at: i) }
+    }
+    pdf.write(to: URL(fileURLWithPath: args[3]))
+    print("ocr pages: \(pdf.pageCount)")
     exit(0)
 }
 

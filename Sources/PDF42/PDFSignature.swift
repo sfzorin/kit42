@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 import Kit42
@@ -10,6 +11,10 @@ enum PDFSigner {
         var identity: SigningIdentity
         var reason: String
         var location: String
+        /// Visible signature: page index, rectangle in page space, rendered appearance.
+        var visible: (page: Int, rect: CGRect, appearance: CGImage)?
+        /// RFC 3161 time-stamping authority, e.g. http://timestamp.digicert.com
+        var timestampURL: URL?
     }
 
     /// Reserved bytes for the CMS signature (hex doubles it).
@@ -24,22 +29,26 @@ enum PDFSigner {
         }
         var catalog = try file.object(rootNum)
 
-        // First page
-        guard case .ref(var pageNum, _)? = catalog["Pages"] else { throw PDFStructureError.malformed("no /Pages") }
-        var node = try file.object(pageNum)
-        while node["Type"]?.nameValue != "Page" {
-            guard case .ref(let kid, _)? = node["Kids"].flatMap({ try? file.resolve($0) })?.items?.first else {
-                throw PDFStructureError.malformed("page tree")
-            }
-            pageNum = kid
-            node = try file.object(kid)
+        // Target page (first, or the visible signature's page)
+        guard case .ref(let pagesRoot, _)? = catalog["Pages"] else { throw PDFStructureError.malformed("no /Pages") }
+        var pageNums: [Int] = []
+        func collect(_ num: Int, depth: Int) throws {
+            guard depth < 64 else { return }
+            let n = try file.object(num)
+            if n["Type"]?.nameValue == "Page" { pageNums.append(num); return }
+            for case .ref(let kid, _) in try file.resolve(n["Kids"])?.items ?? [] { try collect(kid, depth: depth + 1) }
         }
+        try collect(pagesRoot, depth: 0)
+        guard !pageNums.isEmpty else { throw PDFStructureError.malformed("page tree") }
+        let pageNum = pageNums[min(max(0, options.visible?.page ?? 0), pageNums.count - 1)]
+        let node = try file.object(pageNum)
 
         var nextNum = size
         let sigNum = nextNum; nextNum += 1
         let widgetNum = nextNum; nextNum += 1
         let widgetRef = PDFObject.ref(widgetNum, 0)
         var updates: [Int: String] = [:]
+        var binary: [Int: [UInt8]] = [:]
 
         // Page /Annots += widget
         switch node["Annots"] {
@@ -77,7 +86,22 @@ enum PDFSigner {
 
         let existingForm = try file.resolve(try file.object(rootNum)["AcroForm"])
         let fieldCount = try file.resolve(existingForm?["Fields"])?.items?.count ?? 0
-        updates[widgetNum] = "<< /Type /Annot /Subtype /Widget /FT /Sig /T \(pdfTextString("Signature\(fieldCount + 1)")) /F 132 /Rect [0 0 0 0] /P \(pageNum) \(file.gen(pageNum)) R /V \(sigNum) 0 R >>"
+        var rectText = "[0 0 0 0]"
+        var appearance = ""
+        if let visible = options.visible {
+            let r = visible.rect
+            rectText = String(format: "[%.2f %.2f %.2f %.2f]", r.minX, r.minY, r.maxX, r.maxY)
+            let imgNum = nextNum, maskNum = nextNum + 1, apNum = nextNum + 2
+            nextNum += 3
+            let (rgb, alpha, w, h) = Self.pixels(visible.appearance)
+            let rgbZ = [UInt8](zlibCompress(Data(rgb))), alphaZ = [UInt8](zlibCompress(Data(alpha)))
+            binary[maskNum] = Array("<< /Type /XObject /Subtype /Image /Width \(w) /Height \(h) /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length \(alphaZ.count) >>\nstream\n".utf8) + alphaZ + Array("\nendstream".utf8)
+            binary[imgNum] = Array("<< /Type /XObject /Subtype /Image /Width \(w) /Height \(h) /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /SMask \(maskNum) 0 R /Length \(rgbZ.count) >>\nstream\n".utf8) + rgbZ + Array("\nendstream".utf8)
+            let content = String(format: "q %.2f 0 0 %.2f 0 0 cm /Img Do Q", r.width, r.height)
+            updates[apNum] = "<< /Type /XObject /Subtype /Form /BBox [0 0 \(String(format: "%.2f %.2f", r.width, r.height))] /Resources << /XObject << /Img \(imgNum) 0 R >> >> /Length \(content.utf8.count) >>\nstream\n\(content)\nendstream"
+            appearance = " /AP << /N \(apNum) 0 R >>"
+        }
+        updates[widgetNum] = "<< /Type /Annot /Subtype /Widget /FT /Sig /T \(pdfTextString("Signature\(fieldCount + 1)")) /F 132 /Rect \(rectText)\(appearance) /P \(pageNum) \(file.gen(pageNum)) R /V \(sigNum) 0 R >>"
 
         let byteRangePlaceholder = "[0 0000000000 0000000000 0000000000]"
         let contentsPlaceholder = "<" + String(repeating: "0", count: signatureCapacity * 2) + ">"
@@ -93,11 +117,11 @@ enum PDFSigner {
         if out.last != 0x0A { out.append(0x0A) }
         var entries: [(Int, Int)] = []
         var sigOffset = 0
-        for num in updates.keys.sorted() {
+        for num in Set(updates.keys).union(binary.keys).sorted() {
             entries.append((num, out.count))
             if num == sigNum { sigOffset = out.count }
             let gen = num >= size ? 0 : file.gen(num)
-            out += Array("\(num) \(gen) obj\n\(updates[num]!)\nendobj\n".utf8)
+            out += Array("\(num) \(gen) obj\n".utf8) + (binary[num] ?? Array(updates[num]!.utf8)) + Array("\nendobj\n".utf8)
         }
         let xrefOffset = out.count
         var xref = "xref\n"
@@ -130,11 +154,31 @@ enum PDFSigner {
         out.replaceSubrange(brStart..<brStart + padded.utf8.count, with: Array(padded.utf8))
 
         let signed = Data(out[0..<a] + out[b..<out.count])
-        let cms = try cmsSign(signed, identity: options.identity.identity)
+        var cms = try cmsSign(signed, identity: options.identity.identity)
+        if let url = options.timestampURL { cms = try Timestamp.add(to: cms, tsa: url) }
         guard cms.count <= signatureCapacity else { throw PDFStructureError.unsupported(L("the signature is too large (%d bytes)", cms.count)) }
         let hex = cms.map { String(format: "%02X", $0) }.joined()
         out.replaceSubrange(a + 1..<a + 1 + hex.utf8.count, with: Array(hex.utf8))
         return Data(out)
+    }
+
+    /// RGB and alpha planes (8-bit, not premultiplied) of an image, top row first.
+    static func pixels(_ image: CGImage) -> ([UInt8], [UInt8], Int, Int) {
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var rgb = [UInt8](repeating: 0, count: w * h * 3), alpha = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<(w * h) {
+            let a = rgba[i * 4 + 3]
+            alpha[i] = a
+            for c in 0..<3 {
+                let v = rgba[i * 4 + c]
+                rgb[i * 3 + c] = a == 0 ? 255 : UInt8(min(255, Int(v) * 255 / Int(a)))
+            }
+        }
+        return (rgb, alpha, w, h)
     }
 
     static func cmsSign(_ data: Data, identity: SecIdentity) throws -> Data {
@@ -201,6 +245,8 @@ struct SignatureInfo {
     var coversWholeFile = false
     var trustMessage: String?
     var problem: String?
+    /// Trusted time from an RFC 3161 timestamp, if the signature has one.
+    var timestamp: Date?
 
     var summary: String {
         switch status {
@@ -272,6 +318,8 @@ enum PDFSignatureVerifier {
         if CMSDecoderCopySignerSigningTime(dec, 0, &time) == errSecSuccess {
             info.date = Date(timeIntervalSinceReferenceDate: time)
         }
+        var ts: CFAbsoluteTime = 0
+        if CMSDecoderCopySignerTimestamp(dec, 0, &ts) == errSecSuccess { info.timestamp = Date(timeIntervalSinceReferenceDate: ts) }
 
         var status: CMSSignerStatus = .unsigned
         var trust: SecTrust?

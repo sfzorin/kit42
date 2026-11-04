@@ -6,7 +6,7 @@ import PDFKit
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     enum Mode: Int { case thumbnails, outline }
 
-    let thumbnails = PDFThumbnailView()
+    let thumbnails = ThumbnailGrid(frame: .zero)
     private let pdfView: PDFView
     private let switcher = NSSegmentedControl(labels: [L("Thumbnails"), L("Contents")], trackingMode: .selectOne, target: nil, action: nil)
     private let outlineView = NSOutlineView()
@@ -39,9 +39,6 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switcher.segmentDistribution = .fillEqually
 
         thumbnails.pdfView = pdfView
-        thumbnails.thumbnailSize = NSSize(width: 104, height: 136)
-        thumbnails.allowsMultipleSelection = true
-        thumbnails.backgroundColor = .clear
 
         let column = NSTableColumn(identifier: .init("title"))
         outlineView.addTableColumn(column)

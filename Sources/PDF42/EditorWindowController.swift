@@ -5,9 +5,9 @@ import UniformTypeIdentifiers
 
 final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation {
     let pdfView = EditorPDFView()
-    private lazy var sidebar = SidebarViewController(pdfView: pdfView)
+    private(set) lazy var sidebar = SidebarViewController(pdfView: pdfView)
     private let splitController = NSSplitViewController()
-    private let banner = BannerView()
+    let banner = BannerView()
     private let toolbarController = ToolbarController(identifier: "PDF42.toolbar", elements: Cmd.toolbar)
     private let colorButton = ColorButton(symbol: "paintpalette", toolTip: L("Colour of the tool or selected annotation"),
                                           color: .systemRed, allowsNone: false)
@@ -63,6 +63,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.center()
 
         pdfView.document = pdf
+        sidebar.thumbnails.onMove = { [weak self] indices, target in self?.movePages(indices, to: target) }
+        sidebar.thumbnails.onDropFiles = { [weak self] urls, target in self?.insertFiles(urls, at: target) }
         setTool(.select)
         updateSubtitle()
 
@@ -127,6 +129,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func replaceDocument(_ pdf: PDFDocument) {
         pdfView.selectAnnotation(nil)
         pdfView.document = pdf
+        sidebar.thumbnails.reload()
         sidebar.reloadOutline()
         resetSearch()
         updateSubtitle()
@@ -173,7 +176,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window?.subtitle = text
     }
 
-    private func updateSignatureBanner() {
+    func updateSignatureBanner() {
         guard let signatures = pdfDoc?.signatures, !signatures.isEmpty else {
             banner.hide()
             return
@@ -249,6 +252,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     func add(_ annotation: PDFAnnotation, to page: PDFPage, name: String) {
         page.addAnnotation(annotation)
         pdfView.annotationsChanged(on: page)
+        sidebar.thumbnails.refresh(page)
         undo?.registerUndo(withTarget: self) { $0.remove(annotation, from: page, name: name) }
         undo?.setActionName(name)
     }
@@ -258,6 +262,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         if let popup = annotation.popup { page.removeAnnotation(popup) }
         page.removeAnnotation(annotation)
         pdfView.annotationsChanged(on: page)
+        sidebar.thumbnails.refresh(page)
         undo?.registerUndo(withTarget: self) { $0.add(annotation, to: page, name: name) }
         undo?.setActionName(name)
     }
@@ -479,20 +484,48 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             alert.addButton(withTitle: L("Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        guard let options = SignDialog.run() else { return }
+        let stamp = pdfView.selectedAnnotation as? ImageStampAnnotation
+        let stampPage = pdfView.selectedPage
+        guard let (chosen, visible) = SignDialog.run(stampSelected: stamp != nil) else { return }
+        var options = chosen
 
         prepareForSave()
+        // A selected signature image becomes the visible signature (removed from the base copy).
+        var removedStamp: (PDFAnnotation, PDFPage)?
+        if visible, let page = stamp != nil ? stampPage : pdfView.currentPage {
+            let rect: CGRect
+            if let stamp { rect = stamp.bounds } else {
+                let box = page.bounds(for: .cropBox)
+                rect = CGRect(x: box.maxX - 36 - 220, y: box.minY + 36, width: 220, height: 72)
+            }
+            let appearance = Self.signatureAppearance(size: rect.size, image: stamp?.image, name: options.identity.name,
+                                                      reason: options.reason, date: Date())
+            options.visible = (pdf.index(for: page), rect, appearance)
+            if let stamp, !(alreadySigned && !doc.isDocumentEdited) {
+                page.removeAnnotation(stamp)
+                removedStamp = (stamp, page)
+            }
+        }
         let base: Data
         if alreadySigned, !doc.isDocumentEdited, let original = doc.originalData {
             base = original
         } else if let data = pdf.dataRepresentation() {
             base = data
         } else { return }
+        if let (a, p) = removedStamp { p.addAnnotation(a) }
 
-        let signed: Data
+        var signed: Data
         do { signed = try PDFSigner.sign(base, options: options) } catch {
-            presentError(error)
-            return
+            // Offline or TSA problem: offer to sign without the timestamp.
+            guard options.timestampURL != nil else { presentError(error); return }
+            let ask = NSAlert()
+            ask.messageText = L("Could not get a trusted timestamp")
+            ask.informativeText = error.localizedDescription
+            ask.addButton(withTitle: L("Sign Without Timestamp"))
+            ask.addButton(withTitle: L("Cancel"))
+            guard ask.runModal() == .alertFirstButtonReturn else { return }
+            options.timestampURL = nil
+            do { signed = try PDFSigner.sign(base, options: options) } catch { presentError(error); return }
         }
 
         let panel = NSSavePanel()
@@ -515,6 +548,43 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func verifySignaturesAction(_ sender: Any?) { showSignatures() }
+
+    /// Appearance of a visible signature: optional signature image, name, reason and date (3× resolution).
+    static func signatureAppearance(size: CGSize, image: CGImage?, name: String, reason: String, date: Date) -> CGImage {
+        let scale: CGFloat = 3
+        let w = Int(size.width * scale), h = Int(size.height * scale)
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.scaleBy(x: scale, y: scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        let rect = CGRect(origin: .zero, size: size)
+        NSColor(srgbRed: 0.1, green: 0.3, blue: 0.7, alpha: 0.8).setStroke()
+        let frame = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
+        frame.lineWidth = 1
+        frame.stroke()
+        var textRect = rect.insetBy(dx: 6, dy: 4)
+        if let image {
+            let side = min(rect.height - 8, rect.width * 0.45)
+            let aspect = CGFloat(image.width) / max(1, CGFloat(image.height))
+            let imgRect = CGRect(x: 6, y: (rect.height - side / aspect.clamped(0.2, 5)) / 2, width: side, height: side / aspect.clamped(0.2, 5))
+            ctx.draw(image, in: imgRect)
+            textRect.origin.x = imgRect.maxX + 6
+            textRect.size.width = rect.width - imgRect.maxX - 12
+        }
+        let font = NSFont(name: "Helvetica Neue", size: min(9, size.height / 6)) ?? .systemFont(ofSize: 8)
+        let bold = NSFont(name: "Helvetica Neue Bold", size: font.pointSize + 1) ?? font
+        let blue = NSColor(srgbRed: 0.1, green: 0.25, blue: 0.55, alpha: 1)
+        let text = NSMutableAttributedString(string: L("Digitally signed by") + "\n", attributes: [.font: font, .foregroundColor: blue])
+        text.append(NSAttributedString(string: name + "\n", attributes: [.font: bold, .foregroundColor: blue]))
+        text.append(NSAttributedString(string: date.formatted(date: .numeric, time: .shortened), attributes: [.font: font, .foregroundColor: blue]))
+        if !reason.isEmpty { text.append(NSAttributedString(string: "\n" + reason, attributes: [.font: font, .foregroundColor: blue])) }
+        let bounds = text.boundingRect(with: textRect.size, options: [.usesLineFragmentOrigin])
+        text.draw(with: CGRect(x: textRect.minX, y: textRect.midY - bounds.height / 2, width: textRect.width, height: bounds.height),
+                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage()!
+    }
 
     // MARK: - Export
 
@@ -744,7 +814,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     /// Pages selected in the thumbnail sidebar, or the current page.
     private var targetIndices: [Int] {
         guard let pdf else { return [] }
-        let selected = (sidebar.thumbnails.selectedPages ?? []).map { pdf.index(for: $0) }.filter { $0 != NSNotFound }
+        let selected = sidebar.thumbnails.selectedPages.map { pdf.index(for: $0) }.filter { $0 != NSNotFound }
         return selected.count > 1 ? selected.sorted() : [currentIndex]
     }
 
@@ -758,6 +828,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             page.rotation = ((page.rotation + degrees) % 360 + 360) % 360
         }
         pdfView.layoutDocumentView()
+        sidebar.thumbnails.reload()
         undo?.registerUndo(withTarget: self) { $0.rotate(indices, by: -degrees) }
         undo?.setActionName(L("Rotate"))
     }
@@ -778,6 +849,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let pages = indices.compactMap { pdf.page(at: $0) }
         for i in indices.sorted().reversed() { pdf.removePage(at: i) }
         pdfView.layoutDocumentView()
+        sidebar.thumbnails.reload()
         undo?.registerUndo(withTarget: self) { $0.insertPages(pages, at: indices) }
         undo?.setActionName(L("Delete Pages"))
         updateSubtitle()
@@ -790,6 +862,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         pdfView.layoutDocumentView()
         if let first = pages.first { pdfView.go(to: first) }
+        sidebar.thumbnails.reload()
         undo?.registerUndo(withTarget: self) { $0.deletePages(indices) }
         undo?.setActionName(L("Insert Pages"))
         updateSubtitle()
@@ -825,6 +898,45 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
     }
 
+    /// Drag & drop in thumbnails: moves `indices` before position `target`.
+    func movePages(_ indices: [Int], to target: Int) {
+        guard let pdf, !indices.isEmpty else { return }
+        let order = (0..<pdf.pageCount).compactMap { pdf.page(at: $0) }
+        let moving = indices.sorted().compactMap { $0 < order.count ? order[$0] : nil }
+        var rest = order.enumerated().filter { !indices.contains($0.offset) }.map(\.element)
+        let insertAt = target - indices.filter { $0 < target }.count
+        rest.insert(contentsOf: moving, at: max(0, min(insertAt, rest.count)))
+        setPageOrder(rest, name: L("Move Pages"))
+    }
+
+    private func setPageOrder(_ pages: [PDFPage], name: String) {
+        guard let pdf else { return }
+        let old = (0..<pdf.pageCount).compactMap { pdf.page(at: $0) }
+        guard old.map(ObjectIdentifier.init) != pages.map(ObjectIdentifier.init) else { return }
+        pdfView.selectAnnotation(nil)
+        for i in stride(from: pdf.pageCount - 1, through: 0, by: -1) { pdf.removePage(at: i) }
+        for (i, p) in pages.enumerated() { pdf.insert(p, at: i) }
+        pdfView.layoutDocumentView()
+        sidebar.thumbnails.reload()
+        undo?.registerUndo(withTarget: self) { $0.setPageOrder(old, name: name) }
+        undo?.setActionName(name)
+        updateSubtitle()
+    }
+
+    /// Files dropped on the thumbnails: PDF pages or images inserted at `index`.
+    func insertFiles(_ urls: [URL], at index: Int) {
+        var pages: [PDFPage] = []
+        for url in urls {
+            if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+                if let image = NSImage(contentsOf: url), let page = PDFDoc.page(from: image) { pages.append(page) }
+            } else if let other = PDFDocument(url: url) {
+                for i in 0..<other.pageCount { if let p = other.page(at: i)?.copy() as? PDFPage { pages.append(p) } }
+            }
+        }
+        guard !pages.isEmpty else { return }
+        insertPages(pages, at: Array(index..<(index + pages.count)))
+    }
+
     @objc func movePageUpAction(_ sender: Any?) { movePage(currentIndex, by: -1) }
     @objc func movePageDownAction(_ sender: Any?) { movePage(currentIndex, by: 1) }
 
@@ -835,6 +947,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         pdf.exchangePage(at: index, withPageAt: target)
         pdfView.layoutDocumentView()
         if let page = pdf.page(at: target) { pdfView.go(to: page) }
+        sidebar.thumbnails.reload()
         undo?.registerUndo(withTarget: self) { $0.movePage(target, by: -delta) }
         undo?.setActionName(L("Move Page"))
         updateSubtitle()
@@ -897,4 +1010,8 @@ final class ClosureTarget: NSObject {
     let handler: () -> Void
     init(_ handler: @escaping () -> Void) { self.handler = handler }
     @objc func fire() { handler() }
+}
+
+private extension CGFloat {
+    func clamped(_ lo: CGFloat, _ hi: CGFloat) -> CGFloat { Swift.min(hi, Swift.max(lo, self)) }
 }

@@ -3,7 +3,7 @@ import Kit42
 
 /// Dialogs for digital signatures: choose certificate, import/create, show verification results.
 enum SignDialog {
-    static func run() -> PDFSigner.Options? {
+    static func run(stampSelected: Bool) -> (options: PDFSigner.Options, visible: Bool)? {
         var identities = CertificateStore.identities()
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         func fill(select name: String? = nil) {
@@ -27,10 +27,18 @@ enum SignDialog {
             if let id = createCertificate() { identities = CertificateStore.identities(); fill(select: id.displayName) }
         }
 
+        let d = UserDefaults.standard
+        let visible = NSButton(checkboxWithTitle: stampSelected ? L("Visible signature (in place of the selected image)") : L("Visible signature (bottom right of the current page)"),
+                               target: nil, action: nil)
+        visible.state = stampSelected || d.bool(forKey: "sign.visible") ? .on : .off
+        let timestamp = NSButton(checkboxWithTitle: L("Add a trusted timestamp (needs internet)"), target: nil, action: nil)
+        timestamp.state = d.object(forKey: "sign.tsa") == nil || d.bool(forKey: "sign.tsa") ? .on : .off
+        let tsa = NSTextField(string: d.string(forKey: "sign.tsaURL") ?? "http://timestamp.digicert.com")
         let alert = NSAlert.form(L("Sign Document"),
                                  info: L("The signature is added to a copy of the document. Certificates come from the macOS Keychain."),
                                  ok: L("Sign…"),
-                                 rows: [(L("Certificate:"), popup), ("", actions), (L("Reason:"), reason), (L("Location:"), location)])
+                                 rows: [(L("Certificate:"), popup), ("", actions), (L("Reason:"), reason), (L("Location:"), location),
+                                        ("", visible), ("", timestamp), (L("TSA server:"), tsa)])
         alert.icon = Theme42.symbol("checkmark.seal.fill", size: 40)
         while true {
             guard alert.runModal() == .alertFirstButtonReturn else { return nil }
@@ -38,9 +46,14 @@ enum SignDialog {
                 NSSound.beep()
                 continue
             }
-            UserDefaults.standard.set(reason.stringValue, forKey: "sign.reason")
-            UserDefaults.standard.set(location.stringValue, forKey: "sign.location")
-            return .init(identity: identities[popup.indexOfSelectedItem], reason: reason.stringValue, location: location.stringValue)
+            d.set(reason.stringValue, forKey: "sign.reason")
+            d.set(location.stringValue, forKey: "sign.location")
+            d.set(visible.state == .on, forKey: "sign.visible")
+            d.set(timestamp.state == .on, forKey: "sign.tsa")
+            d.set(tsa.stringValue, forKey: "sign.tsaURL")
+            var o = PDFSigner.Options(identity: identities[popup.indexOfSelectedItem], reason: reason.stringValue, location: location.stringValue)
+            if timestamp.state == .on { o.timestampURL = URL(string: tsa.stringValue.trimmingCharacters(in: .whitespaces)) }
+            return (o, visible.state == .on)
         }
     }
 
@@ -105,6 +118,7 @@ enum SignDialog {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         var lines = [s.summary]
         if let d = s.date { lines.append(L("Signed: %@", d.formatted(date: .long, time: .shortened))) }
+        if let t = s.timestamp { lines.append(L("Trusted timestamp: %@", t.formatted(date: .long, time: .standard))) }
         if let r = s.reason { lines.append(L("Reason: %@", r)) }
         if let l = s.location { lines.append(L("Location: %@", l)) }
         if s.status == .untrusted, let t = s.trustMessage { lines.append(t) }

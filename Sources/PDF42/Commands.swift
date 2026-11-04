@@ -18,6 +18,12 @@ enum Cmd {
     static let exportImages = Command(L("Export Pages as Images…"), #selector(W.exportPNGAction(_:)), symbol: "photo")
     static let exportAs = Command(L("Export As…"), #selector(W.exportAsAction(_:)), symbol: "square.and.arrow.up",
                                   shortcut: Shortcut("e", [.command, .shift]))
+    static let recognizeText = Command(L("Recognize Text (OCR)…"), #selector(W.recognizeTextAction(_:)), symbol: "text.viewfinder",
+                                       shortcut: Shortcut("t", [.command, .option]))
+    static let reduceSize = Command(L("Reduce File Size…"), #selector(W.reduceSizeAction(_:)), symbol: "arrow.down.right.and.arrow.up.left")
+    static let printSelected = Command(L("Print Selected Pages…"), #selector(W.printSelectedPagesAction(_:)), symbol: "printer",
+                                       shortcut: Shortcut("p", [.command, .option]))
+    static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
     static let createFromImages = Command(L("New PDF from Images…"), #selector(A.newFromImagesAction(_:)), symbol: "photo.stack")
 
     // Edit
@@ -79,7 +85,8 @@ enum Cmd {
 
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "PDF42")
-        spec.fileExtras = [.command(exportAs), .command(exportImages), .command(exportProtected), .separator, .command(createFromImages)]
+        spec.fileExtras = [.command(exportAs), .command(exportImages), .command(exportProtected), .command(reduceSize), .separator,
+                           .command(createFromImages), .command(recognizeText), .separator, .command(printSelected)]
         spec.editExtras = [.command(replaceText), .command(highlightSelection), .command(deleteAnnotation)]
         spec.find = [.command(find), .command(findNext), .command(findPrevious)]
         spec.view = [.command(thumbnails), .command(outline), .separator,
@@ -109,6 +116,7 @@ enum Cmd {
         .command(markupBar),
         .command(stamps),
         .command(sign),
+        .command(print),
         .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
     ]
 }
