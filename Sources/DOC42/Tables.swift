@@ -329,6 +329,17 @@ extension DocWindowController {
         textView.undoManager?.setActionName(L("Delete Table"))
     }
 
+    /// Tab in a table: the next (or previous) cell, its text selected.
+    func moveToCell(forward: Bool) -> Bool {
+        guard let g = tableGrid, let me = g.cell(containing: textView.selectedRange().location),
+              let i = g.cells.firstIndex(where: { $0 === me }) else { return false }
+        let j = forward ? i + 1 : i - 1
+        guard g.cells.indices.contains(j) else { return forward ? false : true }
+        let c = g.cells[j]
+        textView.setSelectedRange(NSRange(location: c.range.location, length: max(0, c.range.length - 1)))
+        return true
+    }
+
     // MARK: Merge and split
 
     @objc func mergeCellsAction(_ sender: Any?) {

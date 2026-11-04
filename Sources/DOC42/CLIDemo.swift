@@ -26,7 +26,8 @@ extension CLI {
     static func addWriterFeatures(_ doc: TextDocument) {
         let s = doc.storage
         let sheet = doc.styles
-        doc.docInfo = DocInfo(title: "Feature Test", author: "Test Author")
+        let demoTitle = "Feature Test", demoAuthor = "Test Author"
+        doc.docInfo = DocInfo(title: demoTitle, author: demoAuthor)
         doc.watermark = "DRAFT"
         doc.hyphenate = true
         // A custom paragraph style and a modified built-in one.

@@ -275,7 +275,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         for (i, card) in cards.enumerated() {
             card.number = i + 1
             card.total = cards.count
-            if let c = card.textViews.first?.textContainer, layoutManager.textStorage != nil {
+            if !changingPages, let c = card.textViews.first?.textContainer, c.layoutManager === layoutManager, layoutManager.textContainers.contains(where: { $0 === c }) {
                 let g = layoutManager.glyphRange(for: c)
                 if g.length > 0 {
                     let start = layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil).location
@@ -932,6 +932,19 @@ final class PageTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         editor?.textViewMouseUp(self)
+    }
+
+    /// Tab at the start of a list item demotes it (Shift-Tab promotes); in a table it goes to the next cell.
+    override func insertTab(_ sender: Any?) {
+        if let editor, editor.changeListLevel(by: 1) { return }
+        if let editor, editor.moveToCell(forward: true) { return }
+        super.insertTab(sender)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        if let editor, editor.changeListLevel(by: -1) { return }
+        if let editor, editor.moveToCell(forward: false) { return }
+        super.insertBacktab(sender)
     }
 
     override func cancelOperation(_ sender: Any?) {

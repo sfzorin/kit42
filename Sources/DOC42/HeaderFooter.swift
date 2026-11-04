@@ -163,7 +163,11 @@ extension DocWindowController {
         let number = card.number
         let editor = HeaderEditor(card: card, header: header, part: part, text: text) { [weak self] f in
             guard let self else { return "" }
-            return Fields.value(f, at: -1, self.paged.fieldContext(page: number))
+            var c = self.paged.fieldContext(page: number)
+            if let tc = card.textViews.first?.textContainer {
+                c.pageStart = self.paged.layoutManager.characterRange(forGlyphRange: self.paged.layoutManager.glyphRange(for: tc), actualGlyphRange: nil).location
+            }
+            return Fields.value(f, at: -1, c)
         }
         editor.onCommit = { [weak self] e in self?.finishHeaderEdit(e) }
         headerEditor = editor

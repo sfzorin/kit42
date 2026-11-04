@@ -78,7 +78,7 @@ final class StylesPanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         table.addTableColumn(column)
         table.headerView = nil
         table.rowHeight = 26
-        table.style = .sourceList
+        table.style = .inset
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -162,7 +162,9 @@ final class StylesPanel: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         if s.kind == .character, let p = editor?.doc?.styles.resolved("Normal") {
             font = StyleSheet.font(family: s.family ?? p.family, size: size, weight: s.weight ?? 5, italic: s.italic ?? false)
         }
-        field.attributedStringValue = NSAttributedString(string: s.displayName, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        field.stringValue = s.displayName
+        field.font = font
+        field.textColor = .labelColor
         field.lineBreakMode = .byTruncatingTail
         field.toolTip = s.basedOn.map { L("Based on: %@", editor?.doc?.styles[$0]?.displayName ?? $0) }
         return field
