@@ -1,8 +1,9 @@
 // SCN42 UI strings: [English, Русский, Türkçe].
 let scn42Strings: [[String]] = [
     // App, welcome, window
-    ["Scanning made simple: documents, photos, receipts", "Простое сканирование: документы, фото, чеки", "Kolay tarama: belgeler, fotoğraflar, fişler"],
-    ["New Scan", "Новое сканирование", "Yeni Tarama"],
+    ["Scan documents, photos and receipts", "Сканирование документов, фото и чеков", "Belge, fotoğraf ve fiş tarama"],
+    ["Scan with iPhone…", "Сканировать с iPhone…", "iPhone ile Tara…"],
+    ["New Scan", "Новый скан", "Yeni Tarama"],
     ["Welcome Window", "Окно приветствия", "Karşılama Penceresi"],
     ["Quit", "Выйти", "Çık"],
     ["Quit without saving the scans?", "Выйти, не сохранив отсканированное?", "Taramalar kaydedilmeden çıkılsın mı?"],
@@ -96,7 +97,7 @@ let scn42Strings: [[String]] = [
     ["Delete Preset", "Удалить набор", "Hazır Ayarı Sil"],
 
     // File
-    ["Import Images or PDF…", "Импорт изображений или PDF…", "Görüntü veya PDF İçe Aktar…"],
+    ["Import Images or PDF…", "Импорт изображений и PDF…", "Görüntü/PDF İçe Aktar…"],
     ["Choose images or PDF files to add as pages", "Выберите изображения или PDF, чтобы добавить их как страницы", "Sayfa olarak eklenecek görüntüleri veya PDF dosyalarını seçin"],
     ["No images found in these files.", "В этих файлах нет изображений.", "Bu dosyalarda görüntü bulunamadı."],
     ["Save…", "Сохранить…", "Kaydet…"],

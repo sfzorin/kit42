@@ -21,10 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var windows: [ScanWindowController] = []
 
     private lazy var welcome = WelcomeWindowController(
-        app: .scn, tagline: L("Scanning made simple: documents, photos, receipts"),
+        app: .scn, tagline: L("Scan documents, photos and receipts"),
         actions: [
             .init(L("New Scan"), symbol: "scanner", action: #selector(AppDelegate.newScanAction(_:))),
-            .init(L("Scan with iPhone or iPad…"), symbol: "iphone", action: #selector(AppDelegate.phoneScanAction(_:))),
+            .init(L("Scan with iPhone…"), symbol: "iphone", action: #selector(AppDelegate.phoneScanAction(_:))),
             .init(L("Import Images or PDF…"), symbol: "square.and.arrow.down", action: #selector(NSDocumentController.openDocument(_:))),
         ])
 
@@ -132,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.removeBlank = env["K42_REMOVE_BLANK"] != nil || s.removeBlank
             w.settingsPanel.apply(s)
         }
+        w.settingsChanged()
         if let n = env["K42_DEMO_PAGES"].flatMap(Int.init), n > 0 {
             var o = w.settings.processing
             o.autoRotate = false
@@ -155,6 +156,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.autoscan(w, mode, env) }
         }
         if env["K42_DUMP_MENUS"] != nil { dumpMenus() }
+        if let list = env["K42_ACTIONS"] { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runActions(w, list) } }
+    }
+
+    /// K42_ACTIONS="select:2,rotateRight,moveUp,delete,undo,redo,enhance,insertHere,split,removeBlank,ocr,copyTextDry":
+    /// runs page commands once the pages are ready and prints the page order (ids shortened) after each.
+    private func runActions(_ w: ScanWindowController, _ list: String) {
+        if w.isScanning || w.pendingProcessing > 0 || w.busyText != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.runActions(w, list) }
+            return
+        }
+        var steps = list.split(separator: ",").map(String.init)
+        guard !steps.isEmpty else { return }
+        let step = steps.removeFirst()
+        let parts = step.split(separator: ":").map(String.init)
+        switch parts[0] {
+        case "select": w.pageList.select(parts.dropFirst().compactMap { Int($0).map { $0 - 1 } })
+        case "rotateRight": w.rotateRightAction(nil)
+        case "rotateLeft": w.rotateLeftAction(nil)
+        case "moveUp": w.movePageUpAction(nil)
+        case "moveDown": w.movePageDownAction(nil)
+        case "delete": w.deletePageAction(nil)
+        case "undo": w.doc.undo.undo()
+        case "redo": w.doc.undo.redo()
+        case "enhance": w.enhanceToggleAction(nil)
+        case "bw": w.pageColorAction(NSMenuItem.tagged(ColorMode.bw.rawValue + 1))
+        case "insertHere": w.insertHereAction(nil)
+        case "split": w.splitAction(nil)
+        case "removeBlank": w.removeBlankAction(nil)
+        case "ocr": w.recognizeTextAction(nil)
+        case "hideAll": w.toggleAllPanelsAction(nil)
+        case "history": w.showHistoryAction(nil)
+        default: print("actions: unknown \(step)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            func describe(_ c: ScanWindowController) -> String {
+                c.pages.map { p in "\(p.id.uuidString.prefix(4))\(p.image.width > p.image.height ? "L" : "P")\(p.options.enhancement.rawValue)\(p.image.bitsPerPixel == 1 ? "b" : "")" }.joined(separator: " ")
+            }
+            let selected = w.pageList.selection.map { "\($0 + 1)" }.joined(separator: "+")
+            print("actions: \(step) → [\(describe(w))] selected=\(selected) undo=\(w.doc.undo.canUndo) windows=\(self.windows.count)"
+                  + (self.windows.count > 1 ? " other=[\(describe(self.windows.last!))]" : ""))
+            if !steps.isEmpty { self.runActions(w, steps.joined(separator: ",")) }
+        }
     }
 
     private func autoscan(_ w: ScanWindowController, _ mode: String, _ env: [String: String]) {
@@ -228,5 +271,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if let main = NSApp.mainMenu { dump(main, 0) }
+    }
+}
+
+extension NSMenuItem {
+    static func tagged(_ tag: Int) -> NSMenuItem {
+        let i = NSMenuItem()
+        i.tag = tag
+        return i
     }
 }

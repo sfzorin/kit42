@@ -110,13 +110,13 @@ final class SaveSheetController: NSWindowController, NSTextFieldDelegate {
             v.widthAnchor.constraint(equalToConstant: 230).isActive = true
         }
         name.translatesAutoresizingMaskIntoConstraints = false
-        name.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        name.widthAnchor.constraint(equalToConstant: 230).isActive = true
         folder.translatesAutoresizingMaskIntoConstraints = false
-        folder.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        folder.widthAnchor.constraint(equalToConstant: 230).isActive = true
         quality.translatesAutoresizingMaskIntoConstraints = false
         quality.widthAnchor.constraint(equalToConstant: 230).isActive = true
         preview.translatesAutoresizingMaskIntoConstraints = false
-        preview.widthAnchor.constraint(equalToConstant: 330).isActive = true
+        preview.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
         let cancel = NSButton(title: L("Cancel"), target: self, action: #selector(cancelAction))
         cancel.keyEquivalent = "\u{1b}"
@@ -143,7 +143,7 @@ final class SaveSheetController: NSWindowController, NSTextFieldDelegate {
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -48),
         ])
         w.contentView = content
-        w.setContentSize(content.fittingSize)
+        fitWindow()
     }
 
     private func load() {
@@ -184,7 +184,14 @@ final class SaveSheetController: NSWindowController, NSTextFieldDelegate {
         }
         estimateWork = work
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15, execute: work)
-        window?.setContentSize(window?.contentView?.fittingSize ?? .zero)
+        fitWindow()
+    }
+
+    /// Height from the visible rows; a fixed width with room on both sides.
+    private func fitWindow() {
+        guard let content = window?.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        window?.setContentSize(NSSize(width: max(520, content.fittingSize.width + 24), height: content.fittingSize.height))
     }
 
     @objc private func changed() {

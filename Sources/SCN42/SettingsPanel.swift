@@ -149,9 +149,16 @@ final class SettingsPanelController: NSViewController {
         stack.setViews([header(L("Scan")), main, separator(), header(L("After scanning")), cleanup, checks, separator(), moreRow, advanced], in: .top)
         stack.setCustomSpacing(12, after: main)
         stack.setCustomSpacing(12, after: checks)
-        for v in stack.arrangedSubviews where v is NSBox {
+        for v in stack.arrangedSubviews where v is NSBox || v is NSGridView {
             v.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
         }
+        advancedGrid.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+        source.segmentDistribution = .fillEqually
+        color.segmentDistribution = .fillEqually
+        // One label width for all sections, so the controls line up.
+        let all = [main, cleanup, advancedGrid]
+        let labelWidth = all.flatMap { g in (0..<g.numberOfRows).compactMap { g.cell(atColumnIndex: 0, rowIndex: $0).contentView?.fittingSize.width } }.max() ?? 80
+        all.forEach { $0.column(at: 0).width = ceil(labelWidth) }
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
@@ -239,11 +246,13 @@ final class SettingsPanelController: NSViewController {
         g.rowSpacing = 8
         g.columnSpacing = 8
         g.column(at: 0).xPlacement = .trailing
-        g.column(at: 0).width = 84
         g.rowAlignment = .firstBaseline
+        // Labels take what they need; controls fill the rest of the panel (long translations still fit).
+        g.column(at: 1).xPlacement = .fill
         for (_, v) in rows where v is NSPopUpButton || v is NSSegmentedControl || v is NSSlider {
             v.translatesAutoresizingMaskIntoConstraints = false
-            v.widthAnchor.constraint(equalToConstant: 176).isActive = true
+            v.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+            v.setContentHuggingPriority(.defaultLow, for: .horizontal)
             if let p = v as? NSPopUpButton { (p.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingTail }
         }
         return g

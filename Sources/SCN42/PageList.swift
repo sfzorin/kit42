@@ -21,7 +21,8 @@ final class PageListController: NSViewController, NSTableViewDataSource, NSTable
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         table.headerView = nil
-        table.style = .sourceList
+        table.style = .plain
+        table.selectionHighlightStyle = .regular
         table.rowHeight = 176
         table.intercellSpacing = NSSize(width: 0, height: 6)
         table.allowsMultipleSelection = true

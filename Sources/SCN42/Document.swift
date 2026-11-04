@@ -102,6 +102,16 @@ final class ScanDocument {
 
     var isEmpty: Bool { pages.isEmpty }
 
+    init() { undo.groupsByEvent = false }
+
+    /// One undo step per change, also for changes not started by an event (scans arriving, menu hooks).
+    private func step(_ body: () -> Void) {
+        if undo.isUndoing || undo.isRedoing { body(); return }
+        undo.beginUndoGrouping()
+        body()
+        undo.endUndoGrouping()
+    }
+
     private func changed(_ name: String) {
         isDirty = true
         undo.setActionName(name)
@@ -109,16 +119,22 @@ final class ScanDocument {
     }
 
     func insert(_ new: [ScanPage], at index: Int, name: String = L("Add Pages")) {
-        let i = min(max(0, index), pages.count)
-        pages.insert(contentsOf: new, at: i)
-        let ids = Set(new.map(\.id))
-        undo.registerUndo(withTarget: self) { d in d.remove(ids: ids, name: name) }
-        changed(name)
+        step {
+            let i = min(max(0, index), pages.count)
+            pages.insert(contentsOf: new, at: i)
+            let ids = Set(new.map(\.id))
+            undo.registerUndo(withTarget: self) { d in d.remove(ids: ids, name: name) }
+            changed(name)
+        }
     }
 
     func append(_ new: [ScanPage]) { insert(new, at: pages.count) }
 
     func remove(ids: Set<UUID>, name: String = L("Delete Pages")) {
+        step { removeNow(ids: ids, name: name) }
+    }
+
+    private func removeNow(ids: Set<UUID>, name: String) {
         let removed = pages.enumerated().filter { ids.contains($0.element.id) }
         guard !removed.isEmpty else { return }
         pages.removeAll { ids.contains($0.id) }
@@ -142,10 +158,12 @@ final class ScanDocument {
     }
 
     func setOrder(_ order: [ScanPage], name: String) {
-        let old = pages
-        pages = order
-        undo.registerUndo(withTarget: self) { $0.setOrder(old, name: name) }
-        changed(name)
+        step {
+            let old = pages
+            pages = order
+            undo.registerUndo(withTarget: self) { $0.setOrder(old, name: name) }
+            changed(name)
+        }
     }
 
     func replace(_ page: ScanPage, with new: [ScanPage], name: String = L("Rescan Page")) {
@@ -157,10 +175,12 @@ final class ScanDocument {
 
     /// Changes pages in place (rotate, enhance) with undo.
     func modify(_ targets: [ScanPage], name: String, _ change: (ScanPage) -> Void) {
-        let before = targets.map { ($0, $0.snapshot) }
-        targets.forEach(change)
-        registerRestore(before, name: name)
-        changed(name)
+        step {
+            let before = targets.map { ($0, $0.snapshot) }
+            targets.forEach(change)
+            registerRestore(before, name: name)
+            changed(name)
+        }
     }
 
     private func registerRestore(_ states: [(ScanPage, ScanPage.Snapshot)], name: String) {

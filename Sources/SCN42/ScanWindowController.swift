@@ -71,6 +71,7 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     let viewSwitch = NSSegmentedControl(labels: [L("Glass"), L("Pages")], trackingMode: .selectOne, target: nil, action: nil)
     let countLabel = NSTextField(labelWithString: "")
     let statusBar = NSStackView()
+    let statusLine = NSBox()
     var sidebarItem: NSSplitViewItem!
     var inspectorItem: NSSplitViewItem!
     lazy var toolbarImpl = ScanToolbar(owner: self)
@@ -148,7 +149,7 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         statusBar.spacing = 6
         statusBar.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
 
-        let line = NSBox()
+        let line = statusLine
         line.boxType = .separator
         let stack = NSStackView(views: [banner, preview.view, line, statusBar])
         stack.orientation = .vertical
@@ -346,7 +347,11 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     }
 
     @objc func toggleAllPanelsAction(_ sender: Any?) {
-        Panels.toggleAll(in: window) { [weak self] hidden in self?.statusBar.isHidden = hidden }
+        Panels.toggleAll(in: window) { [weak self] hidden in
+            self?.statusBar.isHidden = hidden
+            self?.statusLine.isHidden = hidden
+            if hidden { self?.banner.hide() }
+        }
     }
 
     // MARK: - Validation
