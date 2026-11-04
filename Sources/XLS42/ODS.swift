@@ -36,10 +36,12 @@ enum ODS {
             }
         }
         // Table styles with table:display="false" hide their sheet.
-        var hiddenTableStyles = Set<String>()
+        var hiddenTableStyles = Set<String>(), tabColors: [String: NSColor] = [:]
         for container in [stylesRoot?.child("automatic-styles"), content.child("automatic-styles")] {
-            for e in container?.children("style") ?? [] where e.attr("family") == "table" && e.child("table-properties")?.attr("display") == "false" {
-                if let n = e.attr("name") { hiddenTableStyles.insert(n) }
+            for e in container?.children("style") ?? [] where e.attr("family") == "table" {
+                guard let n = e.attr("name"), let p = e.child("table-properties") else { continue }
+                if p.attr("display") == "false" { hiddenTableStyles.insert(n) }
+                if let c = color(p.attr("tab-color")) { tabColors[n] = c }
             }
         }
         func resolved(_ name: String?) -> CellStyle {
@@ -66,7 +68,10 @@ enum ODS {
         let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
             var sheet = Sheet(name: table.attr("name") ?? "Sheet\(wb.sheets.count + 1)")
-            if let st = table.attr("style-name"), hiddenTableStyles.contains(st) { sheet.hidden = true }
+            if let st = table.attr("style-name") {
+                sheet.hidden = hiddenTableStyles.contains(st)
+                sheet.tabColor = tabColors[st]
+            }
             if table.attr("protected") == "true" {
                 // LibreOffice may chain two digests (legacy Excel hash, then SHA-1).
                 let digests = [table.attr("protection-key-digest-algorithm") ?? sha1Digest, table.attr("protection-key-digest-algorithm-2")]
@@ -531,11 +536,11 @@ enum ODS {
         var validations = ""
         for (si, sheet) in wb.sheets.enumerated() {
             var t = "<table:table table:name=\"\(xmlEscape(sheet.name))\""
-            if sheet.hidden {
-                if !auto.contains("style:name=\"taHidden\"") {
-                    auto += "<style:style style:name=\"taHidden\" style:family=\"table\"><style:table-properties table:display=\"false\"/></style:style>"
-                }
-                t += " table:style-name=\"taHidden\""
+            if sheet.hidden || sheet.tabColor != nil {
+                // Visibility and tab colour (table:tab-color, as LibreOffice writes it).
+                auto += "<style:style style:name=\"ta\(si + 1)\" style:family=\"table\"><style:table-properties table:display=\"\(!sheet.hidden)\""
+                    + (sheet.tabColor.map { " table:tab-color=\"#\(hex($0).lowercased())\"" } ?? "") + "/></style:style>"
+                t += " table:style-name=\"ta\(si + 1)\""
             }
             if let area = sheet.printArea { t += " table:print-ranges=\"\(xmlEscape(odfRange(sheet.name, area)))\"" }
             if let p = sheet.protection {

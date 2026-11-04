@@ -78,6 +78,15 @@ if let i = CommandLine.arguments.firstIndex(of: "--pivot-demo"), CommandLine.arg
     exit(0)
 }
 
+// XLS42 --feature-demo out.(xlsx|ods): tab colours, hidden sheet, hyperlinks, cell styles (for format checks)
+if let i = CommandLine.arguments.firstIndex(of: "--feature-demo"), CommandLine.arguments.count > i + 1 {
+    let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let data = SelfTest.featureDemo()
+    try (out.pathExtension.lowercased() == "ods" ? ODS.write(data) : XLSX.write(data)).write(to: out)
+    print("wrote \(out.path)")
+    exit(0)
+}
+
 // XLS42 --export-pdf in.xlsx out.pdf [all|landscape|nogrid|nofit]
 if let i = CommandLine.arguments.firstIndex(of: "--export-pdf"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments

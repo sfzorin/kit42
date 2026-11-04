@@ -194,6 +194,30 @@ extension SelfTest {
             print(ok ? "ok  " : "FAIL", name, ok ? "" : detail())
             if !ok { failed += 1 }
         }
+        let wb = featureDemo()
+        for (kind, data) in [("xlsx", XLSX.write(wb)), ("ods", ODS.write(wb))] {
+            guard let back = try? SpreadsheetFile.read(data) else { check("\(kind) reads back", false); continue }
+            let s = back.sheets[0]
+            let tab = s.tabColor.map(XLSX.argb)
+            check("\(kind): tab colour and hidden sheet", tab == "FFFF0000" && back.sheets[1].hidden && !back.sheets[2].hidden, "\(String(describing: tab)) \(back.sheets.map(\.hidden))")
+            check("\(kind): hyperlinks", s.hyperlinks[CellRef("A1")!] == "https://www.apple.com/" && s.hyperlinks[CellRef("A2")!] == "#Third!B5",
+                  "\(s.hyperlinks)")
+            let b1 = s[CellRef("B1")!].style, b2 = s[CellRef("B2")!].style
+            check("\(kind): rotation, shrink, hidden formula", b1.rotation == 45 && b2.rotation == -30 && b2.shrink && b2.hiddenFormula,
+                  "\(b1.rotation) \(b2.rotation) \(b2.shrink) \(b2.hiddenFormula)")
+            if kind == "xlsx" {
+                check("xlsx: named cell styles", b1.styleName == "Heading 1" && b2.styleName == "Good" && b1.bold && b1.fontSize == 15, "\(String(describing: b1.styleName))")
+                check("xlsx: manual page breaks", s.rowBreaks == [10], "\(s.rowBreaks)")
+            }
+        }
+        let styles = String(decoding: (try? ZipArchive(data: XLSX.write(wb)))?["xl/styles.xml"] ?? Data(), as: UTF8.self)
+        check("xlsx cellStyles list the named styles", styles.range(of: "<cellStyle name=\"Heading 1\" xfId=\"[0-9]+\" builtinId=\"16\"/>", options: .regularExpression) != nil
+              && styles.contains("name=\"Good\""), styles.components(separatedBy: "<cellStyles").last ?? "")
+        return failed
+    }
+
+    /// Workbook with sheet features (also `XLS42 --feature-demo out.xlsx|ods` for checks in Excel/LibreOffice).
+    static func featureDemo() -> Workbook {
         var wb = Workbook()
         wb.sheets = [Sheet(name: "Visible"), Sheet(name: "Secret"), Sheet(name: "Third")]
         wb.sheets[0].tabColor = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
@@ -215,24 +239,6 @@ extension SelfTest {
         good.style.rotation = -30
         wb.sheets[0][CellRef("B2")!] = good
         wb.sheets[0].rowBreaks = [10]
-        for (kind, data) in [("xlsx", XLSX.write(wb)), ("ods", ODS.write(wb))] {
-            guard let back = try? SpreadsheetFile.read(data) else { check("\(kind) reads back", false); continue }
-            let s = back.sheets[0]
-            let tab = s.tabColor.map(XLSX.argb)
-            check("\(kind): tab colour and hidden sheet", tab == "FFFF0000" && back.sheets[1].hidden && !back.sheets[2].hidden, "\(String(describing: tab)) \(back.sheets.map(\.hidden))")
-            check("\(kind): hyperlinks", s.hyperlinks[CellRef("A1")!] == "https://www.apple.com/" && s.hyperlinks[CellRef("A2")!] == "#Third!B5",
-                  "\(s.hyperlinks)")
-            let b1 = s[CellRef("B1")!].style, b2 = s[CellRef("B2")!].style
-            check("\(kind): rotation, shrink, hidden formula", b1.rotation == 45 && b2.rotation == -30 && b2.shrink && b2.hiddenFormula,
-                  "\(b1.rotation) \(b2.rotation) \(b2.shrink) \(b2.hiddenFormula)")
-            if kind == "xlsx" {
-                check("xlsx: named cell styles", b1.styleName == "Heading 1" && b2.styleName == "Good" && b1.bold && b1.fontSize == 15, "\(String(describing: b1.styleName))")
-                check("xlsx: manual page breaks", s.rowBreaks == [10], "\(s.rowBreaks)")
-            }
-        }
-        let styles = String(decoding: (try? ZipArchive(data: XLSX.write(wb)))?["xl/styles.xml"] ?? Data(), as: UTF8.self)
-        check("xlsx cellStyles list the named styles", styles.range(of: "<cellStyle name=\"Heading 1\" xfId=\"[0-9]+\" builtinId=\"16\"/>", options: .regularExpression) != nil
-              && styles.contains("name=\"Good\""), styles.components(separatedBy: "<cellStyles").last ?? "")
-        return failed
+        return wb
     }
 }
