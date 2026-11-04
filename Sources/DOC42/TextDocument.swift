@@ -125,9 +125,22 @@ final class TextDocument: NSDocument {
             o.trackRevisions = trackChanges
             return DocxWriter.data(storage, options: o)
         }
-        // Other formats have no footnotes: references become numbers, notes a list at the end.
-        let storage = Notes.flatten(Revisions.accepted(self.storage))
+        // Tracked changes are accepted. Other formats have no footnotes (ODT has): references become numbers,
+        // notes a list at the end. Comments go to ODT, RTF and HTML through markers (Annotations.swift).
+        let accepted = Revisions.accepted(self.storage)
+        var comments: [DocComment] = [], notes: [DocNote] = []
+        var storage: NSAttributedString
+        switch type {
+        case .openDocument:
+            (storage, comments, notes) = CommentMarkers.insert(accepted, notes: true)
+            storage = Notes.flatten(storage)   // (only section geometry left to drop)
+        case .rtf, .html:
+            (storage, comments, _) = CommentMarkers.insert(Notes.flatten(accepted), notes: false, clamp: type == .html)
+        default:
+            storage = Notes.flatten(accepted)
+        }
         let range = NSRange(location: 0, length: storage.length)
+        if type == .html { return CommentMarkers.finishHTML(try storage.data(from: range, documentAttributes: [.documentType: type, .characterEncoding: String.Encoding.utf8.rawValue]), comments: comments) }
         var attrs: [NSAttributedString.DocumentAttributeKey: Any] = [.documentType: type]
         if type == .html { attrs[.characterEncoding] = String.Encoding.utf8.rawValue }
         if type == .rtf || type == .openDocument {
@@ -139,12 +152,15 @@ final class TextDocument: NSDocument {
             attrs[.leftMargin] = setup.margins.left
             attrs[.rightMargin] = setup.margins.right
             let data = try text.data(from: NSRange(location: 0, length: text.length), documentAttributes: attrs)
-            if type == .rtf { return RtfFormat.finish(data, pictures: pictures, setup: setup) }
+            if type == .rtf {
+                let rtf = RtfFormat.finish(data, pictures: pictures, setup: setup)
+                return comments.isEmpty ? rtf : Data(RtfFormat.finishAnnotations(String(decoding: rtf, as: UTF8.self), comments: comments).utf8)
+            }
             var borders = false
             storage.enumerateAttribute(.paragraphStyle, in: range) { v, _, stop in
                 if let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.width(for: .border, edge: .minX) > 0 { borders = true; stop.pointee = true }
             }
-            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders)
+            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes)
         }
         return try storage.data(from: range, documentAttributes: attrs)
     }

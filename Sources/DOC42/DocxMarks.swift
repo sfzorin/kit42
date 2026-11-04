@@ -163,6 +163,18 @@ extension DocxStyles {
             case "C":
                 if let start = commentStarts[mark.payload], mark.at > start, let c = extras.comments[mark.payload] {
                     text.addAttribute(.docComment, value: c, range: NSRange(location: start, length: mark.at - start))
+                } else if let start = commentStarts[mark.payload], mark.at == start, text.length > 0, let c = extras.comments[mark.payload] {
+                    // A comment on a point (ODT, RTF): it covers the word before it (or after it).
+                    let ns = text.string as NSString
+                    func isSpace(_ i: Int) -> Bool { i < 0 || i >= ns.length || CharacterSet.whitespacesAndNewlines.contains(UnicodeScalar(ns.character(at: i)) ?? " ") }
+                    var a = start, b = start
+                    if !isSpace(start - 1) {
+                        while !isSpace(a - 1) { a -= 1 }
+                    } else {
+                        while !isSpace(b) { b += 1 }
+                    }
+                    if b == a, start < ns.length { b = start + 1 }
+                    if b > a { text.addAttribute(.docComment, value: c, range: NSRange(location: a, length: b - a)) }
                 }
             case "b":
                 guard text.length > 0 else { continue }
