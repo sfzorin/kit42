@@ -59,21 +59,86 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.toolbar = toolbarController.toolbar
         markupStrip.isShown = false
         window.addTitlebarAccessoryViewController(markupStrip)
-        window.setContentSize(NSSize(width: 1180, height: 840))
+        window.setContentSize(Self.windowSize(for: pdf))
         window.center()
 
         pdfView.document = pdf
+        sidebar.thumbnails.reload()   // the grid was built before the document was set
+        sidebar.reloadOutline()
         sidebar.thumbnails.onMove = { [weak self] indices, target in self?.movePages(indices, to: target) }
         sidebar.thumbnails.onDropFiles = { [weak self] urls, target in self?.insertFiles(urls, at: target) }
         setTool(.select)
         updateSubtitle()
 
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
+        pdfView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(pdfViewResized(_:)), name: NSView.frameDidChangeNotification, object: pdfView)
+        NotificationCenter.default.addObserver(self, selector: #selector(pdfViewScaleChanged(_:)), name: .PDFViewScaleChanged, object: pdfView)
+        DispatchQueue.main.async { [weak self] in self?.applyZoom() }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Landscape documents get a wide window, portrait ones a tall one.
+    static func windowSize(for pdf: PDFDocument) -> NSSize {
+        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        let page = pdf.page(at: 0).map(displayedSize) ?? NSSize(width: 595, height: 842)
+        let landscape = page.width > page.height
+        let sidebar: CGFloat = 200, chrome: CGFloat = 90
+        // The page fits whole at a comfortable size, the window fits the screen.
+        let height = min(screen.height - 40, landscape ? 820 : 1000)
+        let scale = (height - chrome - 40) / page.height
+        let width = min(screen.width - 40, max(landscape ? 1100 : 900, page.width * scale + sidebar + 80))
+        return NSSize(width: width, height: height)
+    }
+
+    /// Page size as shown: rotation applied.
+    static func displayedSize(_ page: PDFPage) -> NSSize {
+        let b = page.bounds(for: .cropBox).size
+        return page.rotation % 180 == 0 ? b : NSSize(width: b.height, height: b.width)
+    }
+
+    // MARK: - Zoom modes
+
+    enum ZoomMode { case page, width, custom }
+
+    /// Whole page by default (portrait and landscape alike); re-applied when the window is resized.
+    var zoomMode: ZoomMode = .page {
+        didSet { applyZoom() }
+    }
+
+    private var applyingZoom = false
+
+    func applyZoom() {
+        applyingZoom = true
+        defer { applyingZoom = false }
+        switch zoomMode {
+        case .width:
+            pdfView.autoScales = true
+        case .page:
+            guard let page = pdfView.currentPage ?? pdf?.page(at: 0), pdfView.bounds.width > 50 else { return }
+            let size = Self.displayedSize(page)
+            guard size.width > 0, size.height > 0 else { return }
+            let margin: CGFloat = 16
+            let scale = min((pdfView.bounds.width - margin * 2) / size.width, (pdfView.bounds.height - margin * 2) / size.height)
+            pdfView.autoScales = false
+            pdfView.scaleFactor = max(pdfView.minScaleFactor, min(pdfView.maxScaleFactor, scale))
+            pdfView.go(to: page)
+        case .custom:
+            break
+        }
+    }
+
+    @objc private func pdfViewResized(_ note: Notification) {
+        if zoomMode == .page { applyZoom() }
+    }
+
+    /// A pinch or a scale set elsewhere ends the automatic modes.
+    @objc private func pdfViewScaleChanged(_ note: Notification) {
+        if !applyingZoom, zoomMode == .page || (zoomMode == .width && !pdfView.autoScales) { zoomMode = .custom }
+    }
 
     private func setupContent() {
         pdfView.editor = self
@@ -743,10 +808,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         if splitController.splitViewItems.first?.isCollapsed == true { splitController.toggleSidebar(nil) }
     }
 
-    @objc func zoomInAction(_ sender: Any?) { pdfView.zoomIn(nil) }
-    @objc func zoomOutAction(_ sender: Any?) { pdfView.zoomOut(nil) }
-    @objc func zoomToFitAction(_ sender: Any?) { pdfView.autoScales = true }
-    @objc func actualSizeAction(_ sender: Any?) { pdfView.autoScales = false; pdfView.scaleFactor = 1 }
+    @objc func zoomInAction(_ sender: Any?) { zoomMode = .custom; pdfView.zoomIn(nil) }
+    @objc func zoomOutAction(_ sender: Any?) { zoomMode = .custom; pdfView.zoomOut(nil) }
+    @objc func zoomToFitAction(_ sender: Any?) { zoomMode = .page }
+    @objc func fitWidthAction(_ sender: Any?) { zoomMode = .width }
+    @objc func actualSizeAction(_ sender: Any?) { zoomMode = .custom; pdfView.autoScales = false; pdfView.scaleFactor = 1 }
 
     @objc func setDisplayModeAction(_ sender: Any?) {
         pdfView.displayMode = PDFDisplayMode(rawValue: commandTag(of: sender)) ?? .singlePageContinuous

@@ -22,6 +22,9 @@ public final class ToolStrip: NSTitlebarAccessoryViewController {
 
     private let stack = NSStackView()
     private var toolButtons: [StripButton] = []
+    private var groups: [StripGroup] = []
+    /// Shown when the window is too narrow: the groups that did not fit, as a menu.
+    private let overflow = StripButton(symbol: "chevron.right.2", toolTip: L("More"))
 
     public init(_ elements: [Element]) {
         super.init(nibName: nil, bundle: nil)
@@ -32,20 +35,33 @@ public final class ToolStrip: NSTitlebarAccessoryViewController {
         stack.spacing = 8
         for element in elements {
             switch element {
-            case .group(let items): stack.addArrangedSubview(group(items))
-            case .tools(let commands): stack.addArrangedSubview(group(commands.map { .tool($0) }))
-            case .buttons(let commands): stack.addArrangedSubview(group(commands.map { .command($0) }))
-            case .view(let view): stack.addArrangedSubview(group([.view(view)]))
+            case .group(let items): groups.append(group(items))
+            case .tools(let commands): groups.append(group(commands.map { .tool($0) }))
+            case .buttons(let commands): groups.append(group(commands.map { .command($0) }))
+            case .view(let view): groups.append(group([.view(view)]))
             }
         }
+        // Groups further right give way first when the window is narrow.
+        for (i, g) in groups.enumerated() {
+            stack.addArrangedSubview(g)
+            stack.setVisibilityPriority(i == 0 ? .mustHold : NSStackView.VisibilityPriority(rawValue: Float(900 - i)), for: g)
+        }
+        let more = StripGroup([overflow])
+        more.isHidden = true
+        stack.addArrangedSubview(more)
+        stack.setVisibilityPriority(.mustHold, for: more)
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: Theme42.stripHeight))
+        let container = StripContainer(frame: NSRect(x: 0, y: 0, width: 800, height: Theme42.stripHeight))
+        container.onLayout = { [weak self] in self?.updateOverflow() }
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
+        let center = stack.centerXAnchor.constraint(equalTo: container.centerXAnchor)
+        center.priority = .defaultLow
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            center,
             stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 10),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -12),
             container.heightAnchor.constraint(equalToConstant: Theme42.stripHeight),
         ])
         view = container
@@ -69,7 +85,40 @@ public final class ToolStrip: NSTitlebarAccessoryViewController {
     }
 
     private var allButtons: [NSView] {
-        stack.arrangedSubviews.flatMap { ($0 as? StripGroup)?.items ?? [] }
+        groups.flatMap(\.items)
+    }
+
+    private var updatingOverflow = false
+
+    private func updateOverflow() {
+        guard !updatingOverflow else { return }
+        updatingOverflow = true
+        defer { updatingOverflow = false }
+        let hidden = groups.filter { stack.detachedViews.contains($0) }
+        let more = overflow.superview?.superview as? StripGroup
+        if more?.isHidden != hidden.isEmpty { more?.isHidden = hidden.isEmpty }
+        guard !hidden.isEmpty else { return }
+        let menu = NSMenu()
+        for (k, g) in hidden.enumerated() {
+            if k > 0 { menu.addItem(.separator()) }
+            for item in g.items {
+                if let b = item as? StripButton {
+                    if let drop = b.dropDown, let copy = drop.copy() as? NSMenu {
+                        let sub = NSMenuItem(title: b.toolTip ?? "", action: nil, keyEquivalent: "")
+                        sub.image = b.image
+                        sub.submenu = copy
+                        menu.addItem(sub)
+                    } else if let action = b.action {
+                        let mi = NSMenuItem(title: b.toolTip ?? "", action: action, keyEquivalent: "")
+                        mi.tag = b.tag
+                        mi.target = b.target
+                        mi.image = b.image
+                        menu.addItem(mi)
+                    }
+                }
+            }
+        }
+        overflow.dropDown = menu
     }
 
     private func group(_ items: [Item]) -> StripGroup {
@@ -87,6 +136,15 @@ public final class ToolStrip: NSTitlebarAccessoryViewController {
     }
 }
 
+/// Reports layout passes so the strip can refresh its overflow menu.
+final class StripContainer: NSView {
+    var onLayout: (() -> Void)?
+    override func layout() {
+        super.layout()
+        DispatchQueue.main.async { [weak self] in self?.onLayout?() }
+    }
+}
+
 /// Rounded capsule holding related controls.
 final class StripGroup: NSView {
     let items: [NSView]
@@ -95,8 +153,8 @@ final class StripGroup: NSView {
         items = views
         super.init(frame: .zero)
         let stack = NSStackView(views: views)
-        stack.spacing = 1
-        stack.edgeInsets = NSEdgeInsets(top: 1, left: 3, bottom: 1, right: 3)
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 3, left: 4, bottom: 3, right: 4)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([

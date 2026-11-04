@@ -22,6 +22,8 @@ let pdf42Strings: [[String]] = [
     ["Zoom Out", "Уменьшить", "Uzaklaştır"],
     ["Actual Size", "Фактический размер", "Gerçek Boyut"],
     ["Zoom to Fit", "По размеру окна", "Pencereye Sığdır"],
+    ["Whole Page", "Страница целиком", "Tüm Sayfa"],
+    ["Fit Width", "По ширине", "Genişliğe Sığdır"],
     ["Single Page", "Одна страница", "Tek Sayfa"],
     ["Continuous Scroll", "Непрерывная прокрутка", "Sürekli Kaydırma"],
     ["Two Pages", "Разворот", "İki Sayfa"],

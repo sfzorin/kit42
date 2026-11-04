@@ -84,4 +84,5 @@ let kit42Strings: [[String]] = [
     ["The file is not an Office Open XML (ZIP) document", "Файл не является документом Office Open XML (ZIP)", "Dosya bir Office Open XML (ZIP) belgesi değil"],
     ["The file is damaged", "Файл повреждён", "Dosya hasarlı"],
     ["Unsupported compression in archive (%d)", "Неподдерживаемое сжатие в архиве (%d)", "Arşivde desteklenmeyen sıkıştırma (%d)"],
+    ["More", "Ещё", "Daha fazla"],
 ]

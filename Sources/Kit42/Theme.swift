@@ -2,7 +2,7 @@ import AppKit
 
 /// Shared look of Suite42 apps. Each app has its own accent colour; everything else is common.
 public enum Theme42 {
-    public static let stripHeight: CGFloat = 38
+    public static let stripHeight: CGFloat = 42
     public static let bannerHeight: CGFloat = 36
     public static let spacing: CGFloat = 8
     public static let cornerRadius: CGFloat = 8

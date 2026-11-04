@@ -4,7 +4,7 @@ import Kit42
 extension DocWindowController {
     // MARK: - Page setup, header & footer
 
-    private func changeSetup(_ name: String, _ body: (inout PageSetup) -> Void) {
+    func changeSetup(_ name: String, _ body: (inout PageSetup) -> Void) {
         guard let doc else { return }
         let old = doc.setup
         var new = old
@@ -48,6 +48,78 @@ extension DocWindowController {
             $0.size = size
             $0.margins = margins
         }
+    }
+
+    // MARK: - Margins & orientation
+
+    /// Presets as in Word and Writer, plus the Russian GOST layout (top, left, bottom, right in cm).
+    static let marginPresets: [(name: String, cm: (CGFloat, CGFloat, CGFloat, CGFloat))] = [
+        (L("Normal"), (2, 2, 2, 2)),
+        (L("Word Normal"), (2.54, 2.54, 2.54, 2.54)),
+        (L("Narrow"), (1.27, 1.27, 1.27, 1.27)),
+        (L("Moderate"), (2.54, 1.91, 2.54, 1.91)),
+        (L("Wide"), (2.54, 5.08, 2.54, 5.08)),
+        (L("GOST (left 3, right 1.5 cm)"), (2, 3, 2, 1.5)),
+    ]
+
+    @objc func marginPresetAction(_ sender: Any?) {
+        let i = commandTag(of: sender)
+        guard Self.marginPresets.indices.contains(i) else { return }
+        let c = Self.marginPresets[i].cm, k = DocRuler.cm
+        changeSetup(L("Margins")) { $0.margins = NSEdgeInsets(top: c.0 * k, left: c.1 * k, bottom: c.2 * k, right: c.3 * k) }
+    }
+
+    func currentMarginPreset() -> Int? {
+        guard let m = doc?.setup.margins else { return nil }
+        let k = DocRuler.cm
+        return Self.marginPresets.firstIndex { p in
+            abs(p.cm.0 * k - m.top) < 1 && abs(p.cm.1 * k - m.left) < 1 && abs(p.cm.2 * k - m.bottom) < 1 && abs(p.cm.3 * k - m.right) < 1
+        }
+    }
+
+    func setMargins(left: CGFloat, right: CGFloat) {
+        changeSetup(L("Margins")) {
+            $0.margins.left = left
+            $0.margins.right = right
+        }
+    }
+
+    @objc func orientationAction(_ sender: Any?) {
+        let landscape = commandTag(of: sender) == 1
+        changeSetup(L("Orientation")) {
+            let s = $0.size
+            let long = max(s.width, s.height), short = min(s.width, s.height)
+            $0.size = landscape ? NSSize(width: long, height: short) : NSSize(width: short, height: long)
+        }
+    }
+
+    var isLandscape: Bool { (doc?.setup.size.width ?? 0) > (doc?.setup.size.height ?? 1) }
+
+    /// Ruler indents → the selected paragraphs (undoable).
+    func setIndents(firstLine: CGFloat, head: CGFloat, tail: CGFloat) {
+        guard let s = textView.textStorage else { return }
+        let ns = s.string as NSString
+        let range = s.length == 0 ? NSRange(location: 0, length: 0) : ns.paragraphRange(for: textView.selectedRange())
+        guard range.length > 0 else {
+            let p = ((textView.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+            p.firstLineHeadIndent = firstLine; p.headIndent = head; p.tailIndent = tail
+            textView.typingAttributes[.paragraphStyle] = p
+            syncRuler()
+            return
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        s.beginEditing()
+        s.enumerateAttribute(.paragraphStyle, in: range) { v, r, _ in
+            let p = ((v as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+            p.firstLineHeadIndent = firstLine
+            p.headIndent = head
+            p.tailIndent = tail
+            s.addAttribute(.paragraphStyle, value: p, range: r)
+        }
+        s.endEditing()
+        textView.didChangeText()
+        textView.undoManager?.setActionName(L("Indents"))
+        syncRuler()
     }
 
     @objc func headerFooterAction(_ sender: Any?) {

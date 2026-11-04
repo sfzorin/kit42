@@ -15,7 +15,7 @@ enum Cmd {
     static let actualSize = Command(L("Actual Size"), #selector(W.actualSizeAction(_:)), shortcut: Shortcut("0"))
     static let formatBar = Command(L("Hide Format Bar"), #selector(W.toggleFormatBarAction(_:)), symbol: "textformat",
                                    shortcut: Shortcut("a", [.command, .shift]), toolTip: L("Format bar"), label: L("Format"))
-    static let ruler = Command(L("Show Ruler"), #selector(W.toggleRulerAction(_:)), shortcut: Shortcut("r", [.command, .option]))
+    static let ruler = Command(L("Hide Ruler"), #selector(W.toggleRulerAction(_:)), shortcut: Shortcut("r", [.command, .option]))
 
     static let insertImage = Command(L("Image…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]))
     static let insertTable = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option]))
@@ -53,6 +53,13 @@ enum Cmd {
     static let documentSetup = Command(L("Document Setup…"), #selector(W.documentSetupAction(_:)), symbol: "doc.text",
                                        shortcut: Shortcut("p", [.command, .option]))
     static let headerFooter = Command(L("Header and Footer…"), #selector(W.headerFooterAction(_:)), symbol: "rectangle.topthird.inset.filled")
+    static var margins: [Command] {
+        DocWindowController.marginPresets.enumerated().map { i, p in
+            Command(p.name, #selector(W.marginPresetAction(_:)), tag: i)
+        } + [Command(L("Custom Margins…"), #selector(W.documentSetupAction(_:)))]
+    }
+    static let portrait = Command(L("Portrait"), #selector(W.orientationAction(_:)), symbol: "rectangle.portrait", tag: 0)
+    static let landscape = Command(L("Landscape"), #selector(W.orientationAction(_:)), symbol: "rectangle", tag: 1)
     static let pageNumbers = Command(L("Page Numbers"), #selector(W.togglePageNumbersAction(_:)), symbol: "number")
     static let tableRows: [Command] = [(L("Insert Row Above"), "arrow.up.to.line"), (L("Insert Row Below"), "arrow.down.to.line"), (L("Delete Row"), "minus.rectangle")]
         .enumerated().map { Command($0.element.0, #selector(W.tableRowAction(_:)), symbol: $0.element.1, tag: $0.offset) }
@@ -77,7 +84,9 @@ enum Cmd {
                        .command(removeHighlight), .command(clearFormatting)]
         spec.custom = [(L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
                         + [.separator, .command(deleteTable)]),
-                       (L("Document"), [.command(documentSetup), .command(headerFooter), .command(pageNumbers)])]
+                       (L("Document"), [.command(documentSetup), .submenu(L("Margins"), margins.menuElements),
+                                         .submenu(L("Orientation"), [.command(portrait), .command(landscape)]), .separator,
+                                         .command(headerFooter), .command(pageNumbers)])]
         spec.help = [.command(welcome)]
         return spec
     }

@@ -42,7 +42,8 @@ enum Cmd {
     static let zoomIn = Command(L("Zoom In"), #selector(W.zoomInAction(_:)), symbol: "plus.magnifyingglass", shortcut: Shortcut("+"))
     static let zoomOut = Command(L("Zoom Out"), #selector(W.zoomOutAction(_:)), symbol: "minus.magnifyingglass", shortcut: Shortcut("-"))
     static let actualSize = Command(L("Actual Size"), #selector(W.actualSizeAction(_:)), shortcut: Shortcut("0"))
-    static let zoomToFit = Command(L("Zoom to Fit"), #selector(W.zoomToFitAction(_:)), shortcut: Shortcut("0", [.command, .option]))
+    static let zoomToFit = Command(L("Whole Page"), #selector(W.zoomToFitAction(_:)), shortcut: Shortcut("0", [.command, .option]))
+    static let fitWidth = Command(L("Fit Width"), #selector(W.fitWidthAction(_:)), shortcut: Shortcut("9", [.command, .option]))
     static let displayModes: [Command] = [
         (L("Single Page"), 0), (L("Continuous Scroll"), 1), (L("Two Pages"), 2), (L("Two Pages, Continuous"), 3),
     ].map { Command($0.0, #selector(W.setDisplayModeAction(_:)), tag: $0.1) }
@@ -90,7 +91,7 @@ enum Cmd {
         spec.editExtras = [.command(replaceText), .command(highlightSelection), .command(deleteAnnotation)]
         spec.find = [.command(find), .command(findNext), .command(findPrevious)]
         spec.view = [.command(thumbnails), .command(outline), .separator,
-                     .command(zoomIn), .command(zoomOut), .command(actualSize), .command(zoomToFit), .separator]
+                     .command(zoomIn), .command(zoomOut), .command(actualSize), .command(zoomToFit), .command(fitWidth), .separator]
             + displayModes.menuElements
             + [.separator, .command(nextPage), .command(previousPage), .command(goToPage), .separator, .command(markupBar)]
         spec.insert = [.command(stamps), .command(insertImage), .separator,

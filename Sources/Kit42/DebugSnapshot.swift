@@ -8,6 +8,11 @@ public enum DebugSnapshot {
         guard let path = env["K42_SNAPSHOT"] else { return }
         let delay = Double(env["K42_SNAPSHOT_DELAY"] ?? "") ?? 2
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            // K42_SIZE=900x700 resizes the front window first (layout checks).
+            if let size = env["K42_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2,
+               let window = NSApp.orderedWindows.first(where: { $0.isVisible }) {
+                window.setContentSize(NSSize(width: size[0], height: size[1]))
+            }
             prepare?()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 let window = NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }

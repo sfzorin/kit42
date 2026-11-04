@@ -4,7 +4,7 @@ import PDFKit
 import UniformTypeIdentifiers
 
 /// Page thumbnails with multi-selection, drag-to-reorder and drop of PDF/image files.
-final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectionViewDelegate {
+final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout {
     weak var pdfView: PDFView?
     /// Called to move pages (indices) before `to`, and to insert files at an index.
     var onMove: (([Int], Int) -> Void)?
@@ -83,9 +83,25 @@ final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectio
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: ThumbnailItem.id, for: indexPath) as! ThumbnailItem
         if let page = pdfView?.document?.page(at: indexPath.item) {
-            item.configure(image: image(for: page), number: indexPath.item + 1)
+            item.configure(image: image(for: page), number: indexPath.item + 1, size: Self.pictureSize(page))
         }
         return item
+    }
+
+    /// Thumbnail keeps the page's proportions: landscape pages are wide, portrait ones tall.
+    static func pictureSize(_ page: PDFPage) -> NSSize {
+        let b = page.bounds(for: .cropBox).size
+        let s = page.rotation % 180 == 0 ? b : NSSize(width: b.height, height: b.width)
+        guard s.width > 0, s.height > 0 else { return NSSize(width: 110, height: 136) }
+        let maxW: CGFloat = 118, maxH: CGFloat = 136
+        let k = min(maxW / s.width, maxH / s.height)
+        return NSSize(width: (s.width * k).rounded(), height: (s.height * k).rounded())
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout,
+                        sizeForItemAt indexPath: IndexPath) -> NSSize {
+        let picture = pdfView?.document?.page(at: indexPath.item).map(Self.pictureSize) ?? NSSize(width: 110, height: 136)
+        return NSSize(width: 130, height: picture.height + 32)
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
@@ -128,6 +144,8 @@ final class ThumbnailItem: NSCollectionViewItem {
     static let id = NSUserInterfaceItemIdentifier("ThumbnailItem")
     private let picture = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    private var pictureWidth: NSLayoutConstraint?
+    private var pictureHeight: NSLayoutConstraint?
 
     override func loadView() {
         let v = NSView()
@@ -146,16 +164,20 @@ final class ThumbnailItem: NSCollectionViewItem {
         NSLayoutConstraint.activate([
             picture.topAnchor.constraint(equalTo: v.topAnchor, constant: 6),
             picture.centerXAnchor.constraint(equalTo: v.centerXAnchor),
-            picture.widthAnchor.constraint(equalToConstant: 110),
-            picture.heightAnchor.constraint(equalToConstant: 136),
             label.topAnchor.constraint(equalTo: picture.bottomAnchor, constant: 4),
             label.centerXAnchor.constraint(equalTo: v.centerXAnchor),
         ])
+        pictureWidth = picture.widthAnchor.constraint(equalToConstant: 110)
+        pictureHeight = picture.heightAnchor.constraint(equalToConstant: 136)
+        pictureWidth?.isActive = true
+        pictureHeight?.isActive = true
         view = v
     }
 
-    func configure(image: NSImage, number: Int) {
+    func configure(image: NSImage, number: Int, size: NSSize) {
         picture.image = image
+        pictureWidth?.constant = size.width
+        pictureHeight?.constant = size.height
         label.stringValue = "\(number)"
     }
 

@@ -31,10 +31,11 @@ public final class ToolbarController: NSObject, NSToolbarDelegate {
 
     public init(identifier: String, elements: [ToolbarElement]) {
         self.elements = elements
-        toolbar = NSToolbar(identifier: identifier)
+        // ".2": saved layouts from before labels were shown start over once.
+        toolbar = NSToolbar(identifier: identifier + ".2")
         super.init()
         toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
+        toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
     }

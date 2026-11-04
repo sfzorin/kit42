@@ -8,6 +8,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     /// Text views of all pages share selection and typing attributes; the first one stands for all.
     var textView: NSTextView { paged.textViews[0] }
     private let scrollView = NSScrollView()
+    let ruler = DocRuler()
+    private var rulerHeight: NSLayoutConstraint?
     private let toolbarController = ToolbarController(identifier: "DOC42.toolbar", elements: Cmd.toolbar)
     private lazy var stylePopup = stripPopUp(Styles.all.map(\.name), width: 128, toolTip: L("Paragraph style"),
                                              target: self, action: #selector(styleChanged(_:)))
@@ -35,13 +37,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
                                                menu: commandMenu([Cmd.alignLeft, Cmd.alignCenter, Cmd.alignRight, Cmd.justify]))
     private lazy var listButton = StripButton(symbol: "list.bullet", toolTip: L("Lists"),
                                               menu: commandMenu([Cmd.bulletList, Cmd.numberedList]))
+    private lazy var marginsButton = StripButton(symbol: "rectangle.center.inset.filled", toolTip: L("Margins"), menu: commandMenu(Cmd.margins))
+    private lazy var orientationButton = StripButton(symbol: "rectangle.landscape.rotate", toolTip: L("Orientation"),
+                                                     menu: commandMenu([Cmd.portrait, Cmd.landscape]))
     private lazy var formatStrip = ToolStrip([
         .group([.view(stylePopup)]),
         .group([.view(fontPopup), .view(sizeStepper)]),
         .buttons([Cmd.bold, Cmd.italic, Cmd.underline, Cmd.strike]),
         .group([.view(textColorButton), .view(highlightButton)]),
         .group([.view(alignButton), .view(listButton), .command(Cmd.outdent), .command(Cmd.indent)]),
-        .buttons([Cmd.insertImage, Cmd.insertTable, Cmd.stamps]),
+        .group([.view(marginsButton), .view(orientationButton)]),
     ])
 
     var doc: TextDocument? { document as? TextDocument }
@@ -89,7 +94,15 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     /// Page size, margins, header or footer changed in the document.
     func setupDidChange() {
-        if let setup = doc?.setup { paged.setup = setup }
+        if let setup = doc?.setup {
+            paged.setup = setup
+            ruler.setup = setup
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.ruler.needsDisplay = true
+                self.window?.invalidateCursorRects(for: self.ruler)
+            }
+        }
     }
 
     override var document: AnyObject? {
@@ -108,8 +121,20 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         let root = NSView()
         root.addSubview(scrollView)
+        ruler.translatesAutoresizingMaskIntoConstraints = false
+        ruler.paged = paged
+        root.addSubview(ruler)
+        let rulerShown = UserDefaults.standard.object(forKey: "doc.ruler") as? Bool ?? true
+        rulerHeight = ruler.heightAnchor.constraint(equalToConstant: rulerShown ? DocRuler.height : 0)
+        ruler.isHidden = !rulerShown
+        ruler.onMargins = { [weak self] left, right in self?.setMargins(left: left, right: right) }
+        ruler.onIndents = { [weak self] first, head, tail in self?.setIndents(firstLine: first, head: head, tail: tail) }
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            ruler.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            ruler.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            ruler.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            rulerHeight!,
+            scrollView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -120,6 +145,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         // Re-centre pages on resize and zoom (magnification changes the clip view's bounds).
         for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: scrollView.contentView, queue: .main) { [weak self] _ in
+                self?.ruler.needsDisplay = true
+                if let self { self.window?.invalidateCursorRects(for: self.ruler) }
                 guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.setup.size.width + PagedView.gap * 2)) > 1 else { return }
                 self.paged.relayout()
             }
@@ -132,7 +159,17 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     func textDidChange(_ notification: Notification) { updateStatus() }
 
-    func textViewDidChangeSelection(_ notification: Notification) { syncControls() }
+    func textViewDidChangeSelection(_ notification: Notification) {
+        syncControls()
+        syncRuler()
+    }
+
+    func syncRuler() {
+        guard storage.length > 0 else { ruler.paragraph = .default; return }
+        let at = min(textView.selectedRange().location, storage.length - 1)
+        ruler.paragraph = (storage.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle)
+            ?? (textView.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
+    }
 
     private func updateStatus() {
         let text = textView.string
@@ -489,7 +526,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     @objc func actualSizeAction(_ sender: Any?) { scrollView.magnification = 1 }
     func setZoom(_ z: CGFloat) { scrollView.magnification = z }
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
-    @objc func toggleRulerAction(_ sender: Any?) { textView.toggleRuler(sender) }
+    @objc func toggleRulerAction(_ sender: Any?) {
+        ruler.isHidden.toggle()
+        rulerHeight?.constant = ruler.isHidden ? 0 : DocRuler.height
+        UserDefaults.standard.set(!ruler.isHidden, forKey: "doc.ruler")
+    }
 
     @objc func findAction(_ sender: Any?) {
         let item = NSMenuItem()
@@ -572,10 +613,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             item.state = mine[max(0, min(3, item.tag))] == a || (item.tag == 0 && a == .natural) ? .on : .off
         case #selector(toggleFormatBarAction(_:)):
             item.title = formatStrip.isShown ? L("Hide Format Bar") : L("Show Format Bar")
+        case #selector(marginPresetAction(_:)): item.state = currentMarginPreset() == item.tag ? .on : .off
+        case #selector(orientationAction(_:)): item.state = isLandscape == (item.tag == 1) ? .on : .off
         case #selector(togglePageNumbersAction(_:)): item.state = doc?.setup.pageNumbers == true ? .on : .off
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)), #selector(deleteTableAction(_:)): return isInTable
         case #selector(toggleRulerAction(_:)):
-            item.title = textView.isRulerVisible ? L("Hide Ruler") : L("Show Ruler")
+            item.title = ruler.isHidden ? L("Show Ruler") : L("Hide Ruler")
         default: break
         }
         return true

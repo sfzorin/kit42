@@ -73,7 +73,7 @@ public final class StripButton: NSButton {
     }
 
     public override func draw(_ dirtyRect: NSRect) {
-        let r = bounds.insetBy(dx: 1, dy: 1)
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
         if isOn {
             NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
