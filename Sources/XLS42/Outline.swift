@@ -158,7 +158,8 @@ final class OutlineGutter: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let grid else { return }
-        NSColor(srgbRed: 0.955, green: 0.955, blue: 0.955, alpha: 1).setFill()
+        let palette = SheetPalette.for(self)
+        palette.gutterFill.setFill()
         bounds.fill()
         let sheet = grid.sheet
         let maxLevel = isColumns ? sheet.maxColLevel : sheet.maxRowLevel
@@ -167,7 +168,7 @@ final class OutlineGutter: NSView {
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: isColumns ? NSRect(x: leading, y: 0, width: bounds.width, height: bounds.height)
                                      : NSRect(x: 0, y: leading, width: bounds.width, height: bounds.height)).addClip()
-        let line = NSColor(white: 0.45, alpha: 1)
+        let line = palette.gutterLine
         for level in 1...maxLevel {
             for g in sheet.outlineGroups(rows: rows, level: level) {
                 let collapsed = sheet.isCollapsed(g, rows: rows)
@@ -193,13 +194,14 @@ final class OutlineGutter: NSView {
     }
 
     private func drawButton(_ r: NSRect, _ text: String) {
-        NSColor.white.setFill()
+        let palette = SheetPalette.for(self)
+        palette.buttonFill.setFill()
         let path = NSBezierPath(rect: r.insetBy(dx: 0.5, dy: 0.5))
         path.fill()
-        NSColor(white: 0.5, alpha: 1).setStroke()
+        palette.buttonStroke.setStroke()
         path.lineWidth = 1
         path.stroke()
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: NSColor(white: 0.25, alpha: 1)]
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: palette.buttonGlyph]
         let size = (text as NSString).size(withAttributes: attrs)
         (text as NSString).draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)
     }

@@ -120,7 +120,13 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     // MARK: - Drawing
 
-    static let gridColor = NSColor(srgbRed: 0.886, green: 0.886, blue: 0.886, alpha: 1)
+    /// Colours for the current appearance (always light when printing).
+    var palette: SheetPalette { SheetPalette.for(self, print: printMode) }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 
     override var needsDisplay: Bool {
         didSet { if needsDisplay { overlay?.panesNeedDisplay() } }
@@ -130,7 +136,8 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     /// Draws the cells in `dirty` (grid coordinates). Also used by the frozen panes.
     func drawContent(_ dirty: NSRect) {
-        NSColor.white.setFill()
+        let palette = self.palette
+        palette.background.setFill()
         dirty.fill()
         guard colOffsets.count > 1, rowOffsets.count > 1 else { return }
         let r0 = row(at: dirty.minY), r1 = min(rowCount - 1, row(at: dirty.maxY))
@@ -139,7 +146,7 @@ final class GridView: NSView, NSTextFieldDelegate {
 
         // Gridlines
         if printMode ? printGridlines : sheet.showGridlines {
-            Self.gridColor.setFill()
+            palette.grid.setFill()
             for c in c0...c1 + 1 { NSRect(x: x(c) - 0.5, y: dirty.minY, width: 1, height: dirty.height).fill() }
             for r in r0...r1 + 1 { NSRect(x: dirty.minX, y: y(r) - 0.5, width: dirty.width, height: 1).fill() }
         }
@@ -175,7 +182,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             }
         }
         for m in merges {
-            (sheet.cells[m.start]?.style.fill ?? .white).setFill()
+            (sheet.cells[m.start]?.style.fill ?? palette.background).setFill()
             rect(m).insetBy(dx: 0.5, dy: 0.5).fill()
         }
 
@@ -200,7 +207,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             for c in max(0, c0 - 1)...c1 {
                 guard let style = sheet.cells[CellRef(row: r, col: c)]?.style,
                       style.left != nil || style.right != nil || style.top != nil || style.bottom != nil else { continue }
-                drawBorders(style, rect(CellRef(row: r, col: c)))
+                drawBorders(style, rect(CellRef(row: r, col: c)), palette)
             }
         }
 
@@ -243,16 +250,17 @@ final class GridView: NSView, NSTextFieldDelegate {
     private func drawFilterButton(_ col: Int, row: Int, active: Bool) {
         let b = filterButtonRect(col, row: row)
         let path = NSBezierPath(roundedRect: b, xRadius: 3, yRadius: 3)
-        (active ? NSColor.controlAccentColor : NSColor.white).setFill()
+        let palette = self.palette
+        (active ? NSColor.controlAccentColor : palette.buttonFill).setFill()
         path.fill()
-        NSColor(white: 0.7, alpha: 1).setStroke()
+        palette.buttonStroke.setStroke()
         path.lineWidth = 0.5
         path.stroke()
         let symbol = active ? "line.3.horizontal.decrease" : "chevron.down"
         if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: b.height * 0.5, weight: .bold)) {
             let tinted = NSImage(size: img.size, flipped: false) { r in
                 img.draw(in: r)
-                (active ? NSColor.white : NSColor.darkGray).set()
+                (active ? NSColor.white : palette.buttonGlyph).set()
                 r.fill(using: .sourceAtop)
                 return true
             }
@@ -274,16 +282,17 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     private func drawListButton(_ ref: CellRef) {
         let b = listButtonRect(ref)
-        NSColor(white: 0.96, alpha: 1).setFill()
+        let palette = self.palette
+        palette.buttonFill.setFill()
         b.fill()
-        NSColor(white: 0.6, alpha: 1).setStroke()
+        palette.buttonStroke.setStroke()
         NSBezierPath(rect: b.insetBy(dx: 0.5, dy: 0.5)).stroke()
         let tri = NSBezierPath()
         tri.move(to: NSPoint(x: b.midX - 3.5, y: b.midY - 1.5))
         tri.line(to: NSPoint(x: b.midX + 3.5, y: b.midY - 1.5))
         tri.line(to: NSPoint(x: b.midX, y: b.midY + 2.5))
         tri.close()
-        NSColor.darkGray.setFill()
+        palette.buttonGlyph.setFill()
         tri.fill()
     }
 
@@ -313,7 +322,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             case .image(let i):
                 NSImage(data: sheet.images[i].data)?.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             case .chart(let i):
-                ChartRenderer.draw(sheet.charts[i], in: r, workbook: workbook, sheet: sheetIndex, scale: scale * 0.75)
+                ChartRenderer.draw(sheet.charts[i], in: r, workbook: workbook, sheet: sheetIndex, scale: scale * 0.75, palette: palette)
             }
             if o == selectedObject, !printMode {
                 NSColor.controlAccentColor.setStroke()
@@ -346,9 +355,9 @@ final class GridView: NSView, NSTextFieldDelegate {
         var text = formatted.text
         guard !text.isEmpty else { return }
         let font = cell.style.font(scale: scale)
-        let color = cell.style.textColor ?? formatted.color ?? .black
+        let color = palette.textColor(formatted.color ?? cell.style.textColor, fill: cell.style.fill)
         let align = displayAlignment(cell)
-        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: formatted.color ?? color]
+        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         if cell.style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if cell.style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
 
@@ -435,7 +444,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    private func drawBorders(_ style: CellStyle, _ r: NSRect) {
+    private func drawBorders(_ style: CellStyle, _ r: NSRect, _ palette: SheetPalette) {
         func line(_ side: BorderSide?, _ from: NSPoint, _ to: NSPoint) {
             guard let side else { return }
             let path = NSBezierPath()
@@ -444,7 +453,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             path.lineWidth = side.width * zoom
             if side.style.lowercased().contains("dash") { path.setLineDash([3 * zoom, 2 * zoom], count: 2, phase: 0) }
             if side.style == "dotted" { path.setLineDash([1 * zoom, 1 * zoom], count: 2, phase: 0) }
-            side.color.setStroke()
+            palette.borderColor(side.color).setStroke()
             path.stroke()
         }
         line(style.left, NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.minX, y: r.maxY))
@@ -459,7 +468,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         if selection.count > 1 {
             accent.withAlphaComponent(0.10).setFill()
             selRect.fill()
-            NSColor.white.setFill()
+            palette.background.setFill()
             rect(active).insetBy(dx: 1, dy: 1).fill()
             if let cell = sheet.cells[active] {
                 cell.style.fill?.setFill()
@@ -474,7 +483,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         // Fill handle
         accent.setFill()
         NSRect(x: selRect.maxX - 3, y: selRect.maxY - 3, width: 6, height: 6).fill()
-        NSColor.white.setStroke()
+        palette.background.setStroke()
         let ring = NSBezierPath(rect: NSRect(x: selRect.maxX - 3.5, y: selRect.maxY - 3.5, width: 7, height: 7))
         ring.lineWidth = 1
         ring.stroke()
@@ -954,8 +963,8 @@ final class CellEditorField: NSTextField {
         super.init(frame: frame)
         isBordered = false
         drawsBackground = true
-        backgroundColor = .white
-        textColor = .black
+        backgroundColor = .textBackgroundColor
+        textColor = .textColor
         focusRingType = .none
         cell?.wraps = false
         cell?.isScrollable = true
@@ -997,11 +1006,12 @@ final class HeaderView: NSView {
 
     override func draw(_ rect: NSRect) {
         guard let grid else { return }
-        NSColor(srgbRed: 0.965, green: 0.965, blue: 0.965, alpha: 1).setFill()
+        let palette = SheetPalette.for(self)
+        palette.headerFill.setFill()
         bounds.fill()
         let sel = grid.expandedSelection
         let font = NSFont.systemFont(ofSize: 11 * min(1.2, max(0.8, grid.zoom)))
-        let line = NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1)
+        let line = palette.headerLine
         let fw = grid.frozenWidth, fh = grid.frozenHeight
         let o = grid.scrollOrigin, size = grid.viewportSize
         if isColumns {
@@ -1026,7 +1036,7 @@ final class HeaderView: NSView {
                 label(CellRef.columnName(c), in: r, font: font, selected: selected)
                 NSGraphicsContext.restoreGraphicsState()
             }
-            if fw > 0 { NSColor(white: 0.55, alpha: 1).setFill(); NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
+            if fw > 0 { palette.frozenLine.setFill(); NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
             line.setFill()
             NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
         } else {
@@ -1050,7 +1060,7 @@ final class HeaderView: NSView {
                 if r.height > 6 { label("\(row + 1)", in: r, font: font, selected: selected) }
                 NSGraphicsContext.restoreGraphicsState()
             }
-            if fh > 0 { NSColor(white: 0.55, alpha: 1).setFill(); NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
+            if fh > 0 { palette.frozenLine.setFill(); NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
             line.setFill()
             NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
         }
@@ -1066,7 +1076,7 @@ final class HeaderView: NSView {
     private func label(_ s: String, in r: NSRect, font: NSFont, selected: Bool) {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: selected ? NSFont.systemFont(ofSize: font.pointSize, weight: .semibold) : font,
-            .foregroundColor: selected ? NSColor.controlAccentColor : NSColor(white: 0.35, alpha: 1),
+            .foregroundColor: selected ? NSColor.controlAccentColor : SheetPalette.for(self).headerText,
         ]
         let size = (s as NSString).size(withAttributes: attrs)
         (s as NSString).draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)
@@ -1151,9 +1161,10 @@ final class CornerView: NSView {
     var onClick: (() -> Void)?
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(srgbRed: 0.965, green: 0.965, blue: 0.965, alpha: 1).setFill()
+        let palette = SheetPalette.for(self)
+        palette.headerFill.setFill()
         bounds.fill()
-        NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1).setFill()
+        palette.headerLine.setFill()
         NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
         NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
         let tri = NSBezierPath()
@@ -1161,7 +1172,7 @@ final class CornerView: NSView {
         tri.line(to: NSPoint(x: bounds.maxX - 4, y: bounds.height - 4))
         tri.line(to: NSPoint(x: bounds.maxX - 4 - (bounds.height - 8), y: 4))
         tri.close()
-        NSColor(white: 0.75, alpha: 1).setFill()
+        palette.cornerGlyph.setFill()
         tri.fill()
     }
 
@@ -1212,7 +1223,7 @@ final class FreezeOverlay: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let grid else { return }
         let fw = grid.frozenWidth, fh = grid.frozenHeight
-        NSColor(white: 0.55, alpha: 1).setFill()
+        SheetPalette.for(self).frozenLine.setFill()
         if fw > 0 { NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
         if fh > 0 { NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
     }

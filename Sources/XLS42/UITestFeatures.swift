@@ -177,6 +177,13 @@ extension UITest {
         if let data = try? doc.data(ofType: "org.openxmlformats.spreadsheetml.sheet"), let back = try? XLSX.read(data) {
             let s = back.sheets[featureSheet]
             check("document saves validation and locks", s.validations.count == 2 && s[CellRef("F1")!].style.locked == false, "\(s.validations.count)")
+            // The pivot table survives saving, and Refresh works on the reopened copy.
+            var reopened = back
+            if let i = reopened.sheets.firstIndex(where: { $0.pivot != nil }) {
+                let before = reopened.sheets[i].cells.mapValues(\.value)
+                check("document saves pivot table", reopened.sheets[i].pivot?.sourceSheet == source && Pivot.refresh(&reopened, sheet: i)
+                      && reopened.sheets[i].cells.mapValues(\.value) == before)
+            } else { check("document saves pivot table", false) }
         } else { check("document saves", false) }
         w.suppressAlerts = false
         return failed

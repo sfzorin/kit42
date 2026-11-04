@@ -32,16 +32,23 @@ enum Pivot {
         return r.count > 1 || filled(ref.row, ref.col) ? r : nil
     }
 
-    private struct Key: Hashable { let text: String; let number: Double? }
-
-    private static func key(_ v: Value, _ style: CellStyle) -> Key {
-        if case .number(let d) = v { return Key(text: NumberFormat.format(v, style.numberFormat).text, number: d) }
-        if case .bool(let b) = v { return Key(text: b ? L("TRUE") : L("FALSE"), number: nil) }
-        return Key(text: v.isEmpty ? L("(blank)") : v.plain, number: nil)
+    /// A distinct value of a row/column field (numbers sort numerically and keep the source format).
+    struct Key: Hashable {
+        let text: String
+        let number: Double?
+        var blank = false
+        var value: Value { number.map(Value.number) ?? .string(text) }
     }
 
-    private static func ordered(_ keys: Set<Key>) -> [Key] {
+    static func key(_ v: Value, _ style: CellStyle) -> Key {
+        if case .number(let d) = v { return Key(text: NumberFormat.format(v, style.numberFormat).text, number: d) }
+        if case .bool(let b) = v { return Key(text: b ? L("TRUE") : L("FALSE"), number: nil) }
+        return v.isEmpty ? Key(text: L("(blank)"), number: nil, blank: true) : Key(text: v.plain, number: nil)
+    }
+
+    static func ordered(_ keys: Set<Key>) -> [Key] {
         keys.sorted { a, b in
+            if a.blank != b.blank { return b.blank }
             switch (a.number, b.number) {
             case let (x?, y?): return x < y
             case (_?, nil): return true
@@ -49,6 +56,82 @@ enum Pivot {
             default: return a.text.localizedStandardCompare(b.text) == .orderedAscending
             }
         }
+    }
+
+    /// Distinct keys of one source column (data rows only), in display order.
+    static func keys(_ sheet: Sheet, _ source: CellRange, field: Int) -> [Key] {
+        guard source.rows.count >= 2 else { return [] }
+        let c = source.start.col + field
+        var set = Set<Key>()
+        for r in (source.start.row + 1)...source.end.row {
+            let cell = sheet[CellRef(row: r, col: c)]
+            set.insert(key(cell.value, cell.style))
+        }
+        return ordered(set)
+    }
+
+    /// Row and column keys shown by the result (rows with neither a row key nor a value are skipped).
+    static func axisKeys(_ spec: PivotSpec, workbook: Workbook) -> (rows: [Key], cols: [Key]) {
+        guard let si = workbook.sheetIndex(named: spec.sourceSheet), spec.source.rows.count >= 2 else { return ([], []) }
+        let src = workbook.sheets[si], c0 = spec.source.start.col
+        var rows = Set<Key>(), cols = Set<Key>()
+        for r in (spec.source.start.row + 1)...spec.source.end.row {
+            let rc = src[CellRef(row: r, col: c0 + spec.rowField)]
+            if rc.value.isEmpty && src[CellRef(row: r, col: c0 + spec.valueField)].value.isEmpty { continue }
+            rows.insert(key(rc.value, rc.style))
+            if let f = spec.colField { let c = src[CellRef(row: r, col: c0 + f)]; cols.insert(key(c.value, c.style)) }
+        }
+        return (ordered(rows), ordered(cols))
+    }
+
+    /// The spec brought up to date with its source: a source that grew or shrank is replaced by the
+    /// current region, and fields follow their header names if columns moved.
+    static func updated(_ spec: PivotSpec, workbook: Workbook) -> PivotSpec {
+        guard let si = workbook.sheetIndex(named: spec.sourceSheet) else { return spec }
+        let src = workbook.sheets[si]
+        var s = spec
+        func filled(_ r: Int, _ c: Int) -> Bool { !(src.cells[CellRef(row: r, col: c)]?.value.isEmpty ?? true) }
+        let box = spec.source
+        let grew = box.cols.contains { filled(box.end.row + 1, $0) } || box.rows.contains { filled($0, box.end.col + 1) }
+        let shrank = !box.cols.contains { filled(box.end.row, $0) } || !box.rows.contains { filled($0, box.end.col) }
+        if grew || shrank, let region = currentRegion(src, around: box.start), region.start == box.start, region.rows.count >= 2 {
+            s.source = region
+        }
+        let names = headers(src, s.source)
+        func follow(_ i: Int) -> Int {
+            guard i < spec.fieldNames.count else { return i }
+            let name = spec.fieldNames[i]
+            if i < names.count, names[i] == name { return i }
+            return names.firstIndex(of: name) ?? i
+        }
+        s.rowField = follow(spec.rowField)
+        s.colField = spec.colField.map(follow)
+        s.valueField = follow(spec.valueField)
+        s.fieldNames = names
+        return s
+    }
+
+    /// Puts a freshly built result onto `sheet` at the spec's anchor, clearing what the previous result covered.
+    static func place(_ result: Sheet, into sheet: inout Sheet) {
+        guard var spec = result.pivot else { return }
+        let a = spec.anchor
+        if let old = sheet.pivot?.location {
+            for ref in old.cells { sheet.cells[ref] = nil }
+        }
+        for (ref, cell) in result.cells { sheet.cells[CellRef(row: ref.row + a.row, col: ref.col + a.col)] = cell }
+        for (c, w) in result.columnWidths where sheet.columnWidths[c + a.col] == nil { sheet.columnWidths[c + a.col] = w }
+        spec.location = result.usedRange.map { CellRange(a, CellRef(row: $0.end.row + a.row, col: $0.end.col + a.col)) }
+        sheet.pivot = spec
+    }
+
+    /// Rebuilds the pivot on sheet `index` from the current source data.
+    @discardableResult
+    static func refresh(_ workbook: inout Workbook, sheet index: Int) -> Bool {
+        guard let old = workbook.sheets[index].pivot else { return false }
+        let spec = updated(old, workbook: workbook)
+        guard let result = build(spec, workbook: workbook, name: workbook.sheets[index].name) else { return false }
+        place(result, into: &workbook.sheets[index])
+        return true
     }
 
     private static func aggregate(_ values: [Value], _ kind: PivotSpec.Aggregate) -> Value {
@@ -113,10 +196,10 @@ enum Pivot {
             put(0, 1, .string(headers[cf]), header: true)
             for i in stride(from: 2, through: cols.count + 1, by: 1) { put(0, i, .empty, header: true) }
             put(1, 0, .string(headers[spec.rowField]), header: true)
-            for (i, k) in cols.enumerated() { put(1, i + 1, k.number.map(Value.number) ?? .string(k.text), header: true) }
+            for (i, k) in cols.enumerated() { put(1, i + 1, k.value, header: true) }
             put(1, cols.count + 1, .string(L("Grand Total")), header: true)
             for (j, rk) in rows.enumerated() {
-                put(j + 2, 0, rk.number.map(Value.number) ?? .string(rk.text))
+                put(j + 2, 0, rk.value)
                 for (i, ck) in cols.enumerated() {
                     if let vals = buckets[rk]?[ck] { put(j + 2, i + 1, aggregate(vals, spec.aggregate)) }
                 }
@@ -130,7 +213,7 @@ enum Pivot {
         } else {
             put(0, 1, .string(caption), header: true)
             for (j, rk) in rows.enumerated() {
-                put(j + 1, 0, rk.number.map(Value.number) ?? .string(rk.text))
+                put(j + 1, 0, rk.value)
                 put(j + 1, 1, aggregate(byRow[rk] ?? [], spec.aggregate))
             }
             put(rows.count + 1, 0, .string(L("Grand Total")), total: true)
@@ -142,7 +225,10 @@ enum Pivot {
         sheet.columnWidths[0] = 120
         for c in 1...max(1, cols.count + 1) { sheet.columnWidths[c] = 90 }
         sheet.frozenRows = spec.colField == nil ? 1 : 2
-        sheet.pivot = spec
+        var placed = spec
+        if placed.fieldNames.isEmpty { placed.fieldNames = headers }
+        placed.location = sheet.usedRange.map { CellRange(CellRef(row: 0, col: 0), $0.end) }
+        sheet.pivot = placed
         return sheet
     }
 }
@@ -182,6 +268,10 @@ extension SheetWindowController {
         guard let doc else { return }
         var n = 1
         while doc.workbook.sheetIndex(named: L("Pivot%d", n)) != nil { n += 1 }
+        var spec = spec
+        var k = 1
+        while doc.workbook.sheets.contains(where: { $0.pivot?.name == "PivotTable\(k)" }) { k += 1 }
+        spec.name = "PivotTable\(k)"
         guard let result = Pivot.build(spec, workbook: doc.workbook, name: L("Pivot%d", n)) else { NSSound.beep(); return }
         let at = sheetIndex + 1
         doc.change(L("Pivot Table")) { $0.sheets.insert(result, at: at) }
@@ -190,8 +280,11 @@ extension SheetWindowController {
 
     /// Data › Refresh Pivot Table: rebuilds the current pivot sheet from its saved settings.
     @objc func refreshPivotAction(_ sender: Any?) {
-        guard let doc, let spec = sheet.pivot, let result = Pivot.build(spec, workbook: doc.workbook, name: sheet.name) else { NSSound.beep(); return }
-        doc.change(L("Refresh Pivot Table")) { $0.sheets[sheetIndex] = result }
+        guard let doc, sheet.pivot != nil else { NSSound.beep(); return }
+        var wb = doc.workbook
+        let index = sheetIndex
+        guard Pivot.refresh(&wb, sheet: index) else { NSSound.beep(); return }
+        doc.change(L("Refresh Pivot Table")) { $0.sheets[index] = wb.sheets[index] }
     }
 }
 

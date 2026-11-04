@@ -30,12 +30,14 @@ enum XLSX {
         let dxfs = readDxfs(xml("xl/styles.xml"), theme: theme)
         let shared = (xml("xl/sharedStrings.xml")?.children("si") ?? []).map(\.allText)
 
+        var sheetPaths: [String] = []
         for s in workbookXML.child("sheets")?.children("sheet") ?? [] {
             let name = s.attr("name") ?? "Sheet\(wb.sheets.count + 1)"
             guard let rid = s.attr("id"), let path = rels[rid], let root = xml(path) else { continue }
             var sheet = readSheet(root, name: name, styles: styles, shared: shared)
             readExtras(&sheet, root: root, path: path, zip: zip, dxfs: dxfs, theme: theme)
             wb.sheets.append(sheet)
+            sheetPaths.append(path)
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
         for d in workbookXML.child("definedNames")?.children("definedName") ?? [] {
@@ -48,6 +50,7 @@ enum XLSX {
                 wb.names[name] = text
             }
         }
+        PivotFiles.readXLSX(&wb, zip: zip, workbookXML: workbookXML, workbookRels: rels, sheetPaths: sheetPaths)
         return wb
     }
 
@@ -314,12 +317,19 @@ enum XLSX {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
         """
+        var pivotCaches: [String] = [], pivotRels = ""
         for (i, sheet) in wb.sheets.enumerated() {
             workbook += "<sheet name=\"\(xmlEscape(sheet.name))\" sheetId=\"\(i + 1)\" r:id=\"rId\(i + 1)\"/>"
             wbRels += "<Relationship Id=\"rId\(i + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet\(i + 1).xml\"/>"
             let extras = writeExtras(sheet, sheetNumber: i + 1, zip: &zip, counters: &counters, dxfs: &dxfs)
             ct += extras.types
             zip["xl/worksheets/sheet\(i + 1).xml"] = Data(sheetXML(sheet, styleIndex: styleIndex, selected: i == 0, extras: extras).utf8)
+            if let spec = sheet.pivot,
+               let part = PivotFiles.writeXLSX(spec, workbook: wb, sheetNumber: i + 1, n: pivotCaches.count + 1, zip: &zip) {
+                ct += part.types
+                pivotCaches.append(part.cacheEntry)
+                pivotRels += part.workbookRel
+            }
         }
         ct += "</Types>"
         zip["[Content_Types].xml"] = Data(ct.utf8)
@@ -337,8 +347,10 @@ enum XLSX {
             }
         }
         if !defined.isEmpty { workbook += "<definedNames>" + defined.joined() + "</definedNames>" }
-        workbook += "<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/></workbook>"
-        wbRels += "<Relationship Id=\"rId\(sheetCount + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>"
+        workbook += "<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/>"
+        if !pivotCaches.isEmpty { workbook += "<pivotCaches>" + pivotCaches.joined() + "</pivotCaches>" }
+        workbook += "</workbook>"
+        wbRels += "<Relationship Id=\"rId\(sheetCount + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>" + pivotRels + "</Relationships>"
         zip["xl/workbook.xml"] = Data(workbook.utf8)
         zip["xl/_rels/workbook.xml.rels"] = Data(wbRels.utf8)
         zip["xl/styles.xml"] = Data(stylesXML(styleList, dxfs: dxfs).utf8)

@@ -36,22 +36,22 @@ enum ChartRenderer {
         }
     }
 
-    static func draw(_ chart: SheetChart, in rect: NSRect, workbook: Workbook, sheet: Int, scale: CGFloat) {
-        NSColor.white.setFill()
+    static func draw(_ chart: SheetChart, in rect: NSRect, workbook: Workbook, sheet: Int, scale: CGFloat, palette colors: SheetPalette = .light) {
+        colors.chartFill.setFill()
         let frame = NSBezierPath(rect: rect)
         frame.fill()
-        NSColor(white: 0.82, alpha: 1).setStroke()
+        colors.chartFrame.setStroke()
         frame.lineWidth = 1
         frame.stroke()
 
         let series = resolve(chart, workbook: workbook, sheet: sheet)
         let font = NSFont(name: "Helvetica Neue", size: 9 * scale) ?? .systemFont(ofSize: 9 * scale)
-        let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor(white: 0.35, alpha: 1)]
+        let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: colors.chartLabel]
         var area = rect.insetBy(dx: 10 * scale, dy: 8 * scale)
 
         if !chart.title.isEmpty {
             let titleAttrs: [NSAttributedString.Key: Any] = [.font: NSFont(name: "Helvetica Neue Medium", size: 13 * scale) ?? font,
-                                                             .foregroundColor: NSColor(white: 0.2, alpha: 1)]
+                                                             .foregroundColor: colors.chartTitle]
             let size = (chart.title as NSString).size(withAttributes: titleAttrs)
             (chart.title as NSString).draw(at: NSPoint(x: area.midX - size.width / 2, y: area.minY), withAttributes: titleAttrs)
             area.origin.y += size.height + 6 * scale
@@ -90,7 +90,7 @@ enum ChartRenderer {
                 p.close()
                 palette[i % palette.count].setFill()
                 p.fill()
-                NSColor.white.setStroke()
+                colors.chartFill.setStroke()
                 p.lineWidth = 1
                 p.stroke()
                 angle += sweep
@@ -122,7 +122,7 @@ enum ChartRenderer {
         // Gridlines + value labels
         var v = lo
         while v <= hi + step / 2 {
-            NSColor(white: 0.9, alpha: 1).setFill()
+            colors.chartGrid.setFill()
             let p = valuePos(v)
             let text = Value.formatGeneral(v) as NSString
             let size = text.size(withAttributes: label)
@@ -193,7 +193,7 @@ enum ChartRenderer {
         case .pie:
             break
         }
-        NSColor(white: 0.6, alpha: 1).setFill()
+        colors.chartAxis.setFill()
         if horizontal { NSRect(x: zero, y: plot.minY, width: 1, height: plot.height).fill() }
         else { NSRect(x: plot.minX, y: zero, width: plot.width, height: 1).fill() }
     }
