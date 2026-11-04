@@ -68,6 +68,7 @@ enum ODS {
                 }
             }
             var validationCells: [String: [CellRef]] = [:]
+            var matrixRanges: [CellRange] = []
             var col = 0
             var columnDefault: [Int: String] = [:]
             for (c, level) in outlined(table, "table-column", group: "table-column-group") {
@@ -134,7 +135,14 @@ enum ODS {
                             var cell = Cell()
                             cell.style = style
                             cell.value = value
-                            if let formula { cell.input = formula } else {
+                            if let formula {
+                                cell.input = formula
+                                if let cs = cellXML.attr("number-matrix-columns-spanned").flatMap(Int.init),
+                                   let rs = cellXML.attr("number-matrix-rows-spanned").flatMap(Int.init) {
+                                    cell.array = true
+                                    if cs * rs > 1 { matrixRanges.append(CellRange(ref, CellRef(row: ref.row + rs - 1, col: ref.col + cs - 1))) }
+                                }
+                            } else {
                                 cell.input = XLSX.inputText(for: value, style: style)
                                 if case .string(let s) = value, XLSX.constant(s) != .string(s) || s.hasPrefix("=") { cell.input = "'" + s }
                             }
@@ -151,6 +159,12 @@ enum ODS {
                 }
                 row += repeatRows
             }
+            for r in matrixRanges {
+                for ref in r.cells where ref != r.start {
+                    if var c = sheet.cells[ref], !c.isFormula { c.input = ""; sheet.cells[ref] = c }
+                }
+            }
+            matrixRanges = []
             for (name, refs) in validationCells.sorted(by: { $0.key < $1.key }) {
                 guard var v = validationRules[name] else { continue }
                 v.ranges = ranges(refs)
@@ -239,11 +253,16 @@ enum ODS {
         for prefix in ["of:", "oooc:", "msoxl:"] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
         if !s.hasPrefix("=") { s = "=" + s }
         var out = ""
-        var inString = false
+        var inString = false, braces = 0
         var i = s.startIndex
         while i < s.endIndex {
             let ch = s[i]
             if ch == "\"" { inString.toggle(); out.append(ch); i = s.index(after: i); continue }
+            // Inline arrays: {1;2|3;4} (columns ";", rows "|") → {1,2;3,4}.
+            if !inString {
+                if ch == "{" { braces += 1 } else if ch == "}" { braces = max(0, braces - 1) }
+                if braces > 0, ch == ";" || ch == "|" { out.append(ch == ";" ? "," : ";"); i = s.index(after: i); continue }
+            }
             if !inString, ch == "[", let close = s[i...].firstIndex(of: "]") {
                 let inner = String(s[s.index(after: i)..<close])
                 if let r = rangeFromODF(inner) { out += (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range } else { out += "#REF!" }
@@ -590,6 +609,11 @@ enum ODS {
         }
         if cell.isFormula, let e = Calculator.expression(cell.input) {
             x += " table:formula=\"\(xmlEscape("of:=" + odfFormula(e)))\""
+            if let spill = sheet.spills[ref] {
+                x += " table:number-matrix-columns-spanned=\"\(spill.cols.count)\" table:number-matrix-rows-spanned=\"\(spill.rows.count)\""
+            } else if cell.array {
+                x += " table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"1\""
+            }
         }
         var text = NumberFormat.format(cell.value, cell.style.numberFormat).text
         switch cell.value {
@@ -650,6 +674,7 @@ enum ODS {
                 return prec < parent ? "(" + text + ")" : text
             case .unary(let o, let x): return o + s(x, 6)
             case .percent(let x): return s(x, 7) + "%"
+            case .array(let m): return Formula.arrayText(m, col: ";", row: "|")
             default: return Formula.serialize(e)
             }
         }

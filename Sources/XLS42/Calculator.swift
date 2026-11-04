@@ -6,11 +6,45 @@ struct Matrix {
     var cols: Int
     var values: [Value]
     subscript(r: Int, c: Int) -> Value { values[r * cols + c] }
+
+    init(rows: Int, cols: Int, values: [Value]) {
+        self.rows = rows
+        self.cols = cols
+        self.values = values
+    }
+
+    init(rows: Int, cols: Int, fill: Value) { self.init(rows: rows, cols: cols, values: Array(repeating: fill, count: rows * cols)) }
+
+    /// Rows of equal length (the first row sets the width; short rows are padded with #N/A).
+    init(_ rows: [[Value]]) {
+        let w = rows.map(\.count).max() ?? 0
+        self.init(rows: rows.count, cols: w, values: rows.flatMap { $0 + Array(repeating: .error("#N/A"), count: w - $0.count) })
+    }
+
+    var count: Int { values.count }
+    func row(_ r: Int) -> [Value] { Array(values[(r * cols)..<(r * cols + cols)]) }
+    func column(_ c: Int) -> [Value] { (0..<rows).map { self[$0, c] } }
+    var transposed: Matrix {
+        var out: [Value] = []
+        out.reserveCapacity(values.count)
+        for c in 0..<cols { for r in 0..<rows { out.append(self[r, c]) } }
+        return Matrix(rows: cols, cols: rows, values: out)
+    }
+
+    /// Element for elementwise operations: single rows/columns repeat, other positions outside are #N/A.
+    func at(_ r: Int, _ c: Int) -> Value {
+        let rr = rows == 1 ? 0 : r, cc = cols == 1 ? 0 : c
+        guard rr < rows, cc < cols else { return .error("#N/A") }
+        return self[rr, cc]
+    }
 }
 
 enum Operand {
     case value(Value)
     case matrix(Matrix, origin: CellRef?)
+
+    /// More than one value (an array result rather than a single cell).
+    var isMulti: Bool { if case .matrix(let m, _) = self { return m.count != 1 }; return false }
 }
 
 struct XLError: Error {
@@ -21,33 +55,69 @@ struct XLError: Error {
     static let name = XLError(code: "#NAME?")
     static let na = XLError(code: "#N/A")
     static let num = XLError(code: "#NUM!")
+    static let spill = XLError(code: "#SPILL!")
+    static let calc = XLError(code: "#CALC!")
 }
 
 /// Evaluates every formula of a workbook. Excel semantics for coercion, comparison,
-/// error propagation, criteria (SUMIF/COUNTIF), lookups and serial dates.
+/// error propagation, criteria (SUMIF/COUNTIF), lookups and serial dates. Operators and scalar
+/// functions work element by element on arrays; dynamic-array formulas (FILTER, SORT, SEQUENCE…)
+/// and array formulas spill their result into the cells below and to the right (#SPILL! when blocked).
 final class Calculator {
     private(set) var workbook: Workbook
     private var cache: [Int: [CellRef: Value]] = [:]
     private var visiting = Set<[Int]>()
     private var nameDepth = 0
+    /// LET bindings and LAMBDA parameters, innermost last.
+    var locals: [[String: Operand]] = []
     private static var parsed: [String: Expr] = [:]
+    private static var dynamic: [String: Bool] = [:]
     private static let parseLock = NSLock()
+    /// Values spilled by array results (not the anchor cells), and each anchor's spill range.
+    private(set) var spilled: [Int: [CellRef: Value]] = [:]
+    private(set) var spillRanges: [Int: [CellRef: CellRange]] = [:]
+    /// Formulas that may spill, per sheet; `spillsDone`: every one of them is evaluated.
+    private var anchors: [Int: [CellRef]] = [:]
+    private var spillsDone = Set<Int>()
+    /// Evaluation depth guard (LAMBDA recursion, deep nesting).
+    var depth = 0
 
-    init(_ workbook: Workbook) { self.workbook = workbook }
+    init(_ workbook: Workbook) {
+        self.workbook = workbook
+        for (si, sheet) in workbook.sheets.enumerated() {
+            let list = sheet.cells.filter { $0.value.isFormula && ($0.value.array || Self.isDynamic($0.value.input)) }.keys.sorted()
+            if !list.isEmpty { anchors[si] = list }
+        }
+    }
 
     /// Recalculates all formulas and returns the workbook with fresh cached values.
     /// Runs on a thread with a large stack so long dependency chains don't overflow.
     static func recalculate(_ workbook: Workbook) -> Workbook {
-        var result = workbook
+        // Values spilled by the last calculation are recomputed.
+        var input = workbook
+        for si in input.sheets.indices {
+            input.sheets[si].spills = [:]
+            for (ref, cell) in input.sheets[si].cells where cell.input.isEmpty && !cell.value.isEmpty {
+                input.sheets[si][ref].value = .empty
+            }
+        }
+        var result = input
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
-            let calc = Calculator(workbook)
-            for (si, sheet) in workbook.sheets.enumerated() {
+            let calc = Calculator(input)
+            for (si, sheet) in input.sheets.enumerated() {
                 for (ref, cell) in sheet.cells where cell.isFormula { _ = calc.value(sheet: si, ref: ref) }
             }
             for (si, values) in calc.cache {
                 for (ref, v) in values { result.sheets[si].cells[ref]?.value = v }
             }
+            for (si, values) in calc.spilled {
+                for (ref, v) in values {
+                    if result.sheets[si].cells[ref] == nil { result.sheets[si].cells[ref] = Cell() }
+                    result.sheets[si].cells[ref]?.value = v
+                }
+            }
+            for (si, ranges) in calc.spillRanges { result.sheets[si].spills = ranges }
             done.signal()
         }
         thread.stackSize = 256 << 20
@@ -65,11 +135,46 @@ final class Calculator {
         return e
     }
 
+    /// Functions whose array results spill (Excel 365 dynamic arrays).
+    static let dynamicFunctions: Set<String> = [
+        "FILTER", "SORT", "SORTBY", "UNIQUE", "SEQUENCE", "RANDARRAY", "TRANSPOSE", "TEXTSPLIT", "MODE.MULT", "LINEST",
+        "TREND", "GROWTH", "MMULT", "MINVERSE", "MUNIT", "FREQUENCY", "XLOOKUP", "VSTACK", "HSTACK", "TOCOL", "TOROW",
+        "CHOOSECOLS", "CHOOSEROWS", "TAKE", "DROP", "EXPAND", "WRAPROWS", "WRAPCOLS", "LET", "REGEXEXTRACT", "LOGEST",
+    ]
+
+    /// The formula uses a dynamic-array function, so an array result spills.
+    static func isDynamic(_ input: String) -> Bool {
+        parseLock.lock()
+        if let d = dynamic[input] { parseLock.unlock(); return d }
+        parseLock.unlock()
+        var found = false
+        func walk(_ e: Expr) {
+            guard !found else { return }
+            switch e {
+            case .call(let n, let args):
+                if dynamicFunctions.contains(n) { found = true; return }
+                args.forEach(walk)
+            case .binary(_, let l, let r): walk(l); walk(r)
+            case .unary(_, let x), .percent(let x): walk(x)
+            default: break
+            }
+        }
+        if let e = expression(input) { walk(e) }
+        parseLock.lock()
+        if dynamic.count > 50_000 { dynamic.removeAll() }
+        dynamic[input] = found
+        parseLock.unlock()
+        return found
+    }
+
     // MARK: - Cells
 
     func value(sheet: Int, ref: CellRef) -> Value {
-        guard sheet < workbook.sheets.count, let cell = workbook.sheets[sheet].cells[ref] else { return .empty }
-        guard cell.isFormula else { return cell.value }
+        guard sheet < workbook.sheets.count else { return .empty }
+        guard let cell = workbook.sheets[sheet].cells[ref], cell.isFormula else {
+            if let cell = workbook.sheets[sheet].cells[ref], !cell.input.isEmpty { return cell.value }
+            return spillValue(sheet: sheet, ref: ref)
+        }
         if let v = cache[sheet]?[ref] { return v }
         let key = [sheet, ref.row, ref.col]
         if visiting.contains(key) { return .error("#REF!") }
@@ -77,13 +182,56 @@ final class Calculator {
         defer { visiting.remove(key) }
         let v: Value
         if let e = Self.expression(cell.input) {
-            v = scalar(eval(e, sheet: sheet, at: ref), at: ref)
+            let result = eval(e, sheet: sheet, at: ref)
+            if result.isMulti, cell.array || Self.isDynamic(cell.input), case .matrix(let m, _) = result {
+                v = spill(m, sheet: sheet, at: ref)
+            } else {
+                v = scalar(result, at: ref)
+            }
         } else {
             v = .error("#NAME?")
         }
         let stored: Value = v.isEmpty ? .number(0) : v
         cache[sheet, default: [:]][ref] = stored
         return stored
+    }
+
+    /// Value an empty cell gets from a spilling formula (evaluates the sheet's array formulas first).
+    private func spillValue(sheet: Int, ref: CellRef) -> Value {
+        guard let list = anchors[sheet] else { return .empty }
+        if !spillsDone.contains(sheet) {
+            var all = true
+            for a in list where cache[sheet]?[a] == nil {
+                if visiting.contains([sheet, a.row, a.col]) { all = false; continue }
+                _ = value(sheet: sheet, ref: a)
+            }
+            if all { spillsDone.insert(sheet) }
+        }
+        return spilled[sheet]?[ref] ?? .empty
+    }
+
+    /// Writes an array result from `at` down and right; #SPILL! when a cell in the way isn't empty.
+    private func spill(_ m: Matrix, sheet: Int, at: CellRef) -> Value {
+        guard m.rows > 0, m.cols > 0 else { return .error("#CALC!") }
+        guard m.count <= 2_000_000, at.row + m.rows - 1 <= RefPart.maxRow, at.col + m.cols - 1 <= RefPart.maxCol else { return .error("#SPILL!") }
+        let s = workbook.sheets[sheet]
+        let range = CellRange(at, CellRef(row: at.row + m.rows - 1, col: at.col + m.cols - 1))
+        for r in range.rows {
+            for c in range.cols where r != at.row || c != at.col {
+                let ref = CellRef(row: r, col: c)
+                if let cell = s.cells[ref], !cell.input.isEmpty { return .error("#SPILL!") }
+                if spilled[sheet]?[ref] != nil { return .error("#SPILL!") }
+            }
+        }
+        if s.merges.contains(where: { m in range.contains(m.start) || range.contains(m.end) }) { return .error("#SPILL!") }
+        for r in 0..<m.rows {
+            for c in 0..<m.cols where r != 0 || c != 0 {
+                let v = m[r, c]
+                spilled[sheet, default: [:]][CellRef(row: at.row + r, col: at.col + c)] = v.isEmpty ? .number(0) : v
+            }
+        }
+        spillRanges[sheet, default: [:]][at] = range
+        return m[0, 0]
     }
 
     // MARK: - Expressions
@@ -94,7 +242,7 @@ final class Calculator {
         } catch { return .value(.error("#VALUE!")) }
     }
 
-    private func sheetIndex(_ name: String?, _ current: Int) throws -> Int {
+    func sheetIndex(_ name: String?, _ current: Int) throws -> Int {
         guard let name else { return current }
         guard let i = workbook.sheetIndex(named: name) else { throw XLError.ref }
         return i
@@ -126,8 +274,10 @@ final class Calculator {
         case .bool(let b): return .value(.bool(b))
         case .error(let c): return .value(.error(c))
         case .missing: return .value(.empty)
+        case .array(let m): return .matrix(m, origin: nil)
         case .name(let n):
             let up = n.uppercased()
+            for scope in locals.reversed() { if let v = scope[up] { return v } }
             if up == "TRUE" { return .value(.bool(true)) }
             if up == "FALSE" { return .value(.bool(false)) }
             // Defined names (workbook scope), resolved by their formula text.
@@ -145,22 +295,52 @@ final class Calculator {
             let (m, origin) = rangeMatrix(sheet: s, a, b)
             return .matrix(m, origin: origin)
         case .unary(let op, let x):
-            let v = try num(scalar(eval(x, sheet: sheet, at: at), at: at))
+            let o = eval(x, sheet: sheet, at: at)
+            if o.isMulti { return elementwise([o]) { v in let d = try self.num(v[0]); return .number(op == "-" ? -d : d) } }
+            let v = try num(scalar(o, at: at))
             return .value(.number(op == "-" ? -v : v))
         case .percent(let x):
-            return .value(.number(try num(scalar(eval(x, sheet: sheet, at: at), at: at)) / 100))
+            let o = eval(x, sheet: sheet, at: at)
+            if o.isMulti { return elementwise([o]) { v in .number(try self.num(v[0]) / 100) } }
+            return .value(.number(try num(scalar(o, at: at)) / 100))
         case .binary(let op, let l, let r):
-            let a = scalar(eval(l, sheet: sheet, at: at), at: at)
-            let b = scalar(eval(r, sheet: sheet, at: at), at: at)
+            let lo = eval(l, sheet: sheet, at: at), ro = eval(r, sheet: sheet, at: at)
+            if lo.isMulti || ro.isMulti { return elementwise([lo, ro]) { v in try self.binary(op, v[0], v[1]) } }
+            let a = scalar(lo, at: at)
+            let b = scalar(ro, at: at)
             if case .error(let c) = a { throw XLError(code: c) }
             if case .error(let c) = b { throw XLError(code: c) }
             return .value(try binary(op, a, b))
         case .call(let name, let args):
+            depth += 1
+            defer { depth -= 1 }
+            guard depth < 400 else { throw XLError.num }
             return try call(name, args, sheet: sheet, at: at)
         }
     }
 
-    private func binary(_ op: String, _ a: Value, _ b: Value) throws -> Value {
+    /// Applies `f` element by element (single rows/columns broadcast; errors in an element stay in that element).
+    func elementwise(_ ops: [Operand], _ f: ([Value]) throws -> Value) -> Operand {
+        let ms = ops.map(matrix)
+        let rows = ms.map(\.rows).max() ?? 1, cols = ms.map(\.cols).max() ?? 1
+        var out: [Value] = []
+        out.reserveCapacity(rows * cols)
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let args = ms.map { $0.at(r, c) }
+                if let e = args.first(where: \.isError) { out.append(e); continue }
+                do { out.append(try f(args)) } catch let err as XLError { out.append(.error(err.code)) } catch { out.append(.error("#VALUE!")) }
+            }
+        }
+        // Keep the range's position for implicit intersection (=A1:A3*2 in row 2 → A2*2).
+        var origin: CellRef?
+        for case .matrix(let m, let o) in ops where m.rows == rows && m.cols == cols && o != nil { origin = o; break }
+        return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: origin)
+    }
+
+    func binary(_ op: String, _ a: Value, _ b: Value) throws -> Value {
+        if case .error(let c) = a { throw XLError(code: c) }
+        if case .error(let c) = b { throw XLError(code: c) }
         switch op {
         case "+": return .number(try num(a) + num(b))
         case "-": return .number(try num(a) - num(b))
@@ -278,26 +458,26 @@ final class Calculator {
 
     // MARK: - Argument helpers
 
-    private func values(_ op: Operand) -> [Value] {
+    func values(_ op: Operand) -> [Value] {
         switch op {
         case .value(let v): return [v]
         case .matrix(let m, _): return m.values
         }
     }
 
-    private func matrix(_ op: Operand) -> Matrix {
+    func matrix(_ op: Operand) -> Matrix {
         switch op {
         case .value(let v): return Matrix(rows: 1, cols: 1, values: [v])
         case .matrix(let m, _): return m
         }
     }
 
-    private func isReference(_ e: Expr) -> Bool {
+    func isReference(_ e: Expr) -> Bool {
         switch e { case .ref, .range: return true; default: return false }
     }
 
     /// Numbers for SUM/AVERAGE/MIN/…: in references only numbers count; direct arguments are coerced.
-    private func numbers(_ args: [Expr], sheet: Int, at: CellRef, countText: Bool = false) throws -> [Double] {
+    func numbers(_ args: [Expr], sheet: Int, at: CellRef, countText: Bool = false) throws -> [Double] {
         var out: [Double] = []
         for arg in args {
             if case .missing = arg { continue }
@@ -318,13 +498,13 @@ final class Calculator {
         return out
     }
 
-    private func arg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef) -> Value {
+    func arg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef) -> Value {
         guard i < args.count else { return .empty }
         if case .missing = args[i] { return .empty }
         return scalar(eval(args[i], sheet: sheet, at: at), at: at)
     }
 
-    private func numArg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef, default d: Double? = nil) throws -> Double {
+    func numArg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef, default d: Double? = nil) throws -> Double {
         if i >= args.count || { if case .missing = args[i] { return true }; return false }() {
             if let d { return d }
             throw XLError.value
@@ -334,7 +514,7 @@ final class Calculator {
         return try num(v)
     }
 
-    private func textArg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef, default d: String? = nil) throws -> String {
+    func textArg(_ args: [Expr], _ i: Int, _ sheet: Int, _ at: CellRef, default d: String? = nil) throws -> String {
         if i >= args.count, let d { return d }
         let v = arg(args, i, sheet, at)
         if case .error(let c) = v { throw XLError(code: c) }
@@ -378,7 +558,7 @@ final class Calculator {
         }
     }
 
-    private func compareOp(_ op: String, _ c: Int) -> Bool {
+    func compareOp(_ op: String, _ c: Int) -> Bool {
         switch op {
         case "=": return c == 0
         case "<>": return c != 0
@@ -389,9 +569,9 @@ final class Calculator {
         }
     }
 
-    private var regexCache: [String: NSRegularExpression] = [:]
+    var regexCache: [String: NSRegularExpression] = [:]
 
-    private func wildcardRegex(_ pattern: String, anchored: Bool = true) -> NSRegularExpression? {
+    func wildcardRegex(_ pattern: String, anchored: Bool = true) -> NSRegularExpression? {
         let key = (anchored ? "^" : "") + pattern
         if let r = regexCache[key] { return r }
         var re = anchored ? "^" : ""
@@ -414,7 +594,7 @@ final class Calculator {
     // MARK: - Lookup helpers
 
     /// Position in a vector: exact (with wildcards) or approximate (largest ≤ value / smallest ≥ value).
-    private func lookupIndex(_ needle: Value, in hay: [Value], mode: Int) -> Int? {
+    func lookupIndex(_ needle: Value, in hay: [Value], mode: Int) -> Int? {
         if mode == 0 {
             if case .string(let s) = needle, s.contains(where: { "*?".contains($0) }) {
                 let match = criterion(needle)
@@ -435,7 +615,122 @@ final class Calculator {
 
     // MARK: - Functions
 
-    private func call(_ name: String, _ args: [Expr], sheet: Int, at: CellRef) throws -> Operand {
+    /// "R2C3", "R[1]C[-1]", "Sheet!R1C1:R2C2" → A1 text (relative parts from `at`).
+    static func r1c1ToA1(_ text: String, at: CellRef) throws -> String {
+        var sheet = ""
+        var body = Substring(text)
+        if let bang = body.lastIndex(of: "!") { sheet = String(body[...bang]); body = body[body.index(after: bang)...] }
+        func part(_ p: Substring) throws -> String {
+            let up = p.uppercased()
+            guard let re = try? NSRegularExpression(pattern: "^R(\\[-?\\d+\\]|\\d+)?C(\\[-?\\d+\\]|\\d+)?$"),
+                  let m = re.firstMatch(in: up, range: NSRange(up.startIndex..., in: up)) else { throw XLError.ref }
+            func value(_ i: Int, base: Int) -> (Int, Bool) {
+                guard let r = Range(m.range(at: i), in: up) else { return (base, false) }
+                let s = up[r]
+                if s.hasPrefix("[") { return (base + (Int(s.dropFirst().dropLast()) ?? 0), false) }
+                return ((Int(s) ?? 1) - 1, true)
+            }
+            let (row, absRow) = value(1, base: at.row), (col, absCol) = value(2, base: at.col)
+            guard row >= 0, col >= 0 else { throw XLError.ref }
+            return (absCol ? "$" : "") + CellRef.columnName(col) + (absRow ? "$" : "") + "\(row + 1)"
+        }
+        return sheet + (try body.split(separator: ":").map(part).joined(separator: ":"))
+    }
+
+    /// Evaluates the arguments once; arrays make the function run per element (broadcast like operators).
+    private func lift(_ name: String, _ args: [Expr], sheet: Int, at: CellRef) throws -> Operand {
+        let ops: [Operand?] = args.map { e in
+            if case .missing = e { return nil }
+            return eval(e, sheet: sheet, at: at)
+        }
+        func literal(_ v: Value) -> Expr { .array(Matrix(rows: 1, cols: 1, values: [v])) }
+        guard ops.contains(where: { $0?.isMulti ?? false }) else {
+            let lits = ops.map { $0.map { literal(scalar($0, at: at)) } ?? .missing }
+            return try call(name, lits, sheet: sheet, at: at, lifted: true)
+        }
+        let ms = ops.map { $0.map(matrix) }
+        let rows = ms.compactMap { $0?.rows }.max() ?? 1, cols = ms.compactMap { $0?.cols }.max() ?? 1
+        var out: [Value] = []
+        out.reserveCapacity(rows * cols)
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let lits = ms.map { $0.map { literal($0.at(r, c)) } ?? .missing }
+                let v = scalar(eval(.call(name, lits), sheet: sheet, at: at), at: at)
+                out.append(v)
+            }
+        }
+        var origin: CellRef?
+        for case .matrix(let m, let o)? in ops where m.rows == rows && m.cols == cols && o != nil { origin = o; break }
+        return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: origin)
+    }
+
+    /// Like `elementwise`, but errors are passed to `f` (IFERROR over arrays).
+    private func elementwiseKeepingErrors(_ a: Operand, _ b: Matrix, _ f: (Value, Value) -> Value) -> Operand {
+        let am = matrix(a)
+        let rows = max(am.rows, b.rows), cols = max(am.cols, b.cols)
+        var out: [Value] = []
+        for r in 0..<rows { for c in 0..<cols { out.append(f(am.at(r, c), b.at(r, c))) } }
+        return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: nil)
+    }
+
+    /// Scalar functions applied element by element when an argument is an array (=LEN(A1:A3), =ROUND(B1:B5*2;1)).
+    static let liftable: Set<String> = [
+        "ABS", "SIGN", "INT", "TRUNC", "ROUND", "ROUNDUP", "ROUNDDOWN", "MROUND", "CEILING", "CEILING.MATH", "CEILING.PRECISE",
+        "FLOOR", "FLOOR.MATH", "FLOOR.PRECISE", "ISO.CEILING", "EVEN", "ODD", "MOD", "POWER", "SQRT", "EXP", "LN", "LOG", "LOG10",
+        "FACT", "DEGREES", "RADIANS", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "ATAN2", "SINH", "COSH", "TANH", "ASINH", "ACOSH",
+        "ATANH", "COT", "COTH", "CSC", "CSCH", "SEC", "SECH", "ACOT", "ACOTH", "QUOTIENT", "COMBIN", "PERMUT", "SQRTPI",
+        "LEN", "LEFT", "RIGHT", "MID", "UPPER", "LOWER", "PROPER", "TRIM", "CLEAN", "SUBSTITUTE", "REPLACE", "FIND", "SEARCH",
+        "REPT", "EXACT", "CHAR", "UNICHAR", "CODE", "UNICODE", "TEXT", "VALUE", "NUMBERVALUE", "FIXED", "DOLLAR", "TEXTBEFORE",
+        "TEXTAFTER", "DATE", "TIME", "YEAR", "MONTH", "DAY", "WEEKDAY", "HOUR", "MINUTE", "SECOND", "EDATE", "EOMONTH", "DAYS",
+        "DATEDIF", "WEEKNUM", "ISOWEEKNUM", "YEARFRAC", "DAYS360", "DATEVALUE", "TIMEVALUE", "ISBLANK", "ISNUMBER", "ISTEXT",
+        "ISLOGICAL", "ISERROR", "ISERR", "ISNA", "ISEVEN", "ISODD", "N", "T", "NORM.DIST", "NORM.S.DIST", "NORM.INV", "NORM.S.INV",
+        "NORMDIST", "NORMSDIST", "NORMINV", "NORMSINV", "DEC2BIN", "DEC2HEX", "DEC2OCT", "BIN2DEC", "HEX2DEC", "OCT2DEC",
+        "BITAND", "BITOR", "BITXOR", "CONVERT", "REGEX", "REGEXTEST", "REGEXREPLACE", "ROMAN", "ARABIC", "BASE", "DECIMAL",
+        "ERROR.TYPE", "NOT", "BINOM.DIST", "POISSON.DIST", "EXPON.DIST", "T.DIST", "CHISQ.DIST", "GAMMA", "GAMMALN", "PMT", "FV",
+        "PV", "IPMT", "PPMT", "NPER", "EFFECT", "NOMINAL", "DELTA", "GESTEP", "HYPERLINK",
+    ]
+
+    func call(_ name: String, _ args: [Expr], sheet: Int, at: CellRef, lifted: Bool = false) throws -> Operand {
+        // Arrays in IF / IFERROR / IFNA conditions, and scalar functions over arrays.
+        if !lifted {
+            switch name {
+            case "IF" where !args.isEmpty:
+                let cond = eval(args[0], sheet: sheet, at: at)
+                if cond.isMulti {
+                    let yes = args.count > 1 ? eval(args[1], sheet: sheet, at: at) : .value(.bool(true))
+                    let no = args.count > 2 ? eval(args[2], sheet: sheet, at: at) : .value(.bool(false))
+                    let cm = matrix(cond), ym = matrix(yes), nm = matrix(no)
+                    let rows = max(cm.rows, ym.rows, nm.rows), cols = max(cm.cols, ym.cols, nm.cols)
+                    var out: [Value] = []
+                    for r in 0..<rows {
+                        for c in 0..<cols {
+                            let v = cm.at(r, c)
+                            if case .error = v { out.append(v); continue }
+                            guard let b = try? bool(v) else { out.append(.error("#VALUE!")); continue }
+                            let picked = b ? ym.at(r, c) : nm.at(r, c)
+                            out.append(picked.isEmpty ? .number(0) : picked)
+                        }
+                    }
+                    return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: nil)
+                }
+                return try call(name, [.array(Matrix(rows: 1, cols: 1, values: [scalar(cond, at: at)]))] + args.dropFirst(), sheet: sheet, at: at, lifted: true)
+            case "IFERROR", "IFNA":
+                guard args.count >= 2 else { throw XLError.value }
+                let v = eval(args[0], sheet: sheet, at: at)
+                if v.isMulti {
+                    let alt = matrix(eval(args[1], sheet: sheet, at: at))
+                    return elementwiseKeepingErrors(v, alt) { x, y in
+                        if case .error(let c) = x, name == "IFERROR" || c == "#N/A" { return y }
+                        return x
+                    }
+                }
+                let one = scalar(v, at: at)
+                if case .error(let c) = one, name == "IFERROR" || c == "#N/A" { return eval(args[1], sheet: sheet, at: at) }
+                return .value(one)
+            default:
+                if Self.liftable.contains(name) { return try lift(name, args, sheet: sheet, at: at) }
+            }
+        }
         func a(_ i: Int) -> Value { arg(args, i, sheet, at) }
         func n(_ i: Int, _ d: Double? = nil) throws -> Double { try numArg(args, i, sheet, at, default: d) }
         func t(_ i: Int, _ d: String? = nil) throws -> String { try textArg(args, i, sheet, at, default: d) }
@@ -531,13 +826,15 @@ final class Calculator {
             guard m != 0 else { return .value(.number(0)) }
             guard x * m >= 0 else { throw XLError.num }
             return try r((x / m).rounded(.toNearestOrAwayFromZero) * m)
-        case "CEILING", "CEILING.MATH":
+        case "CEILING":
             let x = try n(0), s = try n(1, x >= 0 ? 1 : -1)
             guard s != 0 else { return .value(.number(0)) }
+            guard !(x > 0 && s < 0) else { throw XLError.num }
             return try r((x / s).rounded(.up) * s)
-        case "FLOOR", "FLOOR.MATH":
+        case "FLOOR":
             let x = try n(0), s = try n(1, 1)
-            guard s != 0 else { throw XLError.div0 }
+            guard s != 0 else { if x == 0 { return .value(.number(0)) }; throw XLError.div0 }
+            guard !(x > 0 && s < 0) else { throw XLError.num }
             return try r((x / s).rounded(.down) * s)
         case "EVEN": let x = try n(0); let c = (abs(x) / 2).rounded(.up) * 2; return try r(x < 0 ? -c : c)
         case "ODD":
@@ -621,12 +918,6 @@ final class Calculator {
                 guard !picked.isEmpty else { throw XLError.div0 }
                 return try r(picked.reduce(0, +) / Double(picked.count))
             }
-        case "SUBTOTAL":
-            let fn = Int(try n(0)) % 100
-            let names = [1: "AVERAGE", 2: "COUNT", 3: "COUNTA", 4: "MAX", 5: "MIN", 6: "PRODUCT", 7: "STDEV", 8: "STDEV.P", 9: "SUM", 10: "VAR", 11: "VAR.P"]
-            guard let f = names[fn] else { throw XLError.value }
-            return try call(f, Array(args.dropFirst()), sheet: sheet, at: at)
-
         // Logic
         case "IF":
             try need(1)
@@ -637,10 +928,6 @@ final class Calculator {
         case "IFS":
             for i in stride(from: 0, to: args.count - 1, by: 2) where try bool(a(i)) { return op(i + 1) }
             throw XLError.na
-        case "IFERROR", "IFNA":
-            let v = a(0)
-            if case .error(let c) = v, name == "IFERROR" || c == "#N/A" { return op(1) }
-            return op(0)
         case "AND", "OR", "XOR":
             var results: [Bool] = []
             for arg in args {
@@ -689,57 +976,33 @@ final class Calculator {
             try need(2)
             let m = matrix(op(1))
             let mode = Int(try n(2, 1))
+            let needles = op(0)
+            if needles.isMulti {
+                return elementwise([needles]) { v in
+                    guard let pos = self.lookupIndex(v[0], in: m.values, mode: mode < 0 ? -1 : mode > 0 ? 1 : 0) else { throw XLError.na }
+                    return .number(Double(pos + 1))
+                }
+            }
             guard let pos = lookupIndex(a(0), in: m.values, mode: mode < 0 ? -1 : mode > 0 ? 1 : 0) else { throw XLError.na }
             return .value(.number(Double(pos + 1)))
-        case "INDEX":
-            try need(2)
-            let m = matrix(op(0))
-            var row = Int(try n(1)), col = Int(try n(2, 0))
-            if m.rows == 1, args.count == 2 { col = row; row = 1 }
-            if col == 0, m.cols == 1 { col = 1 }
-            if row == 0, m.rows == 1 { row = 1 }
-            guard row >= 1, row <= m.rows, col >= 1, col <= m.cols else { throw XLError.ref }
-            return .value(m[row - 1, col - 1])
-        case "XLOOKUP":
-            try need(3)
-            let hay = matrix(op(1)), results = matrix(op(2))
-            let needle = a(0)
-            let mode = Int(try n(4, 0))   // 0 exact, -1 exact or next smaller, 1 exact or next larger, 2 wildcard
-            let reverse = (try n(5, 1)) < 0
-            let order = reverse ? Array((0..<hay.values.count).reversed()) : Array(0..<hay.values.count)
-            var pos: Int?
-            switch mode {
-            case 2:
-                let match = criterion(needle)
-                pos = order.first { match(hay.values[$0]) }
-            case -1, 1:
-                pos = order.first { compare(hay.values[$0], needle) == 0 }
-                if pos == nil {
-                    let candidates = order.filter { !hay.values[$0].isEmpty && compare(hay.values[$0], needle) == mode }
-                    pos = candidates.min { compare(hay.values[$0], hay.values[$1]) * mode < 0 }
-                }
-            default:
-                pos = order.first { !hay.values[$0].isEmpty && compare(hay.values[$0], needle) == 0 }
-            }
-            guard let p = pos else {
-                if args.count > 3 { return op(3) }
-                throw XLError.na
-            }
-            let vertical = hay.cols == 1
-            if vertical { return .value(p < results.rows ? results[p, 0] : .error("#N/A")) }
-            return .value(p < results.cols ? results[0, p] : .error("#N/A"))
         case "ROW", "COLUMN":
             if args.isEmpty { return .value(.number(Double((name == "ROW" ? at.row : at.col) + 1))) }
             if case .ref(_, let p) = args[0] { return .value(.number(Double((name == "ROW" ? p.row : p.col) + 1))) }
             if case .range(_, let p, _) = args[0] { return .value(.number(Double((name == "ROW" ? p.row : p.col) + 1))) }
+            if case .matrix(_, let o?) = op(0) { return .value(.number(Double((name == "ROW" ? o.row : o.col) + 1))) }
             throw XLError.value
         case "ROWS", "COLUMNS":
             let m = matrix(op(0))
             return .value(.number(Double(name == "ROWS" ? m.rows : m.cols)))
         case "INDIRECT":
-            let refText = try t(0)
+            var refText = try t(0)
+            if args.count > 1, !(try bool(a(1))) { refText = try Self.r1c1ToA1(refText, at: at) }
             guard let e = try? Formula.parse("=" + refText) else { throw XLError.ref }
-            switch e { case .ref, .range: return eval(e, sheet: sheet, at: at); default: throw XLError.ref }
+            switch e {
+            case .ref, .range: return eval(e, sheet: sheet, at: at)
+            case .name: return eval(e, sheet: sheet, at: at)
+            default: throw XLError.ref
+            }
         case "OFFSET":
             try need(3)
             guard case .ref(let sn, let p) = args[0] else {
@@ -776,7 +1039,6 @@ final class Calculator {
             return .value(.string(String(s[start..<min(s.count, start + len)])))
         case "UPPER": return .value(.string(try t(0).uppercased()))
         case "LOWER": return .value(.string(try t(0).lowercased()))
-        case "PROPER": return .value(.string(try t(0).capitalized))
         case "TRIM": return .value(.string(try t(0).split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")))
         case "CONCATENATE", "CONCAT":
             var s = ""
@@ -886,10 +1148,13 @@ final class Calculator {
             case "DAY": return .value(.number(Double(c.day!)))
             default:
                 let w = c.weekday!   // 1 = Sunday
-                switch Int(try n(1, 1)) {
-                case 2: return .value(.number(Double((w + 5) % 7 + 1)))
+                let type = Int(try n(1, 1))
+                switch type {
+                case 1, 17: return .value(.number(Double(w)))
+                case 2, 11: return .value(.number(Double((w + 5) % 7 + 1)))
                 case 3: return .value(.number(Double((w + 5) % 7)))
-                default: return .value(.number(Double(w)))
+                case 12...16: return .value(.number(Double(((w + 5) % 7 - (type - 11) + 7) % 7 + 1)))
+                default: throw XLError.num
                 }
             }
         case "HOUR", "MINUTE", "SECOND":
@@ -916,34 +1181,17 @@ final class Calculator {
             case "M": return .value(.number(Double(months)))
             case "D": return .value(.number(floor(s2) - floor(s1)))
             case "YM": return .value(.number(Double(months % 12)))
+            case "YD":
+                var y = b1.year!
+                if (b1.month!, b1.day!) < (a1.month!, a1.day!) { y -= 1 }
+                guard let anniversary = DateMath.serial(year: y, month: a1.month!, day: min(a1.day!, DateMath.daysInMonth(year: y, month: a1.month!))) else { throw XLError.num }
+                return .value(.number(floor(s2) - anniversary))
             case "MD":
                 var d = b1.day! - a1.day!
                 if d < 0 { d += DateMath.daysInMonth(year: b1.month! == 1 ? b1.year! - 1 : b1.year!, month: b1.month! == 1 ? 12 : b1.month! - 1) }
                 return .value(.number(Double(d)))
             default: throw XLError.num
             }
-        case "NETWORKDAYS":
-            var s1 = floor(try n(0)), s2 = floor(try n(1))
-            let sign: Double = s2 < s1 ? -1 : 1
-            if s2 < s1 { swap(&s1, &s2) }
-            let holidays = Set(args.count > 2 ? try numbers([args[2]], sheet: sheet, at: at).map { floor($0) } : [])
-            var count = 0.0
-            var d = s1
-            while d <= s2 {
-                if let w = DateMath.components(d)?.weekday, w != 1, w != 7, !holidays.contains(d) { count += 1 }
-                d += 1
-            }
-            return .value(.number(count * sign))
-        case "WORKDAY":
-            var d = floor(try n(0))
-            var left = Int(try n(1))
-            let step: Double = left < 0 ? -1 : 1
-            while left != 0 {
-                d += step
-                if let w = DateMath.components(d)?.weekday, w != 1, w != 7 { left -= Int(step) }
-            }
-            return .value(.number(d))
-
         // Information
         case "ISBLANK": return .value(.bool(a(0).isEmpty))
         case "ISNUMBER": if case .number = a(0) { return .value(.bool(true)) }; return .value(.bool(false))
@@ -954,30 +1202,8 @@ final class Calculator {
         case "ISNA": return .value(.bool(a(0) == .error("#N/A")))
         case "NA": throw XLError.na
 
-        // Finance
-        case "PMT", "FV", "PV":
-            let rate = try n(0), nper = try n(1)
-            let x = try n(2), fv0 = try n(3, 0), type = try n(4, 0)
-            switch name {
-            case "PMT":
-                let pv = x
-                if rate == 0 { return try r(-(pv + fv0) / nper) }
-                let f = pow(1 + rate, nper)
-                return try r(-(rate * (pv * f + fv0)) / ((1 + rate * type) * (f - 1)))
-            case "FV":
-                let pmt = x, pv = fv0
-                if rate == 0 { return try r(-(pv + pmt * nper)) }
-                let f = pow(1 + rate, nper)
-                return try r(-(pv * f + pmt * (1 + rate * type) * (f - 1) / rate))
-            default:
-                let pmt = x, fv = fv0
-                if rate == 0 { return try r(-(fv + pmt * nper)) }
-                let f = pow(1 + rate, nper)
-                return try r(-(fv + pmt * (1 + rate * type) * (f - 1) / rate) / f)
-            }
-
         default:
-            throw XLError.name
+            return try extended(name, args, sheet: sheet, at: at)
         }
     }
 }

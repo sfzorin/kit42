@@ -82,6 +82,7 @@ enum XLSX {
         }
 
         var sharedFormulas: [String: (String, CellRef)] = [:]
+        var arrayRanges: [CellRange] = []
         for row in root.child("sheetData")?.children("row") ?? [] {
             let r = (row.attr("r").flatMap(Int.init) ?? 1) - 1
             let level = row.attr("outlineLevel").flatMap(Int.init) ?? 0
@@ -122,10 +123,20 @@ enum XLSX {
                         }
                     } else if !text.isEmpty {
                         cell.input = "=" + text
+                        // Array formula (CSE or dynamic array): the other cells of its range hold the results.
+                        if f.attr("t") == "array" {
+                            cell.array = true
+                            if let r = f.attr("ref").flatMap(CellRange.init), r.count > 1 { arrayRanges.append(r) }
+                        }
                     }
                 }
                 if cell.input.isEmpty { cell.input = inputText(for: cell.value, style: cell.style) }
                 sheet[ref] = cell
+            }
+        }
+        for r in arrayRanges {
+            for ref in r.cells where ref != r.start {
+                if var c = sheet.cells[ref], !c.isFormula { c.input = ""; sheet.cells[ref] = c }
             }
         }
         for m in root.child("mergeCells")?.children("mergeCell") ?? [] {
@@ -331,6 +342,12 @@ enum XLSX {
                 pivotRels += part.workbookRel
             }
         }
+        let dynamicArrays = wb.sheets.contains { s in s.spills.keys.contains { s.cells[$0].map { !$0.array } ?? false } }
+        if dynamicArrays {
+            ct += "<Override PartName=\"/xl/metadata.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml\"/>"
+            zip["xl/metadata.xml"] = Data(dynamicArrayMetadata.utf8)
+            pivotRels += "<Relationship Id=\"rIdMeta1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata\" Target=\"metadata.xml\"/>"
+        }
         ct += "</Types>"
         zip["[Content_Types].xml"] = Data(ct.utf8)
         workbook += "</sheets>"
@@ -356,6 +373,17 @@ enum XLSX {
         zip["xl/styles.xml"] = Data(stylesXML(styleList, dxfs: dxfs).utf8)
         return zip.data()
     }
+
+    /// Cell metadata Excel 365 uses to mark dynamic-array formulas (cm="1").
+    static let dynamicArrayMetadata = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray">\
+    <metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" \
+    splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/></metadataTypes>\
+    <futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}">\
+    <xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk></futureMetadata>\
+    <cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>
+    """
 
     private static func sheetXML(_ sheet: Sheet, styleIndex: [CellStyle: Int], selected: Bool,
                                  extras: (filter: String, conditional: String, tail: String, types: String)) -> String {
@@ -409,13 +437,23 @@ enum XLSX {
                 let s = styleIndex[cell.style] ?? 0
                 let sAttr = s == 0 ? "" : " s=\"\(s)\""
                 if cell.isFormula {
-                    let f = Calculator.expression(cell.input).map { Formula.serialize($0, forFile: true) } ?? String(cell.input.dropFirst())
+                    let text = Calculator.expression(cell.input).map { Formula.serialize($0, forFile: true) } ?? String(cell.input.dropFirst())
+                    // Spilling results are written as an array formula over their range (dynamic arrays marked with cm="1").
+                    var fOpen = "<f>"
+                    if let spill = sheet.spills[ref] {
+                        fOpen = "<f t=\"array\" ref=\"\(spill.a1)\">"
+                    } else if cell.array {
+                        fOpen = "<f t=\"array\" ref=\"\(ref.a1)\">"
+                    }
+                    let cm = !cell.array && sheet.spills[ref] != nil ? " cm=\"1\"" : ""
+                    let f = fOpen + xmlEscape(text) + "</f>"
+                    let attrs = "r=\"\(ref.a1)\"\(sAttr)\(cm)"
                     switch cell.value {
-                    case .string(let str): x += "<c r=\"\(ref.a1)\"\(sAttr) t=\"str\"><f>\(xmlEscape(f))</f><v>\(xmlEscape(str))</v></c>"
-                    case .bool(let b): x += "<c r=\"\(ref.a1)\"\(sAttr) t=\"b\"><f>\(xmlEscape(f))</f><v>\(b ? 1 : 0)</v></c>"
-                    case .error(let e): x += "<c r=\"\(ref.a1)\"\(sAttr) t=\"e\"><f>\(xmlEscape(f))</f><v>\(xmlEscape(e))</v></c>"
-                    case .number(let d): x += "<c r=\"\(ref.a1)\"\(sAttr)><f>\(xmlEscape(f))</f><v>\(numberText(d))</v></c>"
-                    case .empty: x += "<c r=\"\(ref.a1)\"\(sAttr)><f>\(xmlEscape(f))</f></c>"
+                    case .string(let str): x += "<c \(attrs) t=\"str\">\(f)<v>\(xmlEscape(str))</v></c>"
+                    case .bool(let b): x += "<c \(attrs) t=\"b\">\(f)<v>\(b ? 1 : 0)</v></c>"
+                    case .error(let e): x += "<c \(attrs) t=\"e\">\(f)<v>\(xmlEscape(e))</v></c>"
+                    case .number(let d): x += "<c \(attrs)>\(f)<v>\(numberText(d))</v></c>"
+                    case .empty: x += "<c \(attrs)>\(f)</c>"
                     }
                     continue
                 }

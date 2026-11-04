@@ -170,6 +170,8 @@ struct Cell: Equatable {
     var style: CellStyle = .default
     /// Cached value: the constant, or the formula result after recalculation.
     var value: Value = .empty
+    /// Array formula (Excel CSE / ODF matrix): its result fills the cells below and to the right.
+    var array = false
 
     var isFormula: Bool { input.hasPrefix("=") && input.count > 1 }
     var isBlank: Bool { input.isEmpty && style == .default }
@@ -206,6 +208,8 @@ struct Sheet {
     var protection: SheetProtection?
     /// Pivot table on this sheet (its settings, for Refresh; saved as a pivot table in .xlsx / .ods).
     var pivot: PivotSpec?
+    /// Ranges filled by spilling array formulas (anchor → range), set by the recalculation.
+    var spills: [CellRef: CellRange] = [:]
 
     init(name: String) { self.name = name }
 

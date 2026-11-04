@@ -59,6 +59,7 @@ enum SelfTest {
         let inserted = Formula.adjusted("=SUM(A1:A10)+B5", sheet: "Лист1", formulaSheet: "Лист1", rows: true, at: 2, count: 3)
         print(inserted == "=SUM(A1:A13)+B8" ? "ok  " : "FAIL", "insert rows →", inserted)
         failed += features()
+        failed += functions()
         failed += pivotFiles()
         failed += colors()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
