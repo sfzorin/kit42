@@ -9,13 +9,14 @@ public enum Theme42 {
     public static let sidebarWidth: CGFloat = 180
 
     public enum App {
-        case pdf, doc, xls
+        case pdf, doc, xls, img
 
         public var name: String {
             switch self {
             case .pdf: return "PDF42"
             case .doc: return "DOC42"
             case .xls: return "XLS42"
+            case .img: return "IMG42"
             }
         }
 
@@ -25,6 +26,7 @@ public enum Theme42 {
             case .pdf: return (NSColor(red: 0.95, green: 0.30, blue: 0.25, alpha: 1), NSColor(red: 0.70, green: 0.08, blue: 0.20, alpha: 1))
             case .doc: return (NSColor(red: 0.25, green: 0.55, blue: 0.98, alpha: 1), NSColor(red: 0.10, green: 0.28, blue: 0.75, alpha: 1))
             case .xls: return (NSColor(red: 0.20, green: 0.75, blue: 0.45, alpha: 1), NSColor(red: 0.05, green: 0.48, blue: 0.28, alpha: 1))
+            case .img: return (NSColor(red: 0.66, green: 0.40, blue: 0.98, alpha: 1), NSColor(red: 0.40, green: 0.16, blue: 0.74, alpha: 1))
             }
         }
 

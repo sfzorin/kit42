@@ -1,8 +1,8 @@
-# Suite42 — PDF42 · DOC42 · XLS42
+# Suite42 — PDF42 · DOC42 · XLS42 · IMG42
 
 Local macOS apps for documents, sharing one design and menu system (Kit42).
 No dependencies: AppKit, PDFKit, Security; works offline. Interface in English, Russian and Turkish
-(language is chosen on the welcome screen, shared by all three apps).
+(language is chosen on the welcome screen, shared by all the apps).
 
 ```bash
 git clone https://github.com/sfzorin/kit42.git && cd kit42
@@ -109,6 +109,49 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - Links (⌘K: insert, edit, remove; saved in docx/odt/rtf/md/html), special characters, Paragraph dialog (indents, spacing,
   exact line height), Clone Formatting (⌥⌘C; double-click keeps it on), Statistics (document and selection).
 
+## IMG42 — images (everything ImageIO reads, plus SVG and PDF)
+
+- Formats: whatever ImageIO decodes on this Mac (asked at runtime) — JPEG, PNG, HEIC/HEIF, AVIF, WebP, GIF, TIFF, BMP,
+  ICO/ICNS, PSD, TGA, JPEG 2000, OpenEXR, JPEG XL, camera RAW (CR2/CR3/NEF/ARW/DNG/RAF/ORF…), plus SVG and PDF (pages).
+  EXIF orientation is applied. Animated GIF/APNG/WebP/HEICS play; multi-page TIFF and PDF page with ⌥← / ⌥→.
+  A broken file shows a message in the window, and navigation carries on.
+- Flipping through: opening a file shows its whole folder in Finder name order; several files or a folder make the set.
+  → / ← (also Space / ⇧Space, Page Up/Down, a mouse wheel notch or a two-finger swipe when the image fits), ⌘↑ / ⌘↓ first/last;
+  position "12 / 87" in the subtitle; View › Loop Through Folder; Sort By name, date modified, date taken, size.
+- Viewing: fit (⌥⌘0), actual size (⌘0), ⌘+ / ⌘−, pinch, ⌘-scroll, double-click toggles fit / 100 %, drag to pan,
+  checkerboard behind transparency, background Neutral/Dark/Black/Light, full screen (⌃⌘F or F; black, every bar hidden,
+  the toolbar slides in at the top), slideshow (⇧⌘F, 3 s, Space pauses, Esc stops).
+- Panels (View menu, each with a check mark; state remembered): Markup Toolbar ⇧⌘A, Filmstrip ⌥⌘F (lazy cached
+  thumbnails, click to jump), Info Panel ⌘I (file, dimensions, format, colour profile, camera, lens, exposure, ISO,
+  GPS with Show in Maps, all EXIF/IPTC/TIFF fields), Adjust Colour ⌥⌘C, Hide All Panels ⇧⌘\.
+- Toolbar like Preview's: Previous/Next · Zoom − 1:1 + · Highlight ▾ (colour) · Remove Background, Rotate · Markup ·
+  Adjust · Info · Share · Search (Live Text: words are recognised with Vision and highlighted, Return goes to the next
+  match; Edit › Copy Text in Image ⇧⌘C).
+- Markup bar like Preview's: Select; Selection ▾ (rectangular, elliptical, lasso, aspect ratios; Crop to Selection ⌘K,
+  Delete Selection ⌫, Copy, Invert ⇧⌘I); Instant Alpha (drag on a colour: farther = wider range, then ⌫); Sketch
+  (a rough line, box, circle or star becomes a clean shape); Draw; Shapes ▾ (line, arrow, rectangle, rounded rectangle,
+  oval, speech bubble, star, polygon, loupe, spotlight, pixelate); Text; Sign (shared signature library ⇧⌘K);
+  Adjust Colour; Adjust Size; Shape Style ▾ (width, dashed, arrowheads, shadow, loupe zoom); Border and Fill colour;
+  Text Style ▾ (font, size, colour, bold/italic/underline, alignment); Image Description (alt text, saved in the metadata).
+  Marks stay objects — select, move, resize with handles, restyle, ⌫ deletes — until the image is saved.
+- Adjust panel (Core Image, live, non-destructive): exposure, brightness, contrast, highlights, shadows, saturation,
+  vibrance, temperature, tint, sharpness, vignette; looks (Black & White, Noir, Sepia, Invert); Auto Enhance; double-click
+  a slider resets it; hold Show Original to compare; Reset All. One undo step per slider drag.
+- Image: Rotate ⌘L / ⌘R and Flip — untouched JPEG/HEIC/PNG/TIFF files get a new orientation tag (no re-encoding, undoable);
+  otherwise it becomes an edit. Adjust Size ⌥⌘R (pixels, %, cm, inches, resolution, keep proportions), Remove Background
+  (Vision subject lifting), Image Description.
+- Files: Save ⌘S writes markup + adjustments in the original format (JPEG quality 0.92, EXIF/GPS kept, orientation reset),
+  asking once before replacing; Save As ⇧⌘S and Export ⇧⌘E (PNG, JPEG with quality, HEIC, TIFF, AVIF; size presets).
+  Leaving an edited image asks Save / Don't Save / Cancel. Move to Trash ⌘⌫ (undo puts it back), Copy ⌘C (image or
+  selection), Show in Finder ⇧⌘R, Open With, Share, Print (fit to page), Open Recent.
+- Command line (headless): `--info files…`, `--edit in out [--brightness N --contrast N … --look sepia --auto --demo-marks
+  --rotate right --flip h --resize WxH --crop x,y,w,h --remove-background --description TEXT]`, `--stats file`
+  (mean luminance), `--ocr file`, `--rotate file left|right` (lossless), `--types`.
+- UI checks: `K42_SNAPSHOT=out.png` plus `K42_NEXT=n`, `K42_PAGE=n`, `K42_INFO`, `K42_FILMSTRIP`, `K42_ADJUST`, `K42_MARKUP`,
+  `K42_DEMO_MARKS`, `K42_TOOL=n`, `K42_SELECT=rect|ellipse|alpha` (+ `K42_CROP`, `K42_DELETE`), `K42_SEARCH=text`,
+  `K42_ZOOM=x`, `K42_STAMPS`, `K42_RESIZE`, `K42_DESCRIPTION`, `K42_FULLSCREEN`, `K42_HIDE_ALL`, `K42_SAVE`, `K42_UNDO`,
+  `K42_DUMP_MENUS` (prints the markup drop-downs).
+
 ## Common
 
 - Autosave every 30 s to a backup location: documents survive a crash.
@@ -123,6 +166,6 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 
 - `Sources/Kit42` — shared: commands, menu bar, toolbar, tool strip, banners, welcome window, localisation,
   signature library, certificates, ZIP.
-- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
+- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
