@@ -87,8 +87,9 @@ enum PDFAExport {
         }
         report.unembedded = Array(Set(bad.values.flatMap { $0 })).sorted()
 
+        // Everything document-level is written from the model: the redrawn pages came through PDFKit again.
         var x = extras
-        x.dirty.insert(.outline)
+        x.dirty.formUnion([.outline, .labels, .view, .info, .files])
         guard let w = Writer(data) else { return nil }
         // The live document is the model for outline and links: same pages, same order.
         w.write(extras: x, pdf: pdf, pdfa: true)

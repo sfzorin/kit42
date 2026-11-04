@@ -5,7 +5,7 @@ import PDFKit
 /// Dashed frame shown over a link in the editor; never saved or printed.
 final class LinkBorderMarker: PDFAnnotation {
     init(around link: PDFAnnotation) {
-        super.init(bounds: link.bounds, forType: .square, withProperties: nil)
+        super.init(bounds: link.bounds, forType: .stamp, withProperties: nil)
         let b = PDFBorder()
         b.lineWidth = 1
         b.style = .dashed
@@ -16,6 +16,17 @@ final class LinkBorderMarker: PDFAnnotation {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        context.saveGState()
+        context.setStrokeColor(NSColor.systemBlue.cgColor)
+        context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.08).cgColor)
+        context.fill(bounds)
+        context.setLineWidth(1)
+        context.setLineDash(phase: 0, lengths: [3, 2])
+        context.stroke(bounds.insetBy(dx: 0.5, dy: 0.5))
+        context.restoreGState()
+    }
 }
 
 /// Where a link goes.

@@ -45,6 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if env["K42_STAMPS"] != nil { editor?.showStampsAction(nil) }
             if env["K42_COMPRESS"] != nil { editor?.reduceSizeAction(nil) }
             if let tool = env["K42_TOOL"].flatMap(Int.init).flatMap(Tool.init) { editor?.setTool(tool) }
+            // K42_SIDEBAR=thumbnails|outline|attachments, K42_LINK_BORDERS=1, K42_DO=action,action (non-modal actions before the snapshot).
+            if let mode = env["K42_SIDEBAR"], let editor {
+                editor.showSidebarMode(["outline": .outline, "attachments": .attachments][mode] ?? .thumbnails)
+            }
+            if env["K42_LINK_BORDERS"] != nil { editor?.pdfView.showsLinkBorders = true }
+            for action in (env["K42_DO"] ?? "").split(separator: ",") {
+                let selector = NSSelectorFromString(action + ":")
+                if let editor, editor.responds(to: selector) { editor.perform(selector, with: nil) }
+            }
             if let text = env["K42_WATERMARK"], let editor, let pdf = editor.pdf {
                 var spec = WatermarkSpec()
                 spec.text = text
@@ -90,6 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if let editor, let page = editor.pdf?.page(at: 0) {
                             let kind: PDFTools.FieldKind = action == "textField" ? .text : action == "checkBox" ? .checkBox : .choice
                             editor.createFormField(kind, in: CGRect(x: 72, y: 600, width: 180, height: 22), on: page)
+                        }
+                    case "linkDialog", "cropDialog":
+                        if let editor, let page = editor.pdf?.page(at: 0) {
+                            let rect = CGRect(x: 72, y: 600, width: 200, height: 20)
+                            if action == "linkDialog" { editor.createLink(in: rect, on: page) } else { editor.cropDialog(rect: rect.insetBy(dx: 0, dy: -200), on: page) }
                         }
                     default:
                         let selector = NSSelectorFromString(action + ":")
@@ -158,7 +172,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             L("⌘E — edit selected text, ⌘⌫ — delete annotation"),
             L("⌥⌘M — merge files, ⌘E — edit text (click a line)"),
             L("⌘L / ⌘R — rotate page, ⌥⌘⌫ — delete pages"),
-            L("⇧⌘N — blank page, ⌥⌘I — pages from file"),
+            L("⇧⌘N — blank page, ⇧⌥⌘I — pages from file"),
+            L("⌘D — add bookmark, ⌥⌘I — document properties, ⌥⌘K — crop"),
             L("⌥⌘D — sign, ⌥⌘V — verify signatures"),
             L("⌘F / ⌘G — find, ⌥⌘G — go to page"),
             L("⌘+ / ⌘- / ⌘0 — zoom, ⌃⌘S — sidebar"),

@@ -569,19 +569,40 @@ final class Writer {
 
     // MARK: Parts
 
+    /// Parts are written when edited, and also when PDFKit dropped them (it loses page labels, the
+    /// initial view and attachments when pages are replaced, and leaves the outline on old pages).
     func write(extras x: DocumentExtras, pdf: PDFDocument, pdfa: Bool) {
-        if x.dirty.contains(.info) || pdfa { writeInfo(x.info, pdfa: pdfa) }
-        if x.dirty.contains(.labels) { writeLabels(x.labels) }
-        if x.dirty.contains(.view) { writeView(x.view) }
-        if x.dirty.contains(.files) || pdfa { writeFiles(pdfa ? [] : x.files) }
+        let names = resolve(catalog["Names"])
+        if x.dirty.contains(.info) || pdfa || (trailer["Info"] == nil && x.info != DocumentInfo()) { writeInfo(x.info, pdfa: pdfa) }
+        if x.dirty.contains(.labels) || (!x.labels.isEmpty && catalog["PageLabels"] == nil) { writeLabels(x.labels) }
+        if x.dirty.contains(.view) || (!x.view.pageLayout.isEmpty && catalog["PageLayout"] == nil)
+            || (!x.view.pageMode.isEmpty && catalog["PageMode"] == nil) { writeView(x.view) }
+        if x.dirty.contains(.files) || pdfa || (!x.files.isEmpty && names?["EmbeddedFiles"] == nil) { writeFiles(pdfa ? [] : x.files) }
         if x.dirty.contains(.outline) || needsOutline(pdf) { writeOutline(pdf, styles: x.outlineStyles) }
         repairLinks(pdf, fit: x.linkFit)
     }
 
-    /// Outline in the model that the file lacks (PDFKit never writes a new outline).
+    /// Outline in the model that the file lacks (PDFKit never writes a new outline), or whose
+    /// entries point at pages that are no longer in the document.
     private func needsOutline(_ pdf: PDFDocument) -> Bool {
         guard let root = pdf.outlineRoot, root.numberOfChildren > 0 else { return false }
-        return catalog["Outlines"] == nil
+        guard let outlines = resolve(catalog["Outlines"]) else { return true }
+        let pageSet = Set(pages)
+        var stale = false
+        var seen = Set<Int>()
+        func walk(_ first: PDFObject?, depth: Int) {
+            var next = first
+            while case .ref(let n, _)? = next, !stale, depth < 64, seen.insert(n).inserted, let item = object(n) {
+                let dest = resolve(item["Dest"]) ?? resolve(item["A"])?["D"]
+                if let items = dest?.items, let head = items.first {
+                    if case .ref(let p, _) = head { if !pageSet.contains(p) { stale = true } } else if case .name = head { stale = true }
+                }
+                walk(item["First"], depth: depth + 1)
+                next = item["Next"]
+            }
+        }
+        walk(outlines["First"], depth: 0)
+        return stale
     }
 
     func writeInfo(_ info: DocumentInfo, pdfa: Bool) {
@@ -827,15 +848,25 @@ final class Writer {
                 guard let link = links.first(where: { abs($0.bounds.minX - rect.minX) < 0.6 && abs($0.bounds.minY - rect.minY) < 0.6
                     && abs($0.bounds.width - rect.width) < 0.6 && abs($0.bounds.height - rect.height) < 0.6 }) else { continue }
                 let kind = fit[ObjectIdentifier(link)]
-                let broken = Self.isBroken(a["Dest"]) || Self.isBroken(resolve(a["A"])?["D"])
-                guard broken || kind != nil else { continue }
+                let fileDest = a["Dest"] ?? resolve(a["A"])?["D"]
+                let broken = Self.isBroken(fileDest)
                 let dest = link.destination ?? (link.action as? PDFActionGoTo)?.destination
-                var fixed = a.removing("Dest")
-                if let dest, let d = destination(dest, pdf: pdf, fit: kind) {
-                    fixed = fixed.setting("A", .dict([("S", .name("GoTo")), ("D", d)]))
-                } else if broken {
-                    fixed = fixed.removing("A")
-                } else { continue }
+                guard let dest, let page = dest.page else {
+                    if broken { set(num, a.removing("Dest").removing("A")) }
+                    continue
+                }
+                let i = pdf.index(for: page)
+                guard i != NSNotFound, i < pages.count else { continue }
+                // PDFKit can also point a link at the wrong page (after pages were replaced) or write /Dest next to /A.
+                var target: PDFObject?
+                if broken || kind != nil {
+                    target = destination(dest, pdf: pdf, fit: kind)
+                } else if let items = fileDest?.items, case .ref(let n, _)? = items.first {
+                    if n != pages[i] { target = .array([.ref(pages[i], file.gen(pages[i]))] + items.dropFirst()) }
+                    else if a["Dest"] != nil, a["A"] != nil { target = fileDest }
+                }
+                guard let target else { continue }
+                let fixed = a.removing("Dest").setting("A", .dict([("S", .name("GoTo")), ("D", target)]))
                 set(num, fixed)
             }
         }

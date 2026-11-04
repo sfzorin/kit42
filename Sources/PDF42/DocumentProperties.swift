@@ -106,6 +106,7 @@ extension EditorWindowController {
         default: break
         }
         pdfView.displaysAsBook = view.pageLayout.hasSuffix("Right")
+        if view.pageLayout.hasPrefix("Two") { zoomMode = .width }
         switch view.pageMode {
         case "UseOutlines" where (pdf.outlineRoot?.numberOfChildren ?? 0) > 0: showSidebarMode(.outline)
         case "UseThumbs": showSidebarMode(.thumbnails)
@@ -206,7 +207,14 @@ extension EditorWindowController {
         security.append(L("Attachments: %d", x.files.count + x.annotationFiles.count))
         let securityView = Self.textList(security)
 
-        let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 520, height: 440))
+        let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 520, height: 410))
+        tabs.tabViewType = .noTabsBezelBorder
+        let titles = [L("Description"), L("Initial View"), L("Fonts"), L("Security")]
+        let switcher = NSSegmentedControl(labels: titles, trackingMode: .selectOne, target: nil, action: nil)
+        let switchTarget = ClosureTarget { tabs.selectTabViewItem(at: max(0, switcher.selectedSegment)) }
+        switcher.target = switchTarget
+        switcher.action = #selector(ClosureTarget.fire)
+        switcher.selectedSegment = 0
         for (label, content) in [(L("Description"), description), (L("Initial View"), initial), (L("Fonts"), fonts), (L("Security"), securityView)] {
             let item = NSTabViewItem(identifier: label)
             item.label = label
@@ -226,17 +234,24 @@ extension EditorWindowController {
             item.view = holder
             tabs.addTabViewItem(item)
         }
-        if let tab = ProcessInfo.processInfo.environment["K42_PROPERTIES_TAB"].flatMap(Int.init) { tabs.selectTabViewItem(at: tab) }
+        if let tab = ProcessInfo.processInfo.environment["K42_PROPERTIES_TAB"].flatMap(Int.init) { switcher.selectedSegment = tab; tabs.selectTabViewItem(at: tab) }
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 446))
+        switcher.frame = NSRect(x: 0, y: 418, width: 520, height: 24)
+        switcher.segmentDistribution = .fillEqually
+        accessory.addSubview(switcher)
+        accessory.addSubview(tabs)
 
         let alert = NSAlert()
         alert.messageText = L("Document Properties")
         alert.informativeText = doc.displayName ?? ""
         alert.addButton(withTitle: L("OK"))
         alert.addButton(withTitle: L("Cancel"))
-        alert.accessoryView = tabs
+        alert.accessoryView = accessory
         alert.layout()
         alert.window.initialFirstResponder = title
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let response = alert.runModal()
+        _ = switchTarget
+        guard response == .alertFirstButtonReturn else { return }
 
         var info = x.info
         info.title = title.stringValue

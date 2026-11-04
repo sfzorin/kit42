@@ -7,19 +7,28 @@ import PDFKit
 ///   PDF42 --compare a.pdf b.pdf [marked.pdf]                      PDF42 --edit-text in.pdf out.pdf "old" "new"
 ///   PDF42 --redact in.pdf out.pdf x,y,w,h[@page] … [white]   (page space, pages from 1; prints what was removed)
 ///   PDF42 --add-field in.pdf out.pdf                     PDF42 --fill in.pdf out.pdf name=value …     PDF42 --fields file.pdf
+/// Document tools (DocumentCLI.swift): --bookmarks, --crop, --page-size, --link, --autolink, --props, --attach, --detach,
+///   --attachments, --pdfa, --bates, --header-footer, --labels, --fonts, --info.
+/// Document parts of the file opened by a command-line tool (shared by its open and save).
+final class ExtrasBox { var x = DocumentExtras() }
+
 enum ToolsCLI {
     static func run(_ args: [String]) -> Int32? {
         guard args.count >= 3 else { return nil }
         let a = Array(args.dropFirst(2))
+        let box = ExtrasBox()
         func open(_ path: String) -> PDFDocument {
-            guard let d = PDFDocument(url: URL(fileURLWithPath: path)) else { fail("cannot open \(path)") }
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), let d = PDFDocument(data: data) else { fail("cannot open \(path)") }
+            box.x = DocumentExtras.read(data, pdf: d)
             return d
         }
         func save(_ pdf: PDFDocument, _ path: String) {
             guard let baked = PageOverlay.bake(pdf) else { fail("cannot write") }
-            do { try AcroFormFixer.ensureFields(baked.data).write(to: URL(fileURLWithPath: path)) } catch { fail("\(error)") }
+            let data = DocumentWriter.apply(AcroFormFixer.ensureFields(baked.data), extras: box.x, pdf: pdf)
+            do { try data.write(to: URL(fileURLWithPath: path)) } catch { fail("\(error)") }
             baked.report.lines.forEach { print($0) }
         }
+        if let code = runDocumentTools(args[1], a, open: open, save: save, box: box) { return code }
         switch args[1] {
         case "--watermark" where a.count >= 3:
             let pdf = open(a[0])
@@ -120,7 +129,7 @@ enum ToolsCLI {
         return 0
     }
 
-    private static func fail(_ message: String) -> Never {
+    static func fail(_ message: String) -> Never {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         exit(1)
     }
