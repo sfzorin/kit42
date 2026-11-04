@@ -18,13 +18,19 @@ public enum DebugSnapshot {
                 // K42_SNAPSHOT_POPOVER=1 captures an open popover instead of the window.
                 let popover = env["K42_SNAPSHOT_POPOVER"] != nil
                     ? NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") } : nil
-                let window = popover ?? NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
+                var window = popover ?? NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
+                // K42_SNAPSHOT_SHEET=1 captures the sheet attached to the window (dialogs).
+                if env["K42_SNAPSHOT_SHEET"] != nil, let sheet = NSApp.windows.compactMap(\.attachedSheet).first { window = sheet }
                 if let frame = window?.contentView?.superview,
                    let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
                     frame.cacheDisplay(in: frame.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                 }
-                if env["K42_SNAPSHOT_KEEP"] == nil { NSApp.terminate(nil) }
+                if env["K42_SNAPSHOT_KEEP"] == nil {
+                    // An open sheet would block terminate: quit hard, it is a debug run.
+                    if NSApp.windows.contains(where: { $0.attachedSheet != nil }) { exit(0) }
+                    NSApp.terminate(nil)
+                }
             }
         }
     }

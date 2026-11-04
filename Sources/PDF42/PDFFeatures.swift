@@ -103,37 +103,6 @@ extension EditorWindowController {
         undo?.setActionName(name)
     }
 
-    // MARK: - Reduce size
-
-    @objc func reduceSizeAction(_ sender: Any?) {
-        guard let pdf, let window else { return }
-        prepareForSave()
-        let quality = NSPopUpButton(frame: .zero, pullsDown: false)
-        quality.addItems(withTitles: [L("Screen (smallest)"), L("Balanced"), L("High quality")])
-        quality.selectItem(at: 1)
-        let row = NSStackView(views: [NSTextField(labelWithString: L("Images:")), quality])
-        row.edgeInsets = NSEdgeInsets(top: 12, left: 20, bottom: 12, right: 20)
-        row.frame.size = row.fittingSize
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.accessoryView = row
-        let base = pdfDoc?.fileURL?.deletingPathExtension().lastPathComponent ?? pdfDoc?.displayName ?? L("Document")
-        panel.nameFieldStringValue = L("%@ (compressed).pdf", base)
-        panel.beginSheetModal(for: window) { [self] response in
-            guard response == .OK, let url = panel.url else { return }
-            let before = pdf.dataRepresentation()?.count ?? 0
-            var options: [PDFDocumentWriteOption: Any] = [.saveImagesAsJPEGOption: true]
-            if quality.indexOfSelectedItem == 0 { options[.optimizeImagesForScreenOption] = true }
-            options[.init(rawValue: "kCGImageDestinationLossyCompressionQuality")] = [0.45, 0.65, 0.85][quality.indexOfSelectedItem]
-            guard pdf.write(to: url, withOptions: options) else { presentError(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)); return }
-            let after = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            let f = ByteCountFormatter()
-            let done = NSAlert()
-            done.messageText = L("Saved: %@ → %@", f.string(fromByteCount: Int64(before)), f.string(fromByteCount: Int64(after)))
-            done.beginSheetModal(for: window)
-        }
-    }
-
     // MARK: - Print selected pages
 
     @objc func printSelectedPagesAction(_ sender: Any?) {

@@ -8,6 +8,20 @@ import PDFKit
 Localization.register(rows: pdf42Strings)
 
 let args = CommandLine.arguments
+// PDF42 --compress in.pdf out.pdf [smallest|balanced|high]
+if args.count >= 4, args[1] == "--compress" {
+    let input = URL(fileURLWithPath: args[2])
+    let original = (try? input.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    let level = args.count > 4 ? PDFCompressor.Level.named(args[4]) ?? .balanced : .balanced
+    guard let doc = PDFDocument(url: input) else { print("cannot open"); exit(1) }
+    if let data = PDFCompressor.compress(doc, level: level, original: original) {
+        try data.write(to: URL(fileURLWithPath: args[3]))
+        print("\(level): \(original) -> \(data.count) bytes")
+    } else {
+        print("\(level): no gain (\(original) bytes)")
+    }
+    exit(0)
+}
 if args.count >= 3, args[1] == "--verify" {
     let data = try Data(contentsOf: URL(fileURLWithPath: args[2]))
     for s in PDFSignatureVerifier.verify(data) {

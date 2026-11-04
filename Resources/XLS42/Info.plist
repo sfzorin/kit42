@@ -2,48 +2,97 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>XLS42</string>
-	<key>CFBundleDisplayName</key><string>XLS42</string>
-	<key>CFBundleIdentifier</key><string>com.sfzorin.xls42</string>
-	<key>CFBundleExecutable</key><string>XLS42</string>
-	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.0</string>
-	<key>CFBundleVersion</key><string>1</string>
-	<key>CFBundleIconFile</key><string>AppIcon</string>
-	<key>LSMinimumSystemVersion</key><string>14.0</string>
-	<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
-	<key>NSHighResolutionCapable</key><true/>
-	<key>NSHumanReadableCopyright</key><string>© 2026 sfzorin</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>XLS42</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
-			<key>CFBundleTypeName</key><string>Excel Workbook</string>
-			<key>CFBundleTypeRole</key><string>Editor</string>
-			<key>LSHandlerRank</key><string>Alternate</string>
-			<key>LSItemContentTypes</key><array><string>org.openxmlformats.spreadsheetml.sheet</string></array>
-			<key>NSDocumentClass</key><string>SheetDocument</string>
+			<key>CFBundleTypeName</key>
+			<string>Excel Workbook</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.openxmlformats.spreadsheetml.sheet</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>SheetDocument</string>
 		</dict>
 		<dict>
-			<key>CFBundleTypeName</key><string>CSV Document</string>
-			<key>CFBundleTypeRole</key><string>Editor</string>
-			<key>LSHandlerRank</key><string>Alternate</string>
-			<key>LSItemContentTypes</key><array><string>public.comma-separated-values-text</string><string>public.tab-separated-values-text</string></array>
-			<key>NSDocumentClass</key><string>SheetDocument</string>
+			<key>CFBundleTypeName</key>
+			<string>CSV Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.comma-separated-values-text</string>
+				<string>public.tab-separated-values-text</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>SheetDocument</string>
 		</dict>
 		<dict>
-			<key>CFBundleTypeName</key><string>OpenDocument Spreadsheet</string>
-			<key>CFBundleTypeRole</key><string>Editor</string>
-			<key>LSHandlerRank</key><string>Alternate</string>
-			<key>LSItemContentTypes</key><array><string>org.oasis-open.opendocument.spreadsheet</string></array>
-			<key>NSDocumentClass</key><string>SheetDocument</string>
+			<key>CFBundleTypeName</key>
+			<string>OpenDocument Spreadsheet</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.oasis-open.opendocument.spreadsheet</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>SheetDocument</string>
 		</dict>
 		<dict>
-			<key>CFBundleTypeName</key><string>Excel 97-2003 Workbook</string>
-			<key>CFBundleTypeRole</key><string>Viewer</string>
-			<key>LSHandlerRank</key><string>Alternate</string>
-			<key>LSItemContentTypes</key><array><string>com.microsoft.excel.xls</string></array>
-			<key>NSDocumentClass</key><string>SheetDocument</string>
+			<key>CFBundleTypeName</key>
+			<string>Excel 97-2003 Workbook</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.microsoft.excel.xls</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>SheetDocument</string>
 		</dict>
 	</array>
+	<key>CFBundleExecutable</key>
+	<string>XLS42</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.sfzorin.xls42</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>ru</string>
+		<string>tr</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>XLS42</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 sfzorin</string>
 </dict>
 </plist>

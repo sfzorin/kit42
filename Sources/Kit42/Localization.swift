@@ -42,8 +42,18 @@ public enum Localization {
         tables.merge(table) { _, new in new }
     }
 
+    /// System panels (Print, Save, Colors, toolbar items) follow the app's AppleLanguages, not our tables:
+    /// make it the chosen language. Runs at the first registration, before AppKit loads its strings.
+    private static let systemLanguageApplied: Void = {
+        let wanted = [Language.current.rawValue]
+        if UserDefaults.standard.stringArray(forKey: "AppleLanguages") != wanted {
+            UserDefaults.standard.set(wanted, forKey: "AppleLanguages")
+        }
+    }()
+
     /// Compact registration: each row is [en, ru, tr].
     public static func register(rows: [[String]]) {
+        _ = systemLanguageApplied
         for row in rows where row.count == 3 {
             tables[row[0]] = [.ru: row[1], .tr: row[2]]
         }

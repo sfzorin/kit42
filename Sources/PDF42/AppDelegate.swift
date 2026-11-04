@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let editor = NSApp.orderedWindows.compactMap { $0.windowController as? EditorWindowController }.first
             if env["K42_MARKUP"] != nil { editor?.toggleMarkupAction(nil) }
             if env["K42_STAMPS"] != nil { editor?.showStampsAction(nil) }
+            if env["K42_COMPRESS"] != nil { editor?.reduceSizeAction(nil) }
         }
     }
 
