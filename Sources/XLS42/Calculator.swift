@@ -687,7 +687,9 @@ final class Calculator {
         let rows = max(am.rows, b.rows), cols = max(am.cols, b.cols)
         var out: [Value] = []
         for r in 0..<rows { for c in 0..<cols { out.append(f(am.at(r, c), b.at(r, c))) } }
-        return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: nil)
+        var origin: CellRef?
+        if case .matrix(let m, let o) = a, m.rows == rows, m.cols == cols { origin = o }
+        return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: origin)
     }
 
     /// Scalar functions applied element by element when an argument is an array (=LEN(A1:A3), =ROUND(B1:B5*2;1)).
@@ -728,7 +730,9 @@ final class Calculator {
                             out.append(picked.isEmpty ? .number(0) : picked)
                         }
                     }
-                    return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: nil)
+                    var origin: CellRef?
+                    if case .matrix(let m, let o) = cond, m.rows == rows, m.cols == cols { origin = o }
+                    return .matrix(Matrix(rows: rows, cols: cols, values: out), origin: origin)
                 }
                 return try call(name, [.array(Matrix(rows: 1, cols: 1, values: [scalar(cond, at: at)]))] + args.dropFirst(), sheet: sheet, at: at, lifted: true)
             case "IFERROR", "IFNA":

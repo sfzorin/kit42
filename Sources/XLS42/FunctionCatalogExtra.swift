@@ -165,7 +165,7 @@ extension FunctionCatalog {
         f("REGEXEXTRACT", .text, "text, pattern, [return_mode], [case_sensitivity]", "Extracts text matching a regular expression"),
         f("REGEXREPLACE", .text, "text, pattern, replacement, [occurrence], [case_sensitivity]", "Replaces text matching a regular expression"),
         f("HYPERLINK", .text, "link_location, [friendly_name]", "Link that opens a web page, file or cell"),
-        f("LET", .logical, "name1, value1, [name2, value2], …, calculation", "Names values for use in a calculation"),
+        f("LET", .logical, "name1, value1, [name2], [value2], calculation", "Names values for use in a calculation"),
         f("LAMBDA", .logical, "[parameter1], …, calculation", "Custom function (used through a defined name)"),
         f("DATEVALUE", .date, "date_text", "Date text as a serial number"),
         f("TIMEVALUE", .date, "time_text", "Time text as a fraction of a day"),

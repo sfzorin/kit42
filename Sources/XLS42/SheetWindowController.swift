@@ -29,7 +29,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     private let nameBox = NSTextField()
     private let formulaField = NSTextField()
     private let tabs = NSStackView()
-    private let status = NSTextField(labelWithString: "")
+    let status = NSTextField(labelWithString: "")
     private let sheetInfo = NSTextField(labelWithString: "")
     private lazy var fontPopup = stripPopUp(["Calibri", "Arial", "Helvetica Neue", "Times New Roman", "Georgia", "Verdana", "Courier New", "Menlo"],
                                             width: 128, toolTip: L("Font"), target: self, action: #selector(fontChanged(_:)))

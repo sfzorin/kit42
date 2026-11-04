@@ -250,11 +250,12 @@ extension SelfTest {
         set("A1", "3"); set("A2", "1"); set("A3", "2")
         set("C1", "=SORT(A1:A3)"); set("D1", "=SEQUENCE(2,3)"); set("D5", "=C2*10"); set("H1", "=TRANSPOSE(A1:A3)")
         set("H3", "x"); set("H2", "=SEQUENCE(2)")
+        set("J2", "=IF(A1:A3>1,\"y\",\"n\")"); set("K2", "=IFERROR(1/(A1:A3-1),\"e\")"); set("L2", "=LEN(A1:A3)&\"!\"")
         s = Calculator.recalculate(s)
         func v(_ a1: String) -> String { display(s.sheets[0][CellRef(a1)!].value) }
         let spillOK = [v("C1"), v("C2"), v("C3")] == ["1", "2", "3"] && v("F2") == "6" && v("D5") == "20"
-            && [v("H1"), v("I1"), v("J1")] == ["3", "1", "2"] && v("H2") == "#SPILL!" && s.sheets[0].spills[CellRef("C1")!] == CellRange("C1:C3")
-        print(spillOK ? "ok  " : "FAIL", "dynamic arrays spill, #SPILL! when blocked", spillOK ? "" : "\(v("C2")) \(v("F2")) \(v("D5")) \(v("I1")) \(v("H2"))")
+            && [v("H1"), v("I1"), v("J1")] == ["3", "1", "2"] && v("J2") == "n" && v("K2") == "e" && v("L2") == "1!" && v("H2") == "#SPILL!" && s.sheets[0].spills[CellRef("C1")!] == CellRange("C1:C3")
+        print(spillOK ? "ok  " : "FAIL", "dynamic arrays spill, #SPILL! when blocked, implicit intersection otherwise", spillOK ? "" : "\(v("C2")) \(v("F2")) \(v("D5")) \(v("I1")) \(v("H2"))")
         if !spillOK { failed += 1 }
         // Spills survive .xlsx and .ods (array formulas over their range) and recalculate after reopening.
         for (kind, data) in [("xlsx", XLSX.write(s)), ("ods", ODS.write(s))] {

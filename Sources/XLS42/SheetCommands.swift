@@ -307,6 +307,7 @@ extension SheetWindowController {
         var f = statusFunctions
         if f.contains(name) { f.remove(name) } else { f.insert(name) }
         statusFunctions = f
+        status.menu = statusMenu
         selectionDidChange()
     }
 }
