@@ -7,7 +7,7 @@ if CommandLine.arguments.contains("--selftest") { exit(SelfTest.run()) }
 // XLS42 --roundtrip in.xlsx out.xlsx: read, recalculate, write (for testing compatibility)
 if let i = CommandLine.arguments.firstIndex(of: "--roundtrip"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments
-    var wb = try XLSX.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1])))
+    var wb = try SpreadsheetFile.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1])))
     wb = Calculator.recalculate(wb)
     for s in wb.sheets {
         print("[\(s.name)] cells: \(s.cells.count), formulas: \(s.cells.values.filter(\.isFormula).count), merges: \(s.merges.count)")
@@ -20,10 +20,22 @@ if let i = CommandLine.arguments.firstIndex(of: "--roundtrip"), CommandLine.argu
     exit(0)
 }
 
+// XLS42 --info file: summary of structure (for format tests)
+if let i = CommandLine.arguments.firstIndex(of: "--info"), CommandLine.arguments.count > i + 1 {
+    let wb = Calculator.recalculate(try SpreadsheetFile.read(Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[i + 1]))))
+    for s in wb.sheets {
+        let formulas = s.cells.values.filter(\.isFormula).count
+        let errors = s.cells.filter { $0.value.isFormula && $0.value.value.isError }.map { "\($0.key.a1)=\($0.value.input)→\($0.value.value.plain)" }
+        print("[\(s.name)] cells \(s.cells.count) formulas \(formulas) merges \(s.merges.count) frozen \(s.frozenRows)x\(s.frozenCols) widths \(s.columnWidths.count) comments \(s.comments.count) printArea \(s.printArea?.a1 ?? "-") bold \(s.cells.values.filter(\.style.bold).count) fills \(s.cells.values.filter { $0.style.fill != nil }.count) errors \(errors.prefix(5))")
+    }
+    print("names", wb.names)
+    exit(0)
+}
+
 // XLS42 --export-pdf in.xlsx out.pdf [all|landscape|nogrid|nofit]
 if let i = CommandLine.arguments.firstIndex(of: "--export-pdf"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments
-    let wb = Calculator.recalculate(try XLSX.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))))
+    let wb = Calculator.recalculate(try SpreadsheetFile.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))))
     var options = SheetExport.Options()
     if args.contains("all") { options.scope = .workbook }
     if args.contains("landscape") { options.orientation = .landscape }

@@ -24,7 +24,7 @@ final class SheetDocument: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        workbook = Self.isCSV(typeName) ? XLSX.readCSV(data) : try XLSX.read(data)
+        workbook = try SpreadsheetFile.read(data, typeName: typeName)
         workbook = Calculator.recalculate(workbook)
     }
 
