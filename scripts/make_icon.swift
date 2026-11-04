@@ -1,5 +1,5 @@
 // Draws AppIcon.iconset (16…1024 px) for a Suite42 app, macOS 11+ style.
-// usage: swift make_icon.swift <out-dir> <PDF42|DOC42|XLS42|IMG42|PPT42> [preview.png]
+// usage: swift make_icon.swift <out-dir> <PDF42|DOC42|XLS42|IMG42|PPT42|SCN42> [preview.png]
 //
 // Family look: a coloured squircle (Apple icon grid: 824/1024 body, 100 px margins, soft drop shadow)
 // carrying a white document sheet with a folded corner; the sheet shows what the app is about.
@@ -21,6 +21,7 @@ let palette: [String: (top: NSColor, bottom: NSColor, mark: NSColor)] = [
     "XLS42": (rgb(0x3FD486), rgb(0x0E8A4A), rgb(0x12924F)),
     "IMG42": (rgb(0xB57CFF), rgb(0x6A2BD9), rgb(0x7A3BE6)),
     "PPT42": (rgb(0xFFB547), rgb(0xE5671A), rgb(0xEC6F1C)),
+    "SCN42": (rgb(0x3FD8E0), rgb(0x0B8FA6), rgb(0x0FA3B8)),
 ]
 guard let colors = palette[app] else { fatalError("unknown app \(app)") }
 
@@ -234,6 +235,31 @@ func drawIcon(small: Bool) {
                 rounded(NSRect(x: pieCenter.x + pieR + 36, y: pieCenter.y + 34 - CGFloat(i) * 42, width: inner.width - pieR * 2 - 40 - CGFloat(i) * 30, height: 20), 10).fill()
             }
         }
+    case "SCN42":
+        // Text lines being read by a glowing scan beam; the lines above the beam are already "scanned" (tinted).
+        let lineH: CGFloat = small ? 40 : 22
+        let gap: CGFloat = small ? 84 : 46
+        let beamY = inner.minY + inner.height * (small ? 0.40 : 0.38)
+        var y = inner.maxY - (small ? 40 : 30)
+        let widths: [CGFloat] = small ? [0.62, 1, 0.8, 1, 0.7] : [0.6, 1, 0.94, 0.72, 1, 0.9, 1, 0.66, 0.85]
+        for w in widths where y > inner.minY - 10 {
+            (y > beamY ? rgb(0x7FC9D4) : rgb(0xC3C8D2)).setFill()
+            rounded(NSRect(x: inner.minX, y: y, width: inner.width * w, height: lineH), lineH / 2).fill()
+            y -= gap
+        }
+        // Light trail above the beam.
+        NSGraphicsContext.saveGraphicsState()
+        outline.addClip()
+        NSGradient(colors: [mark.withAlphaComponent(0), mark.withAlphaComponent(0.28)])!
+            .draw(in: NSRect(x: sheet.minX, y: beamY, width: sheet.width, height: small ? 170 : 210), angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+        // The beam reaches past the sheet edges like a scanner carriage.
+        let beam = NSRect(x: sheet.minX - (small ? 40 : 52), y: beamY - (small ? 26 : 16), width: sheet.width + (small ? 80 : 104), height: small ? 52 : 32)
+        withShadow(rgb(0x5FF4FF, 0.9), blur: small ? 18 : 30, dy: 0) {
+            rgb(0x2FE6F2).setFill()
+            rounded(beam, beam.height / 2).fill()
+        }
+        NSGradient(starting: rgb(0xB8FBFF), ending: rgb(0x14BFD3))!.draw(in: rounded(beam, beam.height / 2), angle: -90)
 
     default: // IMG42
         // Landscape photo: sky, sun, two mountains.

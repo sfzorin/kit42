@@ -1,4 +1,4 @@
-# Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42
+# Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42 · SCN42
 
 A small native office suite for macOS: five apps that look and work alike, share one menu system and design
 (the Kit42 library), need no internet and no third-party libraries — only AppKit, PDFKit, Core Image, Vision and
@@ -11,9 +11,10 @@ Security from macOS. Interface in English, Russian and Turkish.
 | **XLS42** | spreadsheets | XLSX, XLS (97–2003), ODS, CSV/TSV | XLSX, ODS, CSV, PDF |
 | **IMG42** | viewing and quick editing of images | JPEG, PNG, HEIC, AVIF, WebP, GIF, TIFF, PSD, RAW, SVG, PDF, … | the original format, PNG, JPEG, HEIC, TIFF, AVIF |
 | **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX, ODP, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown |
+| **SCN42** | scanning (replaces Image Capture) | scanners (USB, network, AirScan), iPhone/iPad camera, images, PDF | searchable PDF, PDF/A, multi-page TIFF, JPEG, PNG, HEIC, TXT/RTF |
 
-**По-русски.** Набор из пяти программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
-Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений) и PPT42 (презентации PPTX/ODP, показ слайдов). Работают без интернета,
+**По-русски.** Набор из шести программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
+Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений) PPT42 (презентации PPTX/ODP, показ слайдов) и SCN42 (сканирование: сканеры и iPhone, автообрезка, распознавание текста, PDF). Работают без интернета,
 интерфейс на английском, русском и турецком.
 
 ## Install
@@ -302,6 +303,50 @@ lets you switch extensions off.
 - Not yet: charts/SmartArt editing, custom geometry (read as rectangles), motion paths and exit animations, embedded
   media, comments, layout editing in Master view (only the master).
 
+## SCN42 — scanning (replaces Image Capture)
+
+One window: pages on the left, a big preview in the middle, a few clear settings and one big **Scan** button on the
+right. Every scan adds pages to the document; save them as one searchable PDF when you are done.
+
+- Scanners: everything Image Capture sees (ImageCaptureCore: USB, network/Bonjour, AirScan/eSCL), picked in the
+  toolbar and remembered; status in plain words (connecting, warming up, busy, feeder empty or jammed, needs a driver…).
+  Flatbed, document feeder with duplex, transparency unit. **Scan with iPhone or iPad** (Continuity Camera: Take Photo,
+  Scan Documents) from the toolbar, File menu or welcome window — no scanner needed.
+- Settings: presets Document, Photo, Receipt, Draft plus your own (Scan › Save Settings as Preset…, ⌃⌘1…); source, colour
+  (colour / gray / B&W), resolution, paper size (Auto, A4, Letter, Legal, A5, A6, business card, custom). More Options:
+  bit depth, brightness, contrast, B&W threshold, descreen.
+- Overview (⇧⌘B) shows the glass; drag to mark one or several scan areas (move, resize by the corners, ⌫ deletes; hand-drawn
+  areas are remembered). **Separate photos on the glass**: the photos are found on the overview (glass background +
+  Vision rectangles) and each one becomes its own straight image.
+- After scanning (Core Image + Vision, in the background while the scanner goes on): crop to the page and straighten
+  (perspective correction; text-line deskew for feeder pages), turn sideways / upside-down pages upright (text direction),
+  remove blank pages (ink coverage + tone), document clean-up (paper made white: shadows, yellowing and uneven light
+  divided out; sharper text; adaptive B&W; border clean-up), photo auto-enhance.
+- Pages: thumbnails with drag-to-reorder, drop images/PDFs to insert, rotate ⌘L/⌘R, delete ⌘⌫, move ⌥⌘↑/↓, Rescan Page ⌥⌘B,
+  Insert Next Scan After This Page, Split Document Here (rest goes to a new window), Enhance ⌥⌘E, colour per page,
+  Crop and Straighten Again, Remove Blank Pages; everything undoable.
+- Text: Recognize Text ⌥⌘R (Vision, Russian/English/Turkish + your languages): invisible text layer in PDFs (searchable,
+  selectable), Copy Text ⇧⌘C, Export Text (.txt, .rtf).
+- Saving ⌘S: PDF (one file or one per page), PDF/A-style (XMP pdfaid 2B, sRGB output intent), multi-page TIFF (B&W as 1-bit
+  CCITT G4), JPEG/HEIC (quality), PNG. File size presets (lossless / 300 / 200 / 150 dpi with JPEG) with the expected size
+  shown before saving; JPEG data goes into the PDF unchanged, B&W pages stay 1-bit. Name templates (`Scan YYYY-MM-DD HH-mm`,
+  counter `{n}`, first line of text `{title}`), folder (default ~/Documents/Scans), then open in PDF42, IMG42, Finder or the
+  default app. Export… (any name/place/format), Share, Send by Mail, Print, **Copy** ⌥⌘P (scan and print N copies
+  on the default printer).
+- History (⌥⌘3): saved scans with thumbnails; double-click opens, right-click reveals or removes.
+- Command line (headless, nothing scans for real): `--make-test-inputs dir` (skewed page on a grey glass with a shadow,
+  three photos on the glass, feeder pages: blank with noise, skewed, upside down, yellowed, sideways), `--process in out
+  [--crop --deskew --rotate --enhance --photo --gray --bw]`, `--pipeline dir|files… out.pdf [--ocr --remove-blank --compress
+  original|high|balanced|smallest --bw --gray --pdfa --format tiff|jpeg|png|heic]` (prints crop angle and box, deskew,
+  rotation, ink, blank, OCR sample, sizes), `--detect-photos glass.png [outdir]`, `--fake-scan dir out.pdf [--feeder --duplex
+  --photos --dpi n]`, `--list-devices [s]` (read-only discovery), `--name template`.
+- Virtual scanner: `K42_FAKE_SCANNER=dir` replaces Image Capture with a scanner that "scans" the images in `dir` (`glass*`
+  for the flatbed in turn, `feed*` for the feeder; areas, resolution, colour, duplex, `K42_FAKE_WARMUP`, `K42_FAKE_SPEED`).
+  UI checks: `K42_SNAPSHOT` with `K42_AUTOSCAN=flatbed|feeder|overview|photos`, `K42_DEMO_PAGES=n`, `K42_SHOW=history|settings|more|glass`,
+  `K42_SOURCE=feeder` (+ `K42_DUPLEX`, `K42_REMOVE_BLANK`), `K42_PRESET=n`, `K42_SAVE_NOW` (+ `K42_SAVE_FORMAT`, `K42_SAVE_OCR`),
+  `K42_SAVE_SHEET`, `K42_ACTIONS="select:2,rotateRight,moveUp,undo,…"`, `K42_CONTINUITY_TEST=file` (private pasteboard),
+  `K42_PRINT_TEST`, `K42_DUMP_MENUS`, `K42_WELCOME`, `K42_SCAN_DIR` (saves and history go there), `K42_WATCHDOG=s`.
+
 ## Common
 
 - Interface language (English, Russian, Turkish) is chosen on the welcome screen and shared by all apps; system panels
@@ -327,7 +372,7 @@ lets you switch extensions off.
   `Sources/QLThumbnail42` are the extension binaries that `build.sh` packs into `.appex` bundles
   (Info.plist generated, ad-hoc signed with `Resources/QuickLook/Extension.entitlements`); `ql42render` renders the
   same output to files for testing (`ql42render html file.md out.html`, `ql42render thumb file.ods 512 out.png`).
-- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
+- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42`, `Sources/SCN42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
 
