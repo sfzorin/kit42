@@ -40,16 +40,32 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     private lazy var marginsButton = StripButton(symbol: "rectangle.center.inset.filled", toolTip: L("Margins"), menu: commandMenu(Cmd.margins))
     private lazy var orientationButton = StripButton(symbol: "rectangle.landscape.rotate", toolTip: L("Orientation"),
                                                      menu: commandMenu([Cmd.portrait, Cmd.landscape]))
+    private lazy var columnsButton = StripButton(symbol: "rectangle.split.2x1", toolTip: L("Columns"), menu: commandMenu(Cmd.columns))
     private lazy var formatStrip = ToolStrip([
         .group([.view(stylePopup)]),
         .group([.view(fontPopup), .view(sizeStepper)]),
         .buttons([Cmd.bold, Cmd.italic, Cmd.underline, Cmd.strike]),
         .group([.view(textColorButton), .view(highlightButton)]),
         .group([.view(alignButton), .view(listButton), .command(Cmd.outdent), .command(Cmd.indent)]),
-        .group([.view(marginsButton), .view(orientationButton)]),
+        .group([.view(marginsButton), .view(orientationButton), .view(columnsButton)]),
+        .buttons([Cmd.formatPainter]),
     ])
 
     var doc: TextDocument? { document as? TextDocument }
+    var specialPopover: NSPopover?
+    func setStripState(_ on: Bool, for action: Selector) { formatStrip.setState(on, for: action) }
+    let comments = CommentsState()
+    let painter = PainterState()
+    private(set) lazy var finderClient = PagedFinderClient(self)
+    private(set) lazy var finder: NSTextFinder = {
+        let f = NSTextFinder()
+        f.client = finderClient
+        f.findBarContainer = scrollView
+        f.isIncrementalSearchingEnabled = true
+        f.incrementalSearchingShouldDimContentView = false
+        return f
+    }()
+    var scroller: NSScrollView { scrollView }
 
     init(storage: NSTextStorage) {
         self.storage = storage
@@ -77,8 +93,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         tv.importsGraphics = true
         tv.allowsImageEditing = true
         tv.allowsUndo = true
-        tv.usesFindBar = true
-        tv.isIncrementalSearchingEnabled = true
+        tv.usesFindBar = false   // the window's finder searches all pages (PageTextView)
         tv.usesRuler = true
         tv.usesInspectorBar = false
         tv.isAutomaticQuoteSubstitutionEnabled = true
@@ -88,6 +103,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         tv.backgroundColor = .white
         tv.drawsBackground = false
         tv.insertionPointColor = .black
+        tv.linkTextAttributes = [.cursor: NSCursor.pointingHand]
         if tv.textStorage?.length == 0 { tv.typingAttributes = Styles.normal.attributes }
         tv.delegate = self
     }
@@ -96,7 +112,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     func setupDidChange() {
         if let setup = doc?.setup {
             paged.setup = setup
-            ruler.setup = setup
+            syncRulerSetup()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.ruler.needsDisplay = true
@@ -129,6 +145,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         ruler.isHidden = !rulerShown
         ruler.onMargins = { [weak self] left, right in self?.setMargins(left: left, right: right) }
         ruler.onIndents = { [weak self] first, head, tail in self?.setIndents(firstLine: first, head: head, tail: tail) }
+        paged.onLayout = { [weak self] in self?.layoutComments() }
+        paged.onNoteClick = { [weak self] in self?.editNote($0) }
         NSLayoutConstraint.activate([
             ruler.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
             ruler.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -147,7 +165,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             NotificationCenter.default.addObserver(forName: name, object: scrollView.contentView, queue: .main) { [weak self] _ in
                 self?.ruler.needsDisplay = true
                 if let self { self.window?.invalidateCursorRects(for: self.ruler) }
-                guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.setup.size.width + PagedView.gap * 2)) > 1 else { return }
+                guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.minimumWidth)) > 1 else { return }
                 self.paged.relayout()
             }
         }
@@ -157,11 +175,24 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     // MARK: - Status
 
-    func textDidChange(_ notification: Notification) { updateStatus() }
+    func textDidChange(_ notification: Notification) {
+        updateStatus()
+        syncRulerSetup()
+    }
 
     func textViewDidChangeSelection(_ notification: Notification) {
         syncControls()
         syncRuler()
+        syncRulerSetup()
+        layoutComments()
+    }
+
+    /// The ruler shows the page and section of the cursor.
+    func syncRulerSetup() {
+        let at = textView.selectedRange().location
+        let s = paged.setup(at: at)
+        if ruler.setup != s { ruler.setup = s }
+        if ruler.location != at { ruler.location = at; ruler.needsDisplay = true }
     }
 
     func syncRuler() {
@@ -178,7 +209,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         window?.subtitle = L("%d words · %d characters", words, text.count)
     }
 
-    private var currentAttributes: [NSAttributedString.Key: Any] {
+    var currentAttributes: [NSAttributedString.Key: Any] {
         let r = textView.selectedRange()
         if r.length > 0, r.location < textView.textStorage!.length {
             return textView.textStorage!.attributes(at: r.location, effectiveRange: nil)
@@ -252,12 +283,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     /// Paragraph ranges touched by the selection.
-    private var paragraphRanges: [NSRange] {
+    var paragraphRanges: [NSRange] {
         let ns = textView.string as NSString
         return textView.selectedRanges.map { ns.paragraphRange(for: $0.rangeValue) }
     }
 
-    private func applyParagraph(_ transform: (NSMutableParagraphStyle) -> Void) {
+    func applyParagraph(_ transform: (NSMutableParagraphStyle) -> Void) {
         guard let storage = textView.textStorage else { return }
         let ranges = paragraphRanges
         let current = (currentAttributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
@@ -432,7 +463,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     // MARK: - Insert
 
-    private func insert(_ s: NSAttributedString) {
+    func insert(_ s: NSAttributedString) {
         let r = textView.selectedRange()
         guard textView.shouldChangeText(in: r, replacementString: s.string) else { return }
         textView.textStorage?.replaceCharacters(in: r, with: s)
@@ -443,7 +474,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     private func imageAttachment(_ image: NSImage, width: CGFloat) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        let maxWidth = paged.setup.textSize.width
+        let maxWidth = paged.setup(at: textView.selectedRange().location).columnWidth
         let w = min(width, maxWidth)
         let size = NSSize(width: w, height: w * image.size.height / max(1, image.size.width))
         if let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
@@ -533,10 +564,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     @objc func findAction(_ sender: Any?) {
-        let item = NSMenuItem()
-        item.tag = NSTextFinder.Action.showFindInterface.rawValue
-        textView.performTextFinderAction(item)
-        window?.makeFirstResponder(textView)
+        finder.performAction(.showFindInterface)
     }
 
     @objc func searchChanged(_ sender: NSSearchField) {
@@ -617,6 +645,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         case #selector(orientationAction(_:)): item.state = isLandscape == (item.tag == 1) ? .on : .off
         case #selector(togglePageNumbersAction(_:)): item.state = doc?.setup.pageNumbers == true ? .on : .off
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)), #selector(deleteTableAction(_:)): return isInTable
+        case #selector(columnsAction(_:)): item.state = paged.setup(at: textView.selectedRange().location).columns == item.tag + 1 ? .on : .off
+        case #selector(editFootnoteAction(_:)), #selector(deleteFootnoteAction(_:)): return noteAtCursor != nil
+        case #selector(deleteCommentAction(_:)): return commentAtCursor != nil
+        case #selector(resolveCommentAction(_:)):
+            item.title = commentAtCursor?.resolved == true ? L("Reopen Comment") : L("Resolve Comment")
+            return commentAtCursor != nil
+        case #selector(toggleCommentsAction(_:)): item.title = comments.shown ? L("Hide Comments") : L("Show Comments")
+        case #selector(removeLinkAction(_:)): return linkAtCursor != nil
+        case #selector(updateTOCAction(_:)): return TOC.range(in: storage) != nil
+        case #selector(formatPainterAction(_:)): item.state = painter.armed ? .on : .off
         case #selector(toggleRulerAction(_:)):
             item.title = ruler.isHidden ? L("Show Ruler") : L("Hide Ruler")
         default: break

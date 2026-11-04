@@ -4,7 +4,8 @@ import Kit42
 extension DocWindowController {
     // MARK: - Page setup, header & footer
 
-    func changeSetup(_ name: String, _ body: (inout PageSetup) -> Void) {
+    /// Changes the setup of the document (the last section, and header/footer of all pages), undoably.
+    func changeDocumentSetup(_ name: String, _ body: (inout PageSetup) -> Void) {
         guard let doc else { return }
         let old = doc.setup
         var new = old
@@ -19,12 +20,45 @@ extension DocWindowController {
         doc.undoManager?.setActionName(name)
     }
 
+    /// Section break that ends the section of the cursor (nil in the last section).
+    var sectionBreakAtCursor: (index: Int, section: DocSection)? {
+        let at = textView.selectedRange().location
+        return paged.sections.first { $0.index >= at }
+    }
+
+    /// Setup of the cursor's section.
+    var currentSetup: PageSetup { paged.setup(at: textView.selectedRange().location) }
+
+    /// Changes the page setup of the cursor's section (or of every section), undoably.
+    func changeSetup(_ name: String, wholeDocument: Bool = false, _ body: (inout PageSetup) -> Void) {
+        guard let storage = textView.textStorage else { return }
+        let breaks = wholeDocument ? paged.sections : sectionBreakAtCursor.map { [$0] } ?? []
+        var changes: [(NSRange, DocSection)] = []
+        for b in breaks {
+            var s = paged.setup.with(b.section)
+            let old = s
+            body(&s)
+            if !s.sameGeometry(old) { changes.append((NSRange(location: b.index, length: 1), s.section)) }
+        }
+        let undo = doc?.undoManager
+        undo?.beginUndoGrouping()
+        if !changes.isEmpty, textView.shouldChangeText(inRanges: changes.map { NSValue(range: $0.0) }, replacementStrings: nil) {
+            storage.beginEditing()
+            for (r, sec) in changes { storage.addAttribute(.docSection, value: sec, range: r) }
+            storage.endEditing()
+            textView.didChangeText()
+        }
+        if wholeDocument || sectionBreakAtCursor == nil { changeDocumentSetup(name, body) }
+        undo?.setActionName(name)
+        undo?.endUndoGrouping()
+        syncRulerSetup()
+    }
+
     static let papers: [(String, NSSize)] = [("A4", NSSize(width: 595, height: 842)), ("A5", NSSize(width: 420, height: 595)),
                                              ("Letter", NSSize(width: 612, height: 792)), ("Legal", NSSize(width: 612, height: 1008))]
 
     @objc func documentSetupAction(_ sender: Any?) {
-        guard let doc else { return }
-        let s = doc.setup
+        let s = currentSetup
         let paper = NSPopUpButton(frame: .zero, pullsDown: false)
         paper.addItems(withTitles: Self.papers.map(\.0))
         let portraitSize = NSSize(width: min(s.size.width, s.size.height), height: max(s.size.width, s.size.height))
@@ -34,9 +68,16 @@ extension DocWindowController {
         orientation.selectItem(at: s.size.width > s.size.height ? 1 : 0)
         func cm(_ v: CGFloat) -> NSTextField { NSTextField(string: String(format: "%.1f", v / 28.3465)) }
         let top = cm(s.margins.top), bottom = cm(s.margins.bottom), left = cm(s.margins.left), right = cm(s.margins.right)
-        let alert = NSAlert.form(L("Document Setup"), info: L("Margins in centimetres."), ok: L("Apply"),
-                                 rows: [(L("Paper:"), paper), (L("Orientation:"), orientation), (L("Top:"), top), (L("Bottom:"), bottom),
-                                        (L("Left:"), left), (L("Right:"), right)])
+        let columns = NSPopUpButton(frame: .zero, pullsDown: false)
+        columns.addItems(withTitles: ["1", "2", "3"])
+        columns.selectItem(at: min(2, s.columns - 1))
+        let spacing = cm(s.columnSpacing)
+        let scope = NSPopUpButton(frame: .zero, pullsDown: false)
+        scope.addItems(withTitles: [L("This section"), L("Whole document")])
+        var rows: [(String, NSView)] = [(L("Paper:"), paper), (L("Orientation:"), orientation), (L("Top:"), top), (L("Bottom:"), bottom),
+                                        (L("Left:"), left), (L("Right:"), right), (L("Columns:"), columns), (L("Column spacing:"), spacing)]
+        if !paged.sections.isEmpty { rows.append((L("Apply to:"), scope)) }
+        let alert = NSAlert.form(L("Document Setup"), info: L("Margins in centimetres."), ok: L("Apply"), rows: rows)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         func pt(_ f: NSTextField, _ d: CGFloat) -> CGFloat {
             Double(f.stringValue.replacingOccurrences(of: ",", with: ".")).map { max(0, CGFloat($0) * 28.3465) } ?? d
@@ -44,9 +85,12 @@ extension DocWindowController {
         var size = Self.papers[max(0, paper.indexOfSelectedItem)].1
         if orientation.indexOfSelectedItem == 1 { size = NSSize(width: size.height, height: size.width) }
         let margins = NSEdgeInsets(top: pt(top, s.margins.top), left: pt(left, s.margins.left), bottom: pt(bottom, s.margins.bottom), right: pt(right, s.margins.right))
-        changeSetup(L("Document Setup")) {
+        let n = max(1, columns.indexOfSelectedItem + 1), gap = pt(spacing, s.columnSpacing)
+        changeSetup(L("Document Setup"), wholeDocument: !paged.sections.isEmpty && scope.indexOfSelectedItem == 1) {
             $0.size = size
             $0.margins = margins
+            $0.columns = n
+            $0.columnSpacing = gap
         }
     }
 
@@ -70,7 +114,7 @@ extension DocWindowController {
     }
 
     func currentMarginPreset() -> Int? {
-        guard let m = doc?.setup.margins else { return nil }
+        let m = currentSetup.margins
         let k = DocRuler.cm
         return Self.marginPresets.firstIndex { p in
             abs(p.cm.0 * k - m.top) < 1 && abs(p.cm.1 * k - m.left) < 1 && abs(p.cm.2 * k - m.bottom) < 1 && abs(p.cm.3 * k - m.right) < 1
@@ -93,7 +137,7 @@ extension DocWindowController {
         }
     }
 
-    var isLandscape: Bool { (doc?.setup.size.width ?? 0) > (doc?.setup.size.height ?? 1) }
+    var isLandscape: Bool { currentSetup.isLandscape }
 
     /// Ruler indents → the selected paragraphs (undoable).
     func setIndents(firstLine: CGFloat, head: CGFloat, tail: CGFloat) {
@@ -132,7 +176,7 @@ extension DocWindowController {
         numbers.state = doc.setup.pageNumbers ? .on : .off
         let alert = NSAlert.form(L("Header and Footer"), ok: L("Apply"), rows: [(L("Header:"), header), (L("Footer:"), footer), ("", numbers)])
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        changeSetup(L("Header and Footer")) {
+        changeDocumentSetup(L("Header and Footer")) {
             $0.header = header.stringValue
             $0.footer = footer.stringValue
             $0.pageNumbers = numbers.state == .on
@@ -140,7 +184,7 @@ extension DocWindowController {
     }
 
     @objc func togglePageNumbersAction(_ sender: Any?) {
-        changeSetup(L("Page Numbers")) { $0.pageNumbers.toggle() }
+        changeDocumentSetup(L("Page Numbers")) { $0.pageNumbers.toggle() }
     }
 
     // MARK: - Tables

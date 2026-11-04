@@ -14,6 +14,10 @@ enum DocxStyles {
         var hasSetup = false
         /// "numId:ilvl" → list format; the system reader makes every list a bullet list.
         var lists: [String: ListFormat] = [:]
+        /// Footnote ("f2") and endnote ("e1") texts, comments by id, section setups by marker number.
+        var notes: [String: String] = [:]
+        var comments: [String: DocComment] = [:]
+        var sections: [Int: PageSetup] = [:]
     }
 
     struct ListFormat {
@@ -114,16 +118,12 @@ enum DocxStyles {
             if let parent = drawing.parent as? XMLElement { parent.replaceChild(at: drawing.index, with: t) }
         }
 
+        markFootnotesCommentsLinks(body, zip: zip, rels: rels, extras: &extras)
+
         // Page setup, header and footer from the (last) section.
         if let sect = body.child("sectPr") {
             extras.hasSetup = true
-            if let sz = sect.child("pgSz"), let w = sz.attr("w").flatMap(Double.init), let h = sz.attr("h").flatMap(Double.init) {
-                extras.setup.size = NSSize(width: w / 20, height: h / 20)
-            }
-            if let m = sect.child("pgMar") {
-                func v(_ k: String, _ d: CGFloat) -> CGFloat { m.attr(k).flatMap(Double.init).map { CGFloat($0) / 20 } ?? d }
-                extras.setup.margins = NSEdgeInsets(top: v("top", 72), left: v("left", 72), bottom: v("bottom", 72), right: v("right", 72))
-            }
+            extras.setup = sectionSetup(sect, base: extras.setup)
             func part(_ name: String) -> XMLElement? {
                 let refs = sect.children(name + "Reference")
                 let ref = refs.first { $0.attr("type") == "default" } ?? refs.first
@@ -212,6 +212,9 @@ enum DocxStyles {
         if n == "title" { return "Title" }
         if n == "quote" || n == "intensequote" { return "Quote" }
         if n.hasPrefix("heading"), let level = Int(n.dropFirst(7)), (1...9).contains(level) { return "Heading\(min(level, 3))" }
+        if n == "tocheading" || n == "contentsheading" { return "TOCHeading" }
+        if n.hasPrefix("toc"), let level = Int(n.dropFirst(3)), (1...9).contains(level) { return "TOC\(min(level, 3))" }
+        if n.hasPrefix("contents"), let level = Int(n.dropFirst(8)), (1...9).contains(level) { return "TOC\(min(level, 3))" }
         return nil
     }
 
@@ -354,7 +357,7 @@ enum DocxStyles {
         return (scheme.child("majorFont")?.child("latin")?.attr("typeface"), scheme.child("minorFont")?.child("latin")?.attr("typeface"))
     }
 
-    private static func descendants(_ e: XMLElement, named name: String) -> [XMLElement] {
+    static func descendants(_ e: XMLElement, named name: String) -> [XMLElement] {
         var out: [XMLElement] = []
         for case let c as XMLElement in e.children ?? [] {
             if c.localName == name { out.append(c) }
