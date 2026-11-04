@@ -65,6 +65,7 @@ final class ImageCanvas: NSScrollView {
     let document = CanvasDocumentView()
     let imageView = ImageLayerView()
     let markup = MarkupView()
+    let liveText = LiveTextHost()
 
     enum ZoomMode { case fit, custom }
     var zoomMode: ZoomMode = .fit
@@ -89,6 +90,8 @@ final class ImageCanvas: NSScrollView {
         documentView = document
         document.addSubview(imageView)
         document.addSubview(markup)
+        document.addSubview(liveText)
+        liveText.keyTarget = markup
         document.magnification = { [weak self] in self?.magnification ?? 1 }
         markup.magnification = { [weak self] in self?.magnification ?? 1 }
         NotificationCenter.default.addObserver(self, selector: #selector(liveMagnifyEnded), name: NSScrollView.didEndLiveMagnifyNotification, object: self)
@@ -106,6 +109,7 @@ final class ImageCanvas: NSScrollView {
             document.frame = CGRect(origin: .zero, size: size)
             imageView.frame = document.bounds
             markup.frame = document.bounds
+            liveText.frame = document.bounds
         }
         if resetZoom { zoomMode = .fit }
         if resetZoom || sizeChanged { applyZoom() }

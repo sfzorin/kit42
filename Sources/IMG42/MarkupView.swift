@@ -34,6 +34,7 @@ final class MarkupView: NSView, NSTextFieldDelegate {
         didSet {
             endTextEditing()
             if !tool.isSelectionTool { pixelSelection = nil }
+            if tool == .smartLasso { SmartLasso.prewarm(baseImage?()) }
             needsDisplay = true
             window?.invalidateCursorRects(for: self)
         }
@@ -55,6 +56,8 @@ final class MarkupView: NSView, NSTextFieldDelegate {
     var onKey: ((NSEvent) -> Bool)?
     var onDoubleClick: (() -> Void)?
     var onCropRequest: (() -> Void)?
+    /// Any click on the canvas (outside Live Text): clears a text selection.
+    var onMouseDown: (() -> Void)?
 
     private var drag: DragState?
     private var editor: NSTextField?
@@ -93,7 +96,10 @@ final class MarkupView: NSView, NSTextFieldDelegate {
         drawSearch()
         if let m = selected, markupActive, !hideMarks { drawSelection(m) }
         if let sel = pixelSelection { drawPixelSelection(sel) }
-        if case .select(_, let pts) = drag, let path = selectionPath(pts) { drawOutline(path) }
+        if case .select(_, let pts) = drag {
+            if tool == .smartLasso { drawSmartBand(pts) } else if let path = selectionPath(pts) { drawOutline(path) }
+        }
+        if let pts = pendingSmartStroke { drawSmartBand(pts) }
     }
 
     private func drawSearch() {
@@ -168,6 +174,23 @@ final class MarkupView: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// Smart Lasso: the wide translucent stroke the user paints around the object (Preview-style).
+    private func drawSmartBand(_ pts: [CGPoint]) {
+        guard pts.count > 1, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        ctx.addLines(between: pts)
+        ctx.setLineWidth(SmartLasso.bandRadius * 2 / scale)
+        ctx.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor)
+        ctx.strokePath()
+        ctx.addLines(between: pts)
+        ctx.setLineWidth(1 / scale)
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.8).cgColor)
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
     private func corners(_ r: CGRect) -> [CGPoint] {
         [CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.maxX, y: r.minY), CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.minX, y: r.maxY)]
     }
@@ -206,8 +229,9 @@ final class MarkupView: NSView, NSTextFieldDelegate {
     override func resetCursorRects() {
         let cursor: NSCursor
         switch tool {
-        case _ where !markupActive: cursor = .arrow
-        case .select: cursor = .arrow
+        // Viewing / Select tool: no cursor rect, so Live Text can show the I-beam over text.
+        case _ where !markupActive: return
+        case .select: return
         case .text: cursor = .iBeam
         default: cursor = .crosshair
         }
@@ -216,8 +240,21 @@ final class MarkupView: NSView, NSTextFieldDelegate {
 
     private func point(_ event: NSEvent) -> CGPoint { convert(event.locationInWindow, from: nil) }
 
+    /// The topmost mark under `p` (image coordinates).
+    func mark(at p: CGPoint) -> Mark? {
+        hideMarks ? nil : marks.last { $0.hitTest(p, tolerance: 6 / scale) }
+    }
+
+    /// Live Text may take the mouse: viewing, or the Select tool away from marks and while nothing is dragged.
+    func allowsLiveText(at p: CGPoint) -> Bool {
+        guard drag == nil, editor == nil else { return false }
+        if !markupActive { return true }
+        return tool == .select && mark(at: p) == nil
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        onMouseDown?()
         let p = point(event)
         let tol = 6 / scale
         if event.clickCount == 2 {
@@ -249,6 +286,8 @@ final class MarkupView: NSView, NSTextFieldDelegate {
                 drag = .moveSelection(start: p, original: sel)
             } else {
                 pixelSelection = nil
+                smartToken += 1
+                pendingSmartStroke = nil
                 drag = .select(start: p, points: [p])
             }
         case .instantAlpha:
@@ -416,6 +455,8 @@ final class MarkupView: NSView, NSTextFieldDelegate {
             if point(event) != start { onCommit?(before, L("Move")) }
         case .resize(_, _, _, let before):
             onCommit?(before, L("Resize"))
+        case .select(_, let pts) where tool == .smartLasso:
+            finishSmartLasso(pts)
         case .select(_, let pts):
             if let path = selectionPath(pts), path.boundingBoxOfPath.width >= 2, path.boundingBoxOfPath.height >= 2 {
                 pixelSelection = PixelSelection.from(path: path, size: bounds.size, isRectangle: tool == .selectRect)
@@ -424,6 +465,35 @@ final class MarkupView: NSView, NSTextFieldDelegate {
             }
         default:
             break
+        }
+    }
+
+    /// The stroke being snapped to edges (drawn until the selection arrives).
+    private var pendingSmartStroke: [CGPoint]?
+    private var smartToken = 0
+
+    /// Smart Lasso: snaps the painted band to the object's edge in the background, then makes the selection.
+    func finishSmartLasso(_ pts: [CGPoint]) {
+        if ProcessInfo.processInfo.environment["K42_SMART_LASSO"] != nil { print("smartlasso: stroke of \(pts.count) points") }
+        let size = bounds.size
+        guard pts.count > 2, let image = baseImage?() else { pixelSelection = nil; return }
+        let box = pts.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }
+        guard box.width >= 2 || box.height >= 2 else { pixelSelection = nil; return }
+        let radius = SmartLasso.bandRadius / scale
+        smartToken += 1
+        let token = smartToken
+        pendingSmartStroke = pts
+        needsDisplay = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let subject = SmartLasso.subjectMask(for: image)
+            let path = SmartLasso.refine(stroke: pts, radius: radius, image: image, subject: subject)
+            let sel = path.flatMap { PixelSelection.from(path: $0, size: size) }
+            DispatchQueue.main.async {
+                guard let self, token == self.smartToken else { return }
+                self.pendingSmartStroke = nil
+                self.pixelSelection = sel
+                self.needsDisplay = true
+            }
         }
     }
 

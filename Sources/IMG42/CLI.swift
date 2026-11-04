@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 ///     IMG42 --ocr file                      recognised text
 ///     IMG42 --rotate file left|right        lossless orientation change
 ///     IMG42 --types                         readable / writable types
+///     IMG42 --smart-lasso in "x,y;x,y;…" out.png [radius] [--no-subject]   Smart Lasso selection mask for a stroke
+///     IMG42 --smart-lasso-eval in [--gt mask.png] [--radius r] [--noise a] [--seed n] [--vis out.png]
+///                                           simulated rough strokes around the subject: IoU of plain vs Smart Lasso
 enum CLI {
     static var status: Int32 = 0
 
@@ -22,6 +25,8 @@ enum CLI {
         case "--stats": args.dropFirst(2).forEach(stats)
         case "--ocr": args.dropFirst(2).forEach(ocr)
         case "--rotate": rotate(Array(args.dropFirst(2)))
+        case "--smart-lasso": smartLasso(Array(args.dropFirst(2)))
+        case "--smart-lasso-eval": SmartLassoEval.run(Array(args.dropFirst(2)))
         case "--types":
             print("read:", ImageFormats.readableTypes.map(\.identifier).joined(separator: " "))
             print("write:", ImageWriter.writableTypes.map(\.identifier).joined(separator: " "))
@@ -137,5 +142,22 @@ enum CLI {
         let ok = Orientation.rewriteLosslessly(url, orientation: new)
         print("\(url.lastPathComponent): orientation \(current.rawValue) → \(new.rawValue) \(ok ? "lossless OK" : "FAILED")")
         if !ok { status = 1 }
+    }
+
+    static func smartLasso(_ a: [String]) {
+        guard a.count >= 3, let image = ImageLoader.load(URL(fileURLWithPath: a[0])).image else { print("usage: --smart-lasso in \"x,y;…\" out.png [radius]"); status = 2; return }
+        let pts = a[1].split(separator: ";").map { $0.split(separator: ",").compactMap { Double($0) } }.filter { $0.count == 2 }.map { CGPoint(x: $0[0], y: $0[1]) }
+        let radius = a.count > 3 ? CGFloat(Double(a[3]) ?? 12) : 12
+        let noSubject = a.contains("--no-subject")
+        let start = Date()
+        let subject = noSubject ? nil : SmartLasso.subjectMask(for: image)
+        let t1 = Date()
+        guard let path = SmartLasso.refine(stroke: pts, radius: radius, image: image, subject: subject),
+              let sel = PixelSelection.from(path: path, size: CGSize(width: image.width, height: image.height)) else { print("no selection"); status = 1; return }
+        let t2 = Date()
+        do {
+            try ImageWriter.write(sel.mask, to: URL(fileURLWithPath: a[2]), type: "public.png")
+            print(String(format: "wrote %@ bounds=%@ subject=%.2fs refine=%.3fs", a[2], NSStringFromRect(sel.bounds.integral), t1.timeIntervalSince(start), t2.timeIntervalSince(t1)))
+        } catch { print("error: \(error)"); status = 1 }
     }
 }

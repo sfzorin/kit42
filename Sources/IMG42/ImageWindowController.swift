@@ -42,7 +42,7 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     // Editing session (see Editing.swift)
     var originalBase: CGImage?
-    var base: CGImage?
+    var base: CGImage? { didSet { if base !== oldValue { canvas.liveText.analyze(base) } } }
     var adjustments = Adjustments()
     var imageDescription: String?
     var originalDescription: String?
@@ -104,7 +104,11 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         markup.baseImage = { [weak self] in self?.displayed ?? self?.base }
         markup.onCommit = { [weak self] before, name in self?.marksCommitted(before: before, name: name) }
         markup.onSelectionChange = { [weak self] in self?.markupBar.selectionChanged() }
-        markup.onPixelSelectionChange = { [weak self] in self?.window?.toolbar?.validateVisibleItems() }
+        markup.onPixelSelectionChange = { [weak self] in
+            guard let self else { return }
+            if self.canvas.markup.pixelSelection != nil, self.canvas.liveText.overlay.hasActiveTextSelection { self.canvas.liveText.overlay.resetSelection() }
+            self.window?.toolbar?.validateVisibleItems()
+        }
         markup.onKey = { [weak self] event in self?.handleKey(event) ?? false }
         markup.onDoubleClick = { [weak self] in
             guard let self else { return }
@@ -112,6 +116,10 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             self.canvas.toggleFitActual(at: p)
         }
         markup.onCropRequest = { [weak self] in self?.cropToSelectionAction(nil) }
+        markup.onMouseDown = { [weak self] in
+            if self?.canvas.liveText.overlay.hasActiveTextSelection == true { self?.canvas.liveText.overlay.resetSelection() }
+        }
+        canvas.liveText.allowsInteraction = { [weak markup] p in markup?.allowsLiveText(at: p) ?? false }
 
         filmstrip.onSelect = { [weak self] i in self?.go(to: i) }
         filmstrip.isHidden = true
@@ -377,6 +385,9 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             return true
         case 3 where mods.isEmpty:                                  // F: full screen
             window?.toggleFullScreen(nil)
+            return true
+        case 53 where canvas.liveText.overlay.hasActiveTextSelection:  // escape clears the text selection first
+            canvas.liveText.overlay.resetSelection()
             return true
         case 53:                                                    // escape
             if slideshowTimer != nil { stopSlideshow(); return true }

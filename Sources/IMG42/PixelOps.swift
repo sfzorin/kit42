@@ -141,6 +141,9 @@ enum PixelOps {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.automaticallyDetectsLanguage = true
+        // Russian, English and Turkish first (with automatic detection for the rest).
+        let supported = (try? request.supportedRecognitionLanguages()) ?? []
+        request.recognitionLanguages = ["ru-RU", "en-US", "tr-TR"].filter(supported.contains)
         let handler = VNImageRequestHandler(cgImage: image)
         try? handler.perform([request])
         let w = CGFloat(image.width), h = CGFloat(image.height)

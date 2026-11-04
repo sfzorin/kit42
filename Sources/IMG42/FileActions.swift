@@ -178,6 +178,8 @@ extension ImageWindowController {
     }
 
     @objc func copy(_ sender: Any?) {
+        // Text selected with Live Text wins over the image.
+        if canvas.liveText.hasSelection { canvas.liveText.copySelection(); return }
         guard let image = finalImage() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
