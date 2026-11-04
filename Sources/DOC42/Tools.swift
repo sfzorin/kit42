@@ -196,7 +196,8 @@ extension DocWindowController {
 
     /// Click: copy the formatting at the selection, apply it to the next selection. Double click: keep applying until Esc.
     @objc func formatPainterAction(_ sender: Any?) {
-        let clicks = NSApp.currentEvent?.clickCount ?? 1
+        let event = NSApp.currentEvent
+        let clicks = event.map { [.leftMouseDown, .leftMouseUp].contains($0.type) ? $0.clickCount : 1 } ?? 1   // clickCount throws for key events
         if painter.armed && clicks < 2 { _ = cancelFormatPainter(); return }
         let attrs = currentAttributes
         painter.characters = attrs.filter { PainterState.keys.contains($0.key) }
@@ -255,7 +256,7 @@ extension DocWindowController {
 
     @objc func insertSectionBreakAction(_ sender: Any?) {
         guard let storage = textView.textStorage else { return }
-        let sel = textView.selectedRange()
+        let sel = NSRange(location: textView.selectedRange().location, length: 0)
         let at = sel.location
         let section = paged.setup(at: at).section
         var attrs = textView.typingAttributes

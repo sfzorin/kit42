@@ -64,6 +64,19 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - Export: PDF (paginated A4/Letter), Word .docx/.doc, RTF, ODT, HTML, Markdown, text.
 - Real pages on screen (text flows across sheets), paper size, orientation, margins, header/footer, page numbers —
   printed and exported exactly as shown. Table rows/columns insert/delete. Pictures and Word styles survive .docx round trips.
+- Footnotes (⌥⌘N): numbered automatically, shown at the bottom of their page, click to edit; read from and saved to .docx
+  (footnotes.xml; endnotes are read as footnotes), Markdown `[^1]`, a "Notes" list in RTF/ODT/HTML/text.
+- Comments (⌥⌘M): highlighted text with cards in the margin (author, date, edit, resolve, delete); .docx comments.xml
+  with resolved state (commentsExtended.xml), read and written.
+- Sections: Insert › Section Break (Next Page); each section has its own paper, orientation, margins and columns
+  (Document Setup applies to the cursor's section or the whole document). Columns 1–3 with spacing. Mixed page sizes
+  export to PDF page by page. Saved to .docx as sectPr / w:cols and read back (continuous breaks open a new page).
+- Table of contents from Title/Heading 1–3 with dot leaders, page numbers and links to the headings; Update rebuilds it
+  in place. Saved as a Word TOC field with bookmarks and hyperlinks.
+- Find bar across all pages with replace; Find and Replace dialog (⌥⌘F): match case, whole words, regular expressions,
+  Replace / Replace All (undoable).
+- Links (⌘K: insert, edit, remove; saved in docx/odt/rtf/md/html), special characters, Paragraph dialog (indents, spacing,
+  exact line height), Clone Formatting (⌥⌘C; double-click keeps it on), Statistics (document and selection).
 
 ## Common
 
@@ -73,7 +86,7 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 
 ## Not implemented
 
-- GOST signatures (needs CryptoPro CSP), footnotes, comments and track changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
+- GOST signatures (needs CryptoPro CSP), track changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
 
 ## Structure
 

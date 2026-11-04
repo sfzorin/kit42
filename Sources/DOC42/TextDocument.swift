@@ -105,7 +105,7 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(Notes.flatten(storage))) }
+    func markdownData() -> Data { encode(MarkdownWriter.write(storage)) }   // footnotes as [^n]
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
         if type == .plain { return encode(Notes.flatten(storage).string) }

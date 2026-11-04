@@ -177,6 +177,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     func textDidChange(_ notification: Notification) {
         updateStatus()
+        comments.highlightKey = ""   // edits can drop the highlight (temporary attributes)
         syncRulerSetup()
     }
 

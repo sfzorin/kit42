@@ -81,12 +81,14 @@ enum Notes {
 extension DocWindowController {
     // MARK: - Footnotes
 
-    @objc func insertFootnoteAction(_ sender: Any?) {
+    @objc func insertFootnoteAction(_ sender: Any?) { insertFootnote("", edit: true) }
+
+    func insertFootnote(_ text: String, edit: Bool) {
         guard let storage = textView.textStorage else { return }
         let at = NSMaxRange(textView.selectedRange())
         var attrs = textView.typingAttributes
         if storage.length > 0, at > 0 { attrs = storage.attributes(at: at - 1, effectiveRange: nil).merging(attrs.filter { $0.key == .paragraphStyle }) { a, _ in a } }
-        let note = DocNote("")
+        let note = DocNote(text)
         let ref = Notes.reference(note, attributes: attrs)
         let range = NSRange(location: at, length: 0)
         guard textView.shouldChangeText(in: range, replacementString: ref.string) else { return }
@@ -95,7 +97,7 @@ extension DocWindowController {
         textView.undoManager?.setActionName(L("Insert Footnote"))
         textView.setSelectedRange(NSRange(location: at + 1, length: 0))
         paged.layoutAll()
-        editNote(note)
+        if edit { editNote(note) }
     }
 
     /// Footnote at or just before the cursor.

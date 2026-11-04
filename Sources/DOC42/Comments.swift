@@ -57,7 +57,7 @@ final class CommentCardView: NSView, NSTextFieldDelegate {
         f.dateStyle = .short
         f.timeStyle = .short
         date.stringValue = f.string(from: comment.date) + (comment.resolved ? " · " + L("Resolved") : "")
-        if field.currentEditor() == nil { field.stringValue = comment.text }
+        if field.stringValue != comment.text { field.stringValue = comment.text }
         resolveButton.image = NSImage(systemSymbolName: comment.resolved ? "checkmark.circle.fill" : "checkmark.circle", accessibilityDescription: nil)
         resolveButton.toolTip = comment.resolved ? L("Reopen") : L("Resolve")
         alphaValue = comment.resolved ? 0.6 : 1

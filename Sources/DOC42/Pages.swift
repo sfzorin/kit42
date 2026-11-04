@@ -340,6 +340,13 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                 if changed { break }
                 i += 1
             }
+            // Empty pages left at the end (a removal asked for while pages were being added).
+            if !changed, layoutManager.firstUnlaidCharacterIndex() >= storage.length {
+                while cards.count > 1, let c = cards.last?.textViews.first?.textContainer, layoutManager.glyphRange(for: c).length == 0 {
+                    removeLastPage()
+                    changed = true
+                }
+            }
             if !changed { break }
             churn += 1
         }
@@ -350,12 +357,16 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     func layoutManager(_ lm: NSLayoutManager, didCompleteLayoutFor textContainer: NSTextContainer?, atEnd layoutFinished: Bool) {
         let containers = lm.textContainers
+        if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil {
+            Swift.print("didComplete", containers.firstIndex { $0 === textContainer } ?? -1, "of", containers.count, "finished", layoutFinished, "changing", changingPages)
+        }
         if !layoutFinished || textContainer == nil {
             // Text left over: add a page after the last one.
             if let last = containers.last, textContainer === last || textContainer == nil {
                 // (A page that took nothing would be followed by endless empty ones.)
-                let used = cards.last?.textViews.compactMap(\.textContainer).filter { lm.glyphRange(for: $0).length > 0 } ?? []
-                if let filled = used.last {
+                // (Containers rather than cards: this runs while a card is still adding its columns.)
+                let recent = containers.suffix(6)
+                if let filled = recent.last(where: { lm.glyphRange(for: $0).length > 0 }) {
                     addPage(startingAt: NSMaxRange(lm.characterRange(forGlyphRange: lm.glyphRange(for: filled), actualGlyphRange: nil)))
                 }
             }
