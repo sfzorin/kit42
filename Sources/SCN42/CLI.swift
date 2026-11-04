@@ -122,6 +122,11 @@ enum CLI {
                 print("ocr page \(i + 1): \(p.text?.count ?? 0) lines: \(sample.prefix(160))")
             }
             if let title = pages.first?.text.flatMap(OCR.title) { print("title: \(title)") }
+            // --text out.txt|out.rtf: the recognised text as a file.
+            if let t = value(flags, "--text"), let data = Exporter.textData(pages.compactMap(\.text), rtf: t.lowercased().hasSuffix(".rtf")) {
+                try? data.write(to: URL(fileURLWithPath: t))
+                print("text: \(t) \(data.count) bytes")
+            }
         }
         var save = SaveOptions()
         save.ocr = flags.contains("--ocr")
