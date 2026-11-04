@@ -4,3 +4,4 @@ build/
 *.xcodeproj/
 Resources/*/AppIcon.iconset/
 .DS_Store
+.claude/
