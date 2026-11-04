@@ -57,7 +57,7 @@ enum ListNumbering {
 
     /// Default marker format for a nesting level (bullets or numbers).
     static func format(forLevel level: Int, numbered: Bool) -> NSTextList.MarkerFormat {
-        numbered ? [.decimal, .lowercaseAlpha, .lowercaseRoman][level % 3] : [.disc, .circle, .square][level % 3]
+        numbered ? NSTextList.MarkerFormat(rawValue: ["{decimal}.", "{lower-alpha}.", "{lower-roman}."][level % 3]) : [.disc, .circle, .square][level % 3]
     }
 
     /// Indents of a list paragraph at `level`.

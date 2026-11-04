@@ -38,7 +38,7 @@ struct FieldContext {
 enum Fields {
     /// Word date pictures to Unicode patterns ("am/pm" → "a").
     static func pattern(_ word: String) -> String {
-        word.replacingOccurrences(of: "am/pm", with: "a", options: .caseInsensitive).replacingOccurrences(of: "AM/PM", with: "a")
+        word.replacingOccurrences(of: "am/pm", with: "a", options: .caseInsensitive).replacingOccurrences(of: "\\", with: "")
     }
 
     static let datePresets = ["dd.MM.yyyy", "d MMMM yyyy", "MMMM d, yyyy", "yyyy-MM-dd", "dd/MM/yy", "EEEE, d MMMM yyyy"]

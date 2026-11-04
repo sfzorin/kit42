@@ -165,6 +165,53 @@ lets you switch extensions off.
   Replace / Replace All (undoable).
 - Links (⌘K: insert, edit, remove; saved in docx/odt/rtf/md/html), special characters, Paragraph dialog (indents, spacing,
   exact line height), Clone Formatting (⌥⌘C; double-click keeps it on), Statistics (document and selection).
+- Styles panel (⌘T or F11, also Format › Styles): paragraph styles (Body, Title, Heading 1–6, Quote, List, Caption,
+  TOC 1–3, Footnote, custom) and character styles (Emphasis, Strong, Code, custom), each shown in its look; click to
+  apply; New Style from Selection, Update Style to Match Selection, Modify Style (font, size, bold/italic/underline,
+  colour, spacing, line spacing, indents, alignment, based on, next style), delete custom styles. A changed style
+  restyles every paragraph in it (and in styles based on it), keeping what was formatted by hand; undoable. Saved as
+  real styles: .docx styles.xml with w:pStyle/w:rStyle (run properties equal to the style are left to it), .odt
+  named styles in styles.xml (paragraph styles); read back from Word, LibreOffice and DOC42 files.
+- Navigator (F5, side panel): headings as a tree (click to jump, drag a heading to move its chapter), tables, images,
+  bookmarks, comments, footnotes, links, sections and fields.
+- Bullets and Numbering (Format): bullets, numbers, letters, Roman numerals, text before/after ("(a)"), start value,
+  restart numbering, showing higher levels (1.1.1); multi-level lists with Tab / Shift-Tab at an item's start (Format ›
+  Demote/Promote One Level); numbers follow edits. Outline Numbering numbers Heading 1–6 (1, 1.1, 1.1.1 or I, A, 1, a).
+  Saved as .docx numbering.xml (abstractNum/num, lvl with numFmt, lvlText, start, pStyle for headings) and read back.
+- Fields (Insert › Field): page number, page count, date and time (formats, fixed or updating), title, author, file
+  name, chapter (current Heading 1); also sequence numbers (captions) and table formulas. Shaded on screen, updated
+  with the layout (each page shows its own number), Update Fields (F9). .docx: w:fldSimple (PAGE, NUMPAGES, DATE \@,
+  TIME, TITLE, AUTHOR, FILENAME, STYLEREF, SEQ, =SUM(ABOVE); w:fldLock for fixed ones); simple and complex fields are
+  read back. Title and author: File › Properties (docProps/core.xml).
+- Headers and footers: rich text with fields, tab stops for left/centre/right, a different first page and different
+  odd/even pages, per section (or the whole document). Double-click the top or bottom of a page to edit there
+  (Esc or a click in the text ends), or Insert › Header and Footer (dialog with page number position).
+  .docx header1/2/3.xml (default, first, even) with w:titlePg and w:evenAndOddHeaders, read and written; Word's rule
+  that a section without its own headers inherits the previous one's is followed.
+- Tables: Table Properties (column widths, borders all/outer/inner/none, line width and colour, cell padding, cell
+  background, vertical alignment, repeated heading rows), Merge Cells / Split Cells (merged back, or into columns or
+  rows), insert/delete rows and columns with merged cells, Sort (column, ascending/descending, numbers or text, heading
+  row kept), Formula (=SUM(ABOVE), LEFT, AVERAGE, MIN, MAX, COUNT, PRODUCT; updates), Convert Text to Table (tabs,
+  semicolons, commas, paragraphs) and Table to Text, AutoFormat presets, Tab moves between cells. Rows joined by a merged
+  cell are kept on one page. .docx: w:tblBorders/w:tcBorders, w:shd, w:gridSpan, w:vMerge, w:tblHeader, w:tblGrid
+  widths, w:tblCellMar; read back (the system reader drops spans and shading: DOC42 rebuilds the tables).
+- Pictures: click for handles (corners keep proportions; Shift frees them), drag a floating picture to move it; wrap in
+  line, square, top and bottom, behind or in front of text (Format › Image › Wrap); anchored to the paragraph, placed on
+  its page; border, crop and size in cm in Image Properties; Insert › Caption ("Figure 1: …", numbered automatically,
+  above tables). .docx wp:inline / wp:anchor with wrapSquare, wrapTopAndBottom, wrapNone/behindDoc, srcRect, a:ln.
+- Paragraph borders and background (box, top, bottom, …; neighbouring paragraphs share a box; w:pBdr/w:shd), drop caps
+  (2–5 lines; Word's framed drop-cap paragraph), page background colour and watermark text (Format › Page; w:background,
+  Word's VML watermark in the headers), Hyphenation (w:autoHyphenation), Character dialog (font, size, bold/italic,
+  colour, highlight, all caps, small caps, superscript/subscript, spacing, underline single/double/thick/dotted/dashed/
+  words, strikethrough single/double; w:caps, w:smallCaps, w:dstrike, w:spacing, w:u, w:vertAlign, read back).
+- PDF export (File › Export as PDF…): page range, image quality, headings as PDF bookmarks, clickable links (web
+  addresses, table of contents and other internal links), comments as notes, title and author in the PDF properties.
+- View: single page, book view (two pages), multiple pages, web layout (no pages); status bar with page X of Y, words
+  (of the selection), language, layout buttons and a zoom slider (View › Hide Status Bar; Hide All Panels hides it too).
+- Known limits: small caps are shown as capitals when the font has no small capitals (saved correctly); heading rows
+  repeat on each page in Word/LibreOffice but not on DOC42's screen; .odt keeps paragraph styles but not character
+  styles, list definitions, fields or rich headers (plain text there); page-relative positions of floating pictures from
+  other programs are approximate.
 
 ## IMG42 — images (everything ImageIO reads, plus SVG and PDF)
 

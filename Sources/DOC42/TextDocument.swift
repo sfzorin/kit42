@@ -186,7 +186,7 @@ final class TextDocument: NSDocument {
         switch type {
         case .openDocument:
             (storage, comments, notes) = CommentMarkers.insert(accepted, notes: true)
-            storage = Notes.flatten(storage)   // (only section geometry left to drop)
+            storage = OdtStyles.markParagraphs(Notes.flatten(storage))   // (only section geometry left to drop)
         case .rtf, .html:
             (storage, comments, _) = CommentMarkers.insert(Notes.flatten(accepted), notes: false, clamp: type == .html)
         default:
@@ -213,7 +213,7 @@ final class TextDocument: NSDocument {
             storage.enumerateAttribute(.paragraphStyle, in: range) { v, _, stop in
                 if let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.width(for: .border, edge: .minX) > 0 { borders = true; stop.pointee = true }
             }
-            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes)
+            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes, styles: styles)
         }
         return try storage.data(from: range, documentAttributes: attrs)
     }

@@ -181,7 +181,7 @@ extension DocWindowController {
     /// Cells touched by the selection (grid rectangle).
     func selectedCellBox(_ g: TableGrid) -> (r0: Int, c0: Int, r1: Int, c1: Int) {
         let sel = textView.selectedRange()
-        let touched = g.cells.filter { NSIntersectionRange($0.range, sel).length > 0 || NSLocationInRange(sel.location, $0.range) }
+        let touched = g.cells.filter { NSIntersectionRange($0.range, sel).length > 0 || NSLocationInRange(sel.location, $0.range) || (sel.length > 0 && NSMaxRange(sel) == $0.range.location) }
         guard !touched.isEmpty else { return (0, 0, 0, 0) }
         var box = (r0: touched.map(\.row).min()!, c0: touched.map(\.col).min()!,
                    r1: touched.map { $0.row + $0.rowSpan - 1 }.max()!, c1: touched.map { $0.col + $0.colSpan - 1 }.max()!)
