@@ -94,9 +94,26 @@ lets you switch extensions off.
 - Displayed like Excel: column widths and row heights, fonts, fills, borders, merged cells, wrapped text,
   overflow into neighbouring cells, `###` for numbers that don't fit, theme colours.
 - Number formats: thousands separators, decimals, currency, %, dates and times, `[Red]`, sections `;`.
-- 139 functions (Help › Supported Functions, Insert › Function…): SUM/SUMIF(S)/COUNTIF(S), IF/IFS/IFERROR, VLOOKUP/XLOOKUP/INDEX/MATCH,
-  text, dates, statistics, PMT… Russian names (СУММ, ЕСЛИ, ВПР) are accepted too. References A1/$A$1, ranges,
-  other sheets, whole columns; recalculation with cycle detection.
+- 384 functions (Help › Supported Functions, Insert › Function…) in nine categories: conditional aggregates
+  (SUMIFS…MINIFS, AGGREGATE, SUBTOTAL that skips nested subtotals and filtered rows), logic (IFS, SWITCH, XOR, LET,
+  LAMBDA through a defined name), lookup (XLOOKUP, XMATCH, LOOKUP, INDEX with whole rows/columns, OFFSET, INDIRECT
+  with R1C1, ADDRESS), dynamic arrays (FILTER, SORT, SORTBY, UNIQUE, SEQUENCE, RANDARRAY, TRANSPOSE, VSTACK/HSTACK,
+  TOCOL, TAKE/DROP, CHOOSECOLS, EXPAND, WRAPROWS, MMULT, MINVERSE, FREQUENCY, LINEST…), text (TEXTBEFORE/AFTER,
+  TEXTSPLIT, TEXTJOIN, NUMBERVALUE, FIXED, LibreOffice's REGEX and Excel's REGEXTEST/EXTRACT/REPLACE), dates
+  (NETWORKDAYS/WORKDAY with .INTL weekends and holidays, WEEKNUM, ISOWEEKNUM, YEARFRAC, DAYS360, DATEDIF), maths and
+  trigonometry incl. hyperbolic, statistics (percentiles, quartiles, ranks, regression, TREND/GROWTH, normal, t, χ²,
+  F, binomial, Poisson, gamma, beta, lognormal, Weibull distributions and their inverses), finance (PMT, IPMT, PPMT,
+  NPER, RATE, NPV, XNPV, IRR, XIRR, MIRR, depreciation, CUMIPMT…), information (CELL, INFO, ISFORMULA, TYPE, SHEET…)
+  and engineering (CONVERT, base conversions, BIT…). Russian names (СУММ, ЕСЛИ, ВПР) are accepted too. References
+  A1/$A$1, ranges, other sheets, whole columns, array constants {1,2;3,4}; recalculation with cycle detection.
+- Arrays like Excel 365: operators and scalar functions work element by element (`=SUM(A1:A9*B1:B9)`,
+  `=MAX(IF(…))`); dynamic-array formulas spill into the cells below/right (#SPILL! when something is in the way) and are
+  saved as array formulas (`.xlsx` with Excel's dynamic-array marking, `.ods` matrix formulas); CSE array formulas from
+  files are kept. `XLS42 --lo-compare` writes ~490 test formulas to `.xlsx` (or `ods`), lets LibreOffice compute them
+  headless with a private profile and compares: all agree except functions LibreOffice 25.2 lacks, array formulas
+  LibreOffice only computes with Ctrl+Shift+Enter, locale formatting (FIXED/DOLLAR) and a few places where XLS42
+  follows Excel (WEEKNUM type 1 at year end, MROUND/ATAN2 errors, PERCENTRANK truncating, TYPE(TRUE)=4, CONVERT
+  constants).
 - Editing: formula bar, cell references picked with the mouse, copy and paste with formula shifting, fill down/right,
   insert/delete rows and columns with formulas adjusted, sorting, sheets, AutoSum, selection totals.
 - Freeze panes: at the selected cell, top row or first column — frozen rows/columns stay while scrolling (saved to .xlsx).
@@ -107,7 +124,7 @@ lets you switch extensions off.
   AutoFilter with value checklist, defined names, comments, conditional formatting (value rules, text, duplicates,
   colour scales, data bars), pictures and charts (column, bar, line, area, pie, scatter) — all saved to .xlsx.
 - Printing: print area, frozen rows repeated on every page, page numbers, options in the print dialog.
-- Insert › Function… (also the `fx` button by the formula bar, ⇧⌘F): searchable list of all 139 functions grouped by
+- Insert › Function… (also the `fx` button by the formula bar, ⇧⌘F): searchable list of all functions grouped by
   category, with signature, description (en/ru/tr), argument fields and a live result; while typing a formula the
   signature of the current function is shown above the grid.
 - Data › Validation…: list (values or a range like `=$H$1:$H$5`, drop-down arrow in the cell, ⌥↓), whole number,
@@ -129,7 +146,37 @@ lets you switch extensions off.
 - Find and Replace panel (⌥⌘F): Find Next / Replace / Replace All in the sheet or workbook, in formulas or values,
   match case, entire cell; Replace All is one undo step. Edit › Paste Special… (⌥⌘V): all/values/formulas/formats,
   add/subtract/multiply/divide, skip blanks, transpose.
-- Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas, formats) and `--uitest` (editing operations in a window).
+- Data › Sort… (up to three keys, ascending/descending, header detection, case-sensitive, natural order, left to right,
+  custom orders: weekdays, months and lists from Data › Sort Lists…; moved formulas keep their row-relative references).
+- Data › More Filters: AutoFilter, Standard Filter… (up to four conditions: =, <>, <, >, contains, begins/ends with,
+  largest/smallest N or %, empty; AND/OR; case-sensitive; no duplications; copy results to another place), Advanced
+  Filter… from a criteria range (rows OR, columns AND, Excel's criteria syntax), Reset Filter. AutoFilter conditions are
+  saved in `.xlsx` (customFilters, top10).
+- Data › Subtotals…: group by a column, sum/count/average/max/min/product/count numbers/stdev/var, columns to total,
+  page break between groups, SUBTOTAL rows plus an outline (levels 1–3); Remove All.
+- Data › Text to Columns… (tab/comma/semicolon/space/other, merged delimiters, text delimiter, fixed widths, column
+  types), Remove Duplicates… (chosen columns), Statistics › Descriptive Statistics…/Correlation… (formulas on a new
+  sheet); Edit › Fill › Down/Right/Up/Left and Series… (linear, growth, dates by day/weekday/month/year, step, end).
+- Tools › Goal Seek… (secant method with a bracketing fallback) and Solver… (target max/min/value, variable cells,
+  ≤ ≥ = constraints, integer and binary variables, non-negative option; linear models with the simplex method and
+  branch and bound, nonlinear ones with Nelder–Mead and penalties). Results are one undo step.
+- Sheet menu: insert, delete, rename, move or copy (to a position, with a new name), tab colour, hide and show,
+  protect workbook structure. Tab colours, hidden sheets and structure protection are saved in `.xlsx` and `.ods`.
+- View › Split Window: two or four panes at the active cell, the left/top panes scroll on their own (freeze is turned
+  off). View › Status Bar (⌥⇧⌘S): sum/average/count of the selection (right-click to choose min, max, count numbers),
+  sheet number and a zoom slider; hidden with View › Hide All Panels too.
+- Insert › Hyperlink… (⌘K): web, mail, file or a place in the workbook (`#Sheet2!A1`); ⌘-click (or a click on the
+  selected link) opens it; HYPERLINK() cells work the same. Saved in `.xlsx` (hyperlink relationships/locations) and
+  `.ods` (text:a).
+- Format › Cells… (⌥⌘1): number categories and custom codes with a preview, font and effects (double underline),
+  alignment (indent, rotation, vertically stacked, wrap, shrink to fit), borders (line styles, colour, outer and inner
+  lines), background, protection (locked, hidden formula). Format › Cell Styles: Normal, Title, Heading 1–3, Good, Bad,
+  Neutral, Accent 1–3, Input, Calculation, Note, Warning Text, Total, Hyperlink, Currency, Percent, Comma — saved as
+  named cell styles in `.xlsx`.
+- Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas incl. ~490 function cases checked against
+  LibreOffice, formats, data tools, solver, file round trips) and `--uitest` (editing operations in a window; the
+  clipboard is restored afterwards). `--feature-demo out.xlsx|ods` writes a file with the sheet features for checks in
+  other apps.
 
 ## DOC42 — documents (.docx, .doc, .rtf, .odt, .md, .txt)
 
