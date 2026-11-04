@@ -88,6 +88,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             guard document != nil else { return }
             reloadTabs()
             grid.rebuildLayout()
+            updateOutlineGutters()
             grid.select(CellRef(row: 0, col: 0))
         }
     }

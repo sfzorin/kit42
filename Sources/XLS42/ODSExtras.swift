@@ -6,15 +6,22 @@ import Kit42
 extension ODS {
     static let sha256Digest = "http://www.w3.org/2001/04/xmlenc#sha256"
     static let sha1Digest = "http://www.w3.org/2000/09/xmldsig#sha1"
+    static let legacyExcelDigest = "http://docs.oasis-open.org/office/ns/table/legacy-hash-excel"
 
-    /// Splits "a;b;c" at top-level ";" (outside quotes and brackets/parentheses).
+    /// LibreOffice's key for an Excel legacy hash: SHA-1 of the hash's two bytes (big-endian), base64.
+    static func legacyProtectionKey(_ hash: String) -> String? {
+        guard let v = UInt16(hash, radix: 16) else { return nil }
+        return Data(Insecure.SHA1.hash(data: Data([UInt8(v >> 8), UInt8(v & 0xFF)]))).base64EncodedString()
+    }
+
+    /// Splits "a;b;c" (or "a,b") at top-level separators (outside quotes and brackets/parentheses).
     static func splitArguments(_ s: String) -> [String] {
         var out: [String] = [], cur = "", depth = 0, quoted = false
         for ch in s {
             if ch == "\"" { quoted.toggle() }
             if !quoted {
                 if ch == "(" || ch == "[" { depth += 1 } else if ch == ")" || ch == "]" { depth -= 1 }
-                if ch == ";" && depth == 0 { out.append(cur); cur = ""; continue }
+                if (ch == ";" || ch == ",") && depth == 0 { out.append(cur); cur = ""; continue }
             }
             cur.append(ch)
         }
@@ -36,8 +43,8 @@ extension ODS {
         let a = odfOperand(v.formula1), b = odfOperand(v.formula2)
         func comparison(_ subject: String, between: String) -> String {
             switch v.op {
-            case "between": return "\(between)-is-between(\(a);\(b))"
-            case "notBetween": return "\(between)-is-not-between(\(a);\(b))"
+            case "between": return "\(between)-is-between(\(a),\(b))"
+            case "notBetween": return "\(between)-is-not-between(\(a),\(b))"
             default:
                 let ops = ["equal": "=", "notEqual": "!=", "greaterThan": ">", "lessThan": "<", "greaterThanOrEqual": ">=", "lessThanOrEqual": "<="]
                 return "\(subject)\(ops[v.op] ?? "=")\(a)"
@@ -56,7 +63,7 @@ extension ODS {
         default:
             let test = ["whole": "cell-content-is-whole-number()", "decimal": "cell-content-is-decimal-number()",
                         "date": "cell-content-is-date()", "time": "cell-content-is-time()"][v.kind.rawValue]!
-            return "of:\(test) and " + comparison("cell-content()", between: "cell-content")
+            return "of:\(test) and " + comparison("cell-content()", between: "cell-content")   // as LibreOffice writes it
         }
     }
 

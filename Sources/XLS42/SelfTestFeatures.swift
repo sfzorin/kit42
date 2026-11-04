@@ -68,6 +68,9 @@ extension SelfTest {
               && SheetProtection.legacyHash("Пароль") == "A330", SheetProtection.legacyHash("test"))
         let prot = SheetProtection(password: "secret")
         check("protection password check", prot.matches("secret") && !prot.matches("Secret") && SheetProtection().matches(""))
+        // Key LibreOffice wrote for password "secret" converted from .xlsx (legacy Excel hash, then SHA-1).
+        let lo = SheetProtection(odsKey: "BMfVQ/9GAnqCB7e3XfaI6KERwLc=", odsDigest: ODS.legacyExcelDigest + " " + ODS.sha1Digest)
+        check("LibreOffice legacy protection key", lo.matches("secret") && !lo.matches("other") && ODS.legacyProtectionKey("DAA7") == lo.odsKey)
 
         // Outline model
         var s = Sheet(name: "T")

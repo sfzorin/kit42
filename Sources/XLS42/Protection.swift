@@ -18,7 +18,14 @@ extension SheetProtection {
 
     /// ODF `table:protection-key`: base64 SHA-256 (or legacy SHA-1) of the UTF-8 password.
     static func odsKey(_ password: String, digest: String?) -> String {
-        if digest?.contains("sha1") == true { return Data(Insecure.SHA1.hash(data: Data(password.utf8))).base64EncodedString() }
+        let d = digest ?? ""
+        if d.contains("legacy-hash-excel") {
+            let h = legacyHash(password)
+            if d.contains("sha1") { return ODS.legacyProtectionKey(h) ?? "" }
+            let v = UInt16(h, radix: 16) ?? 0
+            return Data([UInt8(v >> 8), UInt8(v & 0xFF)]).base64EncodedString()
+        }
+        if d.contains("sha1") { return Data(Insecure.SHA1.hash(data: Data(password.utf8))).base64EncodedString() }
         return ODS.protectionKey(password)
     }
 

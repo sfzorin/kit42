@@ -60,8 +60,12 @@ enum ODS {
         for table in spreadsheet.children("table") {
             var sheet = Sheet(name: table.attr("name") ?? "Sheet\(wb.sheets.count + 1)")
             if table.attr("protected") == "true" {
-                sheet.protection = SheetProtection(odsKey: table.attr("protection-key"),
-                                                   odsDigest: table.attr("protection-key-digest-algorithm") ?? sha1Digest)
+                // LibreOffice may chain two digests (legacy Excel hash, then SHA-1).
+                let digests = [table.attr("protection-key-digest-algorithm") ?? sha1Digest, table.attr("protection-key-digest-algorithm-2")]
+                sheet.protection = SheetProtection(odsKey: table.attr("protection-key"), odsDigest: digests.compactMap { $0 }.joined(separator: " "))
+                if digests[1] == nil, digests[0] == legacyExcelDigest, let raw = table.attr("protection-key").flatMap({ Data(base64Encoded: $0) }), raw.count == 2 {
+                    sheet.protection?.passwordHash = String(format: "%02X%02X", raw[0], raw[1])
+                }
             }
             var validationCells: [String: [CellRef]] = [:]
             var col = 0
@@ -469,7 +473,14 @@ enum ODS {
             if let area = sheet.printArea { t += " table:print-ranges=\"\(xmlEscape(odfRange(sheet.name, area)))\"" }
             if let p = sheet.protection {
                 t += " table:protected=\"true\""
-                if let key = p.odsKey { t += " table:protection-key=\"\(key)\" table:protection-key-digest-algorithm=\"\(p.odsDigest ?? sha1Digest)\"" }
+                if let key = p.odsKey {
+                    let digests = (p.odsDigest ?? sha1Digest).split(separator: " ")
+                    t += " table:protection-key=\"\(key)\" table:protection-key-digest-algorithm=\"\(digests[0])\""
+                    if digests.count > 1 { t += " loext:protection-key-digest-algorithm-2=\"\(digests[1])\"" }
+                } else if let h = p.passwordHash, let key = legacyProtectionKey(h) {
+                    // From .xlsx: LibreOffice's encoding of the Excel hash keeps the password working.
+                    t += " table:protection-key=\"\(key)\" table:protection-key-digest-algorithm=\"\(legacyExcelDigest)\" loext:protection-key-digest-algorithm-2=\"\(sha1Digest)\""
+                }
             }
             t += ">"
             // Validation rules, clipped to a sane size (whole-column rules would mean a million rows).
@@ -536,7 +547,8 @@ enum ODS {
         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" \
         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" \
         xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" \
-        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" office:version="1.3"
+        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
+        xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
         let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet>\(body)</office:spreadsheet></office:body></office:document-content>"
         let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
