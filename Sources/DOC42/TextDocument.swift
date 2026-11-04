@@ -4,6 +4,8 @@ import Kit42
 @objc(TextDocument)
 final class TextDocument: NSDocument {
     let storage = NSTextStorage()
+    /// Page size, margins, header and footer (saved to .docx).
+    var setup = PageSetup() { didSet { editor?.setupDidChange() } }
 
     override init() {
         super.init()
@@ -43,8 +45,13 @@ final class TextDocument: NSDocument {
         let type = Self.documentType(for: typeName)
         var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
         if type == .plain { options[.characterEncoding] = String.Encoding.utf8.rawValue }
-        let source = type == .officeOpenXML ? DocxStyles.flatten(data) : data
+        var source = data
+        var extras = DocxStyles.Extras()
+        if type == .officeOpenXML { (source, extras) = DocxStyles.flattenWithExtras(data) }
         let text = NSMutableAttributedString(attributedString: try NSAttributedString(data: source, options: options, documentAttributes: nil))
+        DocxStyles.restoreImages(text, extras.images)
+        if type == .officeOpenXML { DocxStyles.restoreStyles(text) }
+        if extras.hasSetup { setup = extras.setup }
         if type == .officeOpenXML || type == .docFormat || type == .openDocument { ListMarkers.insert(into: text) }
         storage.setAttributedString(type == .plain ? NSAttributedString(string: text.string, attributes: Styles.normal.attributes) : text)
     }
@@ -58,43 +65,65 @@ final class TextDocument: NSDocument {
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
         let range = NSRange(location: 0, length: storage.length)
         if type == .plain { return Data(storage.string.utf8) }
-        if type == .officeOpenXML { return DocxWriter.data(storage, pageSize: printInfo.paperSize) }
+        if type == .officeOpenXML {
+            var o = DocxWriter.Options()
+            o.pageSize = setup.size
+            o.margins = setup.margins
+            o.header = setup.header
+            o.footer = setup.footer
+            o.pageNumbers = setup.pageNumbers
+            o.paragraphStyle = Styles.wordStyle
+            return DocxWriter.data(storage, options: o)
+        }
         var attrs: [NSAttributedString.DocumentAttributeKey: Any] = [.documentType: type]
         if type == .html { attrs[.characterEncoding] = String.Encoding.utf8.rawValue }
         return try storage.data(from: range, documentAttributes: attrs)
     }
 
-    /// Paginated PDF of the document (A4/Letter from page setup).
+    /// Paginated PDF of the document: exactly the pages shown on screen.
     func pdfData() -> Data {
-        PaginatedPDF.render(printView(), info: pagedPrintInfo())
+        let view = offscreenPages()
+        defer { view.detach() }
+        return PaginatedPDF.render(view, info: pageInfo())
     }
 
-    private func pagedPrintInfo() -> NSPrintInfo {
+    /// Paper = page size, no extra margins: each page card is one sheet.
+    func pageInfo() -> NSPrintInfo {
         let info = printInfo.copy() as! NSPrintInfo
-        info.horizontalPagination = .fit
-        info.verticalPagination = .automatic
-        info.isVerticallyCentered = false
+        info.paperSize = setup.size
+        info.orientation = setup.size.width > setup.size.height ? .landscape : .portrait
+        info.leftMargin = 0; info.rightMargin = 0; info.topMargin = 0; info.bottomMargin = 0
+        info.horizontalPagination = .clip
+        info.verticalPagination = .clip
         info.isHorizontallyCentered = false
-        info.leftMargin = 64; info.rightMargin = 64; info.topMargin = 64; info.bottomMargin = 64
+        info.isVerticallyCentered = false
         return info
     }
 
-    private func printView() -> NSTextView {
-        let info = pagedPrintInfo()
-        let width = info.paperSize.width - info.leftMargin - info.rightMargin
-        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 100))
-        view.textStorage?.setAttributedString(storage)
-        view.textContainerInset = .zero
-        view.textContainer?.lineFragmentPadding = 0
-        view.isVerticallyResizable = true
-        view.backgroundColor = .white
-        view.sizeToFit()
+    func debugPages() {
+        let v = offscreenPages()
+        for (i, c) in v.cards.enumerated() {
+            let g = v.layoutManager.glyphRange(for: c.textView.textContainer!)
+            let chars = v.layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
+            Swift.print(i, c.frame, "chars", chars, (storage.string as NSString).substring(with: NSRange(location: chars.location, length: min(20, chars.length))))
+        }
+        v.detach()
+    }
+
+    private func offscreenPages() -> PagedView {
+        let view = PagedView(storage: storage, setup: setup) { tv in
+            tv.backgroundColor = .white
+            tv.drawsBackground = false
+        }
+        view.layoutAll()
         return view
     }
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
-        let op = NSPrintOperation(view: printView(), printInfo: pagedPrintInfo())
+        let view = offscreenPages()
+        let op = NSPrintOperation(view: view, printInfo: pageInfo())
         op.jobTitle = displayName
+        op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsPageRange])
         return op
     }
 }
@@ -144,8 +173,27 @@ enum MarkdownStyler {
     }
 }
 
-/// Paragraph styles offered in DOC42 (look only; saved as direct formatting).
+/// Paragraph styles offered in DOC42; saved as direct formatting plus the matching Word style.
 struct Styles {
+    /// Word style id for a paragraph: from the explicit style mark, else by its look.
+    static func wordStyle(_ text: NSAttributedString, _ range: NSRange) -> String? {
+        guard text.length > 0 else { return nil }
+        let at = min(range.location, text.length - 1)
+        if let name = text.attribute(styleKey, at: at, effectiveRange: nil) as? String { return name }
+        guard let font = text.attribute(.font, at: at, effectiveRange: nil) as? NSFont else { return nil }
+        let bold = NSFontManager.shared.traits(of: font).contains(.boldFontMask)
+        switch font.pointSize {
+        case 24...: return "Title"
+        case 18..<24 where bold: return "Heading1"
+        case 15..<18 where bold: return "Heading2"
+        case 13..<15 where bold: return "Heading3"
+        default: return nil
+        }
+    }
+
+    static let styleKey = NSAttributedString.Key("DOC42.style")
+    static let wordIds = ["Title", "Heading1", "Heading2", "Heading3", nil, "Quote"]
+
     let name: String
     let size: CGFloat
     let weight: NSFont.Weight

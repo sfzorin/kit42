@@ -102,13 +102,16 @@ extension SheetWindowController {
 
     // MARK: - Hide / unhide
 
+    /// Whole selection (not clipped to data), unless it spans the entire sheet.
+    private var selectedRows: ClosedRange<Int> { grid.selection.rows.count < 100_000 ? grid.selection.rows : clampedSelection.rows }
+
     @objc func hideRowsAction(_ sender: Any?) {
-        let rows = clampedSelection.rows
+        let rows = selectedRows
         doc?.change(L("Hide Rows"), recalc: false) { wb in rows.forEach { wb.sheets[sheetIndex].rowHeights[$0] = 0 } }
     }
 
     @objc func unhideRowsAction(_ sender: Any?) {
-        let rows = grid.selection.rows.count > 1 ? Array(grid.selection.rows) : [grid.active.row - 1, grid.active.row, grid.active.row + 1]
+        let rows = grid.selection.rows.count > 1 ? Array(selectedRows) : [grid.active.row - 1, grid.active.row, grid.active.row + 1]
         doc?.change(L("Unhide Rows"), recalc: false) { wb in
             for r in rows where wb.sheets[sheetIndex].rowHeights[r] == 0 { wb.sheets[sheetIndex].rowHeights[r] = nil }
         }

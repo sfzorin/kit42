@@ -49,6 +49,18 @@ enum Cmd {
         Command($0.element, #selector(W.lineSpacingAction(_:)), tag: $0.offset)
     }
 
+    // Document & tables
+    static let documentSetup = Command(L("Document Setup…"), #selector(W.documentSetupAction(_:)), symbol: "doc.text",
+                                       shortcut: Shortcut("p", [.command, .option]))
+    static let headerFooter = Command(L("Header and Footer…"), #selector(W.headerFooterAction(_:)), symbol: "rectangle.topthird.inset.filled")
+    static let pageNumbers = Command(L("Page Numbers"), #selector(W.togglePageNumbersAction(_:)), symbol: "number")
+    static let tableRows: [Command] = [(L("Insert Row Above"), "arrow.up.to.line"), (L("Insert Row Below"), "arrow.down.to.line"), (L("Delete Row"), "minus.rectangle")]
+        .enumerated().map { Command($0.element.0, #selector(W.tableRowAction(_:)), symbol: $0.element.1, tag: $0.offset) }
+    static let tableColumns: [Command] = [(L("Insert Column Left"), "arrow.left.to.line"), (L("Insert Column Right"), "arrow.right.to.line"), (L("Delete Column"), "minus.rectangle.portrait")]
+        .enumerated().map { Command($0.element.0, #selector(W.tableColumnAction(_:)), symbol: $0.element.1, tag: $0.offset) }
+    static let deleteTable = Command(L("Delete Table"), #selector(W.deleteTableAction(_:)), symbol: "trash")
+    static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
+
     static let welcome = Command(L("Welcome Window"), #selector(A.showWelcomeAction(_:)), shortcut: Shortcut("0", [.command, .shift]))
 
     static var menuBar: MenuBarSpec {
@@ -63,6 +75,9 @@ enum Cmd {
                        .command(bulletList), .command(numberedList), .command(indent), .command(outdent),
                        .submenu(L("Line Spacing"), lineSpacing.menuElements), .separator,
                        .command(removeHighlight), .command(clearFormatting)]
+        spec.custom = [(L("Table"), [.command(insertTable), .separator] + tableRows.menuElements + [.separator] + tableColumns.menuElements
+                        + [.separator, .command(deleteTable)]),
+                       (L("Document"), [.command(documentSetup), .command(headerFooter), .command(pageNumbers)])]
         spec.help = [.command(welcome)]
         return spec
     }
@@ -72,7 +87,7 @@ enum Cmd {
             .command(insertImage), .command(insertTable), .command(stamps),
             .flexibleSpace,
             .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
-            .command(formatBar), .command(exportPDF),
+            .command(formatBar), .command(print), .command(exportPDF),
             .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
         ]
     }

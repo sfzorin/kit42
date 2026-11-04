@@ -19,6 +19,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--export"), CommandLine.argumen
     let inType = input.pathExtension.lowercased() == "md" ? "md" : (UTType(filenameExtension: input.pathExtension)?.identifier ?? input.pathExtension)
     try doc.read(from: Data(contentsOf: input), ofType: inType)
     let ext = output.pathExtension.lowercased()
+    if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil { doc.debugPages() }
     let data = ext == "pdf" ? doc.pdfData() : try doc.exportData(TextDocument.documentType(for: ext == "doc" ? "com.microsoft.word.doc" : ext))
     try data.write(to: output)
     print("\(ext): \(data.count) bytes")

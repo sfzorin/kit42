@@ -2,44 +2,12 @@ import AppKit
 import Kit42
 import UniformTypeIdentifiers
 
-/// Grey desk with a white A4-wide page; the text view grows downwards inside it.
-final class PageView: NSView {
-    let page: NSTextView
-    static let pageWidth: CGFloat = 595   // A4, points
-    static let margin: CGFloat = 32
-
-    init(textView: NSTextView) {
-        page = textView
-        super.init(frame: .zero)
-        addSubview(page)
-        page.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(relayout), name: NSView.frameDidChangeNotification, object: page)
-    }
-
-    required init?(coder: NSCoder) { fatalError("not supported") }
-
-    override var isFlipped: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.underPageBackgroundColor.setFill()
-        dirtyRect.fill()
-    }
-
-    @objc func relayout() {
-        let width = max(enclosingScrollView?.contentSize.width ?? 0, Self.pageWidth + Self.margin * 2)
-        let height = max(page.frame.height + Self.margin * 2, (enclosingScrollView?.contentSize.height ?? 0))
-        if frame.size != NSSize(width: width, height: height) { setFrameSize(NSSize(width: width, height: height)) }
-        let x = floor((width - Self.pageWidth) / 2)
-        if page.frame.origin != NSPoint(x: x, y: Self.margin) { page.setFrameOrigin(NSPoint(x: x, y: Self.margin)) }
-    }
-
-    override func resizeSubviews(withOldSize oldSize: NSSize) { relayout() }
-}
-
 final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSMenuItemValidation, NSToolbarItemValidation {
-    let textView: NSTextView
+    private let storage: NSTextStorage
+    private(set) lazy var paged = PagedView(storage: storage, setup: PageSetup()) { [unowned self] tv in self.configureTextView(tv) }
+    /// Text views of all pages share selection and typing attributes; the first one stands for all.
+    var textView: NSTextView { paged.textViews[0] }
     private let scrollView = NSScrollView()
-    private lazy var pageView = PageView(textView: textView)
     private let toolbarController = ToolbarController(identifier: "DOC42.toolbar", elements: Cmd.toolbar)
     private lazy var stylePopup = stripPopUp(Styles.all.map(\.name), width: 128, toolTip: L("Paragraph style"),
                                              target: self, action: #selector(styleChanged(_:)))
@@ -79,12 +47,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     var doc: TextDocument? { document as? TextDocument }
 
     init(storage: NSTextStorage) {
-        let layout = NSLayoutManager()
-        storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: NSSize(width: PageView.pageWidth, height: .greatestFiniteMagnitude))
-        container.widthTracksTextView = true
-        layout.addTextContainer(container)
-        textView = NSTextView(frame: NSRect(x: 0, y: 0, width: PageView.pageWidth, height: 842), textContainer: container)
+        self.storage = storage
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 860),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -94,7 +57,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         super.init(window: window)
         window.delegate = self
         shouldCascadeWindows = true
-        setupText()
         setupContent()
         window.toolbar = toolbarController.toolbar
         window.addTitlebarAccessoryViewController(formatStrip)
@@ -105,42 +67,37 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    private func setupText() {
-        textView.isRichText = true
-        textView.importsGraphics = true
-        textView.allowsImageEditing = true
-        textView.allowsUndo = true
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
-        textView.usesRuler = true
-        textView.usesInspectorBar = false
-        textView.isAutomaticQuoteSubstitutionEnabled = true
-        textView.isAutomaticDashSubstitutionEnabled = true
-        textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isContinuousSpellCheckingEnabled = true
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.minSize = NSSize(width: PageView.pageWidth, height: 842)
-        textView.maxSize = NSSize(width: PageView.pageWidth, height: .greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 64, height: 64)
-        textView.backgroundColor = .white
-        textView.drawsBackground = true
-        textView.insertionPointColor = .black
-        textView.typingAttributes = Styles.normal.attributes
-        textView.delegate = self
-        textView.wantsLayer = true
-        textView.shadow = {
-            let s = NSShadow()
-            s.shadowColor = NSColor.black.withAlphaComponent(0.18)
-            s.shadowBlurRadius = 8
-            s.shadowOffset = NSSize(width: 0, height: -2)
-            return s
-        }()
-        textView.layer?.masksToBounds = false
+    private func configureTextView(_ tv: NSTextView) {
+        tv.isRichText = true
+        tv.importsGraphics = true
+        tv.allowsImageEditing = true
+        tv.allowsUndo = true
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
+        tv.usesRuler = true
+        tv.usesInspectorBar = false
+        tv.isAutomaticQuoteSubstitutionEnabled = true
+        tv.isAutomaticDashSubstitutionEnabled = true
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.isContinuousSpellCheckingEnabled = true
+        tv.backgroundColor = .white
+        tv.drawsBackground = false
+        tv.insertionPointColor = .black
+        if tv.textStorage?.length == 0 { tv.typingAttributes = Styles.normal.attributes }
+        tv.delegate = self
+    }
+
+    /// Page size, margins, header or footer changed in the document.
+    func setupDidChange() {
+        if let setup = doc?.setup { paged.setup = setup }
+    }
+
+    override var document: AnyObject? {
+        didSet { setupDidChange() }
     }
 
     private func setupContent() {
-        scrollView.documentView = pageView
+        scrollView.documentView = paged
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
@@ -158,8 +115,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         window?.contentView = root
-        NotificationCenter.default.addObserver(pageView, selector: #selector(PageView.relayout), name: NSView.frameDidChangeNotification, object: scrollView)
-        DispatchQueue.main.async { self.pageView.relayout() }
+        scrollView.contentView.postsFrameChangedNotifications = true
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        // Re-centre pages on resize and zoom (magnification changes the clip view's bounds).
+        for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: scrollView.contentView, queue: .main) { [weak self] _ in
+                guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.setup.size.width + PagedView.gap * 2)) > 1 else { return }
+                self.paged.relayout()
+            }
+        }
+        DispatchQueue.main.async { self.paged.relayout() }
 
     }
 
@@ -336,8 +301,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             return
         }
         guard textView.shouldChangeText(inRanges: ranges as [NSValue], replacementStrings: nil) else { return }
+        let wordId = Styles.all.firstIndex { $0.name == style.name }.flatMap { Styles.wordIds[$0] }
         storage.beginEditing()
-        for r in ranges { storage.addAttributes(style.attributes, range: r) }
+        for r in ranges {
+            storage.addAttributes(style.attributes, range: r)
+            if let wordId { storage.addAttribute(Styles.styleKey, value: wordId, range: r) } else { storage.removeAttribute(Styles.styleKey, range: r) }
+        }
         storage.endEditing()
         textView.didChangeText()
         textView.typingAttributes = style.attributes
@@ -437,7 +406,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     private func imageAttachment(_ image: NSImage, width: CGFloat) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        let maxWidth = PageView.pageWidth - textView.textContainerInset.width * 2
+        let maxWidth = paged.setup.textSize.width
         let w = min(width, maxWidth)
         let size = NSSize(width: w, height: w * image.size.height / max(1, image.size.width))
         if let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
@@ -518,6 +487,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     @objc func zoomInAction(_ sender: Any?) { scrollView.magnification = min(3, scrollView.magnification + 0.1) }
     @objc func zoomOutAction(_ sender: Any?) { scrollView.magnification = max(0.5, scrollView.magnification - 0.1) }
     @objc func actualSizeAction(_ sender: Any?) { scrollView.magnification = 1 }
+    func setZoom(_ z: CGFloat) { scrollView.magnification = z }
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
     @objc func toggleRulerAction(_ sender: Any?) { textView.toggleRuler(sender) }
 
@@ -537,8 +507,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         if found.location == NSNotFound { found = ns.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) }
         guard found.location != NSNotFound else { NSSound.beep(); return }
         textView.setSelectedRange(found)
-        textView.scrollRangeToVisible(found)
-        textView.showFindIndicator(for: found)
+        paged.scrollRangeToVisible(found)
     }
 
     static let exportFormats: [(title: String, ext: String, type: NSAttributedString.DocumentType?)] = [
@@ -602,6 +571,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             item.state = mine[max(0, min(3, item.tag))] == a || (item.tag == 0 && a == .natural) ? .on : .off
         case #selector(toggleFormatBarAction(_:)):
             item.title = formatStrip.isShown ? L("Hide Format Bar") : L("Show Format Bar")
+        case #selector(togglePageNumbersAction(_:)): item.state = doc?.setup.pageNumbers == true ? .on : .off
+        case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)), #selector(deleteTableAction(_:)): return isInTable
         case #selector(toggleRulerAction(_:)):
             item.title = textView.isRulerVisible ? L("Hide Ruler") : L("Show Ruler")
         default: break

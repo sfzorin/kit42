@@ -4,7 +4,26 @@ import AppKit
 /// Covers paragraphs, runs (font, size, bold/italic/underline/strike, colour, highlight),
 /// alignment, spacing, indents, tabs, page breaks, tables (NSTextTable) and images.
 public enum DocxWriter {
-    public static func data(_ text: NSAttributedString, pageSize: NSSize = NSSize(width: 595, height: 842)) -> Data {
+    public struct Options {
+        public var pageSize = NSSize(width: 595, height: 842)
+        public var margins = NSEdgeInsets(top: 72, left: 72, bottom: 72, right: 72)
+        public var header = ""
+        public var footer = ""
+        public var pageNumbers = false
+        /// Word style id for a paragraph (e.g. "Heading1"), so outlines and tables of contents work in Word.
+        public var paragraphStyle: ((NSAttributedString, NSRange) -> String?)?
+        public init() {}
+    }
+
+    public static func data(_ text: NSAttributedString, pageSize: NSSize) -> Data {
+        var o = Options()
+        o.pageSize = pageSize
+        return data(text, options: o)
+    }
+
+    public static func data(_ text: NSAttributedString, options: Options = Options()) -> Data {
+        let pageSize = options.pageSize
+        styleProvider = options.paragraphStyle
         var media: [(name: String, data: Data)] = []
         var body = ""
         let ns = text.string as NSString
@@ -43,9 +62,15 @@ public enum DocxWriter {
         }
 
         let twip = { (pt: CGFloat) in Int((pt * 20).rounded()) }
+        let m = options.margins
+        let hasHeader = !options.header.isEmpty
+        let hasFooter = !options.footer.isEmpty || options.pageNumbers
+        body += "<w:sectPr>"
+        if hasHeader { body += "<w:headerReference w:type=\"default\" r:id=\"rIdHeader\"/>" }
+        if hasFooter { body += "<w:footerReference w:type=\"default\" r:id=\"rIdFooter\"/>" }
         body += """
-        <w:sectPr><w:pgSz w:w="\(twip(pageSize.width))" w:h="\(twip(pageSize.height))"/>\
-        <w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="709" w:footer="709" w:gutter="0"/></w:sectPr>
+        <w:pgSz w:w="\(twip(pageSize.width))" w:h="\(twip(pageSize.height))"\(pageSize.width > pageSize.height ? " w:orient=\"landscape\"" : "")/>\
+        <w:pgMar w:top="\(twip(m.top))" w:right="\(twip(m.right))" w:bottom="\(twip(m.bottom))" w:left="\(twip(m.left))" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr>
         """
 
         let document = """
@@ -66,6 +91,8 @@ public enum DocxWriter {
         <Default Extension="png" ContentType="image/png"/>
         <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
         <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+        <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+        <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
         </Types>
         """.utf8)
         zip["_rels/.rels"] = Data("""
@@ -83,6 +110,14 @@ public enum DocxWriter {
             rels += "<Relationship Id=\"rIdImg\(n + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/\(m.name)\"/>"
             zip["word/media/\(m.name)"] = m.data
         }
+        if hasHeader {
+            rels += "<Relationship Id=\"rIdHeader\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/>"
+            zip["word/header1.xml"] = Data(headerFooterXML("hdr", text: options.header, pageNumber: false).utf8)
+        }
+        if hasFooter {
+            rels += "<Relationship Id=\"rIdFooter\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/>"
+            zip["word/footer1.xml"] = Data(headerFooterXML("ftr", text: options.footer, pageNumber: options.pageNumbers).utf8)
+        }
         rels += "</Relationships>"
         zip["word/_rels/document.xml.rels"] = Data(rels.utf8)
         zip["word/styles.xml"] = Data("""
@@ -90,7 +125,12 @@ public enum DocxWriter {
         <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Helvetica Neue" w:hAnsi="Helvetica Neue" w:cs="Helvetica Neue" w:eastAsia="Helvetica Neue"/>\
         <w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
-        <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+        <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+        <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/></w:style>
+        <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="0"/></w:pPr></w:style>
+        <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="1"/></w:pPr></w:style>
+        <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="2"/></w:pPr></w:style>
+        <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:qFormat/></w:style>
         <w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblCellMar>\
         <w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
         </w:styles>
@@ -101,11 +141,21 @@ public enum DocxWriter {
 
     // MARK: - Paragraphs
 
+    private static var styleProvider: ((NSAttributedString, NSRange) -> String?)?
+
+    private static func headerFooterXML(_ tag: String, text: String, pageNumber: Bool) -> String {
+        var p = "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>"
+        if !text.isEmpty { p += "<w:r><w:rPr><w:sz w:val=\"18\"/></w:rPr><w:t xml:space=\"preserve\">\(xmlEscape(text))\(pageNumber ? "  " : "")</w:t></w:r>" }
+        if pageNumber { p += "<w:fldSimple w:instr=\" PAGE \"><w:r><w:rPr><w:sz w:val=\"18\"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple>" }
+        p += "</w:p>"
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:\(tag) xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\(p)</w:\(tag)>"
+    }
+
     private static func paragraphXML(_ r: NSRange, text: NSAttributedString, media: inout [(name: String, data: Data)]) -> String {
         var x = "<w:p>"
         if text.length > 0 {
             let p = text.attribute(.paragraphStyle, at: min(r.location, text.length - 1), effectiveRange: nil) as? NSParagraphStyle
-            x += paragraphProperties(p)
+            x += paragraphProperties(p, style: styleProvider?(text, r))
         }
         guard r.length > 0 else { return x + "</w:p>" }
         text.enumerateAttributes(in: r) { attrs, run, _ in
@@ -119,9 +169,10 @@ public enum DocxWriter {
         return x + "</w:p>"
     }
 
-    private static func paragraphProperties(_ p: NSParagraphStyle?) -> String {
-        guard let p else { return "" }
+    private static func paragraphProperties(_ p: NSParagraphStyle?, style: String? = nil) -> String {
+        guard let p else { return style.map { "<w:pPr><w:pStyle w:val=\"\($0)\"/></w:pPr>" } ?? "" }
         var x = "<w:pPr>"
+        if let style { x += "<w:pStyle w:val=\"\(style)\"/>" }
         let twip = { (pt: CGFloat) in Int((pt * 20).rounded()) }
         let line = p.lineHeightMultiple > 0 ? Int((p.lineHeightMultiple * 240).rounded()) : 240
         x += "<w:spacing w:before=\"\(twip(p.paragraphSpacingBefore))\" w:after=\"\(twip(p.paragraphSpacing))\" w:line=\"\(line)\" w:lineRule=\"auto\"/>"

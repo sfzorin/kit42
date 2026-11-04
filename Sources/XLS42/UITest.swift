@@ -65,11 +65,48 @@ enum UITest {
         w.setInput("=Лист1!A3*2", at: CellRef("A1")!)
         check("cross-sheet ref (new sheet)", cell("A1").value == .number(60) || cell("A1").value == .error("#REF!"), "\(cell("A1").value)")
 
+        w.selectSheet(0)
+        // Fill handle: series and text increments
+        w.setInput("1", at: CellRef("G1")!); w.setInput("3", at: CellRef("G2")!)
+        w.autoFill(from: CellRange(CellRef("G1")!, CellRef("G2")!), to: CellRange(CellRef("G1")!, CellRef("G5")!))
+        check("fill series", cell("G5").value == .number(9), "\(cell("G5").value)")
+        w.setInput("Item 1", at: CellRef("H1")!)
+        w.autoFill(from: CellRange(CellRef("H1")!, CellRef("H1")!), to: CellRange(CellRef("H1")!, CellRef("H3")!))
+        check("fill text increment", cell("H3").value == .string("Item 3"), "\(cell("H3").value)")
+
+        // Hide rows
+        select("A7", to: "A8"); w.hideRowsAction(nil)
+        check("hide rows", w.sheet.isRowHidden(6) && w.sheet.isRowHidden(7))
+        select("A6", to: "A9"); w.unhideRowsAction(nil)
+        check("unhide rows", !w.sheet.isRowHidden(6))
+
+        // Filter
+        w.setInput("x", at: CellRef("J1")!); w.setInput("a", at: CellRef("J2")!); w.setInput("b", at: CellRef("J3")!); w.setInput("a", at: CellRef("J4")!)
+        select("J1", to: "J4"); w.toggleFilterAction(nil)
+        w.applyFilter(column: 9, allowed: ["a"])
+        check("filter hides rows", w.sheet.filterHidden == [2], "\(w.sheet.filterHidden)")
+
+        // Names, comments, rules, chart, print area
+        let sheetName = w.sheet.name
+        doc.change("names") { $0.names["Rate"] = "\(sheetName)!$A$1" }
+        w.setInput("=Rate*3", at: CellRef("K1")!)
+        check("defined name", cell("K1").value == .number(30), "\(cell("K1").value)")
+        doc.change("comment") { $0.sheets[0].comments[CellRef("A1")!] = "note" }
+        doc.change("rule") { $0.sheets[0].conditionalFormats.append(ConditionalFormat(range: CellRange("A1:A3")!, kind: .cellIs(op: "greaterThan", values: ["15"]), fill: .red)) }
+        select("D1", to: "E3"); w.insertChartAction(nil)
+        check("chart inserted", w.sheet.charts.count == 1 && w.sheet.charts[0].series.count >= 1)
+        select("A1", to: "E5"); w.setPrintAreaAction(nil)
+        check("print area", w.sheet.printArea == CellRange("A1:E5"))
+
         let pdf = SheetExport.pdf(doc.workbook, activeSheet: 0, selection: nil, options: .init(), base: NSPrintInfo.shared)
         check("PDF export", pdf.count > 1000 && String(decoding: pdf.prefix(5), as: UTF8.self) == "%PDF-")
         let xlsx = XLSX.write(doc.workbook)
         let back = try? XLSX.read(xlsx)
         check("xlsx round trip", back?.sheets.count == 2 && back?.sheets[0].frozenRows == 1 && back?.sheets[0].merges.count == 1)
+        let s0 = back?.sheets[0]
+        check("xlsx extras round trip", s0?.comments.count == 1 && s0?.conditionalFormats.count == 1 && s0?.charts.count == 1
+              && s0?.autoFilter != nil && s0?.printArea == CellRange("A1:E5") && back?.names["Rate"] != nil,
+              "comments \(s0?.comments.count ?? -1) cf \(s0?.conditionalFormats.count ?? -1) charts \(s0?.charts.count ?? -1) filter \(String(describing: s0?.autoFilter)) area \(String(describing: s0?.printArea))")
 
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         exit(failed == 0 ? 0 : 1)

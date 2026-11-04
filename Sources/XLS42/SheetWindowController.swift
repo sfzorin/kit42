@@ -322,6 +322,15 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         tabs.addArrangedSubview(add)
     }
 
+    func selectSheet(_ index: Int) {
+        guard let doc, index < doc.workbook.sheets.count else { return }
+        grid.commitEdit(move: nil)
+        sheetIndex = index
+        reloadTabs()
+        grid.rebuildLayout()
+        grid.select(CellRef(row: 0, col: 0))
+    }
+
     @objc private func tabClicked(_ sender: NSButton) {
         grid.commitEdit(move: nil)
         if sender.tag == sheetIndex, NSApp.currentEvent?.clickCount == 2 {

@@ -7,12 +7,24 @@ import Kit42
 enum DocxStyles {
     static let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-    static func flatten(_ data: Data) -> Data {
+    /// What the system reader drops: pictures (replaced by markers in the text), page setup, header, footer.
+    struct Extras {
+        var images: [Int: (data: Data, size: NSSize)] = [:]
+        var setup = PageSetup()
+        var hasSetup = false
+    }
+
+    static let markerStart: Character = "\u{E000}", markerEnd: Character = "\u{E001}"
+
+    static func flatten(_ data: Data) -> Data { flattenWithExtras(data).data }
+
+    static func flattenWithExtras(_ data: Data) -> (data: Data, extras: Extras) {
+        var extras = Extras()
         guard var zip = try? ZipArchive(data: data),
               let docData = zip["word/document.xml"],
               let doc = try? XMLDocument(data: docData, options: [.nodePreserveWhitespace]),
               let stylesData = zip["word/styles.xml"],
-              let styles = try? XMLDocument(data: stylesData, options: []).rootElement() else { return data }
+              let styles = try? XMLDocument(data: stylesData, options: []).rootElement() else { return (data, extras) }
 
         let themeFonts = themeFontNames(zip)
         var byId: [String: XMLElement] = [:]
@@ -39,7 +51,58 @@ enum DocxStyles {
             return out
         }
 
-        guard let body = doc.rootElement()?.child("body") else { return data }
+        guard let body = doc.rootElement()?.child("body") else { return (data, extras) }
+        let rels = relations(zip, "word/_rels/document.xml.rels")
+
+        // Pictures → text markers, restored as attachments after reading.
+        var n = 0
+        for drawing in descendants(body, named: "drawing") {
+            guard let blip = descendants(drawing, named: "blip").first,
+                  let id = blip.attr("embed"), let target = rels[id], let media = zip["word/" + target] ?? zip[target] else { continue }
+            var size = NSSize(width: 200, height: 150)
+            if let ext = descendants(drawing, named: "extent").first,
+               let cx = ext.attr("cx").flatMap(Double.init), let cy = ext.attr("cy").flatMap(Double.init) {
+                size = NSSize(width: cx / 12700, height: cy / 12700)
+            }
+            n += 1
+            extras.images[n] = (media, size)
+            let t = XMLElement(name: "w:t", uri: ns)
+            t.stringValue = "\(markerStart)\(n)\(markerEnd)"
+            if let parent = drawing.parent as? XMLElement { parent.replaceChild(at: drawing.index, with: t) }
+        }
+
+        // Page setup, header and footer from the (last) section.
+        if let sect = body.child("sectPr") {
+            extras.hasSetup = true
+            if let sz = sect.child("pgSz"), let w = sz.attr("w").flatMap(Double.init), let h = sz.attr("h").flatMap(Double.init) {
+                extras.setup.size = NSSize(width: w / 20, height: h / 20)
+            }
+            if let m = sect.child("pgMar") {
+                func v(_ k: String, _ d: CGFloat) -> CGFloat { m.attr(k).flatMap(Double.init).map { CGFloat($0) / 20 } ?? d }
+                extras.setup.margins = NSEdgeInsets(top: v("top", 72), left: v("left", 72), bottom: v("bottom", 72), right: v("right", 72))
+            }
+            func part(_ name: String) -> XMLElement? {
+                let refs = sect.children(name + "Reference")
+                let ref = refs.first { $0.attr("type") == "default" } ?? refs.first
+                guard let id = ref?.attr("id"), let target = rels[id], let d = zip["word/" + target] else { return nil }
+                return (try? XMLDocument(data: d))?.rootElement()
+            }
+            func text(_ root: XMLElement?) -> String {
+                guard let root else { return "" }
+                return descendants(root, named: "p").map { p in descendants(p, named: "t").compactMap(\.stringValue).joined() }
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.joined(separator: " ")
+            }
+            let header = part("header"), footer = part("footer")
+            extras.setup.header = text(header)
+            let footerText = text(footer)
+            let pageField = footer.map { f in
+                descendants(f, named: "fldSimple").contains { ($0.attr("instr") ?? "").uppercased().contains("PAGE") }
+                    || descendants(f, named: "instrText").contains { ($0.stringValue ?? "").uppercased().contains("PAGE") }
+            } ?? false
+            extras.setup.pageNumbers = pageField
+            // Drop the field's cached number ("1") from the footer text.
+            extras.setup.footer = pageField ? footerText.replacingOccurrences(of: "\\s*\\d+\\s*$", with: "", options: .regularExpression) : footerText
+        }
         for p in descendants(body, named: "p") {
             let pPr = p.child("pPr") ?? {
                 let e = XMLElement(name: "w:pPr", uri: ns)
@@ -48,6 +111,14 @@ enum DocxStyles {
             }()
             let styleId = pPr.child("pStyle")?.attr("val") ?? defaultParagraph
             let styleChain = chain(styleId)
+            // Keep Word heading/title styles through the system reader: a marker run at the paragraph start.
+            if let id = styleId, let name = byId[id]?.child("name")?.attr("val"), let word = wordStyle(forName: name, id: id) {
+                let r = XMLElement(name: "w:r", uri: ns)
+                let t = XMLElement(name: "w:t", uri: ns)
+                t.stringValue = "\u{E002}\(word)\u{E003}"
+                r.addChild(t)
+                p.insertChild(r, at: pPr.index + 1)
+            }
 
             // Paragraph properties: defaults < style chain < direct
             var inheritedP: [XMLElement] = []
@@ -71,7 +142,54 @@ enum DocxStyles {
             }
         }
         zip["word/document.xml"] = doc.xmlData(options: [.nodePreserveWhitespace])
-        return zip.data()
+        return (zip.data(), extras)
+    }
+
+    static func relations(_ zip: ZipArchive, _ path: String) -> [String: String] {
+        guard let d = zip[path], let root = (try? XMLDocument(data: d))?.rootElement() else { return [:] }
+        var out: [String: String] = [:]
+        for r in root.children("Relationship") { if let id = r.attr("Id"), let t = r.attr("Target") { out[id] = t } }
+        return out
+    }
+
+    /// Word style id we keep (Title, Heading1–3, Quote) for a style's name/id.
+    static func wordStyle(forName name: String, id: String) -> String? {
+        let n = name.lowercased().replacingOccurrences(of: " ", with: "")
+        if n == "title" { return "Title" }
+        if n == "quote" || n == "intensequote" { return "Quote" }
+        if n.hasPrefix("heading"), let level = Int(n.dropFirst(7)), (1...9).contains(level) { return "Heading\(min(level, 3))" }
+        return nil
+    }
+
+    /// Moves style markers into the DOC42 style attribute of their paragraphs.
+    static func restoreStyles(_ text: NSMutableAttributedString) {
+        let pattern = try! NSRegularExpression(pattern: "\u{E002}([A-Za-z0-9]+)\u{E003}")
+        for m in pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length)).reversed() {
+            let id = (text.string as NSString).substring(with: m.range(at: 1))
+            text.deleteCharacters(in: m.range)
+            let paragraph = (text.string as NSString).paragraphRange(for: NSRange(location: m.range.location, length: 0))
+            text.addAttribute(Styles.styleKey, value: id, range: paragraph)
+        }
+    }
+
+    /// Replaces picture markers with image attachments.
+    static func restoreImages(_ text: NSMutableAttributedString, _ images: [Int: (data: Data, size: NSSize)]) {
+        guard !images.isEmpty else { return }
+        let pattern = try! NSRegularExpression(pattern: "\u{E000}(\\d+)\u{E001}")
+        for m in pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length)).reversed() {
+            let n = Int((text.string as NSString).substring(with: m.range(at: 1))) ?? 0
+            guard let (data, size) = images[n], let image = NSImage(data: data) else { continue }
+            let attachment = NSTextAttachment()
+            let wrapper = FileWrapper(regularFileWithContents: data)
+            wrapper.preferredFilename = "image\(n).png"
+            attachment.fileWrapper = wrapper
+            attachment.image = image
+            attachment.bounds = NSRect(origin: .zero, size: size)
+            let attrs = text.attributes(at: m.range.location, effectiveRange: nil).filter { $0.key == .paragraphStyle }
+            let s = NSMutableAttributedString(attachment: attachment)
+            s.addAttributes(attrs, range: NSRange(location: 0, length: s.length))
+            text.replaceCharacters(in: m.range, with: s)
+        }
     }
 
     /// Adds inherited children that the element doesn't set itself (later sources win over earlier).

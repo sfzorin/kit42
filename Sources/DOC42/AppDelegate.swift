@@ -22,7 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] note in
             if (note.object as? NSWindow)?.windowController is DocWindowController { self?.welcome.close() }
         }
-        DebugSnapshot.scheduleIfRequested()
+        DebugSnapshot.scheduleIfRequested {
+            // K42_ZOOM=0.5 zooms the front document (UI checks).
+            if let z = ProcessInfo.processInfo.environment["K42_ZOOM"].flatMap(Double.init),
+               let editor = NSApp.orderedWindows.compactMap({ $0.windowController as? DocWindowController }).first {
+                editor.setZoom(CGFloat(z))
+            }
+        }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }

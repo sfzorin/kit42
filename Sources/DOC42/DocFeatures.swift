@@ -1,0 +1,196 @@
+import AppKit
+import Kit42
+
+extension DocWindowController {
+    // MARK: - Page setup, header & footer
+
+    private func changeSetup(_ name: String, _ body: (inout PageSetup) -> Void) {
+        guard let doc else { return }
+        let old = doc.setup
+        var new = old
+        body(&new)
+        guard new != old else { return }
+        doc.setup = new
+        doc.undoManager?.registerUndo(withTarget: doc) { d in
+            let current = d.setup
+            d.setup = old
+            d.undoManager?.registerUndo(withTarget: d) { $0.setup = current }
+        }
+        doc.undoManager?.setActionName(name)
+    }
+
+    static let papers: [(String, NSSize)] = [("A4", NSSize(width: 595, height: 842)), ("A5", NSSize(width: 420, height: 595)),
+                                             ("Letter", NSSize(width: 612, height: 792)), ("Legal", NSSize(width: 612, height: 1008))]
+
+    @objc func documentSetupAction(_ sender: Any?) {
+        guard let doc else { return }
+        let s = doc.setup
+        let paper = NSPopUpButton(frame: .zero, pullsDown: false)
+        paper.addItems(withTitles: Self.papers.map(\.0))
+        let portraitSize = NSSize(width: min(s.size.width, s.size.height), height: max(s.size.width, s.size.height))
+        paper.selectItem(at: Self.papers.firstIndex { abs($0.1.width - portraitSize.width) < 2 && abs($0.1.height - portraitSize.height) < 2 } ?? 0)
+        let orientation = NSPopUpButton(frame: .zero, pullsDown: false)
+        orientation.addItems(withTitles: [L("Portrait"), L("Landscape")])
+        orientation.selectItem(at: s.size.width > s.size.height ? 1 : 0)
+        func cm(_ v: CGFloat) -> NSTextField { NSTextField(string: String(format: "%.1f", v / 28.3465)) }
+        let top = cm(s.margins.top), bottom = cm(s.margins.bottom), left = cm(s.margins.left), right = cm(s.margins.right)
+        let alert = NSAlert.form(L("Document Setup"), info: L("Margins in centimetres."), ok: L("Apply"),
+                                 rows: [(L("Paper:"), paper), (L("Orientation:"), orientation), (L("Top:"), top), (L("Bottom:"), bottom),
+                                        (L("Left:"), left), (L("Right:"), right)])
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        func pt(_ f: NSTextField, _ d: CGFloat) -> CGFloat {
+            Double(f.stringValue.replacingOccurrences(of: ",", with: ".")).map { max(0, CGFloat($0) * 28.3465) } ?? d
+        }
+        var size = Self.papers[max(0, paper.indexOfSelectedItem)].1
+        if orientation.indexOfSelectedItem == 1 { size = NSSize(width: size.height, height: size.width) }
+        let margins = NSEdgeInsets(top: pt(top, s.margins.top), left: pt(left, s.margins.left), bottom: pt(bottom, s.margins.bottom), right: pt(right, s.margins.right))
+        changeSetup(L("Document Setup")) {
+            $0.size = size
+            $0.margins = margins
+        }
+    }
+
+    @objc func headerFooterAction(_ sender: Any?) {
+        guard let doc else { return }
+        let header = NSTextField(string: doc.setup.header)
+        let footer = NSTextField(string: doc.setup.footer)
+        header.placeholderString = L("Text at the top of every page")
+        footer.placeholderString = L("Text at the bottom of every page")
+        let numbers = NSButton(checkboxWithTitle: L("Page numbers"), target: nil, action: nil)
+        numbers.state = doc.setup.pageNumbers ? .on : .off
+        let alert = NSAlert.form(L("Header and Footer"), ok: L("Apply"), rows: [(L("Header:"), header), (L("Footer:"), footer), ("", numbers)])
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        changeSetup(L("Header and Footer")) {
+            $0.header = header.stringValue
+            $0.footer = footer.stringValue
+            $0.pageNumbers = numbers.state == .on
+        }
+    }
+
+    @objc func togglePageNumbersAction(_ sender: Any?) {
+        changeSetup(L("Page Numbers")) { $0.pageNumbers.toggle() }
+    }
+
+    // MARK: - Tables
+
+    private struct TableAtCursor {
+        let table: NSTextTable
+        let range: NSRange
+        var cells: [[NSAttributedString]]   // row → column → content (paragraphs with newlines)
+        var template: NSTextTableBlock
+        let row: Int
+        let col: Int
+    }
+
+    private func block(at location: Int) -> NSTextTableBlock? {
+        guard let s = textView.textStorage, s.length > 0 else { return nil }
+        let p = s.attribute(.paragraphStyle, at: min(max(0, location), s.length - 1), effectiveRange: nil) as? NSParagraphStyle
+        return p?.textBlocks.last as? NSTextTableBlock
+    }
+
+    private func tableAtCursor() -> TableAtCursor? {
+        guard let s = textView.textStorage else { return nil }
+        let ns = s.string as NSString
+        let loc = min(textView.selectedRange().location, max(0, s.length - 1))
+        guard let current = block(at: loc) else { return nil }
+        let table = current.table
+        var start = ns.paragraphRange(for: NSRange(location: loc, length: 0)).location
+        while start > 0, block(at: start - 1)?.table === table {
+            start = ns.paragraphRange(for: NSRange(location: start - 1, length: 0)).location
+        }
+        var end = NSMaxRange(ns.paragraphRange(for: NSRange(location: loc, length: 0)))
+        while end < s.length, block(at: end)?.table === table {
+            end = NSMaxRange(ns.paragraphRange(for: NSRange(location: end, length: 0)))
+        }
+        let range = NSRange(location: start, length: end - start)
+        var cells: [[NSMutableAttributedString]] = []
+        var paragraphStart = start
+        while paragraphStart < end {
+            let pr = ns.paragraphRange(for: NSRange(location: paragraphStart, length: 0))
+            if let b = block(at: pr.location) {
+                while cells.count <= b.startingRow { cells.append([]) }
+                while cells[b.startingRow].count < table.numberOfColumns { cells[b.startingRow].append(NSMutableAttributedString()) }
+                if b.startingColumn < cells[b.startingRow].count { cells[b.startingRow][b.startingColumn].append(s.attributedSubstring(from: pr)) }
+            }
+            paragraphStart = NSMaxRange(pr)
+        }
+        return TableAtCursor(table: table, range: range, cells: cells, template: current, row: current.startingRow, col: current.startingColumn)
+    }
+
+    private func emptyCell(like t: TableAtCursor) -> NSAttributedString {
+        let font = (textView.typingAttributes[.font] as? NSFont) ?? Styles.normal.font
+        return NSAttributedString(string: "\n", attributes: [.font: font])
+    }
+
+    private func rebuild(_ t: TableAtCursor, cells: [[NSAttributedString]], caret: (Int, Int)) {
+        guard let s = textView.textStorage else { return }
+        guard !cells.isEmpty, let cols = cells.map(\.count).max(), cols > 0 else {
+            replace(t.range, with: NSAttributedString(string: ""))
+            return
+        }
+        let table = NSTextTable()
+        table.numberOfColumns = cols
+        table.collapsesBorders = t.table.collapsesBorders
+        table.layoutAlgorithm = t.table.layoutAlgorithm
+        let out = NSMutableAttributedString()
+        var caretLocation = t.range.location
+        for (r, row) in cells.enumerated() {
+            for c in 0..<cols {
+                let block = NSTextTableBlock(table: table, startingRow: r, rowSpan: 1, startingColumn: c, columnSpan: 1)
+                block.setWidth(t.template.width(for: .border, edge: .minX), type: .absoluteValueType, for: .border)
+                block.setBorderColor(t.template.borderColor(for: .minX) ?? NSColor(white: 0.6, alpha: 1))
+                block.setWidth(max(4, t.template.width(for: .padding, edge: .minX)), type: .absoluteValueType, for: .padding)
+                block.setValue(100 / CGFloat(cols), type: .percentageValueType, for: .width)
+                let content = NSMutableAttributedString(attributedString: c < row.count ? row[c] : emptyCell(like: t))
+                if content.length == 0 || !content.string.hasSuffix("\n") { content.append(emptyCell(like: t)) }
+                content.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: content.length)) { v, range, _ in
+                    let p = (v as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+                    p.textBlocks = [block]
+                    content.addAttribute(.paragraphStyle, value: p, range: range)
+                }
+                if (r, c) == caret { caretLocation = t.range.location + out.length }
+                out.append(content)
+            }
+        }
+        replace(t.range, with: out)
+        textView.setSelectedRange(NSRange(location: min(caretLocation, s.length), length: 0))
+    }
+
+    private func replace(_ range: NSRange, with text: NSAttributedString) {
+        guard textView.shouldChangeText(in: range, replacementString: text.string) else { return }
+        textView.textStorage?.replaceCharacters(in: range, with: text)
+        textView.didChangeText()
+    }
+
+    @objc func tableRowAction(_ sender: Any?) {
+        guard let t = tableAtCursor() else { NSSound.beep(); return }
+        var cells = t.cells
+        let cols = t.table.numberOfColumns
+        let empty = Array(repeating: emptyCell(like: t), count: cols)
+        switch commandTag(of: sender) {
+        case 0: cells.insert(empty, at: t.row); rebuild(t, cells: cells, caret: (t.row, t.col))            // above
+        case 1: cells.insert(empty, at: t.row + 1); rebuild(t, cells: cells, caret: (t.row + 1, t.col))    // below
+        default: cells.remove(at: t.row); rebuild(t, cells: cells, caret: (max(0, t.row - 1), t.col))       // delete
+        }
+    }
+
+    @objc func tableColumnAction(_ sender: Any?) {
+        guard let t = tableAtCursor() else { NSSound.beep(); return }
+        var cells = t.cells
+        switch commandTag(of: sender) {
+        case 0: for r in cells.indices { cells[r].insert(emptyCell(like: t), at: min(t.col, cells[r].count)) }; rebuild(t, cells: cells, caret: (t.row, t.col))
+        case 1: for r in cells.indices { cells[r].insert(emptyCell(like: t), at: min(t.col + 1, cells[r].count)) }; rebuild(t, cells: cells, caret: (t.row, t.col + 1))
+        default:
+            for r in cells.indices where t.col < cells[r].count { cells[r].remove(at: t.col) }
+            if cells.allSatisfy(\.isEmpty) { cells = [] }
+            rebuild(t, cells: cells, caret: (t.row, max(0, t.col - 1)))
+        }
+    }
+
+    @objc func deleteTableAction(_ sender: Any?) {
+        guard let t = tableAtCursor() else { NSSound.beep(); return }
+        replace(t.range, with: NSAttributedString(string: ""))
+    }
+
+    var isInTable: Bool { block(at: textView.selectedRange().location) != nil }
+}
