@@ -169,13 +169,22 @@ lets you switch extensions off.
 - Toolbar like Preview's: Previous/Next · Zoom − 1:1 + · Highlight ▾ (colour) · Remove Background, Rotate · Markup ·
   Adjust · Info · Share · Search (Live Text: words are recognised with Vision and highlighted, Return goes to the next
   match; Edit › Copy Text in Image ⇧⌘C).
-- Markup bar like Preview's: Select; Selection ▾ (rectangular, elliptical, lasso, aspect ratios; Crop to Selection ⌘K,
+- Live Text like Preview (VisionKit): text in the image is recognised in the background when it is shown (cached per
+  image; Russian, English, Turkish and your preferred languages, plus automatic detection) and can be selected with the
+  mouse while viewing or in the Select tool — I-beam over text, drag across words and lines (rotated text too),
+  double-click a word, triple-click a line, ⌘A selects all text once some is selected, ⌘C copies, Esc deselects; the
+  right-click menu has Look Up, Translate, Search With Google, Copy, Share. Links, phone numbers and e-mail addresses are
+  clickable. Drawing tools and marks keep the mouse (no text selection while drawing).
+- Markup bar like Preview's: Select; Selection ▾ (rectangular, elliptical, lasso, Smart Lasso, aspect ratios; Crop to Selection ⌘K,
   Delete Selection ⌫, Copy, Invert ⇧⌘I); Instant Alpha (drag on a colour: farther = wider range, then ⌫); Sketch
   (a rough line, box, circle or star becomes a clean shape); Draw; Shapes ▾ (line, arrow, rectangle, rounded rectangle,
   oval, speech bubble, star, polygon, loupe, spotlight, pixelate); Text; Sign (shared signature library ⇧⌘K);
   Adjust Colour; Adjust Size; Shape Style ▾ (width, dashed, arrowheads, shadow, loupe zoom); Border and Fill colour;
   Text Style ▾ (font, size, colour, bold/italic/underline, alignment); Image Description (alt text, saved in the metadata).
   Marks stay objects — select, move, resize with handles, restyle, ⌫ deletes — until the image is saved.
+- Smart Lasso: paint a wide stroke around the object's edge (24 pt on screen at any zoom); the selection snaps to the
+  edge inside the stroke — colour edges across the band, a two-region fit and Vision's subject mask, joined into one
+  closed path by dynamic programming. Then Crop / Delete / Copy / Invert as with any selection.
 - Adjust panel (Core Image, live, non-destructive): exposure, brightness, contrast, highlights, shadows, saturation,
   vibrance, temperature, tint, sharpness, vignette; looks (Black & White, Noir, Sepia, Invert); Auto Enhance; double-click
   a slider resets it; hold Show Original to compare; Reset All. One undo step per slider drag.
@@ -188,11 +197,16 @@ lets you switch extensions off.
   selection), Show in Finder ⇧⌘R, Open With, Share, Print (fit to page), Open Recent.
 - Command line (headless): `--info files…`, `--edit in out [--brightness N --contrast N … --look sepia --auto --demo-marks
   --rotate right --flip h --resize WxH --crop x,y,w,h --remove-background --description TEXT]`, `--stats file`
-  (mean luminance), `--ocr file`, `--rotate file left|right` (lossless), `--types`.
+  (mean luminance), `--ocr file`, `--rotate file left|right` (lossless), `--types`, `--smart-lasso in "x,y;…" mask.png
+  [radius]` (selection mask for a stroke), `--smart-lasso-eval in [--gt mask.png] [--radius r] [--noise a] [--vis out.png]`
+  (simulated rough strokes around the subject: IoU of plain vs Smart Lasso).
 - UI checks: `K42_SNAPSHOT=out.png` plus `K42_NEXT=n`, `K42_PAGE=n`, `K42_INFO`, `K42_FILMSTRIP`, `K42_ADJUST`, `K42_MARKUP`,
   `K42_DEMO_MARKS`, `K42_TOOL=n`, `K42_SELECT=rect|ellipse|alpha` (+ `K42_CROP`, `K42_DELETE`), `K42_SEARCH=text`,
   `K42_ZOOM=x`, `K42_STAMPS`, `K42_RESIZE`, `K42_DESCRIPTION`, `K42_FULLSCREEN`, `K42_HIDE_ALL`, `K42_SAVE`, `K42_UNDO`,
-  `K42_DUMP_MENUS` (prints the markup drop-downs).
+  `K42_DUMP_MENUS` (prints the markup drop-downs), `K42_APPEARANCE=dark|light`, `K42_EXPORT_ACCESSORY`,
+  `K42_DUMP_CANVAS`; Live Text: `K42_LIVETEXT_SELECT="from..to"`, `K42_LIVETEXT_DRAG="x,y;x,y"`, `K42_LIVETEXT_CLICK=x,y,n`,
+  `K42_LIVETEXT_ALL`, `K42_LIVETEXT_MENU=x,y`, `K42_LIVETEXT_PROBE`, `K42_LIVETEXT_KEY` (synthesised events, results
+  printed); `K42_SMART_LASSO="x,y;…"|@file` (+ `K42_SMART_CROP`).
 
 ## Common
 

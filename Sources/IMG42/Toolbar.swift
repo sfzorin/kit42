@@ -76,7 +76,7 @@ final class ImageToolbar: NSObject, NSSharingServicePickerDelegate {
             let p = NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1))
             color.setFill()
             p.fill()
-            NSColor.black.withAlphaComponent(0.2).setStroke()
+            NSColor.labelColor.withAlphaComponent(0.25).setStroke()   // visible on light and dark menus
             p.stroke()
             return true
         }

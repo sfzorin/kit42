@@ -149,9 +149,15 @@ enum Background: Int, CaseIterable {
         case .light: return L("Light")
         }
     }
+    /// Preview's grey around the image, light or dark with the appearance. A plain dynamic colour rather than
+    /// `.underPageBackgroundColor`, which makes the scroll view add a visual-effect material (not in snapshots).
+    static let neutralColor = NSColor(name: "IMG42.neutralBackground") { appearance in
+        appearance.isDark ? NSColor(white: 0.157, alpha: 1) : NSColor(white: 0.965, alpha: 1)
+    }
+
     var color: NSColor {
         switch self {
-        case .neutral: return .underPageBackgroundColor
+        case .neutral: return Self.neutralColor
         case .dark: return NSColor(white: 0.13, alpha: 1)
         case .black: return .black
         case .light: return NSColor(white: 0.97, alpha: 1)

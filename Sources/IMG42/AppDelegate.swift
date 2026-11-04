@@ -37,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // K42_APPEARANCE=dark|light forces the appearance (dark mode checks with K42_SNAPSHOT).
+        switch ProcessInfo.processInfo.environment["K42_APPEARANCE"] {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
         NSApp.mainMenu = MenuBar.build(Cmd.menuBar(openWithDelegate: self))
     }
 
@@ -50,6 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         DebugSnapshot.scheduleIfRequested { [weak self] in self?.prepareSnapshot() }
+        // Runs before the snapshot (K42_SNAPSHOT_DELAY ≥ 3): the selection is computed in the background.
+        if ProcessInfo.processInfo.environment["K42_SMART_LASSO"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                if let w = self?.frontController { self?.smartLassoHook(w, ProcessInfo.processInfo.environment) }
+            }
+        }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
@@ -249,10 +261,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if env["K42_RESIZE"] != nil { w.resizeAction(nil) }
             if env["K42_DESCRIPTION"] != nil { w.imageDescriptionAction(nil) }
             if env["K42_EXPORT"] != nil { w.exportAction(nil) }
+            // K42_EXPORT_ACCESSORY: the export panel's options view in a plain window (the save panel itself is
+            // out-of-process and blank in snapshots).
+            if env["K42_EXPORT_ACCESSORY"] != nil {
+                let options = ExportOptions(sourceType: .jpeg, hasAlpha: false, panel: NSSavePanel())
+                let win = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 440, height: 140), styleMask: [.titled], backing: .buffered, defer: false)
+                win.contentView = options.view
+                objc_setAssociatedObject(win, "options", options, .OBJC_ASSOCIATION_RETAIN)
+                win.makeKeyAndOrderFront(nil)
+            }
             if env["K42_UNDO"] != nil { w.undo.undo() }
             if env["K42_SAVE"] != nil { w.save(confirmed: true) { ok in print("saved:", ok) } }
             if env["K42_FULLSCREEN"] != nil { w.window?.toggleFullScreen(nil) }
             if env["K42_HIDE_ALL"] != nil { w.toggleAllPanelsAction(nil) }
+            self.liveTextHooks(w, env)
+            // K42_DUMP_CANVAS prints the canvas view tree with appearances and layer colours (dark mode checks).
+            if env["K42_DUMP_CANVAS"] != nil {
+                func dump(_ v: NSView, _ d: Int) {
+                    print(String(repeating: "  ", count: d) + "\(type(of: v)) \(v.frame) appearance=\(v.effectiveAppearance.name.rawValue) layerBG=\(String(describing: v.layer?.backgroundColor))")
+                    if d < 3 { v.subviews.forEach { dump($0, d + 1) } }
+                }
+                dump(w.canvas, 0)
+            }
+        }
+    }
+
+    /// K42_SMART_LASSO="x,y;x,y;…" (image pixels, or @file with that text) paints a Smart Lasso stroke with synthesised
+    /// mouse events; prints the selection; K42_SMART_CROP then crops to it.
+    private func smartLassoHook(_ w: ImageWindowController, _ env: [String: String]) {
+        guard var spec = env["K42_SMART_LASSO"] else { return }
+        if spec.hasPrefix("@") { spec = (try? String(contentsOfFile: String(spec.dropFirst()), encoding: .utf8)) ?? "" }
+        let size = w.canvas.imageSize
+        let pts: [CGPoint] = spec.split(separator: ";").compactMap { item -> CGPoint? in
+            let v = item.split(separator: ",").compactMap { Double($0) }
+            guard v.count == 2 else { return nil }
+            return CGPoint(x: min(max(CGFloat(v[0]), 1), size.width - 1), y: min(max(CGFloat(v[1]), 1), size.height - 1))
+        }
+        setlinebuf(stdout)
+        w.markupBar.show(true)
+        w.markupBar.setTool(.smartLasso)
+        print("smartlasso: \(pts.count) points, tool=\(w.canvas.markup.tool) active=\(w.canvas.markup.markupActive)")
+        MouseScript.drag(pts, in: w.canvas.document, substeps: 1)
+        func report(_ tries: Int) {
+            if let sel = w.canvas.markup.pixelSelection {
+                print("smartlasso: selection bounds=\(NSStringFromRect(sel.bounds.integral))")
+                if env["K42_SMART_CROP"] != nil {
+                    w.cropToSelectionAction(nil)
+                    print("smartlasso: cropped to \(w.base?.width ?? 0)x\(w.base?.height ?? 0)")
+                }
+            } else if tries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { report(tries - 1) }
+            } else { print("smartlasso: no selection") }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { report(40) }
+    }
+
+    /// K42_LIVETEXT_SELECT="from..to" selects recognised text and copies it; K42_LIVETEXT_DRAG="x1,y1;x2,y2" drags,
+    /// K42_LIVETEXT_CLICK="x,y,n" clicks n times (image pixels) with synthesised mouse events; K42_LIVETEXT_ALL presses ⌘A,
+    /// K42_LIVETEXT_MENU prints the right-click menu at the selection. Results are printed as `livetext: …`.
+    private func liveTextHooks(_ w: ImageWindowController, _ env: [String: String]) {
+        let keys = ["K42_LIVETEXT_KEY", "K42_LIVETEXT_PROBE", "K42_LIVETEXT_SELECT", "K42_LIVETEXT_DRAG", "K42_LIVETEXT_CLICK", "K42_LIVETEXT_ALL", "K42_LIVETEXT_MENU", "K42_LIVETEXT_HIGHLIGHT"]
+        guard keys.contains(where: { env[$0] != nil }) else { return }
+        setlinebuf(stdout)
+        if env["K42_LIVETEXT_TRACE"] != nil {
+            NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { e in
+                print("livetext: event \(e.type.rawValue) \(e.locationInWindow) clicks=\(e.clickCount)")
+                return e
+            }
+        }
+        let live = w.canvas.liveText
+        let started = Date()
+        let points: (String) -> [CGPoint] = { s in
+            s.split(separator: ";").map { $0.split(separator: ",").compactMap { Double($0) } }.filter { $0.count >= 2 }.map { CGPoint(x: $0[0], y: $0[1]) }
+        }
+        live.whenAnalysed {
+            print(String(format: "livetext: analysed in %.2fs, text=%@", Date().timeIntervalSince(started), live.overlay.text.debugDescription))
+            if env["K42_LIVETEXT_TRACE"] != nil {
+                func dump(_ v: NSView, _ d: Int) {
+                    print("livetext: view " + String(repeating: "  ", count: d) + "\(type(of: v)) \(v.frame) gr=\(v.gestureRecognizers.map { "\(type(of: $0))" })")
+                    v.subviews.forEach { dump($0, d + 1) }
+                }
+                dump(live, 0)
+            }
+            // K42_LIVETEXT_PROBE="x,y;x,y": what lies under each point (no click).
+            for p in points(env["K42_LIVETEXT_PROBE"] ?? "") {
+                print("livetext: probe \(Int(p.x)),\(Int(p.y)) text=\(live.overlay.hasText(at: p)) detector=\(live.overlay.hasDataDetector(at: p))")
+            }
+            if env["K42_LIVETEXT_HIGHLIGHT"] != nil { live.overlay.selectableItemsHighlighted = true }
+            if let spec = env["K42_LIVETEXT_SELECT"] {
+                let parts = spec.components(separatedBy: "..")
+                live.select(from: parts[0], to: parts.count > 1 ? parts[1] : parts[0])
+            }
+            if let spec = env["K42_LIVETEXT_DRAG"] { MouseScript.drag(points(spec), in: w.canvas.document) }
+            if let spec = env["K42_LIVETEXT_CLICK"] {
+                let v = spec.split(separator: ",").compactMap { Double($0) }
+                if v.count >= 2 { MouseScript.click(CGPoint(x: v[0], y: v[1]), count: v.count > 2 ? Int(v[2]) : 1, in: w.canvas.document) }
+            }
+            // K42_LIVETEXT_KEY=53 presses Escape (key code) after the mouse script.
+            if let code = env["K42_LIVETEXT_KEY"].flatMap(UInt16.init) { MouseScript.key(code, chars: code == 53 ? "\u{1b}" : " ", in: w.canvas.document) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if env["K42_LIVETEXT_ALL"] != nil { w.selectAll(nil) }
+                print("livetext: selected=\(live.overlay.selectedText.debugDescription) marks=\(w.canvas.markup.marks.count) tool=\(w.canvas.markup.tool)")
+                if live.hasSelection {
+                    w.copy(nil)
+                    print("livetext: copied=\((NSPasteboard.general.string(forType: .string) ?? "").debugDescription)")
+                }
+                if env["K42_LIVETEXT_MENU"] != nil, let r = live.overlay.selectedRanges.first {
+                    _ = r
+                    live.debugMenu = true
+                    let p = env["K42_LIVETEXT_MENU"].flatMap { s -> CGPoint? in
+                        let v = s.split(separator: ",").compactMap { Double($0) }
+                        return v.count == 2 ? CGPoint(x: v[0], y: v[1]) : nil
+                    }
+                    if let p { MouseScript.rightClick(p, in: w.canvas.document) }
+                }
+            }
         }
     }
 }

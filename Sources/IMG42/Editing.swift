@@ -296,6 +296,8 @@ extension ImageWindowController {
     }
 
     @objc override func selectAll(_ sender: Any?) {
+        // ⌘A while text is selected selects all the text (like Preview).
+        if canvas.liveText.overlay.hasActiveTextSelection { canvas.liveText.selectAllText(); return }
         if !markupBar.strip.isShown { markupBar.show(true) }
         if !canvas.markup.tool.isSelectionTool { markupBar.setTool(.selectRect) }
         canvas.markup.selectAllPixels()
