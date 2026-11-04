@@ -208,10 +208,10 @@ enum Shapes {
             return box.insetBy(dx: size.width * 0.146, dy: size.height * 0.146)
         case "triangle":
             return CGRect(x: size.width * 0.25, y: size.height * 0.5, width: size.width * 0.5, height: size.height * 0.5)
-        case "star5", "star6", "star4", "star8", "hexagon", "octagon", "pentagon":
+        case "star5", "star6", "star4", "star8":
             return box.insetBy(dx: size.width * 0.22, dy: size.height * 0.25)
-        case "star5", "star6", "star4", "star8", "hexagon", "octagon", "pentagon":
-            return box.insetBy(dx: size.width * 0.22, dy: size.height * 0.25)
+        case "hexagon", "octagon", "pentagon":
+            return box.insetBy(dx: size.width * 0.1, dy: size.height * 0.1)
         case "diamond", "flowChartDecision":
             return box.insetBy(dx: size.width * 0.25, dy: size.height * 0.25)
         default:
