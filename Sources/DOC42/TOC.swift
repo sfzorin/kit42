@@ -251,6 +251,7 @@ extension DocWindowController {
         a[.docSection] = nil
         a[.docTabLeader] = nil
         a[.attachment] = nil
+        a[.docRevision] = typingRevision   // typed text is an insertion only while tracking changes
         guard let storage = textView.textStorage else { return a }
         let at = textView.selectedRange().location
         for key in [NSAttributedString.Key.link, .docComment] where a[key] != nil {

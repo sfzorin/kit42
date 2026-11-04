@@ -38,6 +38,20 @@ public final class DocSection: NSObject {
     }
 }
 
+/// A tracked change: set as `.docRevision` on inserted text, or on deleted text (which stays in the
+/// document until the deletion is accepted). Written as <w:ins>/<w:del>.
+public final class DocRevision: NSObject {
+    public enum Kind: String { case insertion, deletion }
+    public let kind: Kind
+    public let author: String
+    public let date: Date
+    public init(_ kind: Kind, author: String, date: Date = Date()) {
+        self.kind = kind
+        self.author = author
+        self.date = date
+    }
+}
+
 public extension NSAttributedString.Key {
     /// DocNote on a footnote reference character.
     static let docNote = NSAttributedString.Key("Kit42.note")
@@ -49,6 +63,8 @@ public extension NSAttributedString.Key {
     static let docSection = NSAttributedString.Key("Kit42.section")
     /// "dot" on a tab character: drawn and saved with a dot leader (tables of contents).
     static let docTabLeader = NSAttributedString.Key("Kit42.leader")
+    /// DocRevision on tracked inserted or deleted text.
+    static let docRevision = NSAttributedString.Key("Kit42.revision")
 }
 
 /// Writes an attributed string as .docx. Replaces the system writer, which drops tables.
@@ -67,6 +83,8 @@ public enum DocxWriter {
         public var columnSpacing: CGFloat = 36
         /// Word style id for a paragraph (e.g. "Heading1"), so outlines and tables of contents work in Word.
         public var paragraphStyle: ((NSAttributedString, NSRange) -> String?)?
+        /// Track changes is on (w:trackRevisions in settings.xml).
+        public var trackRevisions = false
         public init() {}
     }
 
@@ -86,6 +104,7 @@ public enum DocxWriter {
         var commentStarts: [Int: [Int]] = [:]       // character index → comment ids starting there
         var commentEnds: [Int: [Int]] = [:]
         var bookmarks = 0
+        var revisions = 0                           // w:ins / w:del ids
         var sectPr: (DocSection) -> String = { _ in "" }
     }
 
@@ -204,10 +223,8 @@ public enum DocxWriter {
         <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
         """
         let wml = "application/vnd.openxmlformats-officedocument.wordprocessingml."
-        if hasNotes {
-            types += "<Override PartName=\"/word/footnotes.xml\" ContentType=\"\(wml)footnotes+xml\"/>"
-            types += "<Override PartName=\"/word/settings.xml\" ContentType=\"\(wml)settings+xml\"/>"
-        }
+        if hasNotes { types += "<Override PartName=\"/word/footnotes.xml\" ContentType=\"\(wml)footnotes+xml\"/>" }
+        if hasNotes || options.trackRevisions { types += "<Override PartName=\"/word/settings.xml\" ContentType=\"\(wml)settings+xml\"/>" }
         if hasComments { types += "<Override PartName=\"/word/comments.xml\" ContentType=\"\(wml)comments+xml\"/>" }
         if hasResolved { types += "<Override PartName=\"/word/commentsExtended.xml\" ContentType=\"\(wml)commentsExtended+xml\"/>" }
         zip["[Content_Types].xml"] = Data((types + "\n</Types>").utf8)
@@ -241,7 +258,6 @@ public enum DocxWriter {
         let wNS = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\""
         if hasNotes {
             rels += "<Relationship Id=\"rIdNotes\" Type=\"\(relType)footnotes\" Target=\"footnotes.xml\"/>"
-            rels += "<Relationship Id=\"rIdSettings\" Type=\"\(relType)settings\" Target=\"settings.xml\"/>"
             var x = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:footnotes \(wNS)>"
             x += "<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>"
             x += "<w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"
@@ -255,9 +271,14 @@ public enum DocxWriter {
                 x += "</w:footnote>"
             }
             zip["word/footnotes.xml"] = Data((x + "</w:footnotes>").utf8)
+        }
+        if hasNotes || options.trackRevisions {
+            rels += "<Relationship Id=\"rIdSettings\" Type=\"\(relType)settings\" Target=\"settings.xml\"/>"
+            let track = options.trackRevisions ? "<w:trackRevisions/>" : ""
+            let notes = hasNotes ? "<w:footnotePr><w:footnote w:id=\"-1\"/><w:footnote w:id=\"0\"/></w:footnotePr>" : ""
             zip["word/settings.xml"] = Data("""
             <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-            <w:settings \(wNS)><w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr></w:settings>
+            <w:settings \(wNS)>\(track)\(notes)</w:settings>
             """.utf8)
         }
         if hasComments {
@@ -343,7 +364,14 @@ public enum DocxWriter {
             // A section break at the end of the paragraph: its sectPr closes the section.
             var sect: String?
             if r.length > 0, let s = text.attribute(.docSection, at: NSMaxRange(r) - 1, effectiveRange: nil) as? DocSection { sect = ctx.sectPr(s) }
-            x += paragraphProperties(p, style: styleProvider?(text, r), leader: leader, sectPr: sect)
+            // A tracked paragraph mark (the newline after the paragraph).
+            var mark: String?
+            let end = NSMaxRange(r)
+            if end < text.length, isParagraphMark((text.string as NSString).character(at: end)),
+               let rev = text.attribute(.docRevision, at: end, effectiveRange: nil) as? DocRevision {
+                mark = "<w:rPr>" + revisionTag(rev, ctx: ctx, empty: true) + "</w:rPr>"
+            }
+            x += paragraphProperties(p, style: styleProvider?(text, r), leader: leader, sectPr: sect, markRPr: mark)
             if let name = text.attribute(.docBookmark, at: at, effectiveRange: nil) as? String, !name.isEmpty {
                 ctx.bookmarks += 1
                 bookmark = (ctx.bookmarks, name)
@@ -360,9 +388,18 @@ public enum DocxWriter {
                     : "<w:commentRangeStart w:id=\"\(id)\"/>"
             }.joined()
         }
+        // Tracked changes: runs of one revision share a <w:ins>/<w:del>, inside any hyperlink.
+        var openRevision: DocRevision?
+        func setRevision(_ rev: DocRevision?) {
+            guard rev !== openRevision else { return }
+            if let old = openRevision { x += old.kind == .insertion ? "</w:ins>" : "</w:del>" }
+            openRevision = rev
+            if let rev { x += revisionTag(rev, ctx: ctx) }
+        }
         var openLink: String?
         func setLink(_ link: String?) {
             guard link != openLink else { return }
+            setRevision(nil)
             if openLink != nil { x += "</w:hyperlink>" }
             openLink = link
             guard let link else { return }
@@ -379,8 +416,10 @@ public enum DocxWriter {
             text.enumerateAttributes(in: r) { attrs, run, _ in
                 let link = (attrs[.link] as? URL)?.absoluteString ?? (attrs[.link] as? String)
                 if attrs[.docSection] != nil { return }   // the break itself is the sectPr
-                if ctx.commentStarts[run.location] != nil { setLink(nil); x += commentMarks(run.location, end: false) }
+                if ctx.commentStarts[run.location] != nil { setRevision(nil); setLink(nil); x += commentMarks(run.location, end: false) }
                 setLink(link)
+                let rev = attrs[.docRevision] as? DocRevision
+                setRevision(rev)
                 if let note = attrs[.docNote] as? DocNote {
                     ctx.notes.append(note.text)
                     x += "<w:r><w:rPr><w:rStyle w:val=\"FootnoteReference\"/><w:vertAlign w:val=\"superscript\"/></w:rPr><w:footnoteReference w:id=\"\(ctx.notes.count)\"/></w:r>"
@@ -388,21 +427,23 @@ public enum DocxWriter {
                     x += imageXML(attachment, ctx: ctx)
                 } else {
                     let s = (text.string as NSString).substring(with: run)
-                    x += runXML(s, attrs, style: link == nil || link!.hasPrefix("#") ? nil : "Hyperlink")
+                    x += runXML(s, attrs, style: link == nil || link!.hasPrefix("#") ? nil : "Hyperlink", deleted: rev?.kind == .deletion)
                 }
-                if ctx.commentEnds[NSMaxRange(run)] != nil { setLink(nil); x += commentMarks(NSMaxRange(run), end: true) }
+                if ctx.commentEnds[NSMaxRange(run)] != nil { setRevision(nil); setLink(nil); x += commentMarks(NSMaxRange(run), end: true) }
             }
             setLink(nil)
+            setRevision(nil)
         }
         if fieldEnd { x += "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>" }
         if let (id, _) = bookmark { x += "<w:bookmarkEnd w:id=\"\(id)\"/>" }
         return x + "</w:p>"
     }
 
-    private static func paragraphProperties(_ p: NSParagraphStyle?, style: String? = nil, leader: Bool = false, sectPr: String? = nil) -> String {
+    private static func paragraphProperties(_ p: NSParagraphStyle?, style: String? = nil, leader: Bool = false, sectPr: String? = nil,
+                                            markRPr: String? = nil) -> String {
         guard let p else {
-            if style == nil && sectPr == nil { return "" }
-            return "<w:pPr>" + (style.map { "<w:pStyle w:val=\"\($0)\"/>" } ?? "") + (sectPr ?? "") + "</w:pPr>"
+            if style == nil && sectPr == nil && markRPr == nil { return "" }
+            return "<w:pPr>" + (style.map { "<w:pStyle w:val=\"\($0)\"/>" } ?? "") + (markRPr ?? "") + (sectPr ?? "") + "</w:pPr>"
         }
         var x = "<w:pPr>"
         if let style { x += "<w:pStyle w:val=\"\(style)\"/>" }
@@ -428,7 +469,20 @@ public enum DocxWriter {
         case .justified: x += "<w:jc w:val=\"both\"/>"
         default: break
         }
-        return x + (sectPr ?? "") + "</w:pPr>"
+        return x + (markRPr ?? "") + (sectPr ?? "") + "</w:pPr>"
+    }
+
+    private static let revisionDate: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    /// <w:ins …> / <w:del …> opening tag (or empty element, for paragraph marks).
+    private static func revisionTag(_ rev: DocRevision, ctx: Context, empty: Bool = false) -> String {
+        ctx.revisions += 1
+        let tag = rev.kind == .insertion ? "ins" : "del"
+        return "<w:\(tag) w:id=\"\(ctx.revisions)\" w:author=\"\(xmlEscape(rev.author))\" w:date=\"\(revisionDate.string(from: rev.date))\"\(empty ? "/" : "")>"
     }
 
     private static func hex(_ c: NSColor) -> String {
@@ -436,7 +490,7 @@ public enum DocxWriter {
         return String(format: "%02X%02X%02X", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
     }
 
-    private static func runXML(_ s: String, _ attrs: [NSAttributedString.Key: Any], style: String? = nil) -> String {
+    private static func runXML(_ s: String, _ attrs: [NSAttributedString.Key: Any], style: String? = nil, deleted: Bool = false) -> String {
         var pr = style.map { "<w:rStyle w:val=\"\($0)\"/>" } ?? ""
         if let font = attrs[.font] as? NSFont {
             let family = xmlEscape(font.familyName ?? font.fontName)
@@ -459,7 +513,8 @@ public enum DocxWriter {
         var chunk = ""
         func flush() {
             guard !chunk.isEmpty else { return }
-            x += "<w:r>\(pr.isEmpty ? "" : "<w:rPr>\(pr)</w:rPr>")<w:t xml:space=\"preserve\">\(xmlEscape(chunk))</w:t></w:r>"
+            let t = deleted ? "w:delText" : "w:t"
+            x += "<w:r>\(pr.isEmpty ? "" : "<w:rPr>\(pr)</w:rPr>")<\(t) xml:space=\"preserve\">\(xmlEscape(chunk))</\(t)></w:r>"
             chunk = ""
         }
         func special(_ xml: String) {

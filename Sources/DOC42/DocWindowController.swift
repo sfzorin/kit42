@@ -56,6 +56,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     func setStripState(_ on: Bool, for action: Selector) { formatStrip.setState(on, for: action) }
     let comments = CommentsState()
     let painter = PainterState()
+    let review = ReviewState()
     private(set) lazy var finderClient = PagedFinderClient(self)
     private(set) lazy var finder: NSTextFinder = {
         let f = NSTextFinder()
@@ -122,7 +123,17 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     override var document: AnyObject? {
-        didSet { setupDidChange() }
+        didSet {
+            setupDidChange()
+            paged.hidesDeletions = !review.showMarkup
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.textView.typingAttributes[.docRevision] = self.typingRevision
+                self.updateRevisionMarkup()
+                self.updateStatus()
+                self.layoutComments()
+            }
+        }
     }
 
     private func setupContent() {
@@ -176,9 +187,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     // MARK: - Status
 
     func textDidChange(_ notification: Notification) {
+        markPendingInsertion()
+        updateRevisionMarkup()
         updateStatus()
         comments.highlightKey = ""   // edits can drop the highlight (temporary attributes)
         syncRulerSetup()
+    }
+
+    /// Track changes: user edits that remove text keep it as a deletion (see Revisions.swift).
+    func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        trackEdit(textView, affectedCharRange, replacementString)
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -203,11 +221,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             ?? (textView.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
     }
 
-    private func updateStatus() {
+    func updateStatus() {
         let text = textView.string
         var words = 0
         text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
-        window?.subtitle = L("%d words · %d characters", words, text.count)
+        window?.subtitle = L("%d words · %d characters", words, text.count) + (isTrackingChanges ? " · " + L("Tracking changes") : "")
     }
 
     var currentAttributes: [NSAttributedString.Key: Any] {
@@ -683,6 +701,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         case #selector(formatPainterAction(_:)): item.state = painter.armed ? .on : .off
         case #selector(toggleRulerAction(_:)):
             item.title = ruler.isHidden ? L("Show Ruler") : L("Hide Ruler")
+        case #selector(toggleTrackChangesAction(_:)): item.state = isTrackingChanges ? .on : .off
+        case #selector(toggleMarkupAction(_:)): item.state = review.showMarkup ? .on : .off
+        case #selector(acceptChangeAction(_:)), #selector(rejectChangeAction(_:)): return !changesAtSelection.isEmpty
+        case #selector(nextChangeAction(_:)), #selector(previousChangeAction(_:)), #selector(acceptAllChangesAction(_:)),
+             #selector(rejectAllChangesAction(_:)): return Revisions.has(storage)
         default: break
         }
         return true

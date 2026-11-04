@@ -18,6 +18,9 @@ enum DocxStyles {
         var notes: [String: String] = [:]
         var comments: [String: DocComment] = [:]
         var sections: [Int: PageSetup] = [:]
+        /// Tracked changes by marker id; track changes on in the file's settings.
+        var revisions: [String: DocRevision] = [:]
+        var trackRevisions = false
     }
 
     struct ListFormat {
@@ -119,6 +122,11 @@ enum DocxStyles {
         }
 
         markFootnotesCommentsLinks(body, zip: zip, rels: rels, extras: &extras)
+        markRevisions(body, extras: &extras)
+        if let settings = zip["word/settings.xml"], let root = (try? XMLDocument(data: settings))?.rootElement(),
+           let track = root.child("trackRevisions") {
+            extras.trackRevisions = !["false", "0", "off"].contains(track.attr("val") ?? "")
+        }
 
         // Page setup, header and footer from the (last) section.
         if let sect = body.child("sectPr") {

@@ -154,6 +154,10 @@ enum CLI {
         for (r, (c)) in commentsOf(s) {
             print("comment \"\(ns.substring(with: r))\" by \(c.author) resolved=\(c.resolved): \(c.text)")
         }
+        if doc.trackChanges { print("track changes on") }
+        for c in Revisions.changes(in: s) {
+            print("\(c.kind.rawValue) by \(c.author) at \(c.range.location): \"\(ns.substring(with: c.range).replacingOccurrences(of: "\n", with: "¶"))\"")
+        }
         s.enumerateAttribute(.link, in: NSRange(location: 0, length: s.length)) { v, r, _ in
             guard let v else { return }
             print("link \"\(ns.substring(with: r).replacingOccurrences(of: "\t", with: "→"))\" → \((v as? URL)?.absoluteString ?? "\(v)")")

@@ -114,7 +114,7 @@ extension DocxStyles {
 
     /// Replaces the markers with footnote references, comment ranges, bookmarks, links and section breaks.
     static func restoreMarks(_ text: NSMutableAttributedString, _ extras: Extras) {
-        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHs])([^\u{E00B}]*)\u{E00B}")
+        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHsrRp])([^\u{E00B}]*)\u{E00B}")
         let matches = pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length))
         guard !matches.isEmpty else { return }
         let ns = text.string as NSString
@@ -146,8 +146,19 @@ extension DocxStyles {
         }
         var commentStarts: [String: Int] = [:]
         var links: [(String, Int)] = []
+        var revisionStarts: [String: Int] = [:]
         for mark in marks {
             switch mark.kind {
+            case "r": revisionStarts[mark.payload] = mark.at
+            case "R":
+                if let start = revisionStarts[mark.payload], mark.at > start, let rev = extras.revisions[mark.payload] {
+                    text.addAttribute(.docRevision, value: rev, range: NSRange(location: start, length: mark.at - start))
+                }
+            case "p":
+                // Tracked paragraph mark: the newline right after the marker.
+                if mark.at < text.length, (text.string as NSString).character(at: mark.at) == 10, let rev = extras.revisions[mark.payload] {
+                    text.addAttribute(.docRevision, value: rev, range: NSRange(location: mark.at, length: 1))
+                }
             case "c": commentStarts[mark.payload] = mark.at
             case "C":
                 if let start = commentStarts[mark.payload], mark.at > start, let c = extras.comments[mark.payload] {

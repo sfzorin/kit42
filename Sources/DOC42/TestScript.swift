@@ -18,6 +18,16 @@ extension DocWindowController {
                 if r.location != NSNotFound { textView.setSelectedRange(r) }
             case "end": textView.setSelectedRange(NSRange(location: storage.length, length: 0))
             case "type": textView.insertText(arg, replacementRange: textView.selectedRange())
+            case "bs": for _ in 0..<max(1, nums.first ?? 1) { textView.deleteBackward(nil) }
+            case "del": for _ in 0..<max(1, nums.first ?? 1) { textView.deleteForward(nil) }
+            case "track": toggleTrackChangesAction(nil)
+            case "markup": toggleMarkupAction(nil)
+            case "nextchange": nextChangeAction(nil)
+            case "accept": acceptChangeAction(nil)
+            case "reject": rejectChangeAction(nil)
+            case "acceptall": acceptAllChangesAction(nil)
+            case "rejectall": rejectAllChangesAction(nil)
+            case "dumptext": print("TEXT:", storage.string.debugDescription, "CHANGES:", Revisions.changes(in: storage).map { "\($0.kind.rawValue)@\($0.range.location)+\($0.range.length)" })
             case "comment":
                 newCommentAction(nil)
                 if let c = commentAtCursor { setCommentText(c, arg) }

@@ -21,11 +21,11 @@ final class CommentCardView: NSView, NSTextFieldDelegate {
         self.comment = comment
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 80))
         author.font = .boldSystemFont(ofSize: 11)
-        author.textColor = .black
+        author.textColor = .labelColor
         date.font = .systemFont(ofSize: 10)
-        date.textColor = NSColor(white: 0.45, alpha: 1)
+        date.textColor = .secondaryLabelColor
         field.font = .systemFont(ofSize: 12)
-        field.textColor = .black
+        field.textColor = .labelColor
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -47,7 +47,7 @@ final class CommentCardView: NSView, NSTextFieldDelegate {
         let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tip) ?? NSImage(), target: self, action: action)
         b.isBordered = false
         b.toolTip = tip
-        b.contentTintColor = NSColor(white: 0.4, alpha: 1)
+        b.contentTintColor = .secondaryLabelColor
         return b
     }
 
@@ -79,9 +79,9 @@ final class CommentCardView: NSView, NSTextFieldDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
-        NSColor.white.setFill()
+        NSColor.controlBackgroundColor.setFill()
         path.fill()
-        (isActive ? NSColor(calibratedRed: 0.95, green: 0.7, blue: 0.1, alpha: 1) : NSColor(white: 0.8, alpha: 1)).setStroke()
+        (isActive ? NSColor(calibratedRed: 0.95, green: 0.7, blue: 0.1, alpha: 1) : NSColor.separatorColor).setStroke()
         path.lineWidth = isActive ? 1.5 : 0.5
         path.stroke()
     }
@@ -223,11 +223,11 @@ extension DocWindowController {
                 }
             }
         }
-        let wanted: CGFloat = comments.shown && !list.isEmpty ? CommentCardView.width + 40 : 0
+        // Cards of comments and tracked changes, in text order.
+        var cards = revisionCards()
+        let wanted: CGFloat = comments.shown && (!list.isEmpty || !cards.isEmpty) ? CommentCardView.width + 40 : 0
         if paged.sideWidth != wanted { paged.sideWidth = wanted }
-        // Cards.
         var keep = Set<ObjectIdentifier>()
-        var bottom: CGFloat = 0
         for (c, r) in comments.shown ? list : [] {
             let k = ObjectIdentifier(c)
             keep.insert(k)
@@ -248,6 +248,11 @@ extension DocWindowController {
                 return v
             }()
             v.isActive = c === active
+            cards.append((r, v))
+        }
+        cards.sort { $0.0.location < $1.0.location }
+        var bottom: CGFloat = 0
+        for (r, v) in cards {
             guard let rect = paged.rect(for: r), let card = paged.card(at: r.location) else { v.isHidden = true; continue }
             v.isHidden = false
             let y = max(rect.minY - 8, bottom + 8)
