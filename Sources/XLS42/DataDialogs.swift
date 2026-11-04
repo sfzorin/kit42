@@ -93,6 +93,12 @@ extension SheetWindowController {
 
     func label(_ s: String) -> NSTextField { NSTextField(labelWithString: s) }
 
+    func hstack(_ views: [NSView]) -> NSStackView {
+        let s = NSStackView(views: views)
+        s.spacing = 8
+        return s
+    }
+
     func report(_ text: String) {
         lastAlertMessage = text
         guard !suppressAlerts else { return }
@@ -133,8 +139,10 @@ extension SheetWindowController {
             }
         }
         for c in [header, direction] { c.target = refresher; c.action = #selector(DialogActions.changed(_:)) }
+        for k in keys { k.0.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true }
         let rows: [[NSView]] = [
-            [label(L("Sort key 1:")), keys[0].0, keys[0].1], [label(L("Then by:")), keys[1].0, keys[1].1], [label(L("Then by:")), keys[2].0, keys[2].1],
+            [label(L("Sort key 1:")), hstack([keys[0].0, keys[0].1])], [label(L("Then by:")), hstack([keys[1].0, keys[1].1])],
+            [label(L("Then by:")), hstack([keys[2].0, keys[2].1])],
             [label(L("Direction:")), direction], [label(L("Custom order:")), order],
             [NSGridCell.emptyContentView, header], [NSGridCell.emptyContentView, caseSensitive], [NSGridCell.emptyContentView, natural],
         ]
@@ -201,7 +209,8 @@ extension SheetWindowController {
             value.widthAnchor.constraint(equalToConstant: 160).isActive = true
             value.addItems(withObjectValues: Array(Set(range.rows.dropFirst().map { NumberFormat.format(sheet[CellRef(row: $0, col: range.start.col)].value, "General").text })).sorted().prefix(200).map { $0 })
             lines.append((connector, f, op, value))
-            rows.append([connector ?? label(L("Field:")), f, op, value])
+            f.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
+            rows.append([connector ?? label(L("Field:")), hstack([f, op, value])])
         }
         let caseSensitive = checkbox(L("Case sensitive"), false)
         let unique = checkbox(L("No duplications"), false)
@@ -373,7 +382,12 @@ extension SheetWindowController {
         let merge = checkbox(L("Merge delimiters"), false)
         let quote = popup(["\"", "'", L("None")])
         let widths = field("", width: 160, placeholder: L("e.g. 5, 12"))
-        let types = (0..<6).map { _ in popup([L("Standard"), L("Text"), L("Date (DMY)"), L("Date (MDY)"), L("Date (YMD)"), L("Skip")]) }
+        let types = (0..<5).map { _ -> NSPopUpButton in
+            let p = popup([L("Standard"), L("Text"), L("Date (DMY)"), L("Date (MDY)"), L("Date (YMD)"), L("Skip")])
+            p.controlSize = .small
+            p.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            return p
+        }
         let typeRow = NSStackView(views: types)
         typeRow.spacing = 4
         let delimiters = NSStackView(views: [tab, comma, semicolon, space, other, otherText])
@@ -499,9 +513,9 @@ extension SheetWindowController {
                                               field("", width: 110, placeholder: L("Value"))) }
         let nonNegative = checkbox(L("Assume non-negative variables"), true)
         let engine = popup([L("Linear (simplex)"), L("Nonlinear (Nelder–Mead)")])
-        var rows: [[NSView]] = [[label(L("Target cell:")), objective], [label(L("Optimize result to:")), goal, goalValue],
+        var rows: [[NSView]] = [[label(L("Target cell:")), objective], [label(L("Optimize result to:")), hstack([goal, goalValue])],
                                 [label(L("By changing cells:")), variables]]
-        for (k, c) in constraints.enumerated() { rows.append([label(k == 0 ? L("Limiting conditions:") : ""), c.0, c.1, c.2]) }
+        for (k, c) in constraints.enumerated() { rows.append([label(k == 0 ? L("Limiting conditions:") : ""), hstack([c.0, c.1, c.2])]) }
         rows += [[NSGridCell.emptyContentView, nonNegative], [label(L("Solving method:")), engine]]
         guard runDialog(L("Solver"), ok: L("Solve"), rows: rows) == .alertFirstButtonReturn else { return }
         guard let obj = CellRef(objective.stringValue), let vars = parseRange(variables.stringValue)?.range else { NSSound.beep(); return }

@@ -135,7 +135,10 @@ extension SheetWindowController {
         func fillFormats() {
             formats.removeAllItems()
             let codes = categories[category.indexOfSelectedItem].codes
-            formats.addItems(withTitles: codes.map { c in "\(NumberFormat.format(sample, c).text)    \(c)" })
+            // A number shows what the formats do even when the cell holds text.
+            let isDateTime = [4, 5].contains(category.indexOfSelectedItem)
+            let shown: Value = { if case .number = sample, !isDateTime || NumberFormat.isDateFormat(style.numberFormat) { return sample }; return .number(isDateTime ? 45366.75 : -1234.5678) }()
+            formats.addItems(withTitles: codes.map { c in "\(NumberFormat.format(shown, c).text)    \(c)" })
             if let i = codes.firstIndex(of: code.stringValue) { formats.selectItem(at: i) }
             formats.isEnabled = !codes.isEmpty
             let numeric = [1, 2, 3, 6].contains(category.indexOfSelectedItem)
