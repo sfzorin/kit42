@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "XLS42", targets: ["XLS42"]),
         .executable(name: "DOC42", targets: ["DOC42"]),
         .executable(name: "IMG42", targets: ["IMG42"]),
+        .executable(name: "SCN42", targets: ["SCN42"]),
         // Quick Look extension binaries, packaged as .appex bundles by build.sh.
         .executable(name: "QLPreview42", targets: ["QLPreview42"]),
         .executable(name: "QLThumbnail42", targets: ["QLThumbnail42"]),
@@ -24,6 +25,7 @@ let package = Package(
         .executableTarget(name: "XLS42", dependencies: ["Kit42"], path: "Sources/XLS42"),
         .executableTarget(name: "DOC42", dependencies: ["Kit42"], path: "Sources/DOC42"),
         .executableTarget(name: "IMG42", dependencies: ["Kit42"], path: "Sources/IMG42"),
+        .executableTarget(name: "SCN42", dependencies: ["Kit42"], path: "Sources/SCN42"),
         // Quick Look for formats macOS shows as plain text or not at all: Markdown, OpenDocument spreadsheets, TSV.
         .target(name: "Previews42", dependencies: ["Kit42"], path: "Sources/Previews42"),
         .executableTarget(name: "QLPreview42", dependencies: ["Previews42"], path: "Sources/QLPreview42",

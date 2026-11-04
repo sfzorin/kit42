@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-ALL=($(for a in PDF42 DOC42 XLS42 IMG42; do [[ -d Sources/$a ]] && echo $a; done))
+ALL=($(for a in PDF42 DOC42 XLS42 IMG42 SCN42; do [[ -d Sources/$a ]] && echo $a; done))
 
 # App icons are drawn in code (scripts/make_icon.swift) and committed; redrawn when the script changes.
 make_icon() {

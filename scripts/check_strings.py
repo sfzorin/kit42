@@ -13,11 +13,11 @@ def table(path):
     return keys
 
 # Not translatable: names, examples.
-ALLOWED = {"name@example.com", "PDF42", "DOC42", "XLS42", "IMG42", "PDF", "HTML", "CSV"}
+ALLOWED = {"name@example.com", "PDF42", "DOC42", "XLS42", "IMG42", "SCN42", "PDF", "HTML", "CSV"}
 
 kit = table(root / "Kit42/Strings.swift")
 problems = 0
-for app in ["Kit42", "PDF42", "DOC42", "XLS42", "IMG42"]:
+for app in ["Kit42", "PDF42", "DOC42", "XLS42", "IMG42", "SCN42"]:
     known = kit | (table(root / app / "Strings.swift") if app != "Kit42" else set())
     # Kit42 strings may be shown by any app: they must be in Kit42's own table.
     missing, unwrapped = {}, []
