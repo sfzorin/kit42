@@ -353,7 +353,12 @@ final class GridView: NSView, NSTextFieldDelegate {
             return
         }
 
-        if isNumber, size.width > cellRect.width - 2, sheet.merge(containing: ref) == nil {
+        var squeeze: CGFloat = 1
+        if isNumber, size.width > cellRect.width - 2, size.width <= (cellRect.width - 2) * 1.12, sheet.merge(containing: ref) == nil {
+            // Slightly too wide only because Mac fonts aren't pixel-hinted like Excel's: compress a little.
+            squeeze = (cellRect.width - 2) / size.width
+            size.width = cellRect.width - 2
+        } else if isNumber, size.width > cellRect.width - 2, sheet.merge(containing: ref) == nil {
             // Numbers never overflow: Excel shows ###.
             let hashWidth = ("#" as NSString).size(withAttributes: attrs).width
             text = String(repeating: "#", count: max(1, Int((cellRect.width - 2) / max(1, hashWidth))))
@@ -392,7 +397,13 @@ final class GridView: NSView, NSTextFieldDelegate {
         }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: clip.insetBy(dx: 0.5, dy: 0)).addClip()
-        (text as NSString).draw(at: origin, withAttributes: attrs)
+        if squeeze < 1, let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.translateBy(x: origin.x, y: 0)
+            ctx.scaleBy(x: squeeze, y: 1)
+            (text as NSString).draw(at: NSPoint(x: 0, y: origin.y), withAttributes: attrs)
+        } else {
+            (text as NSString).draw(at: origin, withAttributes: attrs)
+        }
         NSGraphicsContext.restoreGraphicsState()
     }
 

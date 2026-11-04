@@ -475,14 +475,13 @@ enum XLSX {
 
     // MARK: - CSV
 
+    /// CSV/TSV text: encoding by BOM or validity (UTF-8, UTF-16, Windows-1251), delimiter detected
+    /// from the first lines (outside quotes), RFC 4180 quoting with line breaks inside quotes.
     static func readCSV(_ data: Data) -> Workbook {
-        let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1251) ?? ""
-        let firstLine = text.prefix { $0 != "\n" }
-        let delimiter: Character = [";", "\t", ","].max { a, b in firstLine.filter { $0 == a }.count < firstLine.filter { $0 == b }.count } ?? ","
+        let text = decodeText(data)
+        let delimiter = detectDelimiter(text)
         var sheet = Sheet(name: "Sheet1")
-        var row = 0, col = 0, field = "", quoted = false
-        var chars = Array(text)
-        if chars.first == "\u{FEFF}" { chars.removeFirst() }
+        var row = 0, col = 0, field = "", quoted = false, wasQuoted = false
         func commit() {
             if !field.isEmpty {
                 var cell = Cell()
@@ -491,24 +490,74 @@ enum XLSX {
                 sheet[CellRef(row: row, col: col)] = cell
             }
             field = ""
+            wasQuoted = false
         }
+        var scalars = Array(text.unicodeScalars)
+        if scalars.first == "\u{FEFF}" { scalars.removeFirst() }
         var i = 0
-        while i < chars.count {
-            let ch = chars[i]
+        while i < scalars.count {
+            let ch = scalars[i]
             if quoted {
                 if ch == "\"" {
-                    if i + 1 < chars.count, chars[i + 1] == "\"" { field.append("\""); i += 1 } else { quoted = false }
-                } else { field.append(ch) }
-            } else if ch == "\"" { quoted = true }
-            else if ch == delimiter { commit(); col += 1 }
-            else if ch == "\n" || ch == "\r\n" { commit(); row += 1; col = 0 }
-            else if ch != "\r" { field.append(ch) }
+                    if i + 1 < scalars.count, scalars[i + 1] == "\"" { field.unicodeScalars.append("\""); i += 1 } else { quoted = false }
+                } else { field.unicodeScalars.append(ch) }
+            } else if ch == "\"", field.isEmpty {
+                quoted = true
+                wasQuoted = true
+            } else if Character(ch) == delimiter {
+                commit(); col += 1
+            } else if ch == "\n" || ch == "\r" {
+                if ch == "\r", i + 1 < scalars.count, scalars[i + 1] == "\n" { i += 1 }
+                commit(); row += 1; col = 0
+            } else {
+                field.unicodeScalars.append(ch)
+            }
             i += 1
         }
         commit()
         var wb = Workbook()
         wb.sheets = [sheet]
         return wb
+    }
+
+    static func decodeText(_ data: Data) -> String {
+        let b = [UInt8](data.prefix(4))
+        if b.starts(with: [0xFF, 0xFE]) { return String(data: data, encoding: .utf16LittleEndian) ?? "" }
+        if b.starts(with: [0xFE, 0xFF]) { return String(data: data, encoding: .utf16BigEndian) ?? "" }
+        if let s = String(data: data, encoding: .utf8) { return s }
+        // UTF-16 without BOM: many zero bytes in alternating positions.
+        let sample = [UInt8](data.prefix(400))
+        if sample.count > 10, sample.enumerated().filter({ $0.offset % 2 == 1 && $0.element == 0 }).count > sample.count / 4 {
+            return String(data: data, encoding: .utf16LittleEndian) ?? ""
+        }
+        return String(data: data, encoding: .windowsCP1251) ?? String(data: data, encoding: .isoLatin1) ?? ""
+    }
+
+    /// The candidate that splits the first lines most consistently (quotes respected).
+    static func detectDelimiter(_ text: String) -> Character {
+        var lines: [[Character: Int]] = []
+        var counts: [Character: Int] = [:]
+        var quoted = false
+        for ch in text.prefix(20_000) {
+            if ch == "\"" { quoted.toggle(); continue }
+            if quoted { continue }
+            if ch == "\n" || ch == "\r\n" || ch == "\r" {
+                if !counts.isEmpty { lines.append(counts) }
+                counts = [:]
+                if lines.count >= 20 { break }
+                continue
+            }
+            if ";,\t|".contains(ch) { counts[ch, default: 0] += 1 }
+        }
+        if !counts.isEmpty { lines.append(counts) }
+        guard !lines.isEmpty else { return "," }
+        let candidates: [Character] = [";", "\t", ",", "|"]
+        func score(_ c: Character) -> (Int, Int) {
+            let n = lines.map { $0[c] ?? 0 }
+            guard let first = n.first, first > 0 else { return (0, 0) }
+            return (n.filter { $0 == first }.count, first)
+        }
+        return candidates.max { score($0) < score($1) } ?? ","
     }
 
     static func writeCSV(_ sheet: Sheet) -> Data {

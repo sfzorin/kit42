@@ -33,6 +33,7 @@ final class SheetDocument: NSDocument {
         if Self.isCSV(typeName) {
             return XLSX.writeCSV(workbook.sheets[editor?.sheetIndex ?? 0])
         }
+        if typeName.contains("opendocument") || typeName.lowercased().hasSuffix("ods") { return ODS.write(workbook) }
         return XLSX.write(workbook)
     }
 

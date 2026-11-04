@@ -29,8 +29,10 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - Export: Word (.docx), RTF, HTML, text, PNG/JPEG pages (72–300 dpi), copy with a password.
 - Import: open PNG/JPEG/HEIC/TIFF as PDF, "New PDF from Images…", insert images as pages.
 
-## XLS42 — spreadsheets (.xlsx, .csv)
+## XLS42 — spreadsheets (.xlsx, .xls, .ods, .csv)
 
+- Opens .xlsx, legacy .xls (Excel 97–2003, formulas decompiled), .ods (LibreOffice/OpenOffice) and CSV/TSV
+  (UTF-8/UTF-16/Windows-1251, delimiter detection); saves .xlsx, .ods and CSV. The format is detected by content.
 - Displayed like Excel: column widths and row heights, fonts, fills, borders, merged cells, wrapped text,
   overflow into neighbouring cells, `###` for numbers that don't fit, theme colours.
 - Number formats: thousands separators, decimals, currency, %, dates and times, `[Red]`, sections `;`.
@@ -67,7 +69,7 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 
 ## Not implemented
 
-- GOST signatures (needs CryptoPro CSP), footnotes, comments and track changes in DOC42, legacy .xls (BIFF).
+- GOST signatures (needs CryptoPro CSP), footnotes, comments and track changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
 
 ## Structure
 

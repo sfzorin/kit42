@@ -5,6 +5,8 @@ import Foundation
 public struct ZipArchive {
     public private(set) var entries: [String: Data] = [:]
     public private(set) var order: [String] = []
+    /// Entries written without compression (e.g. ODF "mimetype").
+    public var storedUncompressed: Set<String> = []
 
     public init() {}
 
@@ -58,7 +60,7 @@ public struct ZipArchive {
         for name in order {
             guard let content = entries[name] else { continue }
             let crc = CRC32.checksum(content)
-            let deflated = Self.deflate(content)
+            let deflated = storedUncompressed.contains(name) ? nil : Self.deflate(content)
             let useDeflate = deflated != nil && deflated!.count < content.count
             let payload = useDeflate ? deflated! : content
             let nameData = Data(name.utf8)

@@ -32,6 +32,23 @@ if let i = CommandLine.arguments.firstIndex(of: "--info"), CommandLine.arguments
     exit(0)
 }
 
+// XLS42 --convert in.(xlsx|xls|ods|csv) out.(xlsx|ods|csv)
+if let i = CommandLine.arguments.firstIndex(of: "--convert"), CommandLine.arguments.count > i + 2 {
+    let args = CommandLine.arguments
+    var wb = Calculator.recalculate(try SpreadsheetFile.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))))
+    if args.contains("freeze") { wb.sheets[0].frozenRows = 3; wb.sheets[0].frozenCols = 1 }
+    let out = URL(fileURLWithPath: args[i + 2])
+    let data: Data
+    switch out.pathExtension.lowercased() {
+    case "ods": data = ODS.write(wb)
+    case "csv": data = SheetExport.csv(wb.sheets[0], delimiter: ",", bom: true)
+    default: data = XLSX.write(wb)
+    }
+    try data.write(to: out)
+    print("\(out.pathExtension): \(data.count) bytes")
+    exit(0)
+}
+
 // XLS42 --export-pdf in.xlsx out.pdf [all|landscape|nogrid|nofit]
 if let i = CommandLine.arguments.firstIndex(of: "--export-pdf"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments

@@ -194,4 +194,8 @@ let xls42Strings: [[String]] = [
     ["Print:", "Печатать:", "Yazdır:"],
     ["Repeat frozen rows on every page", "Повторять закреплённые строки на каждой странице", "Dondurulmuş satırları her sayfada yinele"],
     ["Page numbers", "Номера страниц", "Sayfa numaraları"],
+    ["The file is not an Excel 97–2003 workbook", "Файл не является книгой Excel 97–2003", "Dosya bir Excel 97–2003 çalışma kitabı değil"],
+    ["The file contains no workbook", "В файле нет книги Excel", "Dosyada çalışma kitabı yok"],
+    ["Excel 5.0/95 workbooks are not supported; save as .xls 97–2003 or .xlsx", "Книги Excel 5.0/95 не поддерживаются; сохраните как .xls 97–2003 или .xlsx", "Excel 5.0/95 çalışma kitapları desteklenmiyor; .xls 97–2003 veya .xlsx olarak kaydedin"],
+    ["The file is damaged", "Файл повреждён", "Dosya hasarlı"],
 ]
