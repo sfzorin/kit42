@@ -134,7 +134,7 @@ final class InspectorController: NSViewController {
         g.column(at: 0).xPlacement = .trailing
         g.rowAlignment = .none
         for i in 0..<g.numberOfRows { g.row(at: i).yPlacement = .center }
-        g.column(at: 0).width = 78
+        g.column(at: 0).width = 112
         return g
     }
 

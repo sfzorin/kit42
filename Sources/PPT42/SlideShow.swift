@@ -369,7 +369,7 @@ final class SlideShowController: NSObject {
 // MARK: - Presenter view
 
 /// Current and next slide, notes, timer and clock (second display, or a window when rehearsing).
-final class PresenterWindowController: NSWindowController {
+final class PresenterWindowController: NSWindowController, NSWindowDelegate {
     weak var show: SlideShowController?
     private let currentView = ShowView()
     private let nextView = ShowView()
@@ -398,6 +398,7 @@ final class PresenterWindowController: NSWindowController {
         w.appearance = NSAppearance(named: .darkAqua)
         w.backgroundColor = NSColor(white: 0.08, alpha: 1)
         super.init(window: w)
+        w.delegate = self
         build()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
         tick()
@@ -494,6 +495,11 @@ final class PresenterWindowController: NSWindowController {
         let f = DateFormatter()
         f.timeStyle = .short
         clockLabel.stringValue = f.string(from: Date())
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        timer?.invalidate()
+        if SlideShowController.current === show { DispatchQueue.main.async { [weak show] in show?.end() } }
     }
 
     override func close() {

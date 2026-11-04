@@ -1,6 +1,6 @@
-# Suite42 — PDF42 · DOC42 · XLS42 · IMG42
+# Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42
 
-A small native office suite for macOS: four apps that look and work alike, share one menu system and design
+A small native office suite for macOS: five apps that look and work alike, share one menu system and design
 (the Kit42 library), need no internet and no third-party libraries — only AppKit, PDFKit, Core Image, Vision and
 Security from macOS. Interface in English, Russian and Turkish.
 
@@ -10,9 +10,10 @@ Security from macOS. Interface in English, Russian and Turkish.
 | **DOC42** | documents | DOCX, DOC, RTF, ODT, Markdown, TXT, HTML | the same + PDF |
 | **XLS42** | spreadsheets | XLSX, XLS (97–2003), ODS, CSV/TSV | XLSX, ODS, CSV, PDF |
 | **IMG42** | viewing and quick editing of images | JPEG, PNG, HEIC, AVIF, WebP, GIF, TIFF, PSD, RAW, SVG, PDF, … | the original format, PNG, JPEG, HEIC, TIFF, AVIF |
+| **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX, ODP, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown |
 
-**По-русски.** Набор из четырёх программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
-Markdown), XLS42 (таблицы Excel/ODS/CSV) и IMG42 (просмотр и простая правка изображений). Работают без интернета,
+**По-русски.** Набор из пяти программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
+Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений) и PPT42 (презентации PPTX/ODP, показ слайдов). Работают без интернета,
 интерфейс на английском, русском и турецком.
 
 ## Install
@@ -223,6 +224,43 @@ lets you switch extensions off.
   `K42_LIVETEXT_ALL`, `K42_LIVETEXT_MENU=x,y`, `K42_LIVETEXT_PROBE`, `K42_LIVETEXT_KEY` (synthesised events, results
   printed); `K42_SMART_LASSO="x,y;…"|@file` (+ `K42_SMART_CROP`).
 
+## PPT42 — presentations (PPTX, ODP)
+
+- Files: PowerPoint .pptx (PresentationML: slides, master and layouts with theme colours/fonts and placeholder positions,
+  text with runs, bullets/numbering and levels, preset shapes with fill/line/shadow, lines and arrows, pictures with
+  crop, tables, groups, backgrounds solid/gradient/picture, speaker notes, 16:9 and 4:3, transitions, entrance builds
+  as p:timing) and OpenDocument .odp (pages, frames, custom shapes, images, tables, groups, notes, styles, transitions).
+  Legacy .ppt opens with a message suggesting conversion. Charts and SmartArt are shown as placeholder boxes.
+  Fonts missing on the Mac (Calibri, Aptos…) are replaced by close ones (Carlito if installed, Helvetica Neue).
+- Export: PDF (⌥⌘E; one page per slide), notes pages PDF, PNG/JPEG images of slides, outline as RTF or Markdown;
+  printing of slides, handouts (1–9 per page) or notes pages.
+- Editing like Impress/Keynote: thumbnails sidebar (add, duplicate, delete, multi-select, drag to reorder, copy/paste
+  slides, context menu with layout and transition), New Slide ⇧⌘N with a layout picker (Title, Title and Content, Two
+  Content, Section Header, Title Only, Blank, Picture with Caption), canvas with zoom to fit, handles to move / resize /
+  rotate (⇧ keeps proportions or snaps to 15°), snapping guides to the slide centre/edges and other objects, arrow
+  keys nudge, align and distribute, arrange (front/back), group/ungroup, copy/paste objects (also images and text from
+  other apps), drag & drop of images.
+- Text in place (double-click, Return or just type): format bar and Format menu — font, size, bold/italic/underline/
+  strikethrough, colour, super/subscript, alignment, vertical alignment, bullets/numbering, Tab/⇧Tab levels, line
+  spacing; shrink-on-overflow and auto-height text boxes; slide number and date fields; tables (rows×columns, Tab to the
+  next cell, add/delete rows and columns).
+- Inspector (⌥⌘I): Slide (layout, background colour/gradient/picture, transition, hide, theme, slide size), Shape
+  (position and size in cm, rotation, fill, line colour/width/dash/arrowheads, opacity, corner radius, shadow, build
+  animation), Text. Six built-in themes; Master view (⌥⌘5) edits title/body styles, placeholder positions and
+  background for all slides. Views: Normal, Outline (editable: Tab-indented lines are bullets, new title lines add
+  slides), Slide Sorter, Notes Page; notes pane under the canvas. Find and Replace (⌘F) in slides and notes. Undo everywhere.
+- Slide show: ⌥⌘P from the start, ⇧⌘P from the current slide (Page Setup keeps its menu item); transitions fade, push,
+  wipe, cover, dissolve, split, zoom (Core Animation); builds appear/fade/fly in/zoom on click; click/→/Space next,
+  ←/⌫ previous, number + Return jumps, B/W black/white screen, Esc ends; presenter view (current and next slide, notes,
+  timer, clock) on a second display, or Rehearse (⌥⌘R) in a window.
+- Command line: `--info file`, `--export in out.pdf [--notes] | dir [--jpeg --width N] | out.rtf | out.md`,
+  `--convert in.pptx out.odp` (and back), `--demo out.pptx` (a deck with every feature).
+- UI checks: `K42_SNAPSHOT` with `K42_SLIDE=n`, `K42_VIEW=sorter|outline|notes|master`, `K42_SELECT=i,j`,
+  `K42_INSPECTOR=1|slide|shape|text`, `K42_EDIT`, `K42_SHOW=1` (+`K42_SHOW_STEPS`), `K42_PRESENTER=1`, `K42_LAYOUTS`,
+  `K42_DO="cmd;cmd"` (scripted commands, see Snapshot.swift), `K42_SAVE=path`, `K42_PASTEBOARD=1` (private pasteboard).
+- Not yet: charts/SmartArt editing, custom geometry (read as rectangles), motion paths and exit animations, embedded
+  media, comments, layout editing in Master view (only the master).
+
 ## Common
 
 - Interface language (English, Russian, Turkish) is chosen on the welcome screen and shared by all apps; system panels
@@ -248,7 +286,7 @@ lets you switch extensions off.
   `Sources/QLThumbnail42` are the extension binaries that `build.sh` packs into `.appex` bundles
   (Info.plist generated, ad-hoc signed with `Resources/QuickLook/Extension.entitlements`); `ql42render` renders the
   same output to files for testing (`ql42render html file.md out.html`, `ql42render thumb file.ods 512 out.png`).
-- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
+- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
 

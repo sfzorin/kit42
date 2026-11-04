@@ -172,8 +172,8 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let main = NSSplitViewItem(viewController: content)
         main.minimumThickness = 420
         inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
-        inspectorItem.minimumThickness = 250
-        inspectorItem.maximumThickness = 340
+        inspectorItem.minimumThickness = 290
+        inspectorItem.maximumThickness = 380
         inspectorItem.canCollapse = true
         inspectorItem.isCollapsed = true
         splitController.splitViewItems = [sidebarItem, main, inspectorItem]
