@@ -7,5 +7,7 @@ Localization.register(rows: ppt42Strings)
 if CLI.run(CommandLine.arguments) { exit(CLI.status) }
 
 let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()

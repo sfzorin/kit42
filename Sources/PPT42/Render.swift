@@ -23,6 +23,8 @@ struct RenderOptions {
     var textHidden: Set<Int> = []
     /// 1-based number for slide-number fields.
     var number = 1
+    /// Only the slide's own objects (no background, master or layout shapes): build animations.
+    var objectsOnly = false
 }
 
 enum Renderer {
@@ -38,30 +40,32 @@ enum Renderer {
         ctx.saveGState()
         ctx.clip(to: bounds)
         let layout = deck.layout(of: slide)
-        drawFill(slide.background ?? layout?.background ?? deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
-        if slide.showMasterShapes && (layout?.showMasterShapes ?? true) {
-            for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
+        if !options.objectsOnly {
+            drawFill(slide.background ?? layout?.background ?? deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
+            if slide.showMasterShapes && (layout?.showMasterShapes ?? true) {
+                for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
+            }
+            for o in layout?.objects ?? [] { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
         }
-        for o in layout?.objects ?? [] { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
         for o in slide.objects where !options.hidden.contains(o.id) {
             drawObject(o, slide: slide, deck: deck, ctx: ctx, options: options)
         }
         ctx.restoreGState()
     }
 
-    /// Master or layout as a pseudo slide (master view): placeholders drawn with their sample text.
-    static func drawMaster(deck: Deck, layout: Int?, in ctx: CGContext) {
+    /// Master view: master background and shapes, then the sample placeholders (master styles only) with dashed outlines.
+    static func drawMaster(deck: Deck, objects: [SlideObject], in ctx: CGContext, textHidden: Set<Int> = []) {
         let gc = NSGraphicsContext(cgContext: ctx, flipped: true)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = gc
         defer { NSGraphicsContext.restoreGraphicsState() }
         let bounds = CGRect(origin: .zero, size: deck.size)
-        let l = layout.flatMap { deck.layouts.indices.contains($0) ? deck.layouts[$0] : nil }
-        drawFill(l?.background ?? deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
-        for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: RenderOptions()) }
-        for o in l?.objects ?? [] { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: RenderOptions()) }
-        for o in MasterView.sampleObjects(deck: deck, layout: layout) {
-            drawObject(o, slide: MasterView.sampleSlide(deck: deck, layout: layout), deck: deck, ctx: ctx, options: RenderOptions())
+        drawFill(deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
+        var options = RenderOptions()
+        options.textHidden = textHidden
+        for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
+        for o in objects {
+            drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options)
             ctx.saveGState()
             ctx.setStrokeColor(NSColor(white: 0.5, alpha: 0.6).cgColor)
             ctx.setLineDash(phase: 0, lengths: [3, 3])
