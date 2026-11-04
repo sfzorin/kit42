@@ -7,11 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 typeset -A LABEL COLORS
-LABEL=(PDF42 PDF DOC42 DOC XLS42 XLS)
-COLORS=(PDF42 "0.95 0.30 0.25 0.70 0.08 0.20" DOC42 "0.25 0.55 0.98 0.10 0.28 0.75" XLS42 "0.20 0.75 0.45 0.05 0.48 0.28")
+LABEL=(PDF42 PDF DOC42 DOC XLS42 XLS IMG42 IMG)
+COLORS=(PDF42 "0.95 0.30 0.25 0.70 0.08 0.20" DOC42 "0.25 0.55 0.98 0.10 0.28 0.75" XLS42 "0.20 0.75 0.45 0.05 0.48 0.28" IMG42 "0.66 0.40 0.98 0.40 0.16 0.74")
 
 APPS=(${1:-})
-[[ -z "${1:-}" ]] && APPS=($(for a in PDF42 DOC42 XLS42; do [[ -d Sources/$a ]] && echo $a; done))
+[[ -z "${1:-}" ]] && APPS=($(for a in PDF42 DOC42 XLS42 IMG42; do [[ -d Sources/$a ]] && echo $a; done))
 INSTALL=${2:-}
 
 swift build -c release
