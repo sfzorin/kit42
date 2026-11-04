@@ -126,19 +126,39 @@ public final class StampLibraryViewController: NSViewController {
 
         let add = NSButton(title: L("Add to Library…"), target: self, action: #selector(addToLibrary))
         add.bezelStyle = .push
-        add.controlSize = .regular
+        add.keyEquivalent = "\r"
         let once = NSButton(title: L("Insert File…"), target: self, action: #selector(insertOnce))
         once.bezelStyle = .push
-        let buttons = NSStackView(views: [add, once])
-        buttons.spacing = 8
+        let buttons = NSStackView(views: [once, add])
+        buttons.spacing = 10
+        buttons.distribution = .fillEqually
 
-        let root = NSStackView(views: [title, grid, buttons])
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        let stack = NSStackView(views: [title, grid, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        // Fixed width with real insets: wrapped text measures correctly and the buttons keep clear of the edge.
+        let root = NSView()
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.inset),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.inset),
+            root.widthAnchor.constraint(equalToConstant: Self.width),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
         view = root
         reload()
+    }
+
+    private static let width: CGFloat = 372, inset: CGFloat = 20
+
+    public override func viewWillAppear() {
+        super.viewWillAppear()
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = view.fittingSize
     }
 
     private func reload() {
@@ -148,8 +168,15 @@ public final class StampLibraryViewController: NSViewController {
             let hint = NSTextField(wrappingLabelWithString: L("Add a PNG or a scan of your signature or stamp — the white background can be made transparent. Images are stored locally and shared by all 42 apps."))
             hint.textColor = .secondaryLabelColor
             hint.font = .systemFont(ofSize: 12)
-            hint.preferredMaxLayoutWidth = 330
+            hint.preferredMaxLayoutWidth = Self.width - Self.inset * 2
+            hint.maximumNumberOfLines = 0
+            hint.translatesAutoresizingMaskIntoConstraints = false
             grid.addArrangedSubview(hint)
+            hint.widthAnchor.constraint(equalToConstant: Self.width - Self.inset * 2).isActive = true
+            if isViewLoaded {
+                view.layoutSubtreeIfNeeded()
+                preferredContentSize = view.fittingSize
+            }
             return
         }
         var row: NSStackView?
@@ -160,6 +187,10 @@ public final class StampLibraryViewController: NSViewController {
                 grid.addArrangedSubview(row!)
             }
             row?.addArrangedSubview(tile(url))
+        }
+        if isViewLoaded {
+            view.layoutSubtreeIfNeeded()
+            preferredContentSize = view.fittingSize
         }
     }
 

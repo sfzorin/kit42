@@ -29,7 +29,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         .tools([Cmd.tool(.ink), Cmd.tool(.rectangle), Cmd.tool(.oval), Cmd.tool(.whiteout)]),
         .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .command(Cmd.replaceText)]),
         .group([.view(colorButton), .view(widthButton)]),
-        .buttons([Cmd.stamps]),
     ])
 
     private var colors: [Tool: NSColor] = Dictionary(uniqueKeysWithValues: Tool.allCases.map { ($0, $0.defaultColor) })

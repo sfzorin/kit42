@@ -15,7 +15,10 @@ public enum DebugSnapshot {
             }
             prepare?()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                let window = NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
+                // K42_SNAPSHOT_POPOVER=1 captures an open popover instead of the window.
+                let popover = env["K42_SNAPSHOT_POPOVER"] != nil
+                    ? NSApp.windows.first { $0.isVisible && String(describing: type(of: $0)).contains("Popover") } : nil
+                let window = popover ?? NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
                 if let frame = window?.contentView?.superview,
                    let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
                     frame.cacheDisplay(in: frame.bounds, to: rep)
