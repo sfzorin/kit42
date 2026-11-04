@@ -272,7 +272,11 @@ enum ODS {
             out.append(ch)
             i = s.index(after: i)
         }
-        for prefix in ["COM.MICROSOFT.", "ORG.OPENOFFICE.", "_xlfn."] { out = out.replacingOccurrences(of: prefix, with: "") }
+        // ODF names with Excel meanings: FDIST/FINV are the left-tailed F.DIST/F.INV, LEGACY.… the Excel originals.
+        for (odf, excel) in [("FDIST", "F.DIST"), ("FINV", "F.INV"), ("SKEWP", "SKEW.P")] {
+            out = out.replacingOccurrences(of: "(?<![A-Za-z0-9._])\(odf)\\(", with: excel + "(", options: [.regularExpression, .caseInsensitive])
+        }
+        for prefix in ["COM.MICROSOFT.", "ORG.OPENOFFICE.", "ORG.LIBREOFFICE.", "LEGACY.", "_xlfn."] { out = out.replacingOccurrences(of: prefix, with: "") }
         return out
     }
 
@@ -571,7 +575,7 @@ enum ODS {
         xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
-        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet>\(body)</office:spreadsheet></office:body></office:document-content>"
+        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
         let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
         var tables = ""
         for s in wb.sheets {
@@ -661,13 +665,34 @@ enum ODS {
         "\(odfSheet(sheet, absolute: true)).$\(CellRef.columnName(r.start.col))$\(r.start.row + 1):\(odfSheet(sheet, absolute: true)).$\(CellRef.columnName(r.end.col))$\(r.end.row + 1)"
     }
 
+    /// OpenFormula names LibreOffice uses for Excel functions (COM.MICROSOFT.…, LEGACY.…, native equivalents).
+    static func odfName(_ n: String) -> String {
+        switch n {
+        case "F.DIST": return "FDIST"
+        case "F.INV": return "FINV"
+        case "SKEW.P": return "SKEWP"
+        case "FDIST", "FINV", "NORMSDIST", "NORMSINV", "TDIST", "CHIDIST", "CHIINV": return "LEGACY." + n
+        case "REGEX": return "ORG.LIBREOFFICE.REGEX"
+        case "ERROR.TYPE": return n
+        default:
+            return n.contains(".") || microsoftNames.contains(n) ? "COM.MICROSOFT." + n : n
+        }
+    }
+
+    static let microsoftNames: Set<String> = [
+        "MAXIFS", "MINIFS", "IFS", "SWITCH", "XLOOKUP", "XMATCH", "FILTER", "SORT", "SORTBY", "UNIQUE", "SEQUENCE", "RANDARRAY",
+        "LET", "CONCAT", "TEXTJOIN", "CEILING", "FLOOR", "AGGREGATE", "VSTACK", "HSTACK", "TOCOL", "TOROW", "CHOOSECOLS",
+        "CHOOSEROWS", "TAKE", "DROP", "EXPAND", "WRAPROWS", "WRAPCOLS", "TEXTBEFORE", "TEXTAFTER", "TEXTSPLIT", "REGEXTEST",
+        "REGEXEXTRACT", "REGEXREPLACE", "LAMBDA",
+    ]
+
     /// Expression → OpenFormula text (references in brackets, ";" between arguments).
     static func odfFormula(_ e: Expr) -> String {
         func s(_ e: Expr, _ parent: Int) -> String {
             switch e {
             case .ref(let sh, let p): return "[" + odfRef(sh, p, nil) + "]"
             case .range(let sh, let a, let b): return "[" + odfRef(sh, a, b) + "]"
-            case .call(let n, let args): return n + "(" + args.map { s($0, 0) }.joined(separator: ";") + ")"
+            case .call(let n, let args): return odfName(n) + "(" + args.map { s($0, 0) }.joined(separator: ";") + ")"
             case .binary(let o, let l, let r):
                 let prec = Formula.precedence(o)
                 let text = s(l, prec) + o + s(r, prec + 1)

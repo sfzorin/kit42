@@ -417,7 +417,7 @@ enum Formula {
 
     static func canonicalFunction(_ name: String) -> String {
         var up = name.uppercased()
-        for prefix in ["_XLFN._XLWS.", "_XLFN.", "_XLWS.", "ORG.LIBREOFFICE.", "COM.MICROSOFT."] where up.hasPrefix(prefix) { up.removeFirst(prefix.count) }
+        for prefix in ["_XLFN._XLWS.", "_XLFN.", "_XLWS.", "ORG.LIBREOFFICE.", "COM.MICROSOFT.", "LEGACY."] where up.hasPrefix(prefix) { up.removeFirst(prefix.count) }
         return russianNames[up] ?? up
     }
 

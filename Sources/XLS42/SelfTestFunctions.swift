@@ -299,9 +299,11 @@ extension SelfTest {
     static func loCompare(dir: String, soffice: String) -> Int32 {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let xlsx = URL(fileURLWithPath: dir).appendingPathComponent("functions.xlsx")
+        // "ods": the same through an OpenDocument file (checks the ODF function names too).
+        let ods = CommandLine.arguments.contains("ods")
+        let xlsx = URL(fileURLWithPath: dir).appendingPathComponent(ods ? "functions.ods" : "functions.xlsx")
         let wb = functionWorkbook()
-        try? XLSX.write(wb).write(to: xlsx)
+        try? (ods ? ODS.write(wb) : XLSX.write(wb)).write(to: xlsx)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: soffice)
         p.arguments = ["-env:UserInstallation=file://\(dir)/lo-profile", "--headless", "--convert-to",
