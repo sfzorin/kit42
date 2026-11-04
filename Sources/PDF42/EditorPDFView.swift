@@ -11,12 +11,15 @@ final class EditorPDFView: PDFView {
             inlineEditor?.end(commit: true)
             if tool != .select { selectAnnotation(nil) }
             clearSelection()
+            if (oldValue == .link) != (tool == .link) { updateLinkBorders() }
         }
     }
     var color: NSColor = .systemRed
     /// In-place editor of page text (Edit Text tool), while open.
     var inlineEditor: InlineTextEditor?
     var lineWidth: CGFloat = 2
+    /// Dashed frames around links (View › Show Link Borders; always while the Link tool is active).
+    var showsLinkBorders = false { didSet { updateLinkBorders() } }
 
     private(set) var selectedAnnotation: PDFAnnotation?
     private(set) var selectedPage: PDFPage?
@@ -87,7 +90,8 @@ final class EditorPDFView: PDFView {
     private func hitAnnotation(on page: PDFPage, at point: CGPoint) -> PDFAnnotation? {
         for annotation in page.annotations.reversed() where !isMarker(annotation) {
             // Form tools pick widgets (move, resize, delete); otherwise PDFView handles them (filling).
-            if annotation.isSystemHandled, !(tool.isFormField && annotation.isKind(.widget)) { continue }
+            if annotation.isSystemHandled, !(tool.isFormField && annotation.isKind(.widget)), !(tool == .link && annotation.isKind(.link)) { continue }
+            if annotation is LinkBorderMarker { continue }
             if let o = annotation as? PageOverlay, !o.allowsPicking { continue }
             if annotation is TemporaryHighlight { continue }
             if annotation.bounds.insetBy(dx: -2, dy: -2).contains(point) { return annotation }
@@ -195,6 +199,23 @@ final class EditorPDFView: PDFView {
             } else {
                 NSSound.beep()
             }
+
+        case .link, .crop:
+            if tool == .link, let link = hitAnnotation(on: page, at: point), link.isKind(.link) {
+                editor?.editLink(link, on: page)
+                return
+            }
+            drag = .create
+            let preview = PDFAnnotation(bounds: CGRect(origin: point, size: CGSize(width: 1, height: 1)), forType: .square, withProperties: nil)
+            let border = PDFBorder()
+            border.lineWidth = 1
+            border.style = .dashed
+            border.dashPattern = [3, 2]
+            preview.border = border
+            preview.color = tool == .crop ? .systemOrange : .systemBlue
+            preview.shouldPrint = false
+            page.addAnnotation(preview)
+            tempAnnotation = preview
 
         case .textField, .checkBox, .choiceField:
             if hitsHandle(point, on: page), let a = selectedAnnotation {
@@ -305,6 +326,14 @@ final class EditorPDFView: PDFView {
             } else if tool.isFormField {
                 guard let temp = tempAnnotation else { return }
                 editor?.createFormField(tool.fieldKind, in: temp.bounds, on: page)
+            } else if tool == .link {
+                guard let temp = tempAnnotation, temp.bounds.width > 3, temp.bounds.height > 3 else { return }
+                let rect = temp.bounds
+                DispatchQueue.main.async { [weak self] in self?.editor?.createLink(in: rect, on: page) }
+            } else if tool == .crop {
+                guard let temp = tempAnnotation, temp.bounds.width > 10, temp.bounds.height > 10 else { return }
+                let rect = temp.bounds
+                DispatchQueue.main.async { [weak self] in self?.editor?.cropDialog(rect: rect, on: page) }
             } else if tool == .redact {
                 guard let temp = tempAnnotation, temp.bounds.width > 2, temp.bounds.height > 2 else { return }
                 editor?.add(RedactOverlay(bounds: temp.bounds, color: color), to: page, name: L("Redact"))
@@ -345,6 +374,23 @@ final class EditorPDFView: PDFView {
             }
         }
         super.keyDown(with: event)
+    }
+
+    // MARK: - Link borders
+
+    /// Re-creates the dashed frames over links on every page (they are never saved).
+    func updateLinkBorders() {
+        guard let doc = document else { return }
+        let show = showsLinkBorders || tool == .link
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            let old = page.annotations.filter { $0 is LinkBorderMarker }
+            old.forEach { page.removeAnnotation($0) }
+            if show {
+                for link in page.annotations where link.isKind(.link) { page.addAnnotation(LinkBorderMarker(around: link)) }
+            }
+            if !old.isEmpty || show { annotationsChanged(on: page) }
+        }
     }
 
     // MARK: - Helpers

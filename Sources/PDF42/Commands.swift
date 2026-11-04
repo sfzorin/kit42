@@ -12,7 +12,7 @@ enum Cmd {
                 shortcut: tool.rawValue < 9 ? Shortcut("\(tool.rawValue + 1)") : nil, tag: tool.rawValue)
     }
     static func tool(_ t: Tool) -> Command { tools[t.rawValue] }
-    static let markupTools = tools.filter { !(Tool(rawValue: $0.tag)?.isFormField ?? false) }
+    static let markupTools = tools.filter { t in Tool(rawValue: t.tag).map { !$0.isFormField && $0 != .crop } ?? true }
     static let formTools = tools.filter { Tool(rawValue: $0.tag)?.isFormField ?? false }
 
     // File
@@ -34,6 +34,34 @@ enum Cmd {
                                  toolTip: L("Compare the text with another PDF"), label: L("Compare"))
     static let applyRedactions = Command(L("Apply Redactions…"), #selector(W.applyRedactionsAction(_:)), symbol: "checkmark.rectangle")
     static let clearCompare = Command(L("Remove Comparison Highlights"), #selector(W.clearCompareHighlightsAction(_:)))
+    static let properties = Command(L("Properties…"), #selector(W.propertiesAction(_:)), symbol: "info.circle",
+                                    shortcut: Shortcut("i", [.command, .option]))
+    static let exportPDFA = Command(L("Export as PDF/A-2b…"), #selector(W.exportPDFAAction(_:)), symbol: "archivebox")
+
+    // Bookmarks
+    static let addBookmark = Command(L("Add Bookmark"), #selector(W.addBookmarkAction(_:)), symbol: "bookmark", shortcut: Shortcut("d"),
+                                     toolTip: L("Add a bookmark for the current view"))
+    static let addChildBookmark = Command(L("Add Child Bookmark"), #selector(W.addChildBookmarkAction(_:)))
+    static let renameBookmark = Command(L("Rename Bookmark"), #selector(W.renameBookmarkAction(_:)))
+    static let deleteBookmark = Command(L("Delete Bookmark"), #selector(W.deleteBookmarkAction(_:)), toolTip: L("Delete the selected bookmark"))
+    static let indentBookmark = Command(L("Indent Bookmark"), #selector(W.indentBookmarkAction(_:)), toolTip: L("Make it a child of the bookmark above"))
+    static let outdentBookmark = Command(L("Outdent Bookmark"), #selector(W.outdentBookmarkAction(_:)), toolTip: L("Move it up one level"))
+    static let setBookmarkDestination = Command(L("Set Destination to Current View"), #selector(W.setBookmarkDestinationAction(_:)))
+    static let bookmarksFromHeadings = Command(L("Create Bookmarks from Headings…"), #selector(W.bookmarksFromHeadingsAction(_:)))
+    static let bookmarkStyles: [Command] = [Command(L("Bold"), #selector(W.bookmarkStyleAction(_:)), tag: 1),
+                                            Command(L("Italic"), #selector(W.bookmarkStyleAction(_:)), tag: 2)]
+        + W.bookmarkColors.enumerated().map { Command($0.element.0, #selector(W.bookmarkStyleAction(_:)), tag: 10 + $0.offset) }
+
+    // Attachments
+    static let attachments = Command(L("Attachments"), #selector(W.showAttachmentsAction(_:)), shortcut: Shortcut("3", [.command, .option]))
+    static let addAttachment = Command(L("Attach File…"), #selector(W.addAttachmentAction(_:)), symbol: "paperclip", toolTip: L("Embed a file in the PDF"))
+    static let deleteAttachment = Command(L("Delete Attachment"), #selector(W.deleteAttachmentAction(_:)), toolTip: L("Delete the selected attachment"))
+    static let saveAttachment = Command(L("Save Attachment…"), #selector(W.saveAttachmentAction(_:)), toolTip: L("Save the selected attachment as a file"))
+    static let openAttachment = Command(L("Open Attachment"), #selector(W.openAttachmentAction(_:)))
+
+    // Links
+    static let createLinks = Command(L("Create Links from URLs"), #selector(W.createLinksFromURLsAction(_:)))
+    static let linkBorders = Command(L("Show Link Borders"), #selector(W.toggleLinkBordersAction(_:)))
 
     // Edit
     static let deleteAnnotation = Command(L("Delete Annotation"), #selector(W.deleteSelectedAnnotation(_:)),
@@ -72,7 +100,7 @@ enum Cmd {
     static let insertBlank = Command(L("Blank Page"), #selector(W.insertBlankPageAction(_:)), symbol: "doc.badge.plus",
                                      shortcut: Shortcut("n", [.command, .shift]))
     static let insertFromFile = Command(L("Pages from File…"), #selector(W.insertFromFileAction(_:)), symbol: "doc.on.doc",
-                                        shortcut: Shortcut("i", [.command, .option]))
+                                        shortcut: Shortcut("i", [.command, .option, .shift]))
 
     // Page
     static let rotateLeft = Command(L("Rotate Left"), #selector(W.rotateLeftAction(_:)), symbol: "rotate.left", shortcut: Shortcut("l"))
@@ -85,6 +113,11 @@ enum Cmd {
                                    toolTip: L("Add a watermark"), label: L("Watermark"))
     static let pageNumbers = Command(L("Page Numbers…"), #selector(W.pageNumbersAction(_:)), symbol: "number")
     static let removeWatermarks = Command(L("Remove Watermarks and Page Numbers"), #selector(W.removeWatermarksAction(_:)))
+    static let crop = Command(L("Crop…"), #selector(W.cropAction(_:)), symbol: "crop", shortcut: Shortcut("k", [.command, .option]))
+    static let pageSize = Command(L("Page Size…"), #selector(W.pageSizeAction(_:)), symbol: "arrow.up.left.and.arrow.down.right")
+    static let headerFooter = Command(L("Header & Footer…"), #selector(W.headerFooterAction(_:)), symbol: "text.append")
+    static let removeHeaderFooter = Command(L("Remove Headers and Footers"), #selector(W.removeHeaderFooterAction(_:)))
+    static let pageLabels = Command(L("Page Labels…"), #selector(W.pageLabelsAction(_:)), symbol: "list.number")
     static let extractPages = Command(L("Extract to New Document"), #selector(W.extractPagesAction(_:)), shortcut: Shortcut("e", [.command, .option]))
 
     // Signature
@@ -99,18 +132,24 @@ enum Cmd {
 
     static var menuBar: MenuBarSpec {
         var spec = MenuBarSpec(appName: "PDF42")
-        spec.fileExtras = [.command(exportAs), .command(exportImages), .command(exportProtected), .command(reduceSize), .separator,
+        spec.fileExtras = [.command(properties), .separator,
+                           .command(exportAs), .command(exportPDFA), .command(exportImages), .command(exportProtected), .command(reduceSize), .separator,
                            .command(createFromImages), .command(mergeFiles), .command(split), .separator,
                            .command(compare), .command(clearCompare), .separator,
                            .command(recognizeText), .separator, .command(printSelected)]
         spec.editExtras = [.command(tool(.editText)), .command(replaceText), .command(highlightSelection), .command(deleteAnnotation)]
         spec.find = [.command(find), .command(findNext), .command(findPrevious)]
-        spec.view = [.command(thumbnails), .command(outline), .separator,
+        spec.view = [.command(thumbnails), .command(outline), .command(attachments), .command(linkBorders), .separator,
                      .command(zoomIn), .command(zoomOut), .command(actualSize), .command(zoomToFit), .command(fitWidth), .separator]
             + displayModes.menuElements
             + [.separator, .command(nextPage), .command(previousPage), .command(goToPage), .separator, .command(markupBar)]
         spec.insert = [.command(stamps), .command(insertImage), .separator,
-                       .command(tool(.text)), .command(tool(.note)), .separator,
+                       .command(tool(.text)), .command(tool(.note)), .command(tool(.link)), .command(createLinks), .separator,
+                       .command(addBookmark),
+                       .submenu(L("Bookmarks"), [.command(addChildBookmark), .command(renameBookmark), .command(setBookmarkDestination),
+                                                 .command(deleteBookmark), .separator, .command(outdentBookmark), .command(indentBookmark), .separator,
+                                                 .submenu(L("Style"), bookmarkStyles.menuElements), .separator, .command(bookmarksFromHeadings)]),
+                       .command(addAttachment), .separator,
                        .command(insertBlank), .command(insertFromFile)]
         spec.custom = [
             (L("Markup"), markupTools.menuElements + [.separator, .command(applyRedactions)]),
@@ -118,7 +157,9 @@ enum Cmd {
             (L("Page"), [.command(rotateLeft), .command(rotateRight), .separator,
                           .command(deletePages), .command(movePageUp), .command(movePageDown), .separator,
                           .command(extractPages), .separator,
-                          .command(watermark), .command(pageNumbers), .command(removeWatermarks)]),
+                          .command(crop), .command(tool(.crop)), .command(pageSize), .separator,
+                          .command(watermark), .command(pageNumbers), .command(headerFooter), .command(pageLabels), .separator,
+                          .command(removeWatermarks), .command(removeHeaderFooter)]),
             (L("Signature"), [.command(sign), .command(verify), .separator,
                          .command(importCertificate), .command(createCertificate)]),
         ]

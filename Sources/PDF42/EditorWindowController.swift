@@ -27,7 +27,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         .group([.tool(Cmd.tool(.select))]),
         .tools([Cmd.tool(.highlight), Cmd.tool(.underline), Cmd.tool(.strikeOut)]),
         .tools([Cmd.tool(.ink), Cmd.tool(.rectangle), Cmd.tool(.oval), Cmd.tool(.whiteout)]),
-        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .tool(Cmd.tool(.editText)), .tool(Cmd.tool(.redact))]),
+        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .tool(Cmd.tool(.editText)), .tool(Cmd.tool(.redact)), .tool(Cmd.tool(.link))]),
         .tools([Cmd.tool(.textField), Cmd.tool(.checkBox), Cmd.tool(.choiceField)]),
         .group([.view(colorButton), .view(widthButton)]),
     ])
@@ -66,6 +66,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         window.center()
 
         pdfView.document = pdf
+        sidebar.editor = self
+        sidebar.thumbnails.labelProvider = { [weak self] i in self?.pdfDoc?.extras.label(i) }
         sidebar.thumbnails.reload()   // the grid was built before the document was set
         sidebar.reloadOutline()
         sidebar.thumbnails.onMove = { [weak self] indices, target in self?.movePages(indices, to: target) }
@@ -191,6 +193,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             if let undo {
                 NotificationCenter.default.addObserver(self, selector: #selector(didEdit), name: .NSUndoManagerDidCloseUndoGroup, object: undo)
             }
+            applyInitialView()
+            extrasChanged()
         }
     }
 
@@ -199,6 +203,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         pdfView.document = pdf
         sidebar.thumbnails.reload()
         sidebar.reloadOutline()
+        sidebar.reloadAttachments()
         resetSearch()
         updateSubtitle()
         warnedSignedEdit = false
@@ -232,12 +237,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     @objc private func pageChanged(_ note: Notification) { updateSubtitle() }
 
+    func updateSubtitleNow() { updateSubtitle() }
+
     private func updateSubtitle() {
         guard let pdf, let page = pdfView.currentPage else {
             window?.subtitle = ""
             return
         }
-        var text = L("Page %d of %d", pdf.index(for: page) + 1, pdf.pageCount)
+        let index = pdf.index(for: page)
+        var text = L("Page %d of %d", index + 1, pdf.pageCount)
+        if let label = pdfDoc?.extras.label(index), label != "\(index + 1)" { text = L("Page %@ (%d of %d)", label, index + 1, pdf.pageCount) }
         if !lastSearch.isEmpty {
             text += searchResults.isEmpty ? L(" · not found") : L(" · %d of %d", searchIndex + 1, searchResults.count)
         }
@@ -279,7 +288,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         pdfView.tool = tool
         markupStrip.select(tag: tool.rawValue)
         colorButton.color = colors[tool] ?? tool.defaultColor
-        colorButton.isEnabled = tool != .whiteout && !tool.isFormField
+        colorButton.isEnabled = tool != .whiteout && !tool.isFormField && !tool.isAreaTool
         pdfView.color = colorButton.color ?? tool.defaultColor
         if tool != .select, !markupStrip.isShown { markupStrip.isShown = true }
     }
@@ -725,7 +734,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     static let exportFormats: [(title: String, ext: String)] = [
-        ("Word (.docx)", "docx"), ("Rich Text (.rtf)", "rtf"), (L("Plain Text"), "txt"), ("HTML", "html"),
+        ("Word (.docx)", "docx"), ("Rich Text (.rtf)", "rtf"), (L("Plain Text"), "txt"), ("HTML", "html"), ("PDF/A-2b", "pdf"),
     ]
 
     /// PDF text with fonts, one page per section (page breaks between pages).
@@ -754,6 +763,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             _ = observer
             guard response == .OK, let url = panel.url else { return }
             prepareForSave()
+            if formats[max(0, popup.indexOfSelectedItem)].title == "PDF/A-2b" { exportPDFA(to: url); return }
             let text = pagesAsText
             let range = NSRange(location: 0, length: text.length)
             do {
@@ -810,10 +820,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     // MARK: - View
 
-    @objc func showThumbnailsAction(_ sender: Any?) { showSidebar(.thumbnails) }
-    @objc func showOutlineAction(_ sender: Any?) { showSidebar(.outline) }
+    @objc func showThumbnailsAction(_ sender: Any?) { showSidebarMode(.thumbnails) }
+    @objc func showOutlineAction(_ sender: Any?) { showSidebarMode(.outline) }
 
-    private func showSidebar(_ mode: SidebarViewController.Mode) {
+    func showSidebarMode(_ mode: SidebarViewController.Mode) {
         sidebar.mode = mode
         if splitController.splitViewItems.first?.isCollapsed == true { splitController.toggleSidebar(nil) }
     }
@@ -834,11 +844,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     @objc func goToPageAction(_ sender: Any?) {
         guard let pdf else { return }
         let field = NSTextField()
-        field.placeholderString = "1–\(pdf.pageCount)"
-        let alert = NSAlert.form(L("Go to Page"), ok: L("Go"), rows: [(L("Page:"), field)])
+        let labels = pdfDoc?.extras.labels ?? []
+        field.placeholderString = labels.isEmpty ? "1–\(pdf.pageCount)"
+            : "\(PageLabels.label(0, labels) ?? "1")–\(PageLabels.label(pdf.pageCount - 1, labels) ?? "\(pdf.pageCount)")"
+        let alert = NSAlert.form(L("Go to Page"), info: labels.isEmpty ? nil : L("Enter a page label (as printed on the page) or a page number."),
+                                 ok: L("Go"), rows: [(L("Page:"), field)])
         alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn, let n = Int(field.stringValue),
-              let page = pdf.page(at: min(max(n, 1), pdf.pageCount) - 1) else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let index = PageLabels.index(of: field.stringValue, labels, pageCount: pdf.pageCount)
+            ?? Int(field.stringValue).map { min(max($0, 1), pdf.pageCount) - 1 }
+        guard let index, let page = pdf.page(at: index) else { NSSound.beep(); return }
         pdfView.go(to: page)
     }
 
@@ -1095,6 +1110,32 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return hasCompareHighlights
         case #selector(splitAction(_:)):
             return pdf.pageCount > 1
+        case #selector(showAttachmentsAction(_:)):
+            menuItem?.state = sidebar.mode == .attachments ? .on : .off
+        case #selector(renameBookmarkAction(_:)), #selector(deleteBookmarkAction(_:)), #selector(setBookmarkDestinationAction(_:)),
+             #selector(addChildBookmarkAction(_:)):
+            return sidebar.selectedBookmark != nil
+        case #selector(bookmarkStyleAction(_:)):
+            guard let item = sidebar.selectedBookmark else { return false }
+            let style = pdfDoc?.extras.outlineStyles[ObjectIdentifier(item)] ?? OutlineStyle()
+            switch tag {
+            case 1: menuItem?.state = style.bold ? .on : .off
+            case 2: menuItem?.state = style.italic ? .on : .off
+            default:
+                let c = tag - 10 < Self.bookmarkColors.count && tag >= 10 ? Self.bookmarkColors[tag - 10].1 : nil
+                let same = c == nil ? style.color == nil : style.color.map { Self.sameColor($0, c!) } ?? false
+                menuItem?.state = same ? .on : .off
+            }
+        case #selector(indentBookmarkAction(_:)):
+            return (sidebar.selectedBookmark?.index ?? 0) > 0
+        case #selector(outdentBookmarkAction(_:)):
+            return sidebar.selectedBookmark?.parent?.parent != nil
+        case #selector(deleteAttachmentAction(_:)), #selector(saveAttachmentAction(_:)), #selector(openAttachmentAction(_:)):
+            return sidebar.selectedAttachment != nil
+        case #selector(toggleLinkBordersAction(_:)):
+            menuItem?.state = pdfView.showsLinkBorders ? .on : .off
+        case #selector(removeHeaderFooterAction(_:)):
+            return hasHeaderFooterOverlays
         default:
             break
         }

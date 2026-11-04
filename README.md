@@ -82,10 +82,51 @@ lets you switch extensions off.
   compressed copy or compress the open document; a file is never made bigger. CLI: `--compress in out [smallest|balanced|high]`.
 - Export: Word (.docx), RTF, HTML, text, PNG/JPEG pages (72–300 dpi), copy with a password.
 - Import: open PNG/JPEG/HEIC/TIFF as PDF, "New PDF from Images…", insert images as pages.
+- Bookmarks: the sidebar's Contents tab is editable — ⌘D (Insert › Add Bookmark) adds one for the current view (named
+  after the selected text, else "Page N"), double-click or Return renames, Delete removes, drag to reorder and nest,
+  indent/outdent buttons, Set Destination to Current View, bold/italic/colour (Insert › Bookmarks › Style); all undoable.
+  "Create Bookmarks from Headings…" turns lines set larger than the body text into a 1–3 level tree (optionally with OCR
+  for pages without text). PDFKit on this macOS neither writes edited outlines nor correct page references, so the outline
+  (with /C and /F styles) is written by PDF42 itself after PDFKit (`DocumentWriter`), readable by Preview, Acrobat, pypdf.
+- Page › Crop… (⌥⌘K) / the Crop tool (drag a rectangle): margins in mm on the current, all, odd, even pages or a range,
+  "remove white margins automatically", Remove Crop; sets the CropBox, and optionally deletes the content outside on save
+  with the redaction engine. Page › Page Size…: A3/A4/A5/Letter/Legal/Tabloid/custom, scale the content to fit or keep it
+  and extend/trim the canvas.
+- Links: the Link tool (Insert, markup bar) — drag a rectangle → web address (e-mail becomes mailto:), page (keep zoom,
+  whole page, page width) or bookmark, optional visible border; click a link with the tool to edit or delete it.
+  Insert › Create Links from URLs finds web and e-mail addresses in the text; View › Show Link Borders. Saved as /Link
+  annotations with /URI or /GoTo (PDFKit's broken or wrong page references are repaired on save).
+- File › Properties… (⌥⌘I): title, author, subject, keywords (written to the Info dictionary and XMP: dc:title,
+  dc:creator, dc:description, pdf:Keywords…), creator, producer, dates, file and page size, PDF version; Initial View
+  (page layout, panel, open at page and magnification, fit/centre window, show title, hide toolbar/menu bar — also applied
+  when PDF42 opens the file); fonts with embedded/subset state and pages; encryption, permissions, signatures.
+- Attachments: sidebar tab (⌥⌘3) listing embedded files (/EmbeddedFiles) and file attachment annotations; add with
+  Insert › Attach File… or by dropping files, save, open, drag out to Finder, delete (undoable).
+- File › Export as PDF/A-2b… (also in Export As…): fonts embedded (pages with non-embedded fonts are redrawn by Quartz,
+  which embeds them; failing that annotations are flattened, last resort an image with OCR text), sRGB output intent,
+  XMP with pdfaid part 2 / conformance B and matching Info, document ID; JavaScript, forbidden actions and annotation
+  types, attachments, image interpolation, hidden/unprintable annotation flags are removed. Not checked with veraPDF here
+  (not installed): DeviceCMYK content, optional content and font program details are not converted.
+- Page › Header & Footer…: six positions, codes <<page>> <<pages>> <<label>> <<date>> <<file>> <<bates>>, Bates
+  prefix/suffix/digits/start, font, size, colour, margins, page set; optionally the same on other files with continuing
+  Bates numbers. Editable until saved (Page › Remove Headers and Footers), then real page text.
+- Page › Page Labels…: ranges of logical numbers (1, i, I, a, A, none) with prefix and start (e.g. i–iv, then 1…, "A-1");
+  shown in thumbnails, the title bar and bookmarks, accepted by Go to Page; saved as /PageLabels.
+- Document-level parts that PDFKit drops when pages are replaced (labels, initial view, attachments, outline) are put
+  back on every save.
+- Command line for these: `--bookmarks in out [clear] [headings[:levels]] "Title@page[:b][:i][:#RRGGBB]" ">Child@page"`,
+  `--bookmarks file`, `--crop in out l,t,r,b|auto[:l,t,r,b] [pages] [remove]` (points), `--page-size in out A4|210x297 [scale|extend] [pages]`,
+  `--link in out x,y,w,h[@page] https://…|N[:Fit|FitH] …`, `--autolink in out`, `--props in out title=… author=… subject=…
+  keywords=… layout=… mode=… openpage=N zoom=… fitwindow=1 …`, `--info file`, `--attach in out file… [desc=…]`,
+  `--detach in out name|all`, `--attachments file [dir]`, `--pdfa in out`, `--bates in out PREFIX start [digits] [position]`,
+  `--bates-batch outdir PREFIX start a.pdf b.pdf…`, `--header-footer in out "l|c|r" "l|c|r" [pages]`,
+  `--labels in out "1-4:r;5-:D;9-:D:A-"`, `--fonts file`.
 - UI checks: `PDF42 file.pdf` with `K42_SNAPSHOT=out.png` (+ `K42_SNAPSHOT_SHEET=1`), `K42_APPEARANCE=dark|light`,
   `K42_MARKUP`, `K42_TOOL=n`, `K42_REDACT="x,y,w,h;…"`, `K42_COMPRESS`, `K42_STAMPS`, `K42_COMPARE=other.pdf`,
   `K42_ACTION=watermarkAction|pageNumbersAction|splitAction|signDocumentAction|applyRedactionsAction|mergeList|textField|…`
-  (opens that dialog for the snapshot).
+  (opens that dialog for the snapshot; also propertiesAction, pageSizeAction, headerFooterAction, pageLabelsAction,
+  bookmarksFromHeadingsAction, linkDialog, cropDialog), `K42_SIDEBAR=outline|attachments`, `K42_LINK_BORDERS=1`,
+  `K42_DO=action,…` (non-modal actions before the snapshot), `K42_PROPERTIES_TAB=n`.
 
 ## XLS42 — spreadsheets (.xlsx, .xls, .ods, .csv)
 

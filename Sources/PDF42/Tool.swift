@@ -4,7 +4,7 @@ import PDFKit
 
 enum Tool: Int, CaseIterable {
     case select, highlight, underline, strikeOut, ink, rectangle, oval, whiteout, text, note
-    case editText, redact, textField, checkBox, choiceField
+    case editText, redact, textField, checkBox, choiceField, link, crop
 
     var title: String {
         switch self {
@@ -23,6 +23,8 @@ enum Tool: Int, CaseIterable {
         case .textField: return L("Text Field")
         case .checkBox: return L("Checkbox")
         case .choiceField: return L("Dropdown List")
+        case .link: return L("Link")
+        case .crop: return L("Crop Tool")
         }
     }
 
@@ -43,6 +45,8 @@ enum Tool: Int, CaseIterable {
         case .textField: return "rectangle.and.pencil.and.ellipsis"
         case .checkBox: return "checkmark.square"
         case .choiceField: return "filemenu.and.selection"
+        case .link: return "link"
+        case .crop: return "crop"
         }
     }
 
@@ -53,6 +57,7 @@ enum Tool: Int, CaseIterable {
         case .text: return .black
         case .whiteout: return .white
         case .redact: return .black
+        case .link: return .systemBlue
         default: return .systemRed
         }
     }
@@ -61,6 +66,9 @@ enum Tool: Int, CaseIterable {
 
     /// Tools that place new AcroForm fields.
     var isFormField: Bool { self == .textField || self == .checkBox || self == .choiceField }
+
+    /// Tools that only drag out a rectangle (no colour).
+    var isAreaTool: Bool { self == .link || self == .crop }
 
     var fieldKind: PDFTools.FieldKind { self == .checkBox ? .checkBox : self == .choiceField ? .choice : .text }
 }
