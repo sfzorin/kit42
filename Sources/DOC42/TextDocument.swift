@@ -9,6 +9,21 @@ final class TextDocument: NSDocument {
     var setup = PageSetup() { didSet { editor?.setupDidChange() } }
     /// Track changes is on: edits are recorded as insertions and deletions (saved to .docx).
     var trackChanges = false
+    /// Paragraph and character styles (saved to .docx styles.xml and .odt styles.xml).
+    let styles = StyleSheet()
+    /// Title and author (docProps/core.xml, PDF metadata, fields).
+    var docInfo = DocInfo()
+    /// Page colour and watermark text (Format › Page), automatic hyphenation.
+    var background: NSColor? { didSet { editor?.pageLookDidChange() } }
+    var watermark = "" { didSet { editor?.pageLookDidChange() } }
+    var hyphenate = false { didSet { editor?.pageLookDidChange() } }
+
+    /// Document facts for fields: the file name follows the file.
+    var fieldInfo: DocInfo {
+        var i = docInfo
+        i.fileName = fileURL?.lastPathComponent ?? displayName ?? ""
+        return i
+    }
 
     override init() {
         super.init()
@@ -64,10 +79,21 @@ final class TextDocument: NSDocument {
             return
         }
         let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
+        if type == .officeOpenXML {
+            let (text, extras) = try DocxStyles.read(data)
+            if extras.hasSetup { setup = extras.setup }
+            styles.merge(extras.styles)
+            trackChanges = extras.trackRevisions
+            docInfo = extras.info
+            background = extras.background
+            watermark = extras.watermark
+            hyphenate = extras.hyphenate
+            storage.setAttributedString(text)
+            return
+        }
         var source = data
         var extras = DocxStyles.Extras()
         switch type {
-        case .officeOpenXML: (source, extras) = DocxStyles.flattenWithExtras(data)
         case .openDocument: (source, extras) = OdtFormat.prepare(data)
         case .rtf: (source, extras) = RtfFormat.prepare(data)
         default: break
@@ -87,6 +113,7 @@ final class TextDocument: NSDocument {
             extras.setup.margins = NSEdgeInsets(top: m(.topMargin, d.top), left: m(.leftMargin, d.left), bottom: m(.bottomMargin, d.bottom), right: m(.rightMargin, d.right))
         }
         if extras.hasSetup { setup = extras.setup }
+        styles.merge(extras.styles)
         trackChanges = extras.trackRevisions
         if type == .officeOpenXML || type == .docFormat || type == .openDocument || type == .rtf { ListMarkers.insert(into: text) }
         storage.setAttributedString(text)
@@ -122,6 +149,20 @@ final class TextDocument: NSDocument {
             o.columns = setup.columns
             o.columnSpacing = setup.columnSpacing
             o.paragraphStyle = Styles.wordStyle
+            o.styles = styles.docxStyles()
+            o.headerFooter = setup.hf
+            o.title = docInfo.title
+            o.author = docInfo.author
+            o.background = background
+            o.watermark = watermark
+            o.autoHyphenation = hyphenate
+            let pages = offscreenPages()
+            let fieldInfo = fieldInfo
+            o.fieldResult = { f, i in
+                i < 0 ? Fields.value(f, at: i, FieldContext(page: 1, pages: pages.cards.count, info: fieldInfo, storage: self.storage))
+                    : Fields.value(f, at: i, pages.fieldContext(page: pages.pageNumber(at: i)))
+            }
+            defer { pages.detach() }
             o.trackRevisions = trackChanges
             return DocxWriter.data(storage, options: o)
         }

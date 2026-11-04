@@ -114,7 +114,7 @@ extension DocxStyles {
 
     /// Replaces the markers with footnote references, comment ranges, bookmarks, links and section breaks.
     static func restoreMarks(_ text: NSMutableAttributedString, _ extras: Extras) {
-        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHsrRp])([^\u{E00B}]*)\u{E00B}")
+        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHsrRpxXft])([^\u{E00B}]*)\u{E00B}")
         let matches = pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length))
         guard !matches.isEmpty else { return }
         let ns = text.string as NSString
@@ -124,7 +124,7 @@ extension DocxStyles {
         for m in matches {
             let kind = ns.substring(with: m.range(at: 1))
             marks.append(Mark(kind: kind, payload: ns.substring(with: m.range(at: 2)), at: m.range.location - shift))
-            shift += m.range.length - (kind == "n" || kind == "s" ? 1 : 0)
+            shift += m.range.length - (kind == "n" || kind == "s" || kind == "f" ? 1 : 0)
         }
         for (m, mark) in zip(matches, marks).reversed() {
             let attrs = text.attributes(at: m.range.location, effectiveRange: nil)
@@ -135,6 +135,12 @@ extension DocxStyles {
                 a[.baselineOffset] = nil
                 if m.range.location > 0, let f = text.attribute(.font, at: m.range.location - 1, effectiveRange: nil) { a[.font] = f }
                 text.replaceCharacters(in: m.range, with: Notes.reference(DocNote(extras.notes[mark.payload] ?? ""), attributes: a))
+            case "f":
+                let parts = mark.payload.components(separatedBy: "\u{E00C}")
+                let field = DocField.parse(parts[0], result: parts.count > 2 ? parts[2] : "", locked: parts.count > 1 && parts[1] == "1") ?? DocField(.page)
+                var a = attrs
+                a[.link] = nil
+                text.replaceCharacters(in: m.range, with: Fields.reference(field, attributes: a))
             case "s":
                 var a = attrs
                 a[.docSection] = (extras.sections[Int(mark.payload) ?? 0] ?? PageSetup()).section
@@ -147,8 +153,16 @@ extension DocxStyles {
         var commentStarts: [String: Int] = [:]
         var links: [(String, Int)] = []
         var revisionStarts: [String: Int] = [:]
+        var charStyles: [(String, Int)] = []
+        var tables: [(payload: String, at: Int)] = []
         for mark in marks {
             switch mark.kind {
+            case "t": tables.append((mark.payload, mark.at))
+            case "x": charStyles.append((mark.payload, mark.at))
+            case "X":
+                if let (id, start) = charStyles.popLast(), mark.at > start {
+                    text.addAttribute(.docCharStyle, value: id, range: NSRange(location: start, length: mark.at - start))
+                }
             case "r": revisionStarts[mark.payload] = mark.at
             case "R":
                 if let start = revisionStarts[mark.payload], mark.at > start, let rev = extras.revisions[mark.payload] {
@@ -202,6 +216,7 @@ extension DocxStyles {
                 text.addAttribute(.paragraphStyle, value: p, range: pr)
             }
         }
+        restoreTables(text, tables)
     }
 }
 

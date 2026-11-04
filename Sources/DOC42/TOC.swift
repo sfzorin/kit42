@@ -268,10 +268,15 @@ extension DocWindowController {
 
     /// Clicking a footnote reference opens its text.
     func textView(_ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect, at charIndex: Int) {
-        if let n = textView.textStorage?.attribute(.docNote, at: charIndex, effectiveRange: nil) as? DocNote { editNote(n) }
+        if let n = textView.textStorage?.attribute(.docNote, at: charIndex, effectiveRange: nil) as? DocNote { editNote(n); return }
+        if cell is ImageCell || (textView.textStorage?.attribute(.attachment, at: charIndex, effectiveRange: nil) as? NSTextAttachment)?.image != nil {
+            textView.setSelectedRange(NSRange(location: charIndex, length: 1))
+            selectImage(charIndex)
+        }
     }
 
     func textView(_ textView: NSTextView, doubleClickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect, at charIndex: Int) {
-        if let n = textView.textStorage?.attribute(.docNote, at: charIndex, effectiveRange: nil) as? DocNote { editNote(n) }
+        if let n = textView.textStorage?.attribute(.docNote, at: charIndex, effectiveRange: nil) as? DocNote { editNote(n); return }
+        if cell is ImageCell { selectImage(charIndex); imagePropertiesAction(nil) }
     }
 }

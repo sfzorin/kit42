@@ -10,9 +10,14 @@ struct PageSetup: Equatable {
     var pageNumbers = true
     var columns = 1
     var columnSpacing: CGFloat = 36
+    /// Rich headers and footers of the document (nil: the plain `header`, `footer` and `pageNumbers`).
+    var hf: DocHeaderFooter?
+    /// The section's own headers and footers.
+    var sectionHF: DocHeaderFooter?
 
     static func == (a: PageSetup, b: PageSetup) -> Bool {
-        a.sameGeometry(b) && a.header == b.header && a.footer == b.footer && a.pageNumbers == b.pageNumbers
+        func same(_ x: DocHeaderFooter?, _ y: DocHeaderFooter?) -> Bool { x === y || (x != nil && y != nil && x!.isEqual(y!)) }
+        return a.sameGeometry(b) && a.header == b.header && a.footer == b.footer && a.pageNumbers == b.pageNumbers && same(a.hf, b.hf) && same(a.sectionHF, b.sectionHF)
     }
 
     /// Same paper, margins and columns (what the layout depends on).
@@ -26,7 +31,7 @@ struct PageSetup: Equatable {
     var isLandscape: Bool { size.width > size.height }
 
     /// The geometry part, as stored on a section break.
-    var section: DocSection { DocSection(pageSize: size, margins: margins, columns: columns, columnSpacing: columnSpacing) }
+    var section: DocSection { DocSection(pageSize: size, margins: margins, columns: columns, columnSpacing: columnSpacing, headerFooter: sectionHF) }
 
     /// A section's geometry with the document's header and footer.
     func with(_ s: DocSection?) -> PageSetup {
@@ -36,6 +41,7 @@ struct PageSetup: Equatable {
         p.margins = s.margins
         p.columns = s.columns
         p.columnSpacing = s.columnSpacing
+        p.sectionHF = s.headerFooter
         return p
     }
 }
@@ -57,6 +63,63 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     var onLayout: (() -> Void)?
     /// Double click on a footnote at the bottom of a page.
     var onNoteClick: ((DocNote) -> Void)?
+    /// Mouse down on a floating picture.
+    var onFloatMouseDown: ((FloatImageView, NSEvent) -> Void)?
+    /// Double click on a page's header (true) or footer area.
+    var onHeaderDoubleClick: ((PageCard, Bool) -> Void)?
+    /// Title, author and file name for fields.
+    var info: () -> DocInfo = { DocInfo() }
+    /// Page colour and watermark text of every page.
+    var background: NSColor? { didSet { cards.forEach { $0.needsDisplay = true } } }
+    var watermark = "" { didSet { cards.forEach { $0.needsDisplay = true } } }
+
+    /// Single pages, two side by side (book), as many as fit (multiple), or one endless page (web layout).
+    enum ViewMode: Int { case single, book, multi, web }
+    var viewMode: ViewMode = .single {
+        didSet {
+            guard viewMode != oldValue else { return }
+            cards.forEach { $0.web = viewMode == .web }
+            applySetup()
+            relayout()
+        }
+    }
+    /// Height of the web layout page (grows with the text).
+    private var webHeight: CGFloat = 900
+    private var webWidth: CGFloat { max(360, (enclosingScrollView?.contentView.bounds.width ?? 800) - Self.gap * 2 - sideWidth) }
+
+    func fieldContext(page: Int) -> FieldContext {
+        FieldContext(page: page, pages: cards.count, info: info(), storage: layoutManager.textStorage)
+    }
+
+    /// Value of a field in the body text (its page from the layout).
+    func fieldValue(_ f: DocField, at index: Int) -> String {
+        var page = 1
+        if let storage = layoutManager.textStorage, index < storage.length, layoutManager.numberOfGlyphs > 0 {
+            let g = layoutManager.glyphIndexForCharacter(at: index)
+            if g < layoutManager.numberOfGlyphs, let c = layoutManager.textContainer(forGlyphAt: g, effectiveRange: nil, withoutAdditionalLayout: true),
+               let i = cards.firstIndex(where: { $0.textViews.contains { $0.textContainer === c } }) {
+                page = i + 1
+            } else {
+                page = cards.count
+            }
+        }
+        return Fields.value(f, at: index, fieldContext(page: page))
+    }
+
+    /// Fields whose value changed since they were laid out (page numbers after repagination) are laid out again.
+    func refreshFields(force: Bool = false) {
+        guard let storage = layoutManager.textStorage else { return }
+        var stale: [NSRange] = []
+        storage.enumerateAttribute(.docField, in: NSRange(location: 0, length: storage.length)) { v, r, _ in
+            guard let f = v as? DocField, !f.fixed else { return }
+            if force || self.fieldValue(f, at: r.location) != f.result { stale.append(r) }
+        }
+        for r in stale {
+            layoutManager.invalidateLayout(forCharacterRange: r, actualCharacterRange: nil)
+            layoutManager.invalidateDisplay(forCharacterRange: r)
+        }
+        if !stale.isEmpty { scheduleReconcile() }
+    }
 
     /// Setup of the last section (and header/footer of every page).
     var setup: PageSetup {
@@ -71,6 +134,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         super.init(frame: NSRect(x: 0, y: 0, width: setup.size.width + Self.gap * 2, height: setup.size.height + Self.gap * 2))
         layoutManager.delegate = self
         layoutManager.allowsNonContiguousLayout = false
+        layoutManager.fieldValue = { [weak self] f, i in self?.fieldValue(f, at: i) ?? f.result }
         storage.addLayoutManager(layoutManager)
         NotificationCenter.default.addObserver(self, selector: #selector(storageEdited(_:)), name: NSTextStorage.didProcessEditingNotification, object: storage)
         addPage(startingAt: 0)
@@ -110,7 +174,13 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     /// Setup of the section that contains a character (a break belongs to the section it ends).
     func setup(at index: Int) -> PageSetup {
-        setup.with(sections.first { $0.index >= index }?.section)
+        let s = setup.with(sections.first { $0.index >= index }?.section)
+        guard viewMode == .web else { return s }
+        var w = s
+        w.size = NSSize(width: webWidth, height: webHeight)
+        w.margins = NSEdgeInsets(top: 28, left: 36, bottom: 28, right: 36)
+        w.columns = 1
+        return w
     }
 
     @objc private func storageEdited(_ note: Notification) {
@@ -140,7 +210,10 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             }
         }
         let card = PageCard(setup: setup(at: index))
+        card.paged = self
+        card.web = viewMode == .web
         card.onNoteClick = { [weak self] in self?.onNoteClick?($0) }
+        card.onHeaderDoubleClick = { [weak self] in self?.onHeaderDoubleClick?($0, $1) }
         cards.append(card)
         addSubview(card)
         card.setColumns(card.setup.columns, containerIndex: layoutManager.textContainers.count, in: self)
@@ -177,7 +250,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     private func applySetup() {
         sectionCache = nil
         churn = 0
-        for card in cards { card.setup.header = setup.header; card.setup.footer = setup.footer; card.setup.pageNumbers = setup.pageNumbers }
+        for card in cards { card.setup.header = setup.header; card.setup.footer = setup.footer; card.setup.pageNumbers = setup.pageNumbers; card.setup.hf = setup.hf }
         layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: layoutManager.textStorage?.length ?? 0), actualCharacterRange: nil)
         scheduleReconcile()
     }
@@ -189,18 +262,61 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     func relayout() {
         let visibleWidth = enclosingScrollView?.contentView.bounds.width ?? 0
+        if viewMode == .web, let c = cards.first, abs(c.setup.size.width - webWidth) > 1 { applySetup(); return }
         let pageWidth = cards.map(\.setup.size.width).max() ?? setup.size.width
-        let width = max(visibleWidth, pageWidth + Self.gap * 2 + sideWidth)
-        var y = Self.gap
         for (i, card) in cards.enumerated() {
             card.number = i + 1
             card.total = cards.count
-            let s = card.setup.size
-            card.frame = NSRect(x: floor((width - sideWidth - s.width) / 2), y: y, width: s.width, height: s.height)
-            y += s.height + Self.gap
+            card.firstOfSection = i == 0 || cards[i - 1].sectionIndex != card.sectionIndex
         }
-        setFrameSize(NSSize(width: width, height: y))
+        switch viewMode {
+        case .single, .web:
+            let width = max(visibleWidth, pageWidth + Self.gap * 2 + sideWidth)
+            var y = Self.gap
+            for card in cards {
+                let s = card.setup.size
+                card.frame = NSRect(x: floor((width - sideWidth - s.width) / 2), y: y, width: s.width, height: s.height)
+                y += s.height + Self.gap
+            }
+            setFrameSize(NSSize(width: width, height: y))
+        case .book, .multi:
+            // Rows of pages: two (the first page alone on the right, like a book) or as many as fit.
+            let perRow = viewMode == .book ? 2 : max(1, Int((visibleWidth - sideWidth - Self.gap) / (pageWidth + Self.gap)))
+            let width = max(visibleWidth, CGFloat(perRow) * (pageWidth + Self.gap) + Self.gap + sideWidth)
+            var slots: [[PageCard?]] = []
+            var row: [PageCard?] = viewMode == .book ? [nil] : []
+            for card in cards {
+                row.append(card)
+                if row.count == perRow { slots.append(row); row = [] }
+            }
+            if !row.isEmpty { slots.append(row) }
+            let rowWidth = CGFloat(perRow) * pageWidth + CGFloat(perRow - 1) * Self.gap
+            var y = Self.gap
+            for r in slots {
+                let h = r.compactMap { $0?.setup.size.height }.max() ?? 0
+                var x = floor((width - sideWidth - rowWidth) / 2)
+                for card in r {
+                    if let card { card.frame = NSRect(x: x, y: y, width: card.setup.size.width, height: card.setup.size.height) }
+                    x += pageWidth + Self.gap
+                }
+                y += h + Self.gap
+            }
+            setFrameSize(NSSize(width: width, height: y))
+        }
         onLayout?()
+    }
+
+    /// Web layout: the page grows (or shrinks) with the text.
+    private func fitWebHeight() -> Bool {
+        guard viewMode == .web, let c = cards.first?.textViews.first?.textContainer else { return false }
+        let used = layoutManager.usedRect(for: c).height
+        let visible = (enclosingScrollView?.contentView.bounds.height ?? 600) - Self.gap * 2
+        let wanted = max(visible, used + 56 + 300)
+        guard cards.count > 1 || abs(wanted - webHeight) > 250 || used + 56 + 40 > webHeight else { return false }
+        webHeight = max(wanted, webHeight * (cards.count > 1 ? 2 : 1))
+        if abs(wanted - webHeight) > 250, cards.count == 1 { webHeight = wanted }
+        sectionCache = nil
+        return true
     }
 
     /// Width the view needs at least (widest page, gaps, side panel).
@@ -305,7 +421,9 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                     changed = true
                     break
                 }
-                card.setup.header = setup.header; card.setup.footer = setup.footer; card.setup.pageNumbers = setup.pageNumbers
+                card.setup.header = setup.header; card.setup.footer = setup.footer; card.setup.pageNumbers = setup.pageNumbers; card.setup.hf = setup.hf
+                if card.setup.sectionHF !== wanted.sectionHF { card.setup.sectionHF = wanted.sectionHF }
+                card.sectionIndex = sections.firstIndex { $0.index >= start } ?? sections.count
                 // Characters on the page.
                 var end = start
                 for tv in card.textViews {
@@ -335,10 +453,27 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                     let r = layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil)
                     if r.length > 0, (storage.string as NSString).character(at: NSMaxRange(r) - 1) == 0x0C { blockFrom = j + 1; break }
                 }
+                // Drop caps and floating pictures: text flows around them.
+                let floats = placeFloats(card, start: start, end: end)
                 for (j, tv) in card.textViews.enumerated() {
                     let blocked = j >= blockFrom
-                    if let c = tv.textContainer, c.exclusionPaths.isEmpty == blocked {
-                        c.exclusionPaths = blocked ? [NSBezierPath(rect: NSRect(x: -10, y: -10, width: c.size.width + 20, height: c.size.height + 20))] : []
+                    guard let c = tv.textContainer else { continue }
+                    var wanted: [NSRect] = []
+                    if blocked {
+                        wanted = [NSRect(x: -10, y: -10, width: c.size.width + 20, height: c.size.height + 20)]
+                    } else {
+                        wanted = dropCaps(in: c).map(\.rect)
+                        let origin = tv.frame.origin
+                        for f in floats where f.wrap != .behind && f.wrap != .inFront && f.wrap != .inline {
+                            var r = f.rect.offsetBy(dx: -origin.x, dy: -origin.y)
+                            if f.wrap == .topBottom { r = NSRect(x: -10, y: r.minY - 6, width: c.size.width + 20, height: r.height + 12) } else { r = r.insetBy(dx: -8, dy: -6) }
+                            if r.intersects(NSRect(origin: .zero, size: c.size)) { wanted.append(r) }
+                        }
+                    }
+                    let current = c.exclusionPaths.map(\.bounds)
+                    let same = current.count == wanted.count && zip(current, wanted).allSatisfy { abs($0.minX - $1.minX) < 0.5 && abs($0.minY - $1.minY) < 0.5 && abs($0.width - $1.width) < 0.5 && abs($0.height - $1.height) < 0.5 }
+                    if !same {
+                        c.exclusionPaths = wanted.map { NSBezierPath(rect: $0) }
                         changed = true
                     }
                 }
@@ -354,10 +489,12 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                     changed = true
                 }
             }
+            if !changed, fitWebHeight() { changed = true }
             if !changed { break }
             churn += 1
         }
         relayout()
+        refreshFields()
     }
 
     /// Edits so far (column balance is redone after each).
@@ -468,20 +605,35 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     func layoutManager(_ lm: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
                        characterIndexes charIndexes: UnsafePointer<Int>, font aFont: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
-        guard hidesDeletions, let storage = lm.textStorage, glyphRange.length > 0 else { return 0 }
+        guard let storage = lm.textStorage, glyphRange.length > 0 else { return 0 }
         let count = glyphRange.length
         let first = charIndexes[0], last = charIndexes[count - 1]
         guard first < storage.length else { return 0 }
-        var any = false
-        storage.enumerateAttribute(.docRevision, in: NSRange(location: first, length: min(storage.length, last + 1) - first)) { v, _, stop in
-            if (v as? DocRevision)?.kind == .deletion { any = true; stop.pointee = true }
+        let span = NSRange(location: first, length: min(storage.length, last + 1) - first)
+        var deletions = false, effects = false
+        if hidesDeletions {
+            storage.enumerateAttribute(.docRevision, in: span) { v, _, stop in
+                if (v as? DocRevision)?.kind == .deletion { deletions = true; stop.pointee = true }
+            }
         }
-        guard any else { return 0 }
+        for key in [NSAttributedString.Key.docAllCaps, .docSmallCaps, .docDropCap] where !effects {
+            storage.enumerateAttribute(key, in: span) { v, _, stop in if v != nil { effects = true; stop.pointee = true } }
+        }
+        guard deletions || effects else { return 0 }
         var out = Array(UnsafeBufferPointer(start: props, count: count))
-        for i in 0..<count where charIndexes[i] < storage.length {
-            if (storage.attribute(.docRevision, at: charIndexes[i], effectiveRange: nil) as? DocRevision)?.kind == .deletion { out[i] = .null }
+        if deletions {
+            for i in 0..<count where charIndexes[i] < storage.length {
+                if (storage.attribute(.docRevision, at: charIndexes[i], effectiveRange: nil) as? DocRevision)?.kind == .deletion { out[i] = .null }
+            }
         }
-        out.withUnsafeBufferPointer { lm.setGlyphs(glyphs, properties: $0.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange) }
+        let newGlyphs = effects ? Self.capitalGlyphs(storage, glyphs, &out, charIndexes, count, aFont) : nil
+        out.withUnsafeBufferPointer { pp in
+            if let g = newGlyphs {
+                g.withUnsafeBufferPointer { lm.setGlyphs($0.baseAddress!, properties: pp.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange) }
+            } else {
+                lm.setGlyphs(glyphs, properties: pp.baseAddress!, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange)
+            }
+        }
         return count
     }
 
@@ -523,6 +675,16 @@ final class PageCard: NSView {
     var setup: PageSetup { didSet { if !setup.sameGeometry(oldValue) { positionColumns() }; needsDisplay = true } }
     var number = 1 { didSet { if number != oldValue { needsDisplay = true } } }
     var total = 1 { didSet { if total != oldValue { needsDisplay = true } } }
+    weak var paged: PagedView?
+    /// Index of the card's section (sections are numbered by their breaks).
+    var sectionIndex = 0
+    var firstOfSection = true { didSet { if firstOfSection != oldValue { needsDisplay = true } } }
+    /// Web layout: no shadow, header, footer or page edge.
+    var web = false { didSet { layer?.shadowOpacity = web ? 0 : 0.16; needsDisplay = true } }
+    /// The header or footer is being edited on the page.
+    enum Editing { case header, footer }
+    var editing: Editing? { didSet { needsDisplay = true } }
+    var onHeaderDoubleClick: ((PageCard, Bool) -> Void)?
     /// Footnotes whose references are on this page, with their numbers.
     private(set) var notes: [(Int, DocNote)] = []
     private var notesKey = ""
@@ -607,18 +769,10 @@ final class PageCard: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.setFill()
+        (paged?.background ?? .white).setFill()
         bounds.fill()
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont(name: "Helvetica Neue", size: 9) ?? .systemFont(ofSize: 9),
-                                                    .foregroundColor: NSColor(white: 0.4, alpha: 1)]
-        func centered(_ s: String, y: CGFloat) {
-            let size = (s as NSString).size(withAttributes: attrs)
-            (s as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: y), withAttributes: attrs)
-        }
-        if !setup.header.isEmpty { centered(setup.header, y: max(12, setup.margins.top / 2 - 6)) }
-        let footerY = bounds.height - max(18, setup.margins.bottom / 2 + 4)
-        let footer = [setup.footer, setup.pageNumbers ? "\(number)" : ""].filter { !$0.isEmpty }.joined(separator: "   ")
-        if !footer.isEmpty { centered(footer, y: footerY) }
+        if let w = paged?.watermark, !w.isEmpty, !web { drawWatermark(w) }
+        if !web { drawHeadersAndFooters() }
 
         // Footnotes under a short rule.
         noteRects = []
@@ -644,7 +798,59 @@ final class PageCard: NSView {
             onNoteClick?(hit.1)
             return
         }
+        if event.clickCount == 2, !web {
+            if p.y < setup.margins.top { onHeaderDoubleClick?(self, true); return }
+            if p.y > bounds.height - setup.margins.bottom { onHeaderDoubleClick?(self, false); return }
+        }
         super.mouseDown(with: event)
+    }
+
+    /// The header and footer of this page, fields filled in.
+    private func drawHeadersAndFooters() {
+        let hf = setup.effectiveHeaderFooter
+        var context = paged?.fieldContext(page: number) ?? FieldContext(page: number, pages: total, info: DocInfo(), storage: nil)
+        context.page = number
+        if let tv = textViews.first, let lm = paged?.layoutManager, let c = tv.textContainer {
+            context.pageStart = lm.characterRange(forGlyphRange: lm.glyphRange(for: c), actualGlyphRange: nil).location
+        }
+        for header in [true, false] {
+            if editing == (header ? .header : .footer) {
+                // Word's look while editing: a dashed line between header and text, the part named.
+                let r = HeaderFooter.rect(setup, header: header, height: 18)
+                let y = header ? setup.margins.top - 4 : bounds.height - setup.margins.bottom + 4
+                let line = NSBezierPath()
+                line.move(to: NSPoint(x: 8, y: y)); line.line(to: NSPoint(x: bounds.width - 8, y: y))
+                line.setLineDash([4, 3], count: 2, phase: 0)
+                NSColor.systemBlue.setStroke()
+                line.lineWidth = 0.8
+                line.stroke()
+                let part = HeaderFooter.part(hf, page: number, first: firstOfSection)
+                let name = (header ? L("Header") : L("Footer")) + (part == .first ? " (" + L("first page") + ")" : part == .even ? " (" + L("even page") + ")" : "")
+                (name as NSString).draw(at: NSPoint(x: 8, y: header ? y + 2 : y - 14), withAttributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.systemBlue])
+                _ = r
+                continue
+            }
+            guard let text = hf.part(header: header, page: number, first: firstOfSection), text.length > 0 else { continue }
+            let s = Fields.resolve(text, context)
+            let h = HeaderFooter.height(s, width: setup.textSize.width)
+            s.draw(with: HeaderFooter.rect(setup, header: header, height: h), options: [.usesLineFragmentOrigin, .usesFontLeading])
+        }
+    }
+
+    private func drawWatermark(_ text: String) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let diagonal = hypot(bounds.width, bounds.height)
+        var size: CGFloat = 120
+        let font = { (s: CGFloat) in NSFont(name: "Helvetica Neue Bold", size: s) ?? .boldSystemFont(ofSize: s) }
+        var str = NSAttributedString(string: text, attributes: [.font: font(size)])
+        while str.size().width > diagonal * 0.75, size > 12 { size -= 6; str = NSAttributedString(string: text, attributes: [.font: font(size)]) }
+        str = NSAttributedString(string: text, attributes: [.font: font(size), .foregroundColor: NSColor(white: 0.75, alpha: 0.45)])
+        ctx.saveGState()
+        ctx.translateBy(x: bounds.midX, y: bounds.midY)
+        ctx.rotate(by: -atan2(bounds.height, bounds.width))
+        let sz = str.size()
+        str.draw(at: NSPoint(x: -sz.width / 2, y: -sz.height / 2))
+        ctx.restoreGState()
     }
 }
 
@@ -713,8 +919,31 @@ final class PageTextView: NSTextView {
 /// Draws dot leaders on tab characters marked `.docTabLeader` (tables of contents) and numbers footnote references.
 final class DocLayoutManager: NSLayoutManager {
     private var numbers: [Int: Int]?
+    /// Value of a field at a character index (set by the pages).
+    var fieldValue: ((DocField, Int) -> String)?
+    /// Fields have a grey background on screen.
+    var shadesFields = false
 
     func notesChanged() { numbers = nil }
+
+    /// A drop cap's room in its container, its letter, and where the letter's top goes.
+    func dropCap(at index: Int, lines: Int) -> (rect: NSRect, letter: NSAttributedString, top: CGFloat)? {
+        guard let storage = textStorage, index < storage.length else { return nil }
+        let g = glyphIndexForCharacter(at: index)
+        guard g < numberOfGlyphs else { return nil }
+        let line = lineFragmentRect(forGlyphAt: g, effectiveRange: nil, withoutAdditionalLayout: true)
+        let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont ?? Styles.normal.font
+        let p = storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle
+        let lineHeight = defaultLineHeight(for: font) * max(1, p?.lineHeightMultiple ?? 1)
+        let capFont = PagedView.dropCapFont(font, lines: lines, lineHeight: lineHeight)
+        var attrs: [NSAttributedString.Key: Any] = [.font: capFont]
+        attrs[.foregroundColor] = storage.attribute(.foregroundColor, at: index, effectiveRange: nil) ?? NSColor.black
+        let letter = NSAttributedString(string: (storage.string as NSString).substring(with: NSRange(location: index, length: 1)), attributes: attrs)
+        let next = g + 1 < numberOfGlyphs ? g + 1 : g
+        let baseline = line.minY + location(forGlyphAt: next).y
+        let top = baseline - font.capHeight - capFont.ascender + capFont.capHeight
+        return (NSRect(x: p?.firstLineHeadIndent ?? 0, y: line.minY, width: ceil(letter.size().width) + 4, height: lineHeight * CGFloat(lines) - 2), letter, top)
+    }
 
     /// Footnote number of the reference at a character index (1-based, in text order).
     func noteNumber(at index: Int) -> Int {
@@ -736,6 +965,10 @@ final class DocLayoutManager: NSLayoutManager {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
         guard let storage = textStorage else { return }
         let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        storage.enumerateAttribute(.docDropCap, in: chars) { v, r, _ in
+            guard let lines = v as? Int, lines > 1, let cap = dropCap(at: r.location, lines: lines) else { return }
+            cap.letter.draw(at: NSPoint(x: origin.x + cap.rect.minX, y: origin.y + cap.top))
+        }
         storage.enumerateAttribute(.docTabLeader, in: chars) { v, r, _ in
             guard v != nil else { return }
             for c in r.location..<NSMaxRange(r) where (storage.string as NSString).character(at: c) == 9 {

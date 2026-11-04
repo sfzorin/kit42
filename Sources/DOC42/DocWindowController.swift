@@ -7,12 +7,51 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     private(set) lazy var paged = PagedView(storage: storage, setup: PageSetup()) { [unowned self] tv in self.configureTextView(tv) }
     /// Text views of all pages share selection and typing attributes; the first one stands for all.
     var textView: NSTextView { paged.textViews[0] }
+    /// The text view formatting commands act on: a header or footer being edited, else the body.
+    var activeTextView: NSTextView { headerEditor?.textView ?? textView }
+    /// Header or footer being edited on the page.
+    var headerEditor: HeaderEditor? {
+        get { extras.headerEditor }
+        set { extras.headerEditor = newValue }
+    }
+    /// Styles and Navigator on the right, status bar at the bottom.
+    private(set) lazy var sidebar = DocSidebar(editor: self)
+    let statusBar = DocStatusBar()
+    private var sidebarWidth: NSLayoutConstraint?
+    var statusHeight: NSLayoutConstraint?
+    final class Extras {
+        var headerEditor: HeaderEditor?
+        var languageKey = -1
+        var statusScheduled = false
+        var renumberScheduled = false
+        var panelsBefore: (ruler: Bool, comments: Bool, sidebar: DocSidebar.Page?, status: Bool)?
+    }
+    let extras = Extras()
+    let extras2 = EditorExtras2()
+    var languageKey: Int {
+        get { extras.languageKey }
+        set { extras.languageKey = newValue }
+    }
     private let scrollView = NSScrollView()
     let ruler = DocRuler()
     private var rulerHeight: NSLayoutConstraint?
     private let toolbarController = ToolbarController(identifier: "DOC42.toolbar", elements: Cmd.toolbar)
     private lazy var stylePopup = stripPopUp(Styles.all.map(\.name), width: 128, toolTip: L("Paragraph style"),
                                              target: self, action: #selector(styleChanged(_:)))
+    /// Paragraph styles in the style popup, in its order.
+    private var popupStyles: [String] = []
+
+    func rebuildStylePopup() {
+        let list = styleSheet.paragraphStyles.filter { !$0.hidden }
+        let order = StyleSheet.builtins.map(\.id)
+        let sorted = list.sorted { a, b in
+            let ia = order.firstIndex(of: a.id) ?? Int.max, ib = order.firstIndex(of: b.id) ?? Int.max
+            return ia != ib ? ia < ib : a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
+        }
+        popupStyles = sorted.map(\.id)
+        stylePopup.removeAllItems()
+        stylePopup.addItems(withTitles: sorted.map(\.displayName))
+    }
     private lazy var fontPopup = stripPopUp(["Helvetica Neue", "Arial", "Times New Roman", "Georgia", "Palatino", "Avenir Next", "Calibri", "Courier New", "Menlo"],
                                             width: 128, toolTip: L("Font"), target: self, action: #selector(fontChanged(_:)))
     private lazy var sizeStepper: SizeStepper = {
@@ -125,6 +164,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     override var document: AnyObject? {
         didSet {
             setupDidChange()
+            paged.info = { [weak self] in self?.doc?.fieldInfo ?? DocInfo() }
+            pageLookDidChange()
+            rebuildStylePopup()
             paged.hidesDeletions = !review.showMarkup
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -138,11 +180,13 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     private func setupContent() {
         scrollView.documentView = paged
+        paged.onHeaderDoubleClick = { [weak self] card, header in self?.beginHeaderEdit(card, header: header) }
+        paged.onFloatMouseDown = { [weak self] view, event in self?.floatMouseDown(view, event) }
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.allowsMagnification = true
-        scrollView.minMagnification = 0.5
+        scrollView.minMagnification = 0.25
         scrollView.maxMagnification = 3
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -151,12 +195,24 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         ruler.translatesAutoresizingMaskIntoConstraints = false
         ruler.paged = paged
         root.addSubview(ruler)
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(sidebar)
+        root.addSubview(statusBar)
+        let sidebarPage = UserDefaults.standard.object(forKey: "doc.sidebar") as? Int ?? -1
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: sidebarPage >= 0 ? DocSidebar.width : 0)
+        sidebar.isHidden = sidebarPage < 0
+        let statusShown = UserDefaults.standard.object(forKey: "doc.statusBar") as? Bool ?? true
+        statusHeight = statusBar.heightAnchor.constraint(equalToConstant: statusShown ? DocStatusBar.height : 0)
+        statusBar.isHidden = !statusShown
+        statusBar.onZoom = { [weak self] z in self?.scrollView.magnification = z }
+        statusBar.onLayout = { [weak self] m in self?.setViewMode(m) }
         let rulerShown = UserDefaults.standard.object(forKey: "doc.ruler") as? Bool ?? true
         rulerHeight = ruler.heightAnchor.constraint(equalToConstant: rulerShown ? DocRuler.height : 0)
         ruler.isHidden = !rulerShown
         ruler.onMargins = { [weak self] left, right in self?.setMargins(left: left, right: right) }
         ruler.onIndents = { [weak self] first, head, tail in self?.setIndents(firstLine: first, head: head, tail: tail) }
-        paged.onLayout = { [weak self] in self?.layoutComments() }
+        paged.onLayout = { [weak self] in self?.layoutComments(); self?.updateImageHandles() }
         paged.onNoteClick = { [weak self] in self?.editNote($0) }
         NSLayoutConstraint.activate([
             ruler.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
@@ -165,9 +221,18 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             rulerHeight!,
             scrollView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            sidebar.topAnchor.constraint(equalTo: ruler.bottomAnchor),
+            sidebar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            sidebarWidth!,
+            statusBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            statusHeight!,
         ])
+        if sidebarPage >= 0 { sidebar.show(DocSidebar.Page(rawValue: sidebarPage) ?? .styles) }
         window?.contentView = root
         scrollView.contentView.postsFrameChangedNotifications = true
         scrollView.contentView.postsBoundsChangedNotifications = true
@@ -175,7 +240,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: scrollView.contentView, queue: .main) { [weak self] _ in
                 self?.ruler.needsDisplay = true
-                if let self { self.window?.invalidateCursorRects(for: self.ruler) }
+                if let self { self.window?.invalidateCursorRects(for: self.ruler); self.statusBar.setZoom(self.scrollView.magnification) }
                 guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.minimumWidth)) > 1 else { return }
                 self.paged.relayout()
             }
@@ -192,6 +257,41 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         updateStatus()
         comments.highlightKey = ""   // edits can drop the highlight (temporary attributes)
         syncRulerSetup()
+        sidebar.navigator.scheduleReload()
+        scheduleStatusBar()
+        scheduleRenumber()
+    }
+
+    /// Status bar after edits and moves, at most once per run loop pass.
+    func scheduleStatusBar() {
+        guard !extras.statusScheduled else { return }
+        extras.statusScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.extras.statusScheduled = false
+            self?.updateStatusBar()
+        }
+    }
+
+    /// Opens or closes the side panel on a page (Styles, Navigator).
+    func toggleSidebar(_ page: DocSidebar.Page) {
+        if !sidebar.isHidden, sidebar.page == page { setSidebar(nil) } else { setSidebar(page) }
+        UserDefaults.standard.set(sidebar.isHidden ? -1 : sidebar.page.rawValue, forKey: "doc.sidebar")
+    }
+
+    func setSidebar(_ page: DocSidebar.Page?) {
+        sidebar.isHidden = page == nil
+        sidebarWidth?.constant = page == nil ? 0 : DocSidebar.width
+        if let page { sidebar.show(page) }
+    }
+
+    /// Page colour, watermark or hyphenation changed.
+    func pageLookDidChange() {
+        guard let doc else { return }
+        paged.background = doc.background
+        paged.watermark = doc.watermark
+        paged.layoutManager.hyphenationFactor = doc.hyphenate ? 0.9 : 0
+        paged.layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+        paged.scheduleReconcile()
     }
 
     /// Track changes: user edits that remove text keep it as a deletion (see Revisions.swift).
@@ -204,6 +304,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         syncRuler()
         syncRulerSetup()
         layoutComments()
+        sidebar.styles.syncSelection()
+        scheduleStatusBar()
+        if let i = extras2.imageIndex {
+            let sel = textView.selectedRange()
+            if !(sel.location == i || sel.location == i + 1 || NSLocationInRange(i, sel)) { selectImage(nil) }
+        }
     }
 
     /// The ruler shows the page and section of the cursor.
@@ -229,22 +335,31 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     var currentAttributes: [NSAttributedString.Key: Any] {
-        let r = textView.selectedRange()
-        if r.length > 0, r.location < textView.textStorage!.length {
-            return textView.textStorage!.attributes(at: r.location, effectiveRange: nil)
+        let tv = activeTextView
+        let r = tv.selectedRange()
+        if r.length > 0, r.location < tv.textStorage!.length {
+            return tv.textStorage!.attributes(at: r.location, effectiveRange: nil)
         }
-        return textView.typingAttributes
+        // The paragraph style key belongs to the paragraph, also with an empty selection.
+        var a = tv.typingAttributes
+        if let s = tv.textStorage, s.length > 0, headerEditor == nil {
+            let p = (s.string as NSString).paragraphRange(for: NSRange(location: min(r.location, s.length), length: 0))
+            let at = min(p.location, s.length - 1)
+            a[Styles.styleKey] = p.length > 0 || r.location < s.length ? s.attribute(Styles.styleKey, at: at, effectiveRange: nil) : a[Styles.styleKey]
+        }
+        return a
     }
 
-    private func syncControls() {
+    func syncControls() {
         let attrs = currentAttributes
         if let font = attrs[.font] as? NSFont {
             let family = font.familyName ?? font.fontName
             if fontPopup.item(withTitle: family) == nil { fontPopup.addItem(withTitle: family) }
             fontPopup.selectItem(withTitle: family)
             sizeStepper.value = font.pointSize
-            let style = Styles.all.firstIndex { abs($0.size - font.pointSize) < 0.5 && ($0.weight != .regular) == NSFontManager.shared.traits(of: font).contains(.boldFontMask) }
-            stylePopup.selectItem(at: style ?? Styles.all.firstIndex { $0.name == Styles.normal.name }!)
+            if popupStyles.isEmpty { rebuildStylePopup() }
+            let id = attrs[Styles.styleKey] as? String ?? "Normal"
+            if let i = popupStyles.firstIndex(of: id) { stylePopup.selectItem(at: i) } else { stylePopup.select(nil) }
             let traits = NSFontManager.shared.traits(of: font)
             formatStrip.setState(traits.contains(.boldFontMask), for: #selector(toggleBold(_:)))
             formatStrip.setState(traits.contains(.italicFontMask), for: #selector(toggleItalic(_:)))
@@ -264,6 +379,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     /// Applies a change to every selected range (or the typing attributes), undoably.
     private func applyFont(_ transform: (NSFont) -> NSFont) {
+        let textView = activeTextView
         let ranges = textView.selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
         guard let storage = textView.textStorage else { return }
         if ranges.isEmpty {
@@ -285,7 +401,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         syncControls()
     }
 
-    private func applyAttribute(_ key: NSAttributedString.Key, _ value: Any?) {
+    func applyAttribute(_ key: NSAttributedString.Key, _ value: Any?) {
+        let textView = activeTextView
         let ranges = textView.selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
         guard let storage = textView.textStorage else { return }
         if ranges.isEmpty {
@@ -303,11 +420,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     /// Paragraph ranges touched by the selection.
     var paragraphRanges: [NSRange] {
-        let ns = textView.string as NSString
-        return textView.selectedRanges.map { ns.paragraphRange(for: $0.rangeValue) }
+        let ns = activeTextView.string as NSString
+        return activeTextView.selectedRanges.map { ns.paragraphRange(for: $0.rangeValue) }
     }
 
     func applyParagraph(_ transform: (NSMutableParagraphStyle) -> Void) {
+        let textView = activeTextView
         guard let storage = textView.textStorage else { return }
         let ranges = paragraphRanges
         let current = (currentAttributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
@@ -370,14 +488,14 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     @objc private func styleChanged(_ sender: NSPopUpButton) {
         let i = sender.indexOfSelectedItem
-        guard i >= 0, i < Styles.all.count else { return }
-        applyStyle(Styles.all[i])
+        guard i >= 0, i < popupStyles.count else { return }
+        applyParagraphStyle(popupStyles[i])
     }
 
     @objc func applyStyleAction(_ sender: Any?) {
         let i = commandTag(of: sender)
-        guard i >= 0, i < Styles.all.count else { return }
-        applyStyle(Styles.all[i])
+        guard i >= 0, i < Styles.wordIds.count else { return }
+        applyParagraphStyle(Styles.wordIds[i] ?? "Normal")
     }
 
     private func applyStyle(_ style: Styles) {
@@ -483,6 +601,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     // MARK: - Insert
 
     func insert(_ s: NSAttributedString) {
+        let textView = activeTextView
         let r = textView.selectedRange()
         guard textView.shouldChangeText(in: r, replacementString: s.string) else { return }
         textView.textStorage?.replaceCharacters(in: r, with: s)
@@ -493,6 +612,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     private func imageAttachment(_ image: NSImage, width: CGFloat) -> NSAttributedString {
         let attachment = NSTextAttachment()
+        attachment.attachmentCell = ImageCell(imageCell: image)
         let maxWidth = paged.setup(at: textView.selectedRange().location).columnWidth
         let w = min(width, maxWidth)
         let size = NSSize(width: w, height: w * image.size.height / max(1, image.size.width))
@@ -532,35 +652,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         }
     }
 
-    @objc func insertTableAction(_ sender: Any?) {
-        let rows = NSTextField(string: "3"), cols = NSTextField(string: "3")
-        let alert = NSAlert.form(L("Insert Table"), ok: L("Insert"), rows: [(L("Rows:"), rows), (L("Columns:"), cols)])
-        guard alert.runModal() == .alertFirstButtonReturn,
-              let r = Int(rows.stringValue), let c = Int(cols.stringValue), (1...100).contains(r), (1...20).contains(c) else { return }
-        let table = NSTextTable()
-        table.numberOfColumns = c
-        table.collapsesBorders = true
-        table.layoutAlgorithm = .automaticLayoutAlgorithm
-        let out = NSMutableAttributedString()
-        let font = (textView.typingAttributes[.font] as? NSFont) ?? Styles.normal.font
-        let start = textView.selectedRange().location
-        if start > 0 { out.append(NSAttributedString(string: "\n", attributes: [.font: font])) }
-        for row in 0..<r {
-            for col in 0..<c {
-                let block = NSTextTableBlock(table: table, startingRow: row, rowSpan: 1, startingColumn: col, columnSpan: 1)
-                block.setWidth(1, type: .absoluteValueType, for: .border)
-                block.setBorderColor(NSColor(white: 0.6, alpha: 1))
-                block.setWidth(5, type: .absoluteValueType, for: .padding)
-                block.setValue(100 / CGFloat(c), type: .percentageValueType, for: .width)
-                let p = NSMutableParagraphStyle()
-                p.textBlocks = [block]
-                out.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: p]))
-            }
-        }
-        insert(out)
-        textView.setSelectedRange(NSRange(location: start + (start > 0 ? 1 : 0), length: 0))
-    }
-
     @objc func insertPageBreakAction(_ sender: Any?) {
         insert(NSAttributedString(string: "\u{000C}", attributes: textView.typingAttributes))
     }
@@ -572,7 +663,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     // MARK: - View & export
 
     @objc func zoomInAction(_ sender: Any?) { scrollView.magnification = min(3, scrollView.magnification + 0.1) }
-    @objc func zoomOutAction(_ sender: Any?) { scrollView.magnification = max(0.5, scrollView.magnification - 0.1) }
+    @objc func zoomOutAction(_ sender: Any?) { scrollView.magnification = max(0.25, scrollView.magnification - 0.1) }
     @objc func actualSizeAction(_ sender: Any?) { scrollView.magnification = 1 }
     func setZoom(_ z: CGFloat) { scrollView.magnification = z }
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
@@ -645,18 +736,26 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool { true }
 
-    /// Ruler and comments shown before "Hide All Panels", brought back after.
-    private var panelsBefore: (ruler: Bool, comments: Bool)?
+    /// Ruler, comments, side panel and status bar shown before "Hide All Panels", brought back after.
+    private var panelsBefore: (ruler: Bool, comments: Bool, sidebar: DocSidebar.Page?, status: Bool)? {
+        get { extras.panelsBefore }
+        set { extras.panelsBefore = newValue }
+    }
 
     @objc func toggleAllPanelsAction(_ sender: Any?) {
         Panels.toggleAll(in: window) { [self] hide in
             if hide {
-                panelsBefore = (!ruler.isHidden, comments.shown)
+                panelsBefore = (!ruler.isHidden, comments.shown, sidebar.isHidden ? nil : sidebar.page, !statusBar.isHidden)
                 if !ruler.isHidden { toggleRulerAction(nil) }
                 if comments.shown { toggleCommentsAction(nil) }
+                // Temporary: not remembered for the next window.
+                setSidebar(nil)
+                setStatusBar(shown: false)
             } else if let before = panelsBefore {
                 if before.ruler, ruler.isHidden { toggleRulerAction(nil) }
                 if before.comments, !comments.shown { toggleCommentsAction(nil) }
+                setSidebar(before.sidebar)
+                setStatusBar(shown: before.status)
                 panelsBefore = nil
             }
         }
@@ -687,7 +786,18 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             item.title = formatStrip.isShown ? L("Hide Format Bar") : L("Show Format Bar")
         case #selector(marginPresetAction(_:)): item.state = currentMarginPreset() == item.tag ? .on : .off
         case #selector(orientationAction(_:)): item.state = isLandscape == (item.tag == 1) ? .on : .off
-        case #selector(togglePageNumbersAction(_:)): item.state = doc?.setup.pageNumbers == true ? .on : .off
+        case #selector(togglePageNumbersAction(_:)): item.state = hasPageNumbers ? .on : .off
+        case #selector(toggleStylesAction(_:)): item.state = !sidebar.isHidden && sidebar.page == .styles ? .on : .off
+        case #selector(toggleNavigatorAction(_:)): item.state = !sidebar.isHidden && sidebar.page == .navigator ? .on : .off
+        case #selector(toggleStatusBarAction(_:)): item.title = statusBar.isHidden ? L("Show Status Bar") : L("Hide Status Bar")
+        case #selector(viewModeAction(_:)): item.state = paged.viewMode.rawValue == item.tag ? .on : .off
+        case #selector(mergeCellsAction(_:)), #selector(splitCellsAction(_:)), #selector(sortTableAction(_:)), #selector(tableFormulaAction(_:)),
+             #selector(tableToTextAction(_:)), #selector(tablePropertiesAction(_:)), #selector(tableAutoFormatAction(_:)): return isInTable
+        case #selector(textToTableAction(_:)): return !isInTable
+        case #selector(toggleHyphenationAction(_:)): item.state = doc?.hyphenate == true ? .on : .off
+        case #selector(applyCharacterStyleAction(_:)):
+            let ids = [nil] + styleSheet.characterStyles.map(\.id)
+            item.state = ids.indices.contains(item.tag) && ids[item.tag] == currentAttributes[.docCharStyle] as? String ? .on : .off
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)), #selector(deleteTableAction(_:)): return isInTable
         case #selector(columnsAction(_:)): item.state = paged.setup(at: textView.selectedRange().location).columns == item.tag + 1 ? .on : .off
         case #selector(editFootnoteAction(_:)), #selector(deleteFootnoteAction(_:)): return noteAtCursor != nil
