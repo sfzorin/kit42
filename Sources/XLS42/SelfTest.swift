@@ -60,6 +60,7 @@ enum SelfTest {
         print(inserted == "=SUM(A1:A13)+B8" ? "ok  " : "FAIL", "insert rows →", inserted)
         failed += features()
         failed += functions()
+        failed += dataTools()
         failed += pivotFiles()
         failed += colors()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
