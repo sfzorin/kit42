@@ -100,7 +100,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         scrollView.documentView = grid
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
-        scrollView.backgroundColor = .white
+        scrollView.backgroundColor = NSColor(name: nil) { SheetPalette.current($0).background }
         scrollView.drawsBackground = true
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentView.postsBoundsChangedNotifications = true
@@ -138,7 +138,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let corner = CornerView()
         corner.onClick = { [weak self] in self?.grid.selectAllCells() }
         signatureHint.drawsBackground = true
-        signatureHint.backgroundColor = NSColor(srgbRed: 1, green: 0.99, blue: 0.88, alpha: 1)
+        signatureHint.backgroundColor = NSColor(name: nil) { SheetPalette.current($0).hintFill }
         signatureHint.isBordered = true
         signatureHint.isHidden = true
         signatureHint.lineBreakMode = .byTruncatingTail
@@ -426,6 +426,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             wb.sheets[i].name = name
             // Keep references to the sheet working.
             for si in wb.sheets.indices {
+                if wb.sheets[si].pivot?.sourceSheet.caseInsensitiveCompare(old) == .orderedSame { wb.sheets[si].pivot?.sourceSheet = name }
                 for (ref, cell) in wb.sheets[si].cells where cell.isFormula && cell.input.localizedCaseInsensitiveContains(old) {
                     guard let e = try? Formula.parse(cell.input) else { continue }
                     let renamed = Self.renameSheetRefs(e, from: old, to: name)

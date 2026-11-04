@@ -32,6 +32,9 @@ if let i = CommandLine.arguments.firstIndex(of: "--info"), CommandLine.arguments
             print("  outline rows \(s.rowLevels.sorted { $0.key < $1.key }.map { "\($0.key + 1):\($0.value)" }) hidden \(s.outlineHiddenRows.sorted().map { $0 + 1 })"
                   + " cols \(s.colLevels.sorted { $0.key < $1.key }.map { "\(CellRef.columnName($0.key)):\($0.value)" }) hidden \(s.outlineHiddenCols.sorted().map(CellRef.columnName))")
         }
+        if let p = s.pivot {
+            print("  pivot \(p.name) source \(p.sourceSheet)!\(p.source.a1) row \(p.rowField) col \(p.colField.map(String.init) ?? "-") value \(p.valueField) \(p.aggregate) at \(p.anchor.a1) location \(p.location?.a1 ?? "-") fields \(p.fieldNames)")
+        }
         if let p = s.protection {
             print("  protected hash \(p.passwordHash ?? "-") sha512 \(p.sha512Hash != nil) ods \(p.odsKey != nil); unlocked \(s.cells.filter { !$0.value.style.locked }.keys.sorted().map(\.a1))")
         }
@@ -45,6 +48,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--convert"), CommandLine.argume
     let args = CommandLine.arguments
     var wb = Calculator.recalculate(try SpreadsheetFile.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))))
     if args.contains("freeze") { wb.sheets[0].frozenRows = 3; wb.sheets[0].frozenCols = 1 }
+    // "refresh": rebuild every pivot table from its source (as Data › Refresh Pivot Table does).
+    if args.contains("refresh") { for i in wb.sheets.indices where wb.sheets[i].pivot != nil { Pivot.refresh(&wb, sheet: i) } }
     let out = URL(fileURLWithPath: args[i + 2])
     let data: Data
     switch out.pathExtension.lowercased() {
@@ -54,6 +59,15 @@ if let i = CommandLine.arguments.firstIndex(of: "--convert"), CommandLine.argume
     }
     try data.write(to: out)
     print("\(out.pathExtension): \(data.count) bytes")
+    exit(0)
+}
+
+// XLS42 --pivot-demo out.(xlsx|ods): a data sheet with a cross-tab pivot and a one-field pivot (for format checks)
+if let i = CommandLine.arguments.firstIndex(of: "--pivot-demo"), CommandLine.arguments.count > i + 1 {
+    let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let data = SelfTest.pivotDemo()
+    try (out.pathExtension.lowercased() == "ods" ? ODS.write(data) : XLSX.write(data)).write(to: out)
+    print("wrote \(out.path)")
     exit(0)
 }
 

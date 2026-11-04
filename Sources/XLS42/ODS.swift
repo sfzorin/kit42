@@ -167,6 +167,7 @@ enum ODS {
                 wb.names[name] = (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
             }
         }
+        PivotFiles.readODS(spreadsheet, &wb)
         // Freeze panes and gridlines from settings.xml
         if let settings = xml("settings.xml") {
             for map in descendantsNamed(settings, "config-item-map-named") where map.attr("name") == "Tables" {
@@ -541,6 +542,7 @@ enum ODS {
             }
             body += "</table:named-expressions>"
         }
+        body += PivotFiles.odsXML(wb)
 
         let ns = """
         xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" \

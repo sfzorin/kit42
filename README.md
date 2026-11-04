@@ -89,7 +89,14 @@ Finder › Get Info › Open with › Change All.
 - Data › Validation…: list (values or a range like `=$H$1:$H$5`, drop-down arrow in the cell, ⌥↓), whole number,
   decimal, date, time, text length, custom formula; stop/warning/information messages. Saved to .xlsx and .ods.
 - Data › Pivot Table…: row field, optional column field, value field with Sum/Count/Average/Min/Max on a new sheet
-  with totals; Refresh Pivot Table re-runs it (settings are kept while the document is open, not saved in the file).
+  with totals. Saved as a real pivot table — .xlsx pivot cache + pivot table parts (refreshed on load by Excel,
+  imported as a DataPilot by LibreOffice), .ods `table:data-pilot-tables` — with the result cells written as usual.
+  Pivot tables from Excel/LibreOffice files are read too, so Refresh Pivot Table works after reopening; it rebuilds
+  from the source (a source that grew or shrank is replaced by its current region; fields follow their header names).
+  One pivot per sheet, one row/column/value field: richer pivots refresh in XLS42's simpler layout.
+- Dark mode: cells without a fill are dark with light text (headers, gridlines, gutters, charts, buttons follow);
+  fills and colours from the file stay, text on them stays readable, near-black text/borders are lifted. Printing
+  and PDF export stay light.
 - Data › Group / Ungroup (⌥⇧⌘→/←, up to 7 levels): +/− and level buttons in a gutter beside the headers;
   outline levels and collapsed groups are saved to .xlsx, .ods and read from .xls.
 - Data › Protect Sheet… with optional password; Format › Protection › Locked per cell. Locked cells refuse edits

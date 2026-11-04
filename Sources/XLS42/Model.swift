@@ -204,7 +204,7 @@ struct Sheet {
     var outlineHiddenCols: Set<Int> = []
     /// Sheet protection: when set, locked cells can't be edited.
     var protection: SheetProtection?
-    /// Settings that produced this sheet as a pivot table (for Refresh; not saved to files).
+    /// Pivot table on this sheet (its settings, for Refresh; saved as a pivot table in .xlsx / .ods).
     var pivot: PivotSpec?
 
     init(name: String) { self.name = name }
@@ -272,6 +272,12 @@ struct PivotSpec {
     var colField: Int?
     var valueField: Int
     var aggregate: Aggregate
+    /// Top-left cell of the result on its sheet, and the range the result last covered.
+    var anchor = CellRef(row: 0, col: 0)
+    var location: CellRange?
+    /// Field names of the source's header row when the pivot was made (fields follow their names on refresh).
+    var fieldNames: [String] = []
+    var name = "PivotTable1"
 }
 
 /// Conditional formatting rule (subset of Excel's): comparisons, text contains, colour scale, data bar.

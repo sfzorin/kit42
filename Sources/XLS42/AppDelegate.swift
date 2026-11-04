@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Autosave every 30 s to a backup location (not over the file): documents survive a crash.
         NSDocumentController.shared.autosavingDelay = 30
+        // Debug hook: K42_APPEARANCE=dark|light forces the appearance before any window opens (snapshot checks).
+        if let mode = ProcessInfo.processInfo.environment["K42_APPEARANCE"] {
+            NSApp.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
+        }
         NSApp.mainMenu = MenuBar.build(Cmd.menuBar)
     }
 
@@ -21,6 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.activate()
+        // Debug hook: K42_OPEN=/path/file.xlsx opens a document at launch (snapshot checks of the unbundled binary).
+        if let path = ProcessInfo.processInfo.environment["K42_OPEN"] {
+            NSDocumentController.shared.openDocument(withContentsOf: URL(fileURLWithPath: path), display: true) { _, _, _ in }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
             if NSDocumentController.shared.documents.isEmpty { welcome.showWindow(nil) }
         }
@@ -37,15 +45,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // K42_ACTION=insertFunctionAction: sends a command (non-modal dialogs: wizard, find panel).
             if let action = env["K42_ACTION"], let path = env["K42_SNAPSHOT"] {
-                NSApp.sendAction(NSSelectorFromString(action), to: editor, from: nil)
-                // The dialog itself goes to <snapshot>-dialog.png; a sheet is closed so the app can quit.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    guard let dialog = editor.window?.attachedSheet ?? editor.findPanel?.window ?? editor.functionWizard?.window,
+                // The dialog itself goes to <snapshot>-dialog.png; a sheet is closed and a modal alert
+                // cancelled so the app can quit. A run-loop timer scheduled first: modal dialogs block
+                // sendAction, and nested main-queue blocks don't run while this one does.
+                let capture = Timer(timeInterval: 0.6, repeats: false) { _ in
+                    let modal = NSApp.modalWindow
+                    guard let dialog = modal ?? editor.window?.attachedSheet ?? editor.findPanel?.window ?? editor.functionWizard?.window,
                           let frame = dialog.contentView?.superview, let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return }
                     frame.cacheDisplay(in: frame.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-dialog.png")))
-                    if dialog.sheetParent != nil { editor.window?.endSheet(dialog) } else { dialog.orderOut(nil) }
+                    if modal != nil { NSApp.abortModal(); dialog.orderOut(nil) }
+                    else if dialog.sheetParent != nil { editor.window?.endSheet(dialog) } else { dialog.orderOut(nil) }
                 }
+                RunLoop.main.add(capture, forMode: .common)
+                NSApp.sendAction(NSSelectorFromString(action), to: editor, from: nil)
             }
         }
     }
