@@ -261,11 +261,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if env["K42_RESIZE"] != nil { w.resizeAction(nil) }
             if env["K42_DESCRIPTION"] != nil { w.imageDescriptionAction(nil) }
             if env["K42_EXPORT"] != nil { w.exportAction(nil) }
+            // K42_EXPORT_ACCESSORY: the export panel's options view in a plain window (the save panel itself is
+            // out-of-process and blank in snapshots).
+            if env["K42_EXPORT_ACCESSORY"] != nil {
+                let options = ExportOptions(sourceType: .jpeg, hasAlpha: false, panel: NSSavePanel())
+                let win = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 440, height: 140), styleMask: [.titled], backing: .buffered, defer: false)
+                win.contentView = options.view
+                objc_setAssociatedObject(win, "options", options, .OBJC_ASSOCIATION_RETAIN)
+                win.makeKeyAndOrderFront(nil)
+            }
             if env["K42_UNDO"] != nil { w.undo.undo() }
             if env["K42_SAVE"] != nil { w.save(confirmed: true) { ok in print("saved:", ok) } }
             if env["K42_FULLSCREEN"] != nil { w.window?.toggleFullScreen(nil) }
             if env["K42_HIDE_ALL"] != nil { w.toggleAllPanelsAction(nil) }
             self.liveTextHooks(w, env)
+            // K42_DUMP_CANVAS prints the canvas view tree with appearances and layer colours (dark mode checks).
+            if env["K42_DUMP_CANVAS"] != nil {
+                func dump(_ v: NSView, _ d: Int) {
+                    print(String(repeating: "  ", count: d) + "\(type(of: v)) \(v.frame) appearance=\(v.effectiveAppearance.name.rawValue) layerBG=\(String(describing: v.layer?.backgroundColor))")
+                    if d < 3 { v.subviews.forEach { dump($0, d + 1) } }
+                }
+                dump(w.canvas, 0)
+            }
         }
     }
 

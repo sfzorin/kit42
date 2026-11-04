@@ -1,6 +1,10 @@
 import AppKit
 import QuartzCore
 
+extension NSAppearance {
+    var isDark: Bool { bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+}
+
 /// Keeps a document smaller than the viewport centred.
 final class CenteringClipView: NSClipView {
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
@@ -19,12 +23,19 @@ final class CanvasDocumentView: NSView {
     var magnification: () -> CGFloat = { 1 }
     override var isFlipped: Bool { true }
 
-    override func draw(_ dirtyRect: NSRect) {
+    /// Checkerboard squares: light in light mode, dark grey in dark mode (like Preview).
+    static let checkerLight = NSColor(name: "IMG42.checkerLight") { $0.isDark ? NSColor(white: 0.30, alpha: 1) : .white }
+    static let checkerDark = NSColor(name: "IMG42.checkerDark") { $0.isDark ? NSColor(white: 0.22, alpha: 1) : NSColor(white: 0.84, alpha: 1) }
+
+    override func draw(_ rect: NSRect) {
         guard showsCheckerboard else { return }
+        // Views do not clip to bounds (macOS 14+): the dirty rect may cover the whole viewport.
+        let dirtyRect = rect.intersection(bounds)
+        guard !dirtyRect.isEmpty else { return }
         let square = 8 / max(0.0001, magnification())
-        NSColor(white: 1, alpha: 1).setFill()
+        Self.checkerLight.setFill()
         dirtyRect.fill()
-        NSColor(white: 0.84, alpha: 1).setFill()
+        Self.checkerDark.setFill()
         let x0 = Int(floor(dirtyRect.minX / square)), x1 = Int(ceil(dirtyRect.maxX / square))
         let y0 = Int(floor(dirtyRect.minY / square)), y1 = Int(ceil(dirtyRect.maxY / square))
         guard (x1 - x0) * (y1 - y0) < 400_000 else { return }
