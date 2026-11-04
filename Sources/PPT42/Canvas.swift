@@ -2,6 +2,14 @@ import AppKit
 import Kit42
 import UniformTypeIdentifiers
 
+extension NSScrollView {
+    /// Content size minus the content insets (the toolbar and titlebar accessories of a full-size content view).
+    var visibleContentSize: CGSize {
+        let s = contentSize, i = contentInsets
+        return CGSize(width: max(1, s.width - i.left - i.right), height: max(1, s.height - i.top - i.bottom))
+    }
+}
+
 /// What a click-drag on the canvas creates.
 enum InsertTool: Equatable {
     case textBox
@@ -42,7 +50,8 @@ final class SlideCanvas: NSView {
 
     // MARK: - Geometry
 
-    private var visibleSize: CGSize { enclosingScrollView?.contentSize ?? bounds.size }
+    /// The part of the scroll view not covered by the toolbar and format bar (full-size content view insets).
+    private var visibleSize: CGSize { enclosingScrollView?.visibleContentSize ?? bounds.size }
 
     var fitScale: CGFloat {
         let v = visibleSize, s = deck.size
@@ -75,6 +84,10 @@ final class SlideCanvas: NSView {
         guard let clip = enclosingScrollView?.contentView else { return }
         clip.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: clip, queue: .main) { [weak self] _ in self?.updateFrame() }
+        if let scroll = enclosingScrollView {
+            scroll.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scroll, queue: .main) { [weak self] _ in self?.updateFrame() }
+        }
     }
 
     func slideChanged() {
@@ -93,6 +106,10 @@ final class SlideCanvas: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext, let owner else { return }
+        // Insets or the notes pane changed without a frame notification: fit again.
+        let v = visibleSize, s = deck.size
+        let want = CGSize(width: max(v.width, s.width * scale + margin * 2), height: max(v.height, s.height * scale + margin * 2))
+        if abs(want.width - frame.width) > 0.5 || abs(want.height - frame.height) > 0.5 { DispatchQueue.main.async { [weak self] in self?.updateFrame() } }
         NSColor.underPageBackgroundColor.setFill()
         dirtyRect.fill()
         guard !deck.slides.isEmpty || isMaster else {
