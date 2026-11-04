@@ -125,7 +125,7 @@ extension EditorWindowController {
             var options: [PDFDocumentWriteOption: Any] = [.saveImagesAsJPEGOption: true]
             if quality.indexOfSelectedItem == 0 { options[.optimizeImagesForScreenOption] = true }
             options[.init(rawValue: "kCGImageDestinationLossyCompressionQuality")] = [0.45, 0.65, 0.85][quality.indexOfSelectedItem]
-            guard pdf.write(to: url, withOptions: options) else { presentError(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)); return }
+            guard PageOverlay.bakedDocument(pdf).write(to: url, withOptions: options) else { presentError(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)); return }
             let after = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let f = ByteCountFormatter()
             let done = NSAlert()
@@ -142,7 +142,8 @@ extension EditorWindowController {
         let indices = sidebar.thumbnails.selectedPages.map { pdf.index(for: $0) }.filter { $0 != NSNotFound }
         let chosen = indices.isEmpty ? [pdf.index(for: pdfView.currentPage ?? pdf.page(at: 0)!)] : indices.sorted()
         let part = PDFDocument()
-        for i in chosen { if let p = pdf.page(at: i)?.copy() as? PDFPage { part.insert(p, at: part.pageCount) } }
+        let source = PageOverlay.bakedDocument(pdf)
+        for i in chosen { if let p = source.page(at: i)?.copy() as? PDFPage { part.insert(p, at: part.pageCount) } }
         guard let op = part.printOperation(for: pdfDoc?.printInfo ?? .shared, scalingMode: .pageScaleToFit, autoRotate: true) else { return }
         op.jobTitle = pdfDoc?.displayName ?? "PDF42"
         op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsCopies])

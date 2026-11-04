@@ -9,6 +9,8 @@ final class PDFDoc: NSDocument {
     /// File bytes as read; needed to verify signatures and to add further signatures incrementally.
     private(set) var originalData: Data?
     private(set) var signatures: [SignatureInfo] = []
+    /// Save the "Compare With…" highlights into the file (off: they are only shown).
+    var keepCompareHighlights = false
 
     override init() {
         pdf = PDFDocument()
@@ -75,7 +77,8 @@ final class PDFDoc: NSDocument {
 
     override func data(ofType typeName: String) throws -> Data {
         editor?.prepareForSave()
-        guard let data = pdf.dataRepresentation() else {
+        // Watermarks, page numbers and edited text become page content; new form fields get an /AcroForm entry.
+        guard let data = PageOverlay.bakedData(pdf, keepTemporary: keepCompareHighlights).map(AcroFormFixer.ensureFields) else {
             throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
         }
         return data

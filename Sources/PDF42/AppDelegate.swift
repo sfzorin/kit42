@@ -30,6 +30,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let editor = NSApp.orderedWindows.compactMap { $0.windowController as? EditorWindowController }.first
             if env["K42_MARKUP"] != nil { editor?.toggleMarkupAction(nil) }
             if env["K42_STAMPS"] != nil { editor?.showStampsAction(nil) }
+            if let tool = env["K42_TOOL"].flatMap(Int.init).flatMap(Tool.init) { editor?.setTool(tool) }
+            if let text = env["K42_WATERMARK"], let editor, let pdf = editor.pdf {
+                var spec = WatermarkSpec()
+                spec.text = text
+                for i in 0..<pdf.pageCount { if let p = pdf.page(at: i) { editor.add(WatermarkOverlay(spec: spec, page: p), to: p, name: "") } }
+                for (i, t) in PageNumberSpec().labels(for: Array(0..<pdf.pageCount)) {
+                    if let p = pdf.page(at: i) { editor.add(PageNumberOverlay(text: t, spec: PageNumberSpec(), page: p), to: p, name: "") }
+                }
+            }
+            if let text = env["K42_EDIT_TEXT"], let editor, let hit = editor.pdf?.findString(text, withOptions: []).first, let page = hit.pages.first {
+                editor.setTool(.editText)
+                editor.editPageText(hit, on: page)
+            }
+            if let path = env["K42_COMPARE"], let other = PDFDocument(url: URL(fileURLWithPath: path)) {
+                editor?.showComparison(with: other, name: (path as NSString).lastPathComponent)
+            }
         }
     }
 
@@ -88,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             L("⌘1…⌘9 — markup tools, Esc — select"),
             L("⇧⌘A — markup toolbar, ⇧⌘K — signature or stamp"),
             L("⌘E — edit selected text, ⌘⌫ — delete annotation"),
+            L("⌥⌘M — merge files, ⌘E — edit text (click a line)"),
             L("⌘L / ⌘R — rotate page, ⌥⌘⌫ — delete pages"),
             L("⇧⌘N — blank page, ⌥⌘I — pages from file"),
             L("⌥⌘D — sign, ⌥⌘V — verify signatures"),

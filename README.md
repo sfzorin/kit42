@@ -15,11 +15,27 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 ## PDF42 — PDF
 
 - Reading: thumbnails and contents, zoom, display modes, search, go to page, forms, password-protected files.
-- Pages: add blank pages, delete, rotate, reorder, insert from other PDFs (merging), extract, export as PNG.
+- Pages: add blank pages, delete, rotate, reorder, insert from other PDFs, extract, export as PNG.
 - Markup (⇧⌘A): highlight, underline, strikethrough, pencil, shapes, whiteout, text boxes, notes;
   move and resize, change colour, undo.
-- Text editing: select text and press ⌘E — the original is covered with white and an editable text box
-  in the same size and colour is placed on top. (The original text stays under the cover: this is not a redaction.)
+- Text editing: the Edit Text tool (Edit menu, markup bar, or ⌘E with nothing selected) — click a line of page text
+  (⌥-click: one word), edit it in place, Return applies, Esc cancels. The original glyphs are covered with white and the
+  new text is drawn on the same baseline in the original font (when installed; otherwise Helvetica/Times) and size.
+  Double-click to re-edit, undo works; on save the edit is flattened into the page content. A multi-line selection + ⌘E
+  places an editable text box instead. (The original text stays under the cover: this is not a redaction.)
+- Forms: fill existing AcroForm fields with the Select tool (values are saved). Form menu / markup bar: drag to add a
+  text field, checkbox or dropdown list with a name (and options); with a form tool, fields can be moved, resized and
+  deleted. Saved as real widgets with an /AcroForm entry and checkbox on/off appearances, fillable in Acrobat and Preview.
+- Merge Files… (⌥⌘M): PDFs and images in a chosen order → a new document. Split… (File): every N pages,
+  by ranges ("1-3, 4-10") or one file per page, into a chosen folder.
+- Page › Watermark…: text (font size, colour, opacity, rotation — diagonal by default) or an image, on all pages or a range.
+  Page › Page Numbers…: position, format ("1", "Page 1 of N", "- 1 -"), start number, skip first page, font size, range.
+  Both stay editable (undo, Remove Watermarks and Page Numbers) until saved, then become page content.
+- File › Compare With…: word-level text differences per page in a list (click to jump); removed/replaced words are
+  highlighted in the document. The highlights are not saved unless "Keep highlights when saving" is ticked.
+- Command line (headless): `--watermark in out TEXT [pages]`, `--number-pages in out [format] [position] [skip-first]`,
+  `--split in dir 1-2,3|every:N|each`, `--merge out a.pdf b.png …`, `--compare a b [marked.pdf]`,
+  `--edit-text in out OLD NEW`, `--add-field in out`, `--fill in out name=value …`, `--fields file`.
 - Signatures and stamps (⇧⌘K): a library of PNGs/scans, the white background is removed automatically.
 - Digital signature (⌥⌘D): standard PDF signature (PKCS#7/CMS, adbe.pkcs7.detached, SHA-256), readable by Acrobat.
   Certificate from the macOS Keychain, .p12 import or a self-signed one. Counter-signing is supported

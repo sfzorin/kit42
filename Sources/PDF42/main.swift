@@ -61,6 +61,8 @@ if args.count >= 4, args[1] == "--ocr" {
     exit(0)
 }
 
+if let code = ToolsCLI.run(args) { exit(code) }
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
