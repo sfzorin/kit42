@@ -1,0 +1,42 @@
+import AppKit
+import Kit42
+
+Localization.register(rows: xls42Strings)
+
+if CommandLine.arguments.contains("--selftest") { exit(SelfTest.run()) }
+// XLS42 --roundtrip in.xlsx out.xlsx: read, recalculate, write (for testing compatibility)
+if let i = CommandLine.arguments.firstIndex(of: "--roundtrip"), CommandLine.arguments.count > i + 2 {
+    let args = CommandLine.arguments
+    var wb = try XLSX.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1])))
+    wb = Calculator.recalculate(wb)
+    for s in wb.sheets {
+        print("[\(s.name)] cells: \(s.cells.count), formulas: \(s.cells.values.filter(\.isFormula).count), merges: \(s.merges.count)")
+        for ref in s.cells.keys.sorted().prefix(40) {
+            let c = s.cells[ref]!
+            print("  \(ref.a1) \(c.input.prefix(50)) → \(NumberFormat.format(c.value, c.style.numberFormat).text)")
+        }
+    }
+    try XLSX.write(wb).write(to: URL(fileURLWithPath: args[i + 2]))
+    exit(0)
+}
+
+// XLS42 --export-pdf in.xlsx out.pdf [all|landscape|nogrid|nofit]
+if let i = CommandLine.arguments.firstIndex(of: "--export-pdf"), CommandLine.arguments.count > i + 2 {
+    let args = CommandLine.arguments
+    let wb = Calculator.recalculate(try XLSX.read(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))))
+    var options = SheetExport.Options()
+    if args.contains("all") { options.scope = .workbook }
+    if args.contains("landscape") { options.orientation = .landscape }
+    if args.contains("nogrid") { options.gridlines = false }
+    if args.contains("nofit") { options.fitWidth = false }
+    let data = SheetExport.pdf(wb, activeSheet: 0, selection: nil, options: options, base: NSPrintInfo.shared)
+    try data.write(to: URL(fileURLWithPath: args[i + 2]))
+    print("pdf \(data.count) bytes")
+    exit(0)
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()

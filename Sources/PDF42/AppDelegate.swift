@@ -1,0 +1,105 @@
+import AppKit
+import Kit42
+import PDFKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private lazy var welcome = WelcomeWindowController(
+        app: .pdf, tagline: L("View and edit PDF"),
+        actions: [
+            .init(L("Open PDF…"), symbol: "folder", action: #selector(NSDocumentController.openDocument(_:))),
+            .init(L("New Document"), symbol: "doc.badge.plus", action: #selector(NSDocumentController.newDocument(_:))),
+            .init(L("Signatures and Stamps"), symbol: "signature", action: #selector(showStampLibraryAction(_:))),
+        ])
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        _ = NSDocumentController.shared
+        NSApp.mainMenu = MenuBar.build(Cmd.menuBar)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
+            if NSDocumentController.shared.documents.isEmpty { welcome.showWindow(nil) }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] note in
+            if (note.object as? NSWindow)?.windowController is EditorWindowController { self?.welcome.close() }
+        }
+        DebugSnapshot.scheduleIfRequested {
+            let env = ProcessInfo.processInfo.environment
+            let editor = NSApp.orderedWindows.compactMap { $0.windowController as? EditorWindowController }.first
+            if env["K42_MARKUP"] != nil { editor?.toggleMarkupAction(nil) }
+            if env["K42_STAMPS"] != nil { editor?.showStampsAction(nil) }
+        }
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { welcome.showWindow(nil) }
+        return true
+    }
+
+    // MARK: - App-level actions
+
+    @objc func showWelcomeAction(_ sender: Any?) { welcome.showWindow(nil) }
+
+    @objc func newFromImagesAction(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.message = L("Each image becomes an A4 page")
+        guard panel.runModal() == .OK else { return }
+        let pdf = PDFDocument()
+        for url in panel.urls.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            if let image = NSImage(contentsOf: url), let page = PDFDoc.page(from: image) { pdf.insert(page, at: pdf.pageCount) }
+        }
+        guard pdf.pageCount > 0 else { return }
+        let doc = PDFDoc(pdf: pdf)
+        NSDocumentController.shared.addDocument(doc)
+        doc.makeWindowControllers()
+        doc.showWindows()
+        doc.updateChangeCount(.changeDone)
+    }
+
+    @objc func showStampLibraryAction(_ sender: Any?) {
+        let popover = NSPopover()
+        let vc = StampLibraryViewController { _ in }
+        vc.popover = popover
+        popover.contentViewController = vc
+        popover.behavior = .transient
+        if let view = sender as? NSView { popover.show(relativeTo: view.bounds, of: view, preferredEdge: .maxX) }
+    }
+
+    @objc func importCertificateAction(_ sender: Any?) {
+        if let identity = SignDialog.importCertificate() {
+            info(L("Certificate added"), L("“%@” is saved in the Keychain and can be used for signing.", identity.displayName))
+        }
+    }
+
+    @objc func createCertificateAction(_ sender: Any?) {
+        if let identity = SignDialog.createCertificate() {
+            info(L("Certificate created"), L("“%@” is saved in the Keychain. It is a self-signed certificate: the signature will be intact, but other apps will show that the certificate is not confirmed by a certification authority.", identity.displayName))
+        }
+    }
+
+    @objc func showShortcutsAction(_ sender: Any?) {
+        let lines = [
+            L("⌘1…⌘9 — markup tools, Esc — select"),
+            L("⇧⌘A — markup toolbar, ⇧⌘K — signature or stamp"),
+            L("⌘E — edit selected text, ⌘⌫ — delete annotation"),
+            L("⌘L / ⌘R — rotate page, ⌥⌘⌫ — delete pages"),
+            L("⇧⌘N — blank page, ⌥⌘I — pages from file"),
+            L("⌥⌘D — sign, ⌥⌘V — verify signatures"),
+            L("⌘F / ⌘G — find, ⌥⌘G — go to page"),
+            L("⌘+ / ⌘- / ⌘0 — zoom, ⌃⌘S — sidebar"),
+        ]
+        info(L("Keyboard Shortcuts"), lines.joined(separator: "\n"))
+    }
+
+    private func info(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.runModal()
+    }
+}

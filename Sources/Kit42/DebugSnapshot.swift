@@ -1,0 +1,23 @@
+import AppKit
+
+/// Development aid: `K42_SNAPSHOT=/path/out.png` renders the front window (with toolbar) to a PNG
+/// after `K42_SNAPSHOT_DELAY` seconds (default 2), then quits.
+public enum DebugSnapshot {
+    public static func scheduleIfRequested(prepare: (() -> Void)? = nil) {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["K42_SNAPSHOT"] else { return }
+        let delay = Double(env["K42_SNAPSHOT_DELAY"] ?? "") ?? 2
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            prepare?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let window = NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
+                if let frame = window?.contentView?.superview,
+                   let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
+                    frame.cacheDisplay(in: frame.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                }
+                if env["K42_SNAPSHOT_KEEP"] == nil { NSApp.terminate(nil) }
+            }
+        }
+    }
+}

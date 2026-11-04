@@ -1,0 +1,329 @@
+import Kit42
+import AppKit
+import PDFKit
+
+/// PDFView with annotation tools: drawing, shapes, markup, selection, moving and resizing.
+final class EditorPDFView: PDFView {
+    weak var editor: EditorWindowController?
+
+    var tool: Tool = .select {
+        didSet {
+            if tool != .select { selectAnnotation(nil) }
+            clearSelection()
+        }
+    }
+    var color: NSColor = .systemRed
+    var lineWidth: CGFloat = 2
+
+    private(set) var selectedAnnotation: PDFAnnotation?
+    private(set) var selectedPage: PDFPage?
+    private var selectionFrame: PDFAnnotation?
+    private var selectionHandle: PDFAnnotation?
+
+    private enum Drag { case none, move, resize, create }
+    private var drag: Drag = .none
+    private var dragPage: PDFPage?
+    private var dragStart: CGPoint = .zero
+    private var dragOriginalBounds: CGRect = .zero
+    private var mouseHandled = false
+    private var tempAnnotation: PDFAnnotation?
+    private var inkPoints: [CGPoint] = []
+
+    override var acceptsFirstResponder: Bool { true }
+
+    // MARK: - Selection
+
+    private var handleSize: CGFloat { 9 / max(scaleFactor, 0.1) }
+
+    func selectAnnotation(_ annotation: PDFAnnotation?, on page: PDFPage? = nil) {
+        for marker in [selectionFrame, selectionHandle] {
+            if let marker, let p = marker.page { p.removeAnnotation(marker) }
+        }
+        selectionFrame = nil
+        selectionHandle = nil
+        selectedAnnotation = annotation
+        selectedPage = annotation == nil ? nil : (page ?? annotation?.page)
+        guard let annotation, let page = selectedPage else { return }
+
+        let frame = PDFAnnotation(bounds: .zero, forType: .square, withProperties: nil)
+        let border = PDFBorder()
+        border.lineWidth = 1
+        border.style = .dashed
+        border.dashPattern = [4, 3]
+        frame.border = border
+        frame.color = .controlAccentColor
+        frame.shouldPrint = false
+        page.addAnnotation(frame)
+        selectionFrame = frame
+
+        if annotation.isResizable {
+            let handle = PDFAnnotation(bounds: .zero, forType: .square, withProperties: nil)
+            let hb = PDFBorder()
+            hb.lineWidth = 1
+            handle.border = hb
+            handle.color = .white
+            handle.interiorColor = .controlAccentColor
+            handle.shouldPrint = false
+            page.addAnnotation(handle)
+            selectionHandle = handle
+        }
+        refreshMarker()
+    }
+
+    func refreshMarker() {
+        guard let annotation = selectedAnnotation else { return }
+        let b = annotation.bounds
+        selectionFrame?.bounds = b.insetBy(dx: -3, dy: -3)
+        let s = handleSize
+        selectionHandle?.bounds = CGRect(x: b.maxX + 3 - s / 2, y: b.minY - 3 - s / 2, width: s, height: s)
+        if let page = selectedPage { annotationsChanged(on: page) }
+    }
+
+    private func isMarker(_ a: PDFAnnotation) -> Bool { a === selectionFrame || a === selectionHandle }
+
+    private func hitAnnotation(on page: PDFPage, at point: CGPoint) -> PDFAnnotation? {
+        for annotation in page.annotations.reversed() where !isMarker(annotation) {
+            if annotation.isSystemHandled { continue }
+            if annotation.bounds.insetBy(dx: -2, dy: -2).contains(point) { return annotation }
+        }
+        return nil
+    }
+
+    private func hitsHandle(_ point: CGPoint, on page: PDFPage) -> Bool {
+        guard let handle = selectionHandle, page === selectedPage else { return false }
+        return handle.bounds.insetBy(dx: -handleSize * 0.6, dy: -handleSize * 0.6).contains(point)
+    }
+
+    // MARK: - Mouse
+
+    private func locate(_ event: NSEvent) -> (PDFPage, CGPoint)? {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        guard let page = page(for: viewPoint, nearest: true) else { return nil }
+        return (page, convert(viewPoint, to: page))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        switch tool {
+        case .select:
+            if let (page, point) = locate(event), hitsHandle(point, on: page) {
+                NSCursor.crosshair.set()
+            } else {
+                super.mouseMoved(with: event)
+            }
+        case .highlight, .underline, .strikeOut:
+            super.mouseMoved(with: event)
+        default:
+            NSCursor.crosshair.set()
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        mouseHandled = true
+        drag = .none
+        guard let (page, point) = locate(event) else {
+            mouseHandled = false
+            super.mouseDown(with: event)
+            return
+        }
+        dragPage = page
+        dragStart = point
+
+        switch tool {
+        case .select:
+            if hitsHandle(point, on: page), let a = selectedAnnotation {
+                drag = .resize
+                dragOriginalBounds = a.bounds
+                return
+            }
+            if let annotation = hitAnnotation(on: page, at: point) {
+                selectAnnotation(annotation, on: page)
+                if event.clickCount == 2 {
+                    editor?.editAnnotationText(annotation, on: page)
+                    return
+                }
+                if !annotation.isMarkup {
+                    drag = .move
+                    dragOriginalBounds = annotation.bounds
+                }
+                return
+            }
+            selectAnnotation(nil)
+            mouseHandled = false
+            super.mouseDown(with: event)
+
+        case .highlight, .underline, .strikeOut:
+            mouseHandled = false
+            super.mouseDown(with: event)
+
+        case .ink:
+            drag = .create
+            inkPoints = [point]
+            let annotation = PDFAnnotation(bounds: page.bounds(for: .mediaBox), forType: .ink, withProperties: nil)
+            style(annotation)
+            page.addAnnotation(annotation)
+            tempAnnotation = annotation
+            updateInkPreview()
+
+        case .rectangle, .oval, .whiteout:
+            drag = .create
+            let annotation = PDFAnnotation(bounds: CGRect(origin: point, size: CGSize(width: 1, height: 1)),
+                                           forType: tool == .oval ? .circle : .square, withProperties: nil)
+            style(annotation)
+            page.addAnnotation(annotation)
+            tempAnnotation = annotation
+
+        case .text:
+            editor?.createTextBox(on: page, at: point)
+
+        case .note:
+            editor?.createNote(on: page, at: point)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard mouseHandled else {
+            super.mouseDragged(with: event)
+            return
+        }
+        guard let page = dragPage else { return }
+        let point = convert(convert(event.locationInWindow, from: nil), to: page)
+
+        switch drag {
+        case .move:
+            selectedAnnotation?.bounds = dragOriginalBounds.offsetBy(dx: point.x - dragStart.x, dy: point.y - dragStart.y)
+            refreshMarker()
+        case .resize:
+            guard let a = selectedAnnotation else { return }
+            let o = dragOriginalBounds
+            var w = max(8, point.x - o.minX)
+            var h = max(8, o.maxY - point.y)
+            if a.keepsAspectRatio || event.modifierFlags.contains(.shift), o.height > 0 {
+                let ratio = o.width / o.height
+                if w / h > ratio { h = w / ratio } else { w = h * ratio }
+            }
+            a.bounds = CGRect(x: o.minX, y: o.maxY - h, width: w, height: h)
+            refreshMarker()
+        case .create:
+            if tool == .ink {
+                inkPoints.append(point)
+                updateInkPreview()
+            } else {
+                tempAnnotation?.bounds = rect(from: dragStart, to: point)
+                annotationsChanged(on: page)
+            }
+        case .none:
+            break
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            dragPage = nil
+            drag = .none
+            mouseHandled = false
+            tempAnnotation = nil
+            inkPoints = []
+        }
+        guard mouseHandled else {
+            super.mouseUp(with: event)
+            if tool.isTextMarkup, let selection = currentSelection,
+               !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                editor?.addMarkup(for: selection, tool: tool)
+                clearSelection()
+            }
+            return
+        }
+        guard let page = dragPage else { return }
+
+        switch drag {
+        case .move, .resize:
+            if let a = selectedAnnotation, a.bounds != dragOriginalBounds {
+                editor?.didChangeBounds(a, from: dragOriginalBounds, on: page, name: drag == .move ? L("Move") : L("Resize"))
+            }
+        case .create:
+            if let temp = tempAnnotation { page.removeAnnotation(temp) }
+            if tool == .ink {
+                guard inkPoints.count >= 2 else { return }
+                let path = NSBezierPath()
+                path.move(to: inkPoints[0])
+                inkPoints.dropFirst().forEach { path.line(to: $0) }
+                let bounds = path.bounds.insetBy(dx: -lineWidth * 2, dy: -lineWidth * 2)
+                let annotation = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
+                style(annotation)
+                annotation.add(localPath(inkPoints, origin: bounds.origin))
+                editor?.add(annotation, to: page, name: L("Drawing"))
+            } else {
+                guard let temp = tempAnnotation, temp.bounds.width > 4, temp.bounds.height > 4 else { return }
+                let annotation = PDFAnnotation(bounds: temp.bounds, forType: tool == .oval ? .circle : .square, withProperties: nil)
+                style(annotation)
+                editor?.add(annotation, to: page, name: tool.title)
+            }
+        case .none:
+            break
+        }
+    }
+
+    /// PDFView's own menu (copy, zoom…) plus editing commands at the top.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let base = super.menu(for: event) ?? NSMenu()
+        if let (page, point) = locate(event), let a = hitAnnotation(on: page, at: point) { selectAnnotation(a, on: page) }
+        var items: [Command] = []
+        if selectedAnnotation != nil { items.append(Cmd.deleteAnnotation) }
+        if let sel = currentSelection, !(sel.string ?? "").isEmpty { items += [Cmd.replaceText, Cmd.highlightSelection] }
+        items += [Cmd.stamps, Cmd.tool(.text), Cmd.tool(.note)]
+        for (i, c) in items.enumerated() { base.insertItem(c.menuItem(), at: i) }
+        base.insertItem(.separator(), at: items.count)
+        return base
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
+            if selectedAnnotation != nil, scalar.value == 127 || Int(scalar.value) == NSDeleteFunctionKey {
+                editor?.deleteSelectedAnnotation(nil)
+                return
+            }
+            if scalar.value == 27 {
+                selectAnnotation(nil)
+                editor?.setTool(.select)
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+
+    // MARK: - Helpers
+
+    private func style(_ annotation: PDFAnnotation) {
+        let border = PDFBorder()
+        border.lineWidth = tool == .whiteout ? 0 : lineWidth
+        annotation.border = border
+        annotation.color = tool == .whiteout ? .white : color
+        if tool == .whiteout { annotation.interiorColor = .white }
+        annotation.userName = NSFullUserName()
+        annotation.modificationDate = Date()
+    }
+
+    private func updateInkPreview() {
+        guard let annotation = tempAnnotation, let page = dragPage else { return }
+        annotation.paths?.forEach { annotation.remove($0) }
+        annotation.add(localPath(inkPoints, origin: annotation.bounds.origin))
+        annotationsChanged(on: page)
+    }
+
+    private func localPath(_ points: [CGPoint], origin: CGPoint) -> NSBezierPath {
+        let path = NSBezierPath()
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.lineWidth = lineWidth
+        guard let first = points.first else { return path }
+        path.move(to: CGPoint(x: first.x - origin.x, y: first.y - origin.y))
+        if points.count == 1 { path.line(to: CGPoint(x: first.x - origin.x + 0.1, y: first.y - origin.y)) }
+        for p in points.dropFirst() { path.line(to: CGPoint(x: p.x - origin.x, y: p.y - origin.y)) }
+        return path
+    }
+
+    private func rect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+}

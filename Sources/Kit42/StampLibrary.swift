@@ -1,0 +1,210 @@
+import AppKit
+import UniformTypeIdentifiers
+
+/// Shared library of signature and stamp images (PNG with transparency), used by every Suite42 app.
+/// Stored in ~/Library/Application Support/Suite42/Stamps.
+public final class StampLibrary {
+    public static let shared = StampLibrary()
+
+    public let folder: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let url = base.appendingPathComponent("Suite42/Stamps", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+
+    public var items: [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        return urls.filter { $0.pathExtension.lowercased() == "png" }.sorted {
+            let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            return a > b
+        }
+    }
+
+    @discardableResult
+    public func add(_ image: CGImage) throws -> URL {
+        let url = folder.appendingPathComponent(UUID().uuidString + ".png")
+        guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+            throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    public func remove(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    public static func image(at url: URL) -> CGImage? {
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    }
+
+    /// Asks for an image file and optionally cleans the white background. Returns nil when cancelled.
+    public static func pickImage(window: NSWindow?, askCleanup: Bool = true) -> CGImage? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff, .image]
+        panel.message = L("Choose an image of a signature or stamp")
+        guard panel.runModal() == .OK, let url = panel.url, var image = image(at: url) else { return nil }
+        if askCleanup {
+            let alert = NSAlert()
+            alert.messageText = L("Remove white background?")
+            alert.informativeText = L("For scanned signatures and stamps: white becomes transparent and empty margins are cropped.")
+            alert.addButton(withTitle: L("Remove Background"))
+            alert.addButton(withTitle: L("Keep As Is"))
+            if alert.runModal() == .alertFirstButtonReturn {
+                image = ImageTools.removeWhiteBackground(image) ?? image
+            }
+        }
+        return image
+    }
+}
+
+public enum ImageTools {
+    /// Makes near-white pixels transparent (with a soft edge) and trims empty borders.
+    public static func removeWhiteBackground(_ image: CGImage, threshold: CGFloat = 0.86) -> CGImage? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let data = ctx.data else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let px = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+        let soft: CGFloat = 0.10
+        var minX = w, minY = h, maxX = -1, maxY = -1
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                let a = CGFloat(px[i + 3]) / 255
+                guard a > 0 else { continue }
+                let r = CGFloat(px[i]) / 255 / a, g = CGFloat(px[i + 1]) / 255 / a, b = CGFloat(px[i + 2]) / 255 / a
+                let lum = 0.299 * r + 0.587 * g + 0.114 * b
+                var keep: CGFloat = 1
+                if lum >= threshold + soft { keep = 0 } else if lum > threshold { keep = 1 - (lum - threshold) / soft }
+                let na = a * keep
+                // Re-premultiply with the original colour.
+                px[i] = UInt8(min(255, r * na * 255)); px[i + 1] = UInt8(min(255, g * na * 255))
+                px[i + 2] = UInt8(min(255, b * na * 255)); px[i + 3] = UInt8(na * 255)
+                if na > 0.05 {
+                    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+        }
+        guard let cleaned = ctx.makeImage() else { return nil }
+        guard maxX >= minX, maxY >= minY else { return cleaned }
+        let pad = 4
+        // CGContext rows start at the bottom; CGImage cropping starts at the top.
+        let crop = CGRect(x: max(0, minX - pad), y: max(0, (h - 1 - maxY) - pad),
+                          width: min(w, maxX - minX + 1 + pad * 2), height: min(h, maxY - minY + 1 + pad * 2))
+        return cleaned.cropping(to: crop) ?? cleaned
+    }
+}
+
+/// Popover with the signature/stamp library. `onPick` receives the chosen image.
+public final class StampLibraryViewController: NSViewController {
+    private let onPick: (CGImage) -> Void
+    private let grid = NSStackView()
+    private let columns = 3
+    public weak var popover: NSPopover?
+
+    public init(onPick: @escaping (CGImage) -> Void) {
+        self.onPick = onPick
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    public override func loadView() {
+        let title = NSTextField(labelWithString: L("Signatures and Stamps"))
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        grid.orientation = .vertical
+        grid.alignment = .leading
+        grid.spacing = 8
+
+        let add = NSButton(title: L("Add to Library…"), target: self, action: #selector(addToLibrary))
+        add.bezelStyle = .push
+        add.controlSize = .regular
+        let once = NSButton(title: L("Insert File…"), target: self, action: #selector(insertOnce))
+        once.bezelStyle = .push
+        let buttons = NSStackView(views: [add, once])
+        buttons.spacing = 8
+
+        let root = NSStackView(views: [title, grid, buttons])
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        view = root
+        reload()
+    }
+
+    private func reload() {
+        grid.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let items = StampLibrary.shared.items
+        if items.isEmpty {
+            let hint = NSTextField(wrappingLabelWithString: L("Add a PNG or a scan of your signature or stamp — the white background can be made transparent. Images are stored locally and shared by all 42 apps."))
+            hint.textColor = .secondaryLabelColor
+            hint.font = .systemFont(ofSize: 12)
+            hint.preferredMaxLayoutWidth = 330
+            grid.addArrangedSubview(hint)
+            return
+        }
+        var row: NSStackView?
+        for (i, url) in items.enumerated() {
+            if i % columns == 0 {
+                row = NSStackView()
+                row?.spacing = 8
+                grid.addArrangedSubview(row!)
+            }
+            row?.addArrangedSubview(tile(url))
+        }
+    }
+
+    private func tile(_ url: URL) -> NSView {
+        let b = NSButton(image: NSImage(contentsOf: url) ?? NSImage(), target: self, action: #selector(picked(_:)))
+        b.identifier = NSUserInterfaceItemIdentifier(url.path)
+        b.bezelStyle = .smallSquare
+        b.imageScaling = .scaleProportionallyDown
+        b.toolTip = L("Insert. Right-click to delete.")
+        b.wantsLayer = true
+        b.layer?.cornerRadius = Theme42.cornerRadius
+        b.layer?.backgroundColor = NSColor.white.cgColor
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(equalToConstant: 104).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        let menu = NSMenu()
+        let del = NSMenuItem(title: L("Remove from Library"), action: #selector(deleteItem(_:)), keyEquivalent: "")
+        del.target = self
+        del.representedObject = url
+        menu.addItem(del)
+        b.menu = menu
+        return b
+    }
+
+    @objc private func picked(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue, let image = StampLibrary.image(at: URL(fileURLWithPath: path)) else { return }
+        popover?.performClose(nil)
+        onPick(image)
+    }
+
+    @objc private func deleteItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        StampLibrary.shared.remove(url)
+        reload()
+    }
+
+    @objc private func addToLibrary() {
+        guard let image = StampLibrary.pickImage(window: view.window) else { return }
+        do { try StampLibrary.shared.add(image) } catch { NSApp.presentError(error) }
+        reload()
+    }
+
+    @objc private func insertOnce() {
+        guard let image = StampLibrary.pickImage(window: view.window) else { return }
+        popover?.performClose(nil)
+        onPick(image)
+    }
+}

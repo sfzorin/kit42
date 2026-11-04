@@ -1,0 +1,1001 @@
+import AppKit
+import Kit42
+
+/// The spreadsheet canvas: draws cells like Excel (fills, gridlines, overflow text, borders,
+/// merged cells) and handles selection, keyboard navigation and in-cell editing.
+final class GridView: NSView, NSTextFieldDelegate {
+    weak var controller: SheetWindowController?
+
+    /// User zoom (1 = 100 %). Excel's 100 % equals 4/3 of the point sizes stored in the file.
+    var zoom: CGFloat = 1 { didSet { rebuildLayout() } }
+    var scale: CGFloat { zoom * 4 / 3 }
+
+    private(set) var rowCount = 200
+    private(set) var colCount = 40
+    private var colOffsets: [CGFloat] = [0]
+    private var rowOffsets: [CGFloat] = [0]
+
+    var active = CellRef(row: 0, col: 0)
+    var anchor = CellRef(row: 0, col: 0)
+    var selection = CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0))
+
+    private let editor = CellEditorField()
+    private(set) var isEditing = false
+    private var editingCell: CellRef?
+    /// While typing a formula, clicking cells inserts references at this range of the editor text.
+    private var refInsertion: NSRange?
+    private var refAnchor: CellRef?
+
+    var printMode = false
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override var isOpaque: Bool { true }
+
+    /// Sheet drawn when printing a sheet other than the one on screen.
+    var sheetOverride: Sheet?
+    var sheet: Sheet { sheetOverride ?? controller?.sheet ?? Sheet(name: "") }
+
+    // Printing
+    var printGridlines = true
+    var printRange: CellRange?
+    private var pageRects: [NSRect] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        editor.delegate = self
+        editor.isHidden = true
+        addSubview(editor)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    // MARK: - Layout
+
+    func rebuildLayout() {
+        let used = sheet.usedRange
+        rowCount = max(rowCount, (used?.end.row ?? 0) + 100, selection.end.row + 50)
+        colCount = max(colCount, (used?.end.col ?? 0) + 20, selection.end.col + 10)
+        if printMode {
+            let range = printRange ?? used
+            rowCount = (range?.end.row ?? 0) + 1
+            colCount = (range?.end.col ?? 0) + 1
+        }
+        colOffsets = [0]
+        colOffsets.reserveCapacity(colCount + 1)
+        for c in 0..<colCount { colOffsets.append(colOffsets[c] + floor(sheet.width(c) * scale)) }
+        rowOffsets = [0]
+        rowOffsets.reserveCapacity(rowCount + 1)
+        for r in 0..<rowCount { rowOffsets.append(rowOffsets[r] + floor(sheet.height(r) * scale)) }
+        setFrameSize(NSSize(width: colOffsets[colCount] + 1, height: rowOffsets[rowCount] + 1))
+        needsDisplay = true
+        controller?.headersNeedDisplay()
+        if isEditing, let ref = editingCell { positionEditor(ref) }
+    }
+
+    /// Grows the grid when the user scrolls near its end.
+    func extendIfNeeded() {
+        let visible = visibleRect
+        var changed = false
+        if visible.maxY > frame.height - 400 { rowCount += 300; changed = true }
+        if visible.maxX > frame.width - 300 { colCount += 20; changed = true }
+        if changed { rebuildLayout() }
+    }
+
+    func x(_ col: Int) -> CGFloat { col < colOffsets.count ? colOffsets[col] : colOffsets.last! + CGFloat(col - colOffsets.count + 1) * sheet.defaultColumnWidth * scale }
+    func y(_ row: Int) -> CGFloat { row < rowOffsets.count ? rowOffsets[row] : rowOffsets.last! + CGFloat(row - rowOffsets.count + 1) * sheet.defaultRowHeight * scale }
+
+    func col(at px: CGFloat) -> Int { index(in: colOffsets, px) }
+    func row(at py: CGFloat) -> Int { index(in: rowOffsets, py) }
+
+    private func index(in offsets: [CGFloat], _ v: CGFloat) -> Int {
+        var lo = 0, hi = offsets.count - 2
+        guard hi >= 0 else { return 0 }
+        if v <= 0 { return 0 }
+        if v >= offsets[hi + 1] { return hi }
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if offsets[mid] <= v { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
+    }
+
+    func rect(_ ref: CellRef) -> NSRect {
+        if let m = sheet.merge(containing: ref) { return rect(m) }
+        return NSRect(x: x(ref.col), y: y(ref.row), width: x(ref.col + 1) - x(ref.col), height: y(ref.row + 1) - y(ref.row))
+    }
+
+    func rect(_ range: CellRange) -> NSRect {
+        NSRect(x: x(range.start.col), y: y(range.start.row),
+               width: x(range.end.col + 1) - x(range.start.col), height: y(range.end.row + 1) - y(range.start.row))
+    }
+
+    func cell(at point: NSPoint) -> CellRef { CellRef(row: row(at: point.y), col: col(at: point.x)) }
+
+    // MARK: - Drawing
+
+    static let gridColor = NSColor(srgbRed: 0.886, green: 0.886, blue: 0.886, alpha: 1)
+
+    override var needsDisplay: Bool {
+        didSet { if needsDisplay { overlay?.panesNeedDisplay() } }
+    }
+
+    override func draw(_ dirty: NSRect) { drawContent(dirty) }
+
+    /// Draws the cells in `dirty` (grid coordinates). Also used by the frozen panes.
+    func drawContent(_ dirty: NSRect) {
+        NSColor.white.setFill()
+        dirty.fill()
+        guard colOffsets.count > 1, rowOffsets.count > 1 else { return }
+        let r0 = row(at: dirty.minY), r1 = min(rowCount - 1, row(at: dirty.maxY))
+        let c0 = col(at: dirty.minX), c1 = min(colCount - 1, col(at: dirty.maxX))
+        let sheet = self.sheet
+
+        // Gridlines
+        if printMode ? printGridlines : sheet.showGridlines {
+            Self.gridColor.setFill()
+            for c in c0...c1 + 1 { NSRect(x: x(c) - 0.5, y: dirty.minY, width: 1, height: dirty.height).fill() }
+            for r in r0...r1 + 1 { NSRect(x: dirty.minX, y: y(r) - 0.5, width: dirty.width, height: 1).fill() }
+        }
+
+        let merges = sheet.merges.filter { rect($0).intersects(dirty) }
+        let merged = Set(merges.flatMap { $0.count < 5000 ? $0.cells : [] })
+
+        // Fills (cover the gridlines under them, like Excel)
+        for r in r0...r1 {
+            for c in c0...c1 {
+                let ref = CellRef(row: r, col: c)
+                guard let fill = sheet.cells[ref]?.style.fill, !merged.contains(ref) else { continue }
+                fill.setFill()
+                rect(ref).insetBy(dx: -0.5, dy: -0.5).fill()
+            }
+        }
+        for m in merges {
+            (sheet.cells[m.start]?.style.fill ?? .white).setFill()
+            rect(m).insetBy(dx: 0.5, dy: 0.5).fill()
+        }
+
+        // Text (with overflow into empty neighbours)
+        let scanFrom = max(0, c0 - 30)
+        for r in r0...r1 {
+            for c in scanFrom...c1 {
+                let ref = CellRef(row: r, col: c)
+                guard let cell = sheet.cells[ref], !cell.value.isEmpty || cell.isFormula else { continue }
+                if merged.contains(ref) && !merges.contains(where: { $0.start == ref }) { continue }
+                if isEditing, editingCell == ref { continue }
+                drawText(cell, at: ref, row: r, visibleMaxCol: c1)
+            }
+        }
+        // Merged cells whose top-left lies outside the dirty rows/cols
+        for m in merges where !(r0...r1).contains(m.start.row) || m.start.col < scanFrom {
+            if let cell = sheet.cells[m.start] { drawText(cell, at: m.start, row: m.start.row, visibleMaxCol: c1) }
+        }
+
+        // Borders
+        for r in max(0, r0 - 1)...r1 {
+            for c in max(0, c0 - 1)...c1 {
+                guard let style = sheet.cells[CellRef(row: r, col: c)]?.style,
+                      style.left != nil || style.right != nil || style.top != nil || style.bottom != nil else { continue }
+                drawBorders(style, rect(CellRef(row: r, col: c)))
+            }
+        }
+
+        if !printMode { drawSelection() }
+    }
+
+    private func displayAlignment(_ cell: Cell) -> NSTextAlignment {
+        switch cell.style.hAlign {
+        case "center", "centerContinuous": return .center
+        case "right": return .right
+        case "left": return .left
+        case "justify", "distributed": return .justified
+        default:
+            switch cell.value {
+            case .number: return .right
+            case .bool, .error: return .center
+            default: return .left
+            }
+        }
+    }
+
+    private func drawText(_ cell: Cell, at ref: CellRef, row r: Int, visibleMaxCol: Int) {
+        let formatted = NumberFormat.format(cell.value, cell.style.numberFormat)
+        var text = formatted.text
+        guard !text.isEmpty else { return }
+        let font = cell.style.font(scale: scale)
+        let color = cell.style.textColor ?? formatted.color ?? .black
+        let align = displayAlignment(cell)
+        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: formatted.color ?? color]
+        if cell.style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if cell.style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+
+        let cellRect = rect(ref)
+        let pad = 2 * scale + CGFloat(cell.style.indent) * 9 * scale
+        var clip = cellRect
+
+        let isNumber: Bool = { if case .number = cell.value { return true }; return false }()
+        var size = (text as NSString).size(withAttributes: attrs)
+
+        if cell.style.wrap {
+            let para = NSMutableParagraphStyle()
+            para.alignment = align
+            para.lineBreakMode = .byWordWrapping
+            attrs[.paragraphStyle] = para
+            let box = cellRect.insetBy(dx: pad, dy: 1)
+            let bounds = (text as NSString).boundingRect(with: NSSize(width: box.width, height: .greatestFiniteMagnitude),
+                                                         options: [.usesLineFragmentOrigin], attributes: attrs)
+            var drawRect = box
+            switch cell.style.vAlign {
+            case "top": drawRect.size.height = bounds.height
+            case "center": drawRect.origin.y += max(0, (box.height - bounds.height) / 2)
+            default: drawRect.origin.y += max(0, box.height - bounds.height)
+            }
+            drawRect.size.height = min(box.maxY - drawRect.minY, bounds.height)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: cellRect).addClip()
+            (text as NSString).draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+            NSGraphicsContext.restoreGraphicsState()
+            return
+        }
+
+        if isNumber, size.width > cellRect.width - 2, sheet.merge(containing: ref) == nil {
+            // Numbers never overflow: Excel shows ###.
+            let hashWidth = ("#" as NSString).size(withAttributes: attrs).width
+            text = String(repeating: "#", count: max(1, Int((cellRect.width - 2) / max(1, hashWidth))))
+            size = (text as NSString).size(withAttributes: attrs)
+        } else if !isNumber, size.width > cellRect.width - pad * 2, sheet.merge(containing: ref) == nil {
+            // Text overflows into empty neighbours.
+            if align == .left || align == .justified {
+                var c = ref.col + 1
+                while clip.width < size.width + pad * 2, c <= visibleMaxCol + 30, sheet.cells[CellRef(row: r, col: c)]?.value.isEmpty ?? true {
+                    clip.size.width = x(c + 1) - clip.minX
+                    c += 1
+                }
+            } else if align == .right {
+                var c = ref.col - 1
+                while clip.width < size.width + pad * 2, c >= 0, sheet.cells[CellRef(row: r, col: c)]?.value.isEmpty ?? true {
+                    clip.size.width = clip.maxX - x(c)
+                    clip.origin.x = x(c)
+                    c -= 1
+                }
+            } else if align == .center {
+                let extra = (size.width + pad * 2 - cellRect.width) / 2
+                clip = cellRect.insetBy(dx: -extra, dy: 0)
+            }
+        }
+
+        var origin = NSPoint(x: cellRect.minX + pad, y: cellRect.minY)
+        switch align {
+        case .right: origin.x = cellRect.maxX - pad - size.width
+        case .center: origin.x = cellRect.midX - size.width / 2
+        default: break
+        }
+        switch cell.style.vAlign {
+        case "top": origin.y = cellRect.minY + 1
+        case "center": origin.y = cellRect.midY - size.height / 2
+        default: origin.y = cellRect.maxY - size.height - 1 * scale
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: clip.insetBy(dx: 0.5, dy: 0)).addClip()
+        (text as NSString).draw(at: origin, withAttributes: attrs)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawBorders(_ style: CellStyle, _ r: NSRect) {
+        func line(_ side: BorderSide?, _ from: NSPoint, _ to: NSPoint) {
+            guard let side else { return }
+            let path = NSBezierPath()
+            path.move(to: from)
+            path.line(to: to)
+            path.lineWidth = side.width * zoom
+            if side.style.lowercased().contains("dash") { path.setLineDash([3 * zoom, 2 * zoom], count: 2, phase: 0) }
+            if side.style == "dotted" { path.setLineDash([1 * zoom, 1 * zoom], count: 2, phase: 0) }
+            side.color.setStroke()
+            path.stroke()
+        }
+        line(style.left, NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.minX, y: r.maxY))
+        line(style.right, NSPoint(x: r.maxX, y: r.minY), NSPoint(x: r.maxX, y: r.maxY))
+        line(style.top, NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.maxX, y: r.minY))
+        line(style.bottom, NSPoint(x: r.minX, y: r.maxY), NSPoint(x: r.maxX, y: r.maxY))
+    }
+
+    private func drawSelection() {
+        let accent = NSColor.controlAccentColor
+        let selRect = rect(expandedSelection)
+        if selection.count > 1 {
+            accent.withAlphaComponent(0.10).setFill()
+            selRect.fill()
+            NSColor.white.setFill()
+            rect(active).insetBy(dx: 1, dy: 1).fill()
+            if let cell = sheet.cells[active] {
+                cell.style.fill?.setFill()
+                if cell.style.fill != nil { rect(active).insetBy(dx: 1, dy: 1).fill() }
+                drawText(cell, at: active, row: active.row, visibleMaxCol: active.col + 20)
+            }
+        }
+        accent.setStroke()
+        let border = NSBezierPath(rect: selRect.insetBy(dx: 0.5, dy: 0.5))
+        border.lineWidth = 2
+        border.stroke()
+        // Fill handle
+        accent.setFill()
+        NSRect(x: selRect.maxX - 3, y: selRect.maxY - 3, width: 6, height: 6).fill()
+        NSColor.white.setStroke()
+        let ring = NSBezierPath(rect: NSRect(x: selRect.maxX - 3.5, y: selRect.maxY - 3.5, width: 7, height: 7))
+        ring.lineWidth = 1
+        ring.stroke()
+    }
+
+    /// Selection grown to whole merged areas it touches.
+    var expandedSelection: CellRange {
+        var s = selection
+        for m in sheet.merges where rect(m).intersects(rect(s)) {
+            s = CellRange(CellRef(row: min(s.start.row, m.start.row), col: min(s.start.col, m.start.col)),
+                          CellRef(row: max(s.end.row, m.end.row), col: max(s.end.col, m.end.col)))
+        }
+        return s
+    }
+
+    // MARK: - Printing
+
+    override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        guard printMode else { return false }
+        let info = NSPrintOperation.current?.printInfo ?? NSPrintInfo.shared
+        let scaleFactor = max(0.1, info.scalingFactor)
+        let page = NSSize(width: (info.paperSize.width - info.leftMargin - info.rightMargin) / scaleFactor,
+                          height: (info.paperSize.height - info.topMargin - info.bottomMargin) / scaleFactor)
+        pageRects = pages(for: page)
+        range.pointee = NSRange(location: 1, length: max(1, pageRects.count))
+        return true
+    }
+
+    override func rectForPage(_ page: Int) -> NSRect {
+        guard printMode, page >= 1, page <= pageRects.count else { return bounds }
+        return pageRects[page - 1]
+    }
+
+    /// Page rectangles broken at row and column boundaries, down then across (like Excel).
+    func pages(for page: NSSize) -> [NSRect] {
+        let range = printRange ?? sheet.usedRange ?? CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0))
+        func breaks(_ start: Int, _ end: Int, _ offset: (Int) -> CGFloat, _ limit: CGFloat) -> [(CGFloat, CGFloat)] {
+            var out: [(CGFloat, CGFloat)] = []
+            var from = start
+            while from <= end {
+                var to = from
+                while to + 1 <= end, offset(to + 2) - offset(from) <= limit { to += 1 }
+                out.append((offset(from), offset(to + 1)))
+                from = to + 1
+            }
+            return out
+        }
+        let cols = breaks(range.start.col, range.end.col, x, page.width)
+        let rows = breaks(range.start.row, range.end.row, y, page.height)
+        var rects: [NSRect] = []
+        for c in cols {
+            for r in rows { rects.append(NSRect(x: c.0, y: r.0, width: c.1 - c.0 + 1, height: r.1 - r.0 + 1)) }
+        }
+        return rects
+    }
+
+    // MARK: - Frozen panes
+
+    weak var overlay: FreezeOverlay?
+
+    var frozenWidth: CGFloat { printMode || sheet.frozenCols == 0 ? 0 : x(sheet.frozenCols) }
+    var frozenHeight: CGFloat { printMode || sheet.frozenRows == 0 ? 0 : y(sheet.frozenRows) }
+    var scrollOrigin: NSPoint { enclosingScrollView?.contentView.bounds.origin ?? .zero }
+    var viewportSize: NSSize { enclosingScrollView?.contentView.bounds.size ?? bounds.size }
+
+    /// Grid point → point in the visible area (frozen rows/columns don't scroll).
+    func toViewport(_ p: NSPoint) -> NSPoint {
+        let o = scrollOrigin
+        return NSPoint(x: p.x < frozenWidth ? p.x : p.x - o.x, y: p.y < frozenHeight ? p.y : p.y - o.y)
+    }
+
+    func fromViewport(_ v: NSPoint) -> NSPoint {
+        let o = scrollOrigin
+        return NSPoint(x: v.x < frozenWidth ? v.x : v.x + o.x, y: v.y < frozenHeight ? v.y : v.y + o.y)
+    }
+
+    /// Grid point under the mouse, honouring frozen panes.
+    func gridPoint(_ event: NSEvent) -> NSPoint {
+        guard let overlay, frozenWidth > 0 || frozenHeight > 0 else { return convert(event.locationInWindow, from: nil) }
+        return fromViewport(overlay.convert(event.locationInWindow, from: nil))
+    }
+
+    /// Scrolls so the cell is visible below/right of the frozen panes.
+    func reveal(_ ref: CellRef) {
+        guard let scroll = enclosingScrollView else { return }
+        let r = rect(ref).insetBy(dx: -2, dy: -2)
+        let clip = scroll.contentView
+        var o = clip.bounds.origin
+        let size = clip.bounds.size
+        if ref.col >= sheet.frozenCols {
+            if r.minX - o.x < frozenWidth { o.x = r.minX - frozenWidth } else if r.maxX - o.x > size.width { o.x = r.maxX - size.width }
+        }
+        if ref.row >= sheet.frozenRows {
+            if r.minY - o.y < frozenHeight { o.y = r.minY - frozenHeight } else if r.maxY - o.y > size.height { o.y = r.maxY - size.height }
+        }
+        o.x = max(0, min(o.x, frame.width - size.width))
+        o.y = max(0, min(o.y, frame.height - size.height))
+        if o != clip.bounds.origin {
+            clip.scroll(to: o)
+            scroll.reflectScrolledClipView(clip)
+        }
+    }
+
+    // MARK: - Selection
+
+    func select(_ ref: CellRef, extend: Bool = false) {
+        let ref = CellRef(row: max(0, ref.row), col: max(0, ref.col))
+        if extend {
+            selection = CellRange(anchor, ref)
+        } else {
+            active = sheet.merge(containing: ref)?.start ?? ref
+            anchor = active
+            selection = CellRange(active, active)
+        }
+        if ref.row >= rowCount - 20 || ref.col >= colCount - 5 { rebuildLayout() }
+        reveal(extend ? ref : active)
+        needsDisplay = true
+        controller?.selectionDidChange()
+    }
+
+    func selectAllCells() {
+        anchor = CellRef(row: 0, col: 0)
+        selection = CellRange(anchor, CellRef(row: max(0, (sheet.usedRange?.end.row ?? 0)), col: max(0, (sheet.usedRange?.end.col ?? 0))))
+        needsDisplay = true
+        controller?.selectionDidChange()
+    }
+
+    func selectColumns(_ a: Int, _ b: Int) {
+        anchor = CellRef(row: 0, col: a)
+        active = anchor
+        selection = CellRange(CellRef(row: 0, col: min(a, b)), CellRef(row: rowCount - 1, col: max(a, b)))
+        needsDisplay = true
+        controller?.selectionDidChange()
+    }
+
+    func selectRows(_ a: Int, _ b: Int) {
+        anchor = CellRef(row: a, col: 0)
+        active = anchor
+        selection = CellRange(CellRef(row: min(a, b), col: 0), CellRef(row: max(a, b), col: colCount - 1))
+        needsDisplay = true
+        controller?.selectionDidChange()
+    }
+
+    // MARK: - Mouse
+
+    private var dragging = false
+
+    override func mouseDown(with event: NSEvent) {
+        let ref = cell(at: gridPoint(event))
+        if isEditing, editor.stringValue.hasPrefix("="), canInsertReference {
+            refAnchor = ref
+            insertReference(CellRange(ref, ref))
+            dragging = true
+            return
+        }
+        if isEditing { commitEdit(move: nil) }
+        window?.makeFirstResponder(self)
+        if event.clickCount == 2 {
+            select(ref)
+            beginEdit(initial: nil)
+            return
+        }
+        select(ref, extend: event.modifierFlags.contains(.shift))
+        dragging = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard dragging else { return }
+        autoscroll(with: event)
+        let ref = cell(at: gridPoint(event))
+        if isEditing, let a = refAnchor {
+            insertReference(CellRange(a, ref))
+            return
+        }
+        if CellRange(anchor, ref) != selection { select(ref, extend: true) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = false
+        if isEditing { window?.makeFirstResponder(editor); refAnchor = nil }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let ref = cell(at: gridPoint(event))
+        if isEditing { commitEdit(move: nil) }
+        if !expandedSelection.contains(ref) { select(ref) }
+        window?.makeFirstResponder(self)
+        return Cmd.contextMenu
+    }
+
+    // MARK: - Keyboard
+
+    override func keyDown(with event: NSEvent) {
+        let shift = event.modifierFlags.contains(.shift)
+        let cmd = event.modifierFlags.contains(.command)
+        guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first else { return }
+        let key = Int(scalar.value)
+        let from = shift ? lastExtent : active
+        switch key {
+        case NSUpArrowFunctionKey: move(to: cmd ? edge(from, dr: -1, dc: 0) : CellRef(row: from.row - 1, col: from.col), extend: shift)
+        case NSDownArrowFunctionKey: move(to: cmd ? edge(from, dr: 1, dc: 0) : CellRef(row: from.row + 1, col: from.col), extend: shift)
+        case NSLeftArrowFunctionKey: move(to: cmd ? edge(from, dr: 0, dc: -1) : CellRef(row: from.row, col: from.col - 1), extend: shift)
+        case NSRightArrowFunctionKey: move(to: cmd ? edge(from, dr: 0, dc: 1) : CellRef(row: from.row, col: from.col + 1), extend: shift)
+        case NSPageDownFunctionKey: move(to: CellRef(row: from.row + visibleRows, col: from.col), extend: shift)
+        case NSPageUpFunctionKey: move(to: CellRef(row: from.row - visibleRows, col: from.col), extend: shift)
+        case NSHomeFunctionKey: move(to: CellRef(row: cmd ? 0 : from.row, col: 0), extend: shift)
+        case 13, 3: advance(rows: shift ? -1 : 1, cols: 0)
+        case 9: advance(rows: 0, cols: shift ? -1 : 1)
+        case 25: advance(rows: 0, cols: -1)
+        case 127, NSDeleteFunctionKey: controller?.clearContents(nil)
+        case NSF2FunctionKey: beginEdit(initial: nil)
+        case 27: break
+        default:
+            if !cmd, let chars = event.characters, !chars.isEmpty, chars.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 }) {
+                beginEdit(initial: chars)
+            } else {
+                super.keyDown(with: event)
+            }
+        }
+    }
+
+    private var lastExtent: CellRef {
+        CellRef(row: selection.start.row == anchor.row ? selection.end.row : selection.start.row,
+                col: selection.start.col == anchor.col ? selection.end.col : selection.start.col)
+    }
+
+    private var visibleRows: Int { max(1, Int(visibleRect.height / (sheet.defaultRowHeight * scale)) - 1) }
+
+    private func move(to ref: CellRef, extend: Bool) { select(ref, extend: extend) }
+
+    /// Enter/Tab movement inside a multi-cell selection wraps like Excel.
+    private func advance(rows dr: Int, cols dc: Int) {
+        if selection.count > 1 {
+            var next = CellRef(row: active.row + dr, col: active.col + dc)
+            if dr != 0, next.row > selection.end.row { next = CellRef(row: selection.start.row, col: active.col + 1) }
+            if dc != 0, next.col > selection.end.col { next = CellRef(row: active.row + 1, col: selection.start.col) }
+            if next.row > selection.end.row || next.col > selection.end.col { next = selection.start }
+            if next.row < selection.start.row || next.col < selection.start.col { next = selection.end }
+            active = next
+            needsDisplay = true
+            controller?.selectionDidChange()
+        } else {
+            select(CellRef(row: active.row + dr, col: active.col + dc))
+        }
+    }
+
+    /// Ctrl/⌘+arrow: jump to the edge of the data block.
+    private func edge(_ from: CellRef, dr: Int, dc: Int) -> CellRef {
+        func filled(_ r: CellRef) -> Bool { !(sheet.cells[r]?.value.isEmpty ?? true) }
+        var cur = from
+        let limitR = max(rowCount, (sheet.usedRange?.end.row ?? 0) + 1), limitC = max(colCount, (sheet.usedRange?.end.col ?? 0) + 1)
+        func step(_ r: CellRef) -> CellRef? {
+            let n = CellRef(row: r.row + dr, col: r.col + dc)
+            return n.row < 0 || n.col < 0 || n.row >= limitR || n.col >= limitC ? nil : n
+        }
+        guard var next = step(cur) else { return cur }
+        if filled(cur) && filled(next) {
+            while let n = step(next), filled(n) { next = n }
+            return next
+        }
+        while !filled(next), let n = step(next) { next = n }
+        cur = next
+        return cur
+    }
+
+    // MARK: - Editing
+
+    func beginEdit(initial: String?) {
+        guard !isEditing else { return }
+        isEditing = true
+        editingCell = active
+        let cell = sheet[active]
+        editor.stringValue = initial ?? cell.input
+        editor.font = cell.style.font(scale: scale)
+        editor.alignment = initial == nil && !cell.input.hasPrefix("=") ? displayAlignment(cell) : .left
+        positionEditor(active)
+        editor.isHidden = false
+        window?.makeFirstResponder(editor)
+        if let text = editor.currentEditor() {
+            text.selectedRange = NSRange(location: editor.stringValue.utf16.count, length: 0)
+        }
+        needsDisplay = true
+        controller?.editorTextChanged(editor.stringValue)
+    }
+
+    /// Puts the in-cell editor in the overlay so it stays visible over frozen panes.
+    func hostEditor(in view: NSView) {
+        editor.removeFromSuperview()
+        view.addSubview(editor)
+    }
+
+    func repositionEditor() {
+        if isEditing, let ref = editingCell { positionEditor(ref) }
+    }
+
+    private func positionEditor(_ ref: CellRef) {
+        var r = rect(ref).insetBy(dx: 1, dy: 1)
+        if editor.superview !== self { r.origin = toViewport(r.origin) }
+        let width = (editor.stringValue as NSString).size(withAttributes: [.font: editor.font ?? NSFont.systemFont(ofSize: 13)]).width + 16
+        r.size.width = max(r.width, min(width, 600))
+        editor.frame = r
+    }
+
+    func commitEdit(move: (Int, Int)?) {
+        guard isEditing, let ref = editingCell else { return }
+        let text = editor.stringValue
+        endEditing()
+        controller?.setInput(text, at: ref)
+        if let (dr, dc) = move { advance(rows: dr, cols: dc) }
+    }
+
+    func cancelEdit() {
+        endEditing()
+        controller?.selectionDidChange()
+    }
+
+    private func endEditing() {
+        isEditing = false
+        editingCell = nil
+        refInsertion = nil
+        editor.isHidden = true
+        window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+
+    /// Text typed in the formula bar is mirrored into the cell editor.
+    func setEditorText(_ text: String) {
+        if !isEditing { beginEdit(initial: text) } else { editor.stringValue = text }
+        positionEditor(active)
+    }
+
+    private var canInsertReference: Bool {
+        guard let fieldEditor = editor.currentEditor() else { return false }
+        let text = editor.stringValue as NSString
+        let caret = fieldEditor.selectedRange.location
+        if let r = refInsertion, NSMaxRange(r) == caret { return true }
+        guard caret > 0, caret <= text.length else { return false }
+        let prev = text.substring(with: NSRange(location: caret - 1, length: 1))
+        return "=(,;+-*/^&<>:".contains(prev)
+    }
+
+    private func insertReference(_ range: CellRange) {
+        guard let fieldEditor = editor.currentEditor() else { return }
+        let text = range.a1
+        let target = refInsertion ?? fieldEditor.selectedRange
+        let s = (editor.stringValue as NSString).replacingCharacters(in: target, with: text)
+        editor.stringValue = s
+        refInsertion = NSRange(location: target.location, length: (text as NSString).length)
+        window?.makeFirstResponder(editor)
+        editor.currentEditor()?.selectedRange = NSRange(location: NSMaxRange(refInsertion!), length: 0)
+        positionEditor(editingCell ?? active)
+        controller?.editorTextChanged(s)
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        refInsertion = nil
+        positionEditor(editingCell ?? active)
+        controller?.editorTextChanged(editor.stringValue)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(insertNewline(_:)): commitEdit(move: (1, 0)); return true
+        case #selector(insertTab(_:)): commitEdit(move: (0, 1)); return true
+        case #selector(insertBacktab(_:)): commitEdit(move: (0, -1)); return true
+        case #selector(cancelOperation(_:)): cancelEdit(); return true
+        case #selector(insertNewlineIgnoringFieldEditor(_:)):
+            textView.insertText("\n", replacementRange: textView.selectedRange())
+            return true
+        default: return false
+        }
+    }
+}
+
+/// Borderless in-cell editor.
+final class CellEditorField: NSTextField {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isBordered = false
+        drawsBackground = true
+        backgroundColor = .white
+        textColor = .black
+        focusRingType = .none
+        cell?.wraps = false
+        cell?.isScrollable = true
+        wantsLayer = true
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = 2
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+}
+
+// MARK: - Headers
+
+/// Column letters / row numbers beside the scroll view, with selection highlight and resizing.
+final class HeaderView: NSView {
+    weak var grid: GridView?
+    let isColumns: Bool
+    private var resizing: Int?
+    private var resizeStart: CGFloat = 0
+    private var originalSize: CGFloat = 0
+    private var selectingFrom: Int?
+
+    init(grid: GridView, columns: Bool) {
+        self.grid = grid
+        isColumns = columns
+        super.init(frame: .zero)
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ rect: NSRect) {
+        guard let grid else { return }
+        NSColor(srgbRed: 0.965, green: 0.965, blue: 0.965, alpha: 1).setFill()
+        bounds.fill()
+        let sel = grid.expandedSelection
+        let font = NSFont.systemFont(ofSize: 11 * min(1.2, max(0.8, grid.zoom)))
+        let line = NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1)
+        let fw = grid.frozenWidth, fh = grid.frozenHeight
+        let o = grid.scrollOrigin, size = grid.viewportSize
+        if isColumns {
+            // Frozen columns stay put; the rest scroll and are clipped right of the freeze line.
+            var cols: [(Int, Bool)] = (0..<grid.sheet.frozenCols).map { ($0, true) }
+            let c0 = grid.col(at: o.x + fw), c1 = grid.col(at: o.x + size.width)
+            if c1 >= c0 { cols += (max(c0, grid.sheet.frozenCols)...max(c1, grid.sheet.frozenCols)).map { ($0, false) } }
+            for (c, frozen) in cols {
+                let x0 = frozen ? grid.x(c) : grid.x(c) - o.x
+                let r = NSRect(x: x0, y: 0, width: grid.x(c + 1) - grid.x(c), height: bounds.height)
+                NSGraphicsContext.saveGraphicsState()
+                if !frozen { NSBezierPath(rect: NSRect(x: fw, y: 0, width: bounds.width, height: bounds.height)).addClip() }
+                let selected = sel.cols.contains(c)
+                if selected {
+                    NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+                    r.fill()
+                    NSColor.controlAccentColor.setFill()
+                    NSRect(x: r.minX, y: r.maxY - 2, width: r.width, height: 2).fill()
+                }
+                line.setFill()
+                NSRect(x: r.maxX - 0.5, y: 0, width: 1, height: bounds.height).fill()
+                label(CellRef.columnName(c), in: r, font: font, selected: selected)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            if fw > 0 { NSColor(white: 0.55, alpha: 1).setFill(); NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
+            line.setFill()
+            NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+        } else {
+            var rows: [(Int, Bool)] = (0..<grid.sheet.frozenRows).map { ($0, true) }
+            let r0 = grid.row(at: o.y + fh), r1 = grid.row(at: o.y + size.height)
+            if r1 >= r0 { rows += (max(r0, grid.sheet.frozenRows)...max(r1, grid.sheet.frozenRows)).map { ($0, false) } }
+            for (row, frozen) in rows {
+                let y0 = frozen ? grid.y(row) : grid.y(row) - o.y
+                let r = NSRect(x: 0, y: y0, width: bounds.width, height: grid.y(row + 1) - grid.y(row))
+                NSGraphicsContext.saveGraphicsState()
+                if !frozen { NSBezierPath(rect: NSRect(x: 0, y: fh, width: bounds.width, height: bounds.height)).addClip() }
+                let selected = sel.rows.contains(row)
+                if selected {
+                    NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+                    r.fill()
+                    NSColor.controlAccentColor.setFill()
+                    NSRect(x: r.maxX - 2, y: r.minY, width: 2, height: r.height).fill()
+                }
+                line.setFill()
+                NSRect(x: 0, y: r.maxY - 0.5, width: bounds.width, height: 1).fill()
+                if r.height > 6 { label("\(row + 1)", in: r, font: font, selected: selected) }
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            if fh > 0 { NSColor(white: 0.55, alpha: 1).setFill(); NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
+            line.setFill()
+            NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
+        }
+    }
+
+    /// Header point → grid coordinate along this header's axis.
+    private func gridValue(_ p: NSPoint) -> CGFloat {
+        guard let grid else { return 0 }
+        let g = grid.fromViewport(isColumns ? NSPoint(x: p.x, y: 0) : NSPoint(x: 0, y: p.y))
+        return isColumns ? g.x : g.y
+    }
+
+    private func label(_ s: String, in r: NSRect, font: NSFont, selected: Bool) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: selected ? NSFont.systemFont(ofSize: font.pointSize, weight: .semibold) : font,
+            .foregroundColor: selected ? NSColor.controlAccentColor : NSColor(white: 0.35, alpha: 1),
+        ]
+        let size = (s as NSString).size(withAttributes: attrs)
+        (s as NSString).draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)
+    }
+
+    /// Index of a boundary near the point (for resizing), in grid coordinates.
+    private func boundary(at p: NSPoint) -> Int? {
+        guard let grid else { return nil }
+        let v = gridValue(p)
+        let i = isColumns ? grid.col(at: v) : grid.row(at: v)
+        let start = isColumns ? grid.x(i) : grid.y(i)
+        let end = isColumns ? grid.x(i + 1) : grid.y(i + 1)
+        if abs(v - end) <= 4 { return i }
+        if abs(v - start) <= 4, i > 0 { return i - 1 }
+        return nil
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if boundary(at: convert(event.locationInWindow, from: nil)) != nil {
+            (isColumns ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+        } else { NSCursor.arrow.set() }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let grid else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        if let b = boundary(at: p) {
+            if event.clickCount == 2 {
+                grid.controller?.autofit(isColumns ? .column(b) : .row(b))
+                return
+            }
+            resizing = b
+            resizeStart = isColumns ? p.x : p.y
+            originalSize = isColumns ? grid.sheet.width(b) : grid.sheet.height(b)
+            return
+        }
+        let v = gridValue(p)
+        let i = isColumns ? grid.col(at: v) : grid.row(at: v)
+        if grid.isEditing { grid.commitEdit(move: nil) }
+        let from = event.modifierFlags.contains(.shift) ? (isColumns ? grid.anchor.col : grid.anchor.row) : i
+        selectingFrom = from
+        if isColumns { grid.selectColumns(from, i) } else { grid.selectRows(from, i) }
+        window?.makeFirstResponder(grid)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let grid else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        if let b = resizing {
+            let delta = ((isColumns ? p.x : p.y) - resizeStart) / grid.scale
+            grid.controller?.previewSize(isColumns ? .column(b) : .row(b), max(0, originalSize + delta))
+            return
+        }
+        guard let from = selectingFrom else { return }
+        let v = gridValue(p)
+        let i = isColumns ? grid.col(at: v) : grid.row(at: v)
+        if isColumns { grid.selectColumns(from, i) } else { grid.selectRows(from, i) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let b = resizing, let grid {
+            let current = isColumns ? grid.sheet.width(b) : grid.sheet.height(b)
+            grid.controller?.commitSize(isColumns ? .column(b) : .row(b), current, original: originalSize)
+        }
+        resizing = nil
+        selectingFrom = nil
+    }
+}
+
+/// Top-left corner above the row numbers: click selects everything.
+final class CornerView: NSView {
+    var onClick: (() -> Void)?
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(srgbRed: 0.965, green: 0.965, blue: 0.965, alpha: 1).setFill()
+        bounds.fill()
+        NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1).setFill()
+        NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+        let tri = NSBezierPath()
+        tri.move(to: NSPoint(x: bounds.maxX - 4, y: 4))
+        tri.line(to: NSPoint(x: bounds.maxX - 4, y: bounds.height - 4))
+        tri.line(to: NSPoint(x: bounds.maxX - 4 - (bounds.height - 8), y: 4))
+        tri.close()
+        NSColor(white: 0.75, alpha: 1).setFill()
+        tri.fill()
+    }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+}
+
+/// Transparent layer over the scroll view holding the frozen panes and the cell editor.
+/// Clicks outside the panes fall through to the grid.
+final class FreezeOverlay: NSView {
+    weak var grid: GridView?
+    private let corner = FrozenPane(kind: .corner)
+    private let top = FrozenPane(kind: .top)
+    private let left = FrozenPane(kind: .left)
+
+    init(grid: GridView) {
+        self.grid = grid
+        super.init(frame: .zero)
+        for pane in [left, top, corner] {
+            pane.grid = grid
+            addSubview(pane)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+
+    /// Re-lays out panes after scrolling, resizing or changing the freeze.
+    func panesNeedDisplay() {
+        guard let grid else { return }
+        let fw = grid.frozenWidth, fh = grid.frozenHeight
+        let size = grid.viewportSize
+        corner.isHidden = fw == 0 || fh == 0
+        top.isHidden = fh == 0
+        left.isHidden = fw == 0
+        corner.frame = NSRect(x: 0, y: 0, width: fw, height: fh)
+        top.frame = NSRect(x: fw, y: 0, width: max(0, size.width - fw), height: fh)
+        left.frame = NSRect(x: 0, y: fh, width: fw, height: max(0, size.height - fh))
+        for pane in [corner, top, left] where !pane.isHidden { pane.needsDisplay = true }
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let grid else { return }
+        let fw = grid.frozenWidth, fh = grid.frozenHeight
+        NSColor(white: 0.55, alpha: 1).setFill()
+        if fw > 0 { NSRect(x: fw - 0.5, y: 0, width: 1, height: bounds.height).fill() }
+        if fh > 0 { NSRect(x: 0, y: fh - 0.5, width: bounds.width, height: 1).fill() }
+    }
+}
+
+final class FrozenPane: NSView {
+    enum Kind { case corner, top, left }
+    let kind: Kind
+    weak var grid: GridView?
+
+    init(kind: Kind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var isFlipped: Bool { true }
+
+    /// Local point + offset = grid point.
+    private var offset: NSPoint {
+        guard let grid else { return .zero }
+        let o = grid.scrollOrigin
+        switch kind {
+        case .corner: return .zero
+        case .top: return NSPoint(x: grid.frozenWidth + o.x, y: 0)
+        case .left: return NSPoint(x: 0, y: grid.frozenHeight + o.y)
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let grid, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let o = offset
+        ctx.saveGState()
+        ctx.translateBy(x: -o.x, y: -o.y)
+        grid.drawContent(dirtyRect.offsetBy(dx: o.x, dy: o.y))
+        ctx.restoreGState()
+    }
+
+    override func mouseDown(with event: NSEvent) { grid?.mouseDown(with: event) }
+    override func mouseDragged(with event: NSEvent) { grid?.mouseDragged(with: event) }
+    override func mouseUp(with event: NSEvent) { grid?.mouseUp(with: event) }
+    override func menu(for event: NSEvent) -> NSMenu? { grid?.menu(for: event) }
+}

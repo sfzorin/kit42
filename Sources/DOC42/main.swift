@@ -1,0 +1,32 @@
+import AppKit
+import Kit42
+import UniformTypeIdentifiers
+
+Localization.register(rows: doc42Strings)
+
+// DOC42 --flatten in.docx out.docx: write the style-flattened document (for testing).
+if let i = CommandLine.arguments.firstIndex(of: "--flatten"), CommandLine.arguments.count > i + 2 {
+    let args = CommandLine.arguments
+    try DocxStyles.flatten(Data(contentsOf: URL(fileURLWithPath: args[i + 1]))).write(to: URL(fileURLWithPath: args[i + 2]))
+    exit(0)
+}
+
+// DOC42 --export in.docx out.(pdf|docx|rtf|odt|html|txt): convert (for testing)
+if let i = CommandLine.arguments.firstIndex(of: "--export"), CommandLine.arguments.count > i + 2 {
+    let args = CommandLine.arguments
+    let input = URL(fileURLWithPath: args[i + 1]), output = URL(fileURLWithPath: args[i + 2])
+    let doc = TextDocument()
+    let inType = input.pathExtension.lowercased() == "md" ? "md" : (UTType(filenameExtension: input.pathExtension)?.identifier ?? input.pathExtension)
+    try doc.read(from: Data(contentsOf: input), ofType: inType)
+    let ext = output.pathExtension.lowercased()
+    let data = ext == "pdf" ? doc.pdfData() : try doc.exportData(TextDocument.documentType(for: ext == "doc" ? "com.microsoft.word.doc" : ext))
+    try data.write(to: output)
+    print("\(ext): \(data.count) bytes")
+    exit(0)
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()
