@@ -21,6 +21,9 @@ class PageOverlay: PDFAnnotation {
     /// Draws in page space. `box` is the page's crop box, `rotation` its /Rotate.
     func render(in ctx: CGContext, box: CGRect, rotation: Int) {}
 
+    /// Page content under this overlay that is removed from the file when it is baked.
+    var redactionArea: RedactionArea? { nil }
+
     override func draw(with box: PDFDisplayBox, in context: CGContext) {
         guard let page else { return }
         context.saveGState()
@@ -196,6 +199,8 @@ final class EditedTextOverlay: PageOverlay {
 
     override var allowsPicking: Bool { true }
 
+    override var redactionArea: RedactionArea? { RedactionArea(rect: bounds, fill: (1, 1, 1)) }
+
     static func cover(for text: String, font: NSFont, origin: CGPoint, minWidth: CGFloat, height: CGFloat) -> CGRect {
         let w = width(of: line(text, font: font, color: .black)) + 2
         return CGRect(x: origin.x, y: origin.y, width: max(minWidth, w), height: height)
@@ -249,42 +254,173 @@ final class EditedTextOverlay: PageOverlay {
     }
 }
 
+// MARK: - Redaction mark
+
+/// Area marked with the Redact tool: a filled box (black unless another colour is chosen). When the
+/// document is saved, or with Markup › Apply Redactions, the text, images and annotations under it
+/// are removed from the file. Until then it can be moved, resized and deleted.
+final class RedactOverlay: PageOverlay {
+    init(bounds: CGRect, color: NSColor) {
+        super.init(bounds: bounds)
+        self.color = color
+        contents = L("Redaction")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var allowsPicking: Bool { true }
+
+    var fillRGB: (r: CGFloat, g: CGFloat, b: CGFloat) {
+        let c = color.usingColorSpace(.sRGB) ?? .black
+        return (c.redComponent, c.greenComponent, c.blueComponent)
+    }
+
+    override var redactionArea: RedactionArea? { RedactionArea(rect: bounds, fill: fillRGB, paint: true) }
+
+    override func render(in ctx: CGContext, box: CGRect, rotation: Int) {
+        let f = fillRGB
+        ctx.setFillColor(red: f.r, green: f.g, blue: f.b, alpha: 1)
+        ctx.fill(bounds)
+    }
+
+    /// On screen a pending mark also gets a red dashed outline, so it is told apart from page content.
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        super.draw(with: box, in: context)
+        context.saveGState()
+        context.setStrokeColor(NSColor.systemRed.cgColor)
+        context.setLineWidth(1)
+        context.setLineDash(phase: 0, lengths: [4, 2])
+        context.stroke(bounds.insetBy(dx: 0.5, dy: 0.5))
+        context.restoreGState()
+    }
+}
+
+extension PDFAnnotation {
+    /// Whiteout box (Whiteout tool): an opaque white square without border.
+    var isWhiteout: Bool {
+        guard isKind(.square), !(self is PageOverlay), let fill = interiorColor?.usingColorSpace(.sRGB) else { return false }
+        let white = fill.redComponent > 0.98 && fill.greenComponent > 0.98 && fill.blueComponent > 0.98 && fill.alphaComponent > 0.98
+        return white && (border?.lineWidth ?? 0) <= 0.01
+    }
+}
+
 // MARK: - Baking on save
 
 extension PageOverlay {
     /// File bytes with overlays drawn into the page content. Temporary annotations (compare highlights)
     /// are dropped unless `keepTemporary`. The live document is left as it was.
     static func bakedData(_ pdf: PDFDocument, keepTemporary: Bool = false) -> Data? {
+        bake(pdf, keepTemporary: keepTemporary)?.data
+    }
+
+    /// Baking with redaction: whatever lies under edited text, whiteout boxes and redaction marks is
+    /// removed from the page content (`Redactor`), annotations there are dropped, and the file is
+    /// rewritten without the old objects. `only` limits which overlays are baked and redacted (the
+    /// others are lifted and left out of the result, for the caller to put back).
+    static func bake(_ pdf: PDFDocument, keepTemporary: Bool = false,
+                     only: ((PageOverlay) -> Bool)? = nil) -> (data: Data, report: RedactionReport)? {
         var overlays: [Int: [PageOverlay]] = [:]
+        var areas: [Int: [RedactionArea]] = [:]
+        var covers: [Int: [PDFAnnotation]] = [:]   // whiteout boxes: stay as annotations, content under them goes
         var lifted: [(PDFAnnotation, PDFPage)] = []
         for i in 0..<pdf.pageCount {
             guard let page = pdf.page(at: i) else { continue }
             for a in page.annotations {
-                if let o = a as? PageOverlay { overlays[i, default: []].append(o); lifted.append((a, page)) }
-                else if a is TemporaryHighlight, !keepTemporary { lifted.append((a, page)) }
+                if let o = a as? PageOverlay {
+                    lifted.append((a, page))
+                    guard only?(o) ?? true else { continue }
+                    overlays[i, default: []].append(o)
+                    if let area = o.redactionArea { areas[i, default: []].append(area) }
+                } else if a is TemporaryHighlight, !keepTemporary {
+                    lifted.append((a, page))
+                } else if only == nil, a.isWhiteout {
+                    covers[i, default: []].append(a)
+                    areas[i, default: []].append(RedactionArea(rect: a.bounds, fill: (1, 1, 1)))
+                }
             }
         }
-        guard !lifted.isEmpty else { return pdf.dataRepresentation() }
+        guard !lifted.isEmpty || !areas.isEmpty else { return pdf.dataRepresentation().map { ($0, RedactionReport()) } }
         lifted.forEach { $0.1.removeAnnotation($0.0) }
         defer { lifted.forEach { $0.1.addAnnotation($0.0) } }
-        guard let data = pdf.dataRepresentation() else { return nil }
-        guard !overlays.isEmpty else { return data }
+        guard var data = pdf.dataRepresentation() else { return nil }
+        guard !overlays.isEmpty || !areas.isEmpty else { return (data, RedactionReport()) }
+
+        var report = RedactionReport()
+        var rasterize: [Int: String] = [:]
+        if !areas.isEmpty {
+            if let result = Redactor.redact(data, areas: areas) {
+                data = result.data
+                report = result.report
+                rasterize = result.failed
+            } else {
+                for i in areas.keys { rasterize[i] = "file structure not supported" }
+            }
+        }
         guard let out = PDFDocument(data: data) else { return nil }
         var replacements: [(Int, PDFPage)] = []
-        for (i, list) in overlays {
+        for i in Set(overlays.keys).union(areas.keys).sorted() {
             guard let page = out.page(at: i) else { continue }
+            var list = overlays[i] ?? []
+            if let pageAreas = areas[i] {
+                let removed = removeAnnotations(on: page, under: pageAreas, keeping: covers[i]?.map(\.bounds) ?? [])
+                if removed > 0 { report.update(i) { $0.annotations += removed } }
+            }
             let rotation = page.rotation, box = page.bounds(for: .cropBox)
-            if let baked = redraw(page, overlay: { ctx in
+            let draw: (CGContext) -> Void = { ctx in
+                for o in list { ctx.saveGState(); o.render(in: ctx, box: box, rotation: rotation); ctx.restoreGState() }
+            }
+            if let reason = rasterize[i] {
+                // The content could not be rewritten safely: the page becomes a picture (with an OCR text layer).
+                if let raster = RedactionRaster.page(page, areas: areas[i] ?? [], overlay: draw) {
+                    replacements.append((i, raster))
+                    report.update(i) { $0.rasterized = reason }
+                }
+                continue
+            }
+            // Redaction boxes are already in the rewritten content: no need to redraw the page for them.
+            list.removeAll { $0 is RedactOverlay }
+            if !list.isEmpty, let baked = redraw(page, overlay: { ctx in
                 for o in list { ctx.saveGState(); o.render(in: ctx, box: box, rotation: rotation); ctx.restoreGState() }
             }) { replacements.append((i, baked)) }
         }
         replace(replacements, in: out)
-        return out.dataRepresentation()
+        guard var result = out.dataRepresentation() else { return nil }
+        if let dir = ProcessInfo.processInfo.environment["K42_REDACT_DEBUG"] {   // intermediate files, for testing
+            try? data.write(to: URL(fileURLWithPath: dir + "/redacted-incremental.pdf"))
+            try? result.write(to: URL(fileURLWithPath: dir + "/pdfkit-saved.pdf"))
+        }
+        if !areas.isEmpty {
+            // PDFKit keeps every object of the file it read, the replaced ones too: drop them.
+            guard let compact = PDFCompactor.compact(result) else { return nil }
+            result = compact
+        }
+        return (result, report)
+    }
+
+    /// Removes annotations lying mostly under the areas (notes, text boxes, markup, links, form fields
+    /// would still carry the hidden text). Whiteout boxes in `keeping` stay. Returns how many went.
+    static func removeAnnotations(on page: PDFPage, under areas: [RedactionArea], keeping: [CGRect]) -> Int {
+        var removed = 0
+        for a in page.annotations where !a.isKind(.popup) && !keeping.contains(a.bounds) {
+            let b = a.bounds
+            let area = max(0.01, b.width * b.height)
+            let hit = areas.contains { r in
+                let i = b.intersection(r.rect)
+                return !i.isNull && (i.width * i.height / area >= 0.5 || r.rect.contains(CGPoint(x: b.midX, y: b.midY)))
+            }
+            guard hit else { continue }
+            if a.isKind(.widget) { a.widgetStringValue = "" }
+            a.contents = nil
+            if let popup = a.popup { page.removeAnnotation(popup) }
+            page.removeAnnotation(a)
+            removed += 1
+        }
+        return removed
     }
 
     /// Bakes overlays into a copy of the document (export, print).
     static func bakedDocument(_ pdf: PDFDocument) -> PDFDocument {
-        guard pdf.pageCount > 0, (0..<pdf.pageCount).contains(where: { pdf.page(at: $0)?.annotations.contains { $0 is PageOverlay || $0 is TemporaryHighlight } == true }),
+        guard pdf.pageCount > 0, (0..<pdf.pageCount).contains(where: { pdf.page(at: $0)?.annotations.contains { $0 is PageOverlay || $0 is TemporaryHighlight || $0.isWhiteout } == true }),
               let data = bakedData(pdf), let copy = PDFDocument(data: data) else { return pdf }
         return copy
     }

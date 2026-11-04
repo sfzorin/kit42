@@ -5,6 +5,7 @@ import PDFKit
 ///   PDF42 --watermark in.pdf out.pdf "TEXT" [pages]      PDF42 --number-pages in.pdf out.pdf [format 0|1|2] [position 0…5] [skip-first]
 ///   PDF42 --split in.pdf outdir 1-2,3 | every:N | each   PDF42 --merge out.pdf a.pdf b.png …
 ///   PDF42 --compare a.pdf b.pdf [marked.pdf]                      PDF42 --edit-text in.pdf out.pdf "old" "new"
+///   PDF42 --redact in.pdf out.pdf x,y,w,h[@page] … [white]   (page space, pages from 1; prints what was removed)
 ///   PDF42 --add-field in.pdf out.pdf                     PDF42 --fill in.pdf out.pdf name=value …     PDF42 --fields file.pdf
 enum ToolsCLI {
     static func run(_ args: [String]) -> Int32? {
@@ -15,8 +16,9 @@ enum ToolsCLI {
             return d
         }
         func save(_ pdf: PDFDocument, _ path: String) {
-            guard let data = PageOverlay.bakedData(pdf).map(AcroFormFixer.ensureFields) else { fail("cannot write") }
-            do { try data.write(to: URL(fileURLWithPath: path)) } catch { fail("\(error)") }
+            guard let baked = PageOverlay.bake(pdf) else { fail("cannot write") }
+            do { try AcroFormFixer.ensureFields(baked.data).write(to: URL(fileURLWithPath: path)) } catch { fail("\(error)") }
+            baked.report.lines.forEach { print($0) }
         }
         switch args[1] {
         case "--watermark" where a.count >= 3:
@@ -74,6 +76,20 @@ enum ToolsCLI {
             page.addAnnotation(EditedTextOverlay.make(replacing: hit, on: page, with: a[3]))
             save(pdf, a[1])
             print("edited on page \(pdf.index(for: page) + 1)")
+        case "--redact" where a.count >= 3:
+            let pdf = open(a[0])
+            let white = a.contains("white")
+            var marks = 0
+            for spec in a.dropFirst(2) where spec != "white" {
+                let parts = spec.split(separator: "@")
+                let n = parts[0].split(separator: ",").compactMap { Double($0) }
+                let pageIndex = parts.count > 1 ? (Int(parts[1]) ?? 1) - 1 : 0
+                guard n.count == 4, let page = pdf.page(at: pageIndex) else { fail("bad area \(spec) (x,y,w,h[@page])") }
+                page.addAnnotation(RedactOverlay(bounds: CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), color: white ? .white : .black))
+                marks += 1
+            }
+            save(pdf, a[1])
+            print("redactions: \(marks)")
         case "--add-field" where a.count >= 2:
             let pdf = open(a[0])
             guard let page = pdf.page(at: 0) else { fail("no pages") }

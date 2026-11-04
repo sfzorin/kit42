@@ -4,7 +4,7 @@ import PDFKit
 
 enum Tool: Int, CaseIterable {
     case select, highlight, underline, strikeOut, ink, rectangle, oval, whiteout, text, note
-    case editText, textField, checkBox, choiceField
+    case editText, redact, textField, checkBox, choiceField
 
     var title: String {
         switch self {
@@ -19,6 +19,7 @@ enum Tool: Int, CaseIterable {
         case .text: return L("Text Box")
         case .note: return L("Note")
         case .editText: return L("Edit Text")
+        case .redact: return L("Redact")
         case .textField: return L("Text Field")
         case .checkBox: return L("Checkbox")
         case .choiceField: return L("Dropdown List")
@@ -38,6 +39,7 @@ enum Tool: Int, CaseIterable {
         case .text: return "character.textbox"
         case .note: return "note.text"
         case .editText: return "character.cursor.ibeam"
+        case .redact: return "rectangle.inset.filled"
         case .textField: return "rectangle.and.pencil.and.ellipsis"
         case .checkBox: return "checkmark.square"
         case .choiceField: return "filemenu.and.selection"
@@ -50,6 +52,7 @@ enum Tool: Int, CaseIterable {
         case .underline: return .systemBlue
         case .text: return .black
         case .whiteout: return .white
+        case .redact: return .black
         default: return .systemRed
         }
     }
@@ -77,7 +80,7 @@ extension PDFAnnotation {
     /// Annotations PDFView should keep handling itself (form fields, links, popups).
     var isSystemHandled: Bool { isKind(.widget) || isKind(.link) || isKind(.popup) }
 
-    var isResizable: Bool { !(self is PageOverlay) && (isKind(.freeText) || isKind(.square) || isKind(.circle) || isKind(.stamp) || isKind(.widget)) }
+    var isResizable: Bool { self is RedactOverlay || !(self is PageOverlay) && (isKind(.freeText) || isKind(.square) || isKind(.circle) || isKind(.stamp) || isKind(.widget)) }
 
     var keepsAspectRatio: Bool { isKind(.stamp) }
 }

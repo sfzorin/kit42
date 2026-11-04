@@ -211,7 +211,9 @@ struct PDFFileStructure {
     func object(_ num: Int) throws -> PDFObject {
         guard let entry = offsets[num] else { throw PDFStructureError.malformed("no object \(num)") }
         var lexer = PDFLexer(bytes: bytes, pos: entry.offset)
-        _ = lexer.word(); _ = lexer.word()
+        // PDFKit lists objects it did not write with offset 0; never read another object instead.
+        guard entry.offset > 0, lexer.word() == "\(num)" else { throw PDFStructureError.malformed("no object \(num)") }
+        _ = lexer.word()
         try lexer.expect("obj")
         return try lexer.parse()
     }

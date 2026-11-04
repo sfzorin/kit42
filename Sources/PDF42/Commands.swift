@@ -32,6 +32,7 @@ enum Cmd {
     static let split = Command(L("Split…"), #selector(W.splitAction(_:)), symbol: "scissors")
     static let compare = Command(L("Compare With…"), #selector(W.compareAction(_:)), symbol: "doc.text.magnifyingglass",
                                  toolTip: L("Compare the text with another PDF"), label: L("Compare"))
+    static let applyRedactions = Command(L("Apply Redactions…"), #selector(W.applyRedactionsAction(_:)), symbol: "checkmark.rectangle")
     static let clearCompare = Command(L("Remove Comparison Highlights"), #selector(W.clearCompareHighlightsAction(_:)))
 
     // Edit
@@ -112,7 +113,7 @@ enum Cmd {
                        .command(tool(.text)), .command(tool(.note)), .separator,
                        .command(insertBlank), .command(insertFromFile)]
         spec.custom = [
-            (L("Markup"), markupTools.menuElements),
+            (L("Markup"), markupTools.menuElements + [.separator, .command(applyRedactions)]),
             (L("Form"), formTools.menuElements),
             (L("Page"), [.command(rotateLeft), .command(rotateRight), .separator,
                           .command(deletePages), .command(movePageUp), .command(movePageDown), .separator,

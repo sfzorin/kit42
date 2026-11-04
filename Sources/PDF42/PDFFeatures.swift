@@ -51,12 +51,7 @@ extension EditorWindowController {
         var proposed = CGRect(origin: .zero, size: thumb.size)
         guard let cg = thumb.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { return nil }
 
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["ru-RU", "en-US", "tr-TR"]
-        do { try VNImageRequestHandler(cgImage: cg).perform([request]) } catch { return nil }
-        let observations = request.results ?? []
+        let observations = recognizeText(in: cg)
         guard !observations.isEmpty else { return nil }
 
         let data = NSMutableData()
@@ -64,6 +59,28 @@ extension EditorWindowController {
         guard let consumer = CGDataConsumer(data: data), let ctx = CGContext(consumer: consumer, mediaBox: &media, nil) else { return nil }
         ctx.beginPDFPage(nil)
         page.draw(with: .mediaBox, to: ctx)
+        drawInvisibleText(observations, box: box, in: ctx)
+        ctx.endPDFPage()
+        ctx.closePDF()
+        guard let newPage = PDFDocument(data: data as Data)?.page(at: 0) else { return nil }
+        newPage.rotation = rotation
+        for a in annotations { newPage.addAnnotation(a.copy() as! PDFAnnotation) }
+        return newPage
+    }
+
+    /// Text lines found by Vision in a page image.
+    static func recognizeText(in image: CGImage) -> [VNRecognizedTextObservation] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["ru-RU", "en-US", "tr-TR"]
+        do { try VNImageRequestHandler(cgImage: image).perform([request]) } catch { return [] }
+        return request.results ?? []
+    }
+
+    /// Invisible (searchable, selectable) text over the recognised lines; `box` is the page area the image covers.
+    static func drawInvisibleText(_ observations: [VNRecognizedTextObservation], box: CGRect, in ctx: CGContext) {
+        ctx.saveGState()
         ctx.setTextDrawingMode(.invisible)
         for o in observations {
             guard let text = o.topCandidates(1).first?.string, !text.isEmpty else { continue }
@@ -79,12 +96,7 @@ extension EditorWindowController {
             CTLineDraw(line, ctx)
             ctx.restoreGState()
         }
-        ctx.endPDFPage()
-        ctx.closePDF()
-        guard let newPage = PDFDocument(data: data as Data)?.page(at: 0) else { return nil }
-        newPage.rotation = rotation
-        for a in annotations { newPage.addAnnotation(a.copy() as! PDFAnnotation) }
-        return newPage
+        ctx.restoreGState()
     }
 
     /// Swaps pages (undoable).
