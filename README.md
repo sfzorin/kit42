@@ -52,13 +52,16 @@ Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
 - Printing: print area, frozen rows repeated on every page, page numbers, options in the print dialog.
 - Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas, formats) and `--uitest` (editing operations in a window).
 
-## DOC42 — documents (.docx, .doc, .rtf, .odt, .txt)
+## DOC42 — documents (.docx, .doc, .rtf, .odt, .md, .txt)
 
 - Page on a grey desk, styles (title, headings, quote), font, size, colour, highlighting, alignment,
   lists, indents, line spacing, tables, images, signatures and stamps from the shared library, PDF export, word count.
 - Word styles (Heading 1, Title, docDefaults, theme fonts) and lists are resolved on open, so documents
   look as intended. Saving .docx uses our own writer, which keeps tables and images.
-- Export: PDF (paginated A4/Letter), Word .docx/.doc, RTF, ODT, HTML, text. Opens .md (Markdown) and HTML too.
+- Opens and saves .docx, .rtf, .odt, .md, .txt (and .doc, HTML) keeping pictures, tables, lists (bulleted, numbered,
+  lettered), headings, page size, margins, header, footer and page numbers. Markdown: GitHub tables, nested lists,
+  code, links, strikethrough, pictures by relative path. Text: UTF-8/UTF-16/Windows-1251 detected and saved back as found.
+- Export: PDF (paginated A4/Letter), Word .docx/.doc, RTF, ODT, HTML, Markdown, text.
 - Real pages on screen (text flows across sheets), paper size, orientation, margins, header/footer, page numbers —
   printed and exported exactly as shown. Table rows/columns insert/delete. Pictures and Word styles survive .docx round trips.
 

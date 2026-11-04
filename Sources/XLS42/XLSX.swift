@@ -520,18 +520,7 @@ enum XLSX {
         return wb
     }
 
-    static func decodeText(_ data: Data) -> String {
-        let b = [UInt8](data.prefix(4))
-        if b.starts(with: [0xFF, 0xFE]) { return String(data: data, encoding: .utf16LittleEndian) ?? "" }
-        if b.starts(with: [0xFE, 0xFF]) { return String(data: data, encoding: .utf16BigEndian) ?? "" }
-        if let s = String(data: data, encoding: .utf8) { return s }
-        // UTF-16 without BOM: many zero bytes in alternating positions.
-        let sample = [UInt8](data.prefix(400))
-        if sample.count > 10, sample.enumerated().filter({ $0.offset % 2 == 1 && $0.element == 0 }).count > sample.count / 4 {
-            return String(data: data, encoding: .utf16LittleEndian) ?? ""
-        }
-        return String(data: data, encoding: .windowsCP1251) ?? String(data: data, encoding: .isoLatin1) ?? ""
-    }
+    static func decodeText(_ data: Data) -> String { TextDecoding.decode(data).text }
 
     /// The candidate that splits the first lines most consistently (quotes respected).
     static func detectDelimiter(_ text: String) -> Character {

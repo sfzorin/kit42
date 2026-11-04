@@ -35,36 +35,79 @@ final class TextDocument: NSDocument {
         return t.contains("markdown") || t.hasSuffix(".md") || t == "md"
     }
 
+    /// Encoding of an opened plain-text file: saved back the same way.
+    var textEncoding: String.Encoding = .utf8
+    /// Folder of the file being read: Markdown pictures are relative to it.
+    private var readingFrom: URL?
+
+    override func read(from url: URL, ofType typeName: String) throws {
+        readingFrom = url.deletingLastPathComponent()
+        defer { readingFrom = nil }
+        try super.read(from: url, ofType: typeName)
+    }
+
     override func read(from data: Data, ofType typeName: String) throws {
         if Self.isMarkdown(typeName) {
-            let md = String(decoding: data, as: UTF8.self)
-            let parsed = (try? AttributedString(markdown: md, options: .init(interpretedSyntax: .full))) ?? AttributedString(md)
-            storage.setAttributedString(MarkdownStyler.style(NSAttributedString(parsed)))
+            let (md, encoding) = TextDecoding.decode(data)
+            textEncoding = encoding
+            storage.setAttributedString(MarkdownReader.read(md, baseURL: readingFrom ?? fileURL?.deletingLastPathComponent()))
             return
         }
         let type = Self.documentType(for: typeName)
-        var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
-        if type == .plain { options[.characterEncoding] = String.Encoding.utf8.rawValue }
+        if type == .plain {
+            let (text, encoding) = TextDecoding.decode(data)
+            textEncoding = encoding
+            storage.setAttributedString(NSAttributedString(string: text, attributes: Styles.normal.attributes))
+            return
+        }
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
         var source = data
         var extras = DocxStyles.Extras()
-        if type == .officeOpenXML { (source, extras) = DocxStyles.flattenWithExtras(data) }
-        let text = NSMutableAttributedString(attributedString: try NSAttributedString(data: source, options: options, documentAttributes: nil))
+        switch type {
+        case .officeOpenXML: (source, extras) = DocxStyles.flattenWithExtras(data)
+        case .openDocument: (source, extras) = OdtFormat.prepare(data)
+        case .rtf: (source, extras) = RtfFormat.prepare(data)
+        default: break
+        }
+        var attributes: NSDictionary?
+        let text = NSMutableAttributedString(attributedString: try NSAttributedString(data: source, options: options, documentAttributes: &attributes))
         DocxStyles.restoreImages(text, extras.images)
-        if type == .officeOpenXML { DocxStyles.restoreStyles(text) }
+        DocxStyles.restoreStyles(text)
+        DocxStyles.restoreLists(text, extras.lists)
+        if type == .rtf, let a = attributes as? [NSAttributedString.DocumentAttributeKey: Any], data.range(of: Data("\\paperw".utf8)) != nil,
+           let paper = a[.paperSize] as? NSSize, paper.width > 0, paper.height > 0 {
+            extras.hasSetup = true
+            extras.setup.size = paper
+            func m(_ k: NSAttributedString.DocumentAttributeKey, _ d: CGFloat) -> CGFloat { (a[k] as? NSNumber).map { CGFloat($0.doubleValue) } ?? d }
+            let d = extras.setup.margins
+            extras.setup.margins = NSEdgeInsets(top: m(.topMargin, d.top), left: m(.leftMargin, d.left), bottom: m(.bottomMargin, d.bottom), right: m(.rightMargin, d.right))
+        }
         if extras.hasSetup { setup = extras.setup }
-        if type == .officeOpenXML || type == .docFormat || type == .openDocument { ListMarkers.insert(into: text) }
-        storage.setAttributedString(type == .plain ? NSAttributedString(string: text.string, attributes: Styles.normal.attributes) : text)
+        if type == .officeOpenXML || type == .docFormat || type == .openDocument || type == .rtf { ListMarkers.insert(into: text) }
+        storage.setAttributedString(text)
     }
 
     override func data(ofType typeName: String) throws -> Data {
         editor?.textView.breakUndoCoalescing()
-        if Self.isMarkdown(typeName) { return Data(storage.string.utf8) }
+        if Self.isMarkdown(typeName) { return encode(MarkdownWriter.write(storage)) }
         return try exportData(Self.documentType(for: typeName))
     }
 
+    /// Plain text in the file's own encoding when every character fits, else UTF-8.
+    private func encode(_ s: String) -> Data {
+        if textEncoding != .utf8, let d = s.data(using: textEncoding, allowLossyConversion: false) {
+            if textEncoding == .utf16LittleEndian { return Data([0xFF, 0xFE]) + d }
+            if textEncoding == .utf16BigEndian { return Data([0xFE, 0xFF]) + d }
+            return d
+        }
+        return Data(s.utf8)
+    }
+
+    func markdownData() -> Data { encode(MarkdownWriter.write(storage)) }
+
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
         let range = NSRange(location: 0, length: storage.length)
-        if type == .plain { return Data(storage.string.utf8) }
+        if type == .plain { return encode(storage.string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
             o.pageSize = setup.size
@@ -77,6 +120,22 @@ final class TextDocument: NSDocument {
         }
         var attrs: [NSAttributedString.DocumentAttributeKey: Any] = [.documentType: type]
         if type == .html { attrs[.characterEncoding] = String.Encoding.utf8.rawValue }
+        if type == .rtf || type == .openDocument {
+            // Pictures, page setup, header and footer are added to the system writer's output.
+            let (text, pictures) = ImageMarkers.extract(storage)
+            attrs[.paperSize] = setup.size
+            attrs[.topMargin] = setup.margins.top
+            attrs[.bottomMargin] = setup.margins.bottom
+            attrs[.leftMargin] = setup.margins.left
+            attrs[.rightMargin] = setup.margins.right
+            let data = try text.data(from: NSRange(location: 0, length: text.length), documentAttributes: attrs)
+            if type == .rtf { return RtfFormat.finish(data, pictures: pictures, setup: setup) }
+            var borders = false
+            storage.enumerateAttribute(.paragraphStyle, in: range) { v, _, stop in
+                if let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.width(for: .border, edge: .minX) > 0 { borders = true; stop.pointee = true }
+            }
+            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders)
+        }
         return try storage.data(from: range, documentAttributes: attrs)
     }
 
@@ -125,51 +184,6 @@ final class TextDocument: NSDocument {
         op.jobTitle = displayName
         op.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling, .showsPreview, .showsPageRange])
         return op
-    }
-}
-
-/// Gives Markdown's semantic runs (headings, code, quotes) a document look.
-enum MarkdownStyler {
-    static func style(_ source: NSAttributedString) -> NSAttributedString {
-        let out = NSMutableAttributedString()
-        var lastIdentity: Int?
-        source.enumerateAttributes(in: NSRange(location: 0, length: source.length)) { attrs, range, _ in
-            let intent = attrs[NSAttributedString.Key("NSPresentationIntent")] as? PresentationIntent
-            let inline = attrs[NSAttributedString.Key("NSInlinePresentationIntent")] as? NSNumber
-            var style = Styles.normal
-            var isCode = false
-            var isList = false
-            for component in intent?.components ?? [] {
-                switch component.kind {
-                case .header(let level): style = Styles.all[min(3, max(1, level))]
-                case .blockQuote: style = Styles.all[5]
-                case .codeBlock: isCode = true
-                case .listItem: isList = true
-                default: break
-                }
-            }
-            // A new block starts a new paragraph.
-            if let id = intent?.components.first?.identity, id != lastIdentity, out.length > 0 {
-                out.append(NSAttributedString(string: "\n", attributes: style.attributes))
-            }
-            lastIdentity = intent?.components.first?.identity
-            var a = style.attributes
-            var font = a[.font] as! NSFont
-            if let inline {
-                let v = inline.uintValue
-                if v & 2 != 0 { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }   // stronglyEmphasized
-                if v & 1 != 0 { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) } // emphasized
-                if v & 4 != 0 { isCode = true }                                                           // code
-                if v & 32 != 0 { a[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            }
-            if isCode { font = .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular); a[.backgroundColor] = NSColor(white: 0.95, alpha: 1) }
-            a[.font] = font
-            if let link = attrs[.link] { a[.link] = link }
-            var text = source.attributedSubstring(from: range).string
-            if isList, out.string.hasSuffix("\n") || out.length == 0 { text = "\t•\t" + text }
-            out.append(NSAttributedString(string: text, attributes: a))
-        }
-        return out
     }
 }
 

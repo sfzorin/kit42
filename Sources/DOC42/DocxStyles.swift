@@ -12,6 +12,48 @@ enum DocxStyles {
         var images: [Int: (data: Data, size: NSSize)] = [:]
         var setup = PageSetup()
         var hasSetup = false
+        /// "numId:ilvl" → list format; the system reader makes every list a bullet list.
+        var lists: [String: ListFormat] = [:]
+    }
+
+    struct ListFormat {
+        var format = "bullet"
+        var text = "%1."
+        var start = 1
+    }
+
+    /// Level formats of every numbering instance (overrides applied).
+    static func listFormats(_ zip: ZipArchive) -> [String: [Int: ListFormat]] {
+        guard let data = zip["word/numbering.xml"], let root = (try? XMLDocument(data: data))?.rootElement() else { return [:] }
+        func levels(_ e: XMLElement) -> [Int: ListFormat] {
+            var out: [Int: ListFormat] = [:]
+            for l in e.children("lvl") {
+                if let i = l.attr("ilvl").flatMap(Int.init) { out[i] = levelsOf(l) }
+            }
+            return out
+        }
+        var abstracts: [String: [Int: ListFormat]] = [:]
+        for a in root.children("abstractNum") { if let id = a.attr("abstractNumId") { abstracts[id] = levels(a) } }
+        var out: [String: [Int: ListFormat]] = [:]
+        for num in root.children("num") {
+            guard let id = num.attr("numId"), let a = num.child("abstractNumId")?.attr("val") else { continue }
+            var l = abstracts[a] ?? [:]
+            for o in num.children("lvlOverride") {
+                guard let i = o.attr("ilvl").flatMap(Int.init) else { continue }
+                if let lvl = o.child("lvl") { l[i] = levelsOf(lvl) }
+                if let start = o.child("startOverride")?.attr("val").flatMap(Int.init) { l[i, default: ListFormat()].start = start }
+            }
+            out[id] = l
+        }
+        return out
+    }
+
+    private static func levelsOf(_ lvl: XMLElement) -> ListFormat {
+        var f = ListFormat()
+        f.format = lvl.child("numFmt")?.attr("val") ?? "bullet"
+        f.text = lvl.child("lvlText")?.attr("val") ?? ""
+        f.start = lvl.child("start")?.attr("val").flatMap(Int.init) ?? 1
+        return f
     }
 
     static let markerStart: Character = "\u{E000}", markerEnd: Character = "\u{E001}"
@@ -27,6 +69,7 @@ enum DocxStyles {
               let styles = try? XMLDocument(data: stylesData, options: []).rootElement() else { return (data, extras) }
 
         let themeFonts = themeFontNames(zip)
+        let formats = listFormats(zip)
         var byId: [String: XMLElement] = [:]
         var defaultParagraph: String?
         for s in styles.children("style") {
@@ -125,6 +168,17 @@ enum DocxStyles {
             if let d = defaultPPr { inheritedP.append(d) }
             inheritedP += styleChain.compactMap { $0.child("pPr") }
             merge(into: pPr, from: inheritedP, skip: ["pStyle", "rPr", "sectPr", "pPrChange"])
+            // List format marker: restored by `restoreLists` after reading.
+            if let numPr = pPr.child("numPr"), let numId = numPr.child("numId")?.attr("val") {
+                let level = numPr.child("ilvl")?.attr("val").flatMap(Int.init) ?? 0
+                let key = "\(numId):\(level)"
+                if extras.lists[key] == nil { extras.lists[key] = formats[numId]?[level] ?? ListFormat(format: numId == "0" ? "none" : "bullet") }
+                let r = XMLElement(name: "w:r", uri: ns)
+                let t = XMLElement(name: "w:t", uri: ns)
+                t.stringValue = "\u{E004}\(key)\u{E005}"
+                r.addChild(t)
+                p.insertChild(r, at: pPr.index + 1)
+            }
 
             // Run properties: defaults < paragraph style chain < character style chain < direct
             var inheritedR: [XMLElement] = []
@@ -162,6 +216,55 @@ enum DocxStyles {
     }
 
     /// Moves style markers into the DOC42 style attribute of their paragraphs.
+    /// Gives list paragraphs their real format (numbered, lettered, none) from the markers.
+    static func restoreLists(_ text: NSMutableAttributedString, _ formats: [String: ListFormat]) {
+        let pattern = try! NSRegularExpression(pattern: "\u{E004}(\\d+):(\\d+)\u{E005}")
+        var lists: [String: NSTextList] = [:]
+        for m in pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length)).reversed() {
+            let ns = text.string as NSString
+            let key = ns.substring(with: m.range(at: 1)) + ":" + ns.substring(with: m.range(at: 2))
+            let level = Int(ns.substring(with: m.range(at: 2))) ?? 0
+            text.deleteCharacters(in: m.range)
+            let paragraph = (text.string as NSString).paragraphRange(for: NSRange(location: m.range.location, length: 0))
+            guard paragraph.length > 0 || paragraph.location < text.length,
+                  let style = (text.attribute(.paragraphStyle, at: min(paragraph.location, text.length - 1), effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+            else { continue }
+            let f = formats[key] ?? ListFormat()
+            if f.format == "none" || (f.format != "bullet" && f.text.isEmpty) {
+                style.textLists = []
+            } else {
+                let list = lists[key] ?? {
+                    let l = NSTextList(markerFormat: markerFormat(f, level: level), options: 0)
+                    l.startingItemNumber = f.start
+                    return l
+                }()
+                lists[key] = list
+                style.textLists = Array(style.textLists.dropLast()) + [list]
+            }
+            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
+        }
+    }
+
+    private static func markerFormat(_ f: ListFormat, level: Int) -> NSTextList.MarkerFormat {
+        let token: String
+        switch f.format {
+        case "decimal", "decimalZero": token = "{decimal}"
+        case "lowerLetter": token = "{lower-alpha}"
+        case "upperLetter": token = "{upper-alpha}"
+        case "lowerRoman": token = "{lower-roman}"
+        case "upperRoman": token = "{upper-roman}"
+        default:
+            // Symbol-font bullets are private-use characters: show a plain bullet.
+            let ch = f.text.unicodeScalars.first
+            if let ch, !(0xE000...0xF8FF).contains(ch.value), f.text.count == 1 { return NSTextList.MarkerFormat(rawValue: f.text) }
+            return [.disc, .circle, .square][level % 3]
+        }
+        // "%1." → "{decimal}."; references to outer levels ("%1.%2.") keep only this level's number.
+        var s = f.text.replacingOccurrences(of: "%\(level + 1)", with: token)
+        s = s.replacingOccurrences(of: "%[0-9]\\.?", with: "", options: .regularExpression)
+        return NSTextList.MarkerFormat(rawValue: s.contains(token) ? s : token + ".")
+    }
+
     static func restoreStyles(_ text: NSMutableAttributedString) {
         let pattern = try! NSRegularExpression(pattern: "\u{E002}([A-Za-z0-9]+)\u{E003}")
         for m in pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length)).reversed() {
