@@ -103,10 +103,27 @@ enum OdtFormat {
         // Comments and footnotes → markers (the system reader drops them).
         markAnnotations(root, extras: &extras)
 
+        // Named paragraph styles; each paragraph keeps the one its (automatic) style derives from.
+        let named = OdtStyles.read(stylesDoc?.rootElement())
+        extras.styles = named.filter { $0.id != "Normal" }
+        var namedIds: [String: String] = [:]
+        for s in descendants(stylesDoc?.rootElement(), named: "style") where s.attr("family") == "paragraph" && (s.parent as? XMLElement)?.localName == "styles" {
+            if let n = s.attr("name") { namedIds[n] = OdtStyles.id(n, display: s.attr("display-name")) ?? n }
+        }
+        func namedStyle(_ style: String?) -> String? {
+            var cur = style, depth = 0
+            while let c = cur, depth < 12 {
+                if let id = namedIds[c] { return id }
+                cur = parents[c]; depth += 1
+            }
+            return nil
+        }
         // Headings and the title keep their Word style through the system reader.
         for p in descendants(root, named: "h") + descendants(root, named: "p") {
             var word: String?
-            if p.localName == "h" {
+            if let id = namedStyle(p.attr("style-name")), id != "Normal", !(p.localName == "h" && !id.hasPrefix("Heading") && id != "Title") {
+                word = id
+            } else if p.localName == "h" {
                 let level = Int(p.attr("outline-level") ?? "1") ?? 1
                 word = isTitle(p.attr("style-name")) ? "Title" : "Heading\(min(3, max(1, level)))"
             } else if isTitle(p.attr("style-name")) {
@@ -162,7 +179,7 @@ enum OdtFormat {
 
     /// Adds pictures, page layout, header and footer to the system writer's .odt.
     static func finish(_ data: Data, pictures: [ImageMarkers.Picture], setup: PageSetup, tableBorders: Bool,
-                       comments: [DocComment] = [], notes: [DocNote] = []) -> Data {
+                       comments: [DocComment] = [], notes: [DocNote] = [], styles sheet: StyleSheet? = nil) -> Data {
         guard var zip = try? ZipArchive(data: data), let contentData = zip["content.xml"],
               var content = String(data: contentData, encoding: .utf8) else { return data }
         // The system writer drops cell borders.
@@ -188,6 +205,7 @@ enum OdtFormat {
         }
         out += ns.substring(from: last)
         content = finishAnnotations(out, comments: comments, notes: notes)
+        if sheet != nil { content = OdtStyles.apply(content).0 }
         zip["content.xml"] = Data(content.utf8)
 
         if !pictures.isEmpty, let manifestData = zip["META-INF/manifest.xml"], var manifest = String(data: manifestData, encoding: .utf8),
@@ -224,6 +242,12 @@ enum OdtFormat {
                 styles.replaceSubrange(r, with: "</office:styles><office:automatic-styles>" + layout + "</office:automatic-styles>")
             }
             if let r = styles.range(of: "</office:document-styles>") { styles.replaceSubrange(r, with: master + "</office:document-styles>") }
+            if let sheet {
+                let defs = OdtStyles.definitions(sheet)
+                if let r = styles.range(of: "</office:styles>") { styles.replaceSubrange(r, with: defs + "</office:styles>") }
+                else if let r = styles.range(of: "<office:styles/>") { styles.replaceSubrange(r, with: "<office:styles>" + defs + "</office:styles>") }
+                else if let r = styles.range(of: "<office:automatic-styles") { styles.insert(contentsOf: "<office:styles>" + defs + "</office:styles>", at: r.lowerBound) }
+            }
             zip["styles.xml"] = Data(styles.utf8)
         }
         zip.storedUncompressed.insert("mimetype")

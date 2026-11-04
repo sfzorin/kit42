@@ -114,7 +114,7 @@ extension DocxStyles {
 
     /// Replaces the markers with footnote references, comment ranges, bookmarks, links and section breaks.
     static func restoreMarks(_ text: NSMutableAttributedString, _ extras: Extras) {
-        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHsrRp])([^\u{E00B}]*)\u{E00B}")
+        let pattern = try! NSRegularExpression(pattern: "\u{E00A}([ncCbhHsrRpxXftqeEdT])([^\u{E00B}]*)\u{E00B}")
         let matches = pattern.matches(in: text.string, range: NSRange(location: 0, length: text.length))
         guard !matches.isEmpty else { return }
         let ns = text.string as NSString
@@ -124,7 +124,7 @@ extension DocxStyles {
         for m in matches {
             let kind = ns.substring(with: m.range(at: 1))
             marks.append(Mark(kind: kind, payload: ns.substring(with: m.range(at: 2)), at: m.range.location - shift))
-            shift += m.range.length - (kind == "n" || kind == "s" ? 1 : 0)
+            shift += m.range.length - (kind == "n" || kind == "s" || kind == "f" ? 1 : 0)
         }
         for (m, mark) in zip(matches, marks).reversed() {
             let attrs = text.attributes(at: m.range.location, effectiveRange: nil)
@@ -135,6 +135,12 @@ extension DocxStyles {
                 a[.baselineOffset] = nil
                 if m.range.location > 0, let f = text.attribute(.font, at: m.range.location - 1, effectiveRange: nil) { a[.font] = f }
                 text.replaceCharacters(in: m.range, with: Notes.reference(DocNote(extras.notes[mark.payload] ?? ""), attributes: a))
+            case "f":
+                let parts = mark.payload.components(separatedBy: "\u{E00C}")
+                let field = DocField.parse(parts[0], result: parts.count > 2 ? parts[2] : "", locked: parts.count > 1 && parts[1] == "1") ?? DocField(.page)
+                var a = attrs
+                a[.link] = nil
+                text.replaceCharacters(in: m.range, with: Fields.reference(field, attributes: a))
             case "s":
                 var a = attrs
                 a[.docSection] = (extras.sections[Int(mark.payload) ?? 0] ?? PageSetup()).section
@@ -147,8 +153,41 @@ extension DocxStyles {
         var commentStarts: [String: Int] = [:]
         var links: [(String, Int)] = []
         var revisionStarts: [String: Int] = [:]
+        var charStyles: [(String, Int)] = []
+        var tables: [(payload: String, at: Int)] = []
+        var boxes: [(payload: String, at: Int)] = []
+        var effects: [(String, Int)] = []
         for mark in marks {
             switch mark.kind {
+            case "q": boxes.append((mark.payload, mark.at))
+            case "T":
+                guard text.length > 0 else { continue }
+                let para = (text.string as NSString).paragraphRange(for: NSRange(location: min(mark.at, text.length - 1), length: 0))
+                let stops = mark.payload.split(separator: ",").compactMap { t -> NSTextTab? in
+                    guard let kind = t.first, let pos = Double(t.dropFirst()) else { return nil }
+                    let align: NSTextAlignment = kind == "c" ? .center : kind == "r" ? .right : .left
+                    return NSTextTab(textAlignment: align, location: CGFloat(pos) / 20, options: kind == "d" ? [.columnTerminators: NSCharacterSet(charactersIn: ".,")] : [:])
+                }.sorted { $0.location < $1.location }
+                text.enumerateAttribute(.paragraphStyle, in: para) { v, r, _ in
+                    let p = ((v as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+                    p.tabStops = stops
+                    text.addAttribute(.paragraphStyle, value: p, range: r)
+                }
+            case "e": effects.append((mark.payload, mark.at))
+            case "E":
+                if let (e, start) = effects.popLast(), mark.at > start {
+                    let r = NSRange(location: start, length: mark.at - start)
+                    if e.contains("smallCaps") { text.addAttribute(.docSmallCaps, value: true, range: r) }
+                    if e.split(separator: ",").contains("caps") { text.addAttribute(.docAllCaps, value: true, range: r) }
+                }
+            case "d":
+                if mark.at < text.length, let lines = Int(mark.payload) { text.addAttribute(.docDropCap, value: lines, range: NSRange(location: mark.at, length: 1)) }
+            case "t": tables.append((mark.payload, mark.at))
+            case "x": charStyles.append((mark.payload, mark.at))
+            case "X":
+                if let (id, start) = charStyles.popLast(), mark.at > start {
+                    text.addAttribute(.docCharStyle, value: id, range: NSRange(location: start, length: mark.at - start))
+                }
             case "r": revisionStarts[mark.payload] = mark.at
             case "R":
                 if let start = revisionStarts[mark.payload], mark.at > start, let rev = extras.revisions[mark.payload] {
@@ -201,6 +240,80 @@ extension DocxStyles {
                 p.tabStops = [NSTextTab(textAlignment: .right, location: width - 1)]
                 text.addAttribute(.paragraphStyle, value: p, range: pr)
             }
+        }
+        restoreBoxes(text, boxes)
+        restoreTables(text, tables)
+    }
+}
+
+extension DocxStyles {
+    /// "t=sz:color:space;l=…;b=…;r=…;f=fill" for a paragraph's w:pBdr and w:shd (nil: none).
+    static func paragraphBoxPayload(_ pPr: XMLElement) -> String? {
+        var parts: [String] = []
+        if let b = pPr.child("pBdr") {
+            for (name, key) in [("top", "t"), ("left", "l"), ("bottom", "b"), ("right", "r")] {
+                guard let e = b.child(name) ?? (name == "left" ? b.child("start") : name == "right" ? b.child("end") : nil),
+                      !["nil", "none"].contains(e.attr("val") ?? "single") else { continue }
+                parts.append("\(key)=\(e.attr("sz") ?? "4"):\(e.attr("color").flatMap { $0 == "auto" ? nil : $0 } ?? "000000"):\(e.attr("space") ?? "1")")
+            }
+        }
+        if let fill = pPr.child("shd")?.attr("fill"), fill != "auto", fill.uppercased() != "FFFFFF" { parts.append("f=\(fill)") }
+        return parts.isEmpty ? nil : parts.joined(separator: ";")
+    }
+
+    /// Paragraphs with the same borders next to each other share one box (an NSTextBlock).
+    static func restoreBoxes(_ text: NSMutableAttributedString, _ marks: [(payload: String, at: Int)]) {
+        let ns = text.string as NSString
+        var last: (payload: String, end: Int, block: NSTextBlock)?
+        for m in marks where m.at <= text.length && text.length > 0 {
+            let para = ns.paragraphRange(for: NSRange(location: min(m.at, text.length - 1), length: 0))
+            let block: NSTextBlock
+            if let l = last, l.payload == m.payload, l.end == para.location { block = l.block } else {
+                block = NSTextBlock()
+                var pad: CGFloat = 1
+                for kv in m.payload.split(separator: ";") {
+                    let p = kv.split(separator: "=", maxSplits: 1).map(String.init)
+                    guard p.count == 2 else { continue }
+                    if p[0] == "f" { block.backgroundColor = hexColor(p[1]); continue }
+                    let v = p[1].split(separator: ":").map(String.init)
+                    let edge: NSRectEdge = ["t": .minY, "l": .minX, "b": .maxY, "r": .maxX][p[0]] ?? .minY
+                    block.setWidth(CGFloat(Double(v.first ?? "4") ?? 4) / 8, type: .absoluteValueType, for: .border, edge: edge)
+                    if v.count > 1 { block.setBorderColor(hexColor(v[1]) ?? .black, for: edge) }
+                    if v.count > 2 { pad = max(pad, CGFloat(Double(v[2]) ?? 1)) }
+                }
+                block.setWidth(pad, type: .absoluteValueType, for: .padding)
+                block.setValue(100, type: .percentageValueType, for: .width)
+            }
+            text.enumerateAttribute(.paragraphStyle, in: para) { v, r, _ in
+                let p = ((v as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+                guard !(p.textBlocks.last is NSTextTableBlock) else { return }
+                p.textBlocks = [block]
+                text.addAttribute(.paragraphStyle, value: p, range: r)
+            }
+            last = (m.payload, NSMaxRange(para), block)
+        }
+    }
+
+    /// Word's drop cap is a framed paragraph holding the letter: the letter moves to the start of the next paragraph.
+    static func markDropCaps(_ body: XMLElement) {
+        for p in descendants(body, named: "p") {
+            guard let frame = p.child("pPr")?.child("framePr"), let kind = frame.attr("dropCap"), kind == "drop" || kind == "margin",
+                  let parent = p.parent as? XMLElement else { continue }
+            let letter = descendants(p, named: "t").compactMap(\.stringValue).joined()
+            let lines = frame.attr("lines").flatMap(Int.init) ?? 3
+            let siblings = (parent.children ?? []).compactMap { $0 as? XMLElement }
+            guard let i = siblings.firstIndex(where: { $0 === p }), i + 1 < siblings.count, siblings[i + 1].localName == "p", !letter.isEmpty else { continue }
+            let next = siblings[i + 1]
+            let run = XMLElement(name: "w:r", uri: ns)
+            if let rPr = descendants(next, named: "r").first?.child("rPr")?.copy() as? XMLElement { run.addChild(rPr) }
+            let t = XMLElement(name: "w:t", uri: ns)
+            t.stringValue = letter
+            t.addAttribute(XMLNode.attribute(withName: "xml:space", stringValue: "preserve") as! XMLNode)
+            run.addChild(t)
+            let at = (next.child("pPr")?.index ?? -1) + 1
+            next.insertChild(run, at: at)
+            next.insertChild(mark("d", "\(lines)"), at: at)
+            p.detach()
         }
     }
 }

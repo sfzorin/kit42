@@ -9,6 +9,21 @@ final class TextDocument: NSDocument {
     var setup = PageSetup() { didSet { editor?.setupDidChange() } }
     /// Track changes is on: edits are recorded as insertions and deletions (saved to .docx).
     var trackChanges = false
+    /// Paragraph and character styles (saved to .docx styles.xml and .odt styles.xml).
+    let styles = StyleSheet()
+    /// Title and author (docProps/core.xml, PDF metadata, fields).
+    var docInfo = DocInfo()
+    /// Page colour and watermark text (Format › Page), automatic hyphenation.
+    var background: NSColor? { didSet { editor?.pageLookDidChange() } }
+    var watermark = "" { didSet { editor?.pageLookDidChange() } }
+    var hyphenate = false { didSet { editor?.pageLookDidChange() } }
+
+    /// Document facts for fields: the file name follows the file.
+    var fieldInfo: DocInfo {
+        var i = docInfo
+        i.fileName = fileURL?.lastPathComponent ?? displayName ?? ""
+        return i
+    }
 
     override init() {
         super.init()
@@ -64,10 +79,21 @@ final class TextDocument: NSDocument {
             return
         }
         let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
+        if type == .officeOpenXML {
+            let (text, extras) = try DocxStyles.read(data)
+            if extras.hasSetup { setup = extras.setup }
+            styles.merge(extras.styles)
+            trackChanges = extras.trackRevisions
+            docInfo = extras.info
+            background = extras.background
+            watermark = extras.watermark
+            hyphenate = extras.hyphenate
+            storage.setAttributedString(text)
+            return
+        }
         var source = data
         var extras = DocxStyles.Extras()
         switch type {
-        case .officeOpenXML: (source, extras) = DocxStyles.flattenWithExtras(data)
         case .openDocument: (source, extras) = OdtFormat.prepare(data)
         case .rtf: (source, extras) = RtfFormat.prepare(data)
         default: break
@@ -87,6 +113,7 @@ final class TextDocument: NSDocument {
             extras.setup.margins = NSEdgeInsets(top: m(.topMargin, d.top), left: m(.leftMargin, d.left), bottom: m(.bottomMargin, d.bottom), right: m(.rightMargin, d.right))
         }
         if extras.hasSetup { setup = extras.setup }
+        styles.merge(extras.styles)
         trackChanges = extras.trackRevisions
         if type == .officeOpenXML || type == .docFormat || type == .openDocument || type == .rtf { ListMarkers.insert(into: text) }
         storage.setAttributedString(text)
@@ -108,10 +135,21 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(Revisions.accepted(storage))) }   // footnotes as [^n]
+    func markdownData() -> Data { encode(MarkdownWriter.write(Fields.flatten(Revisions.accepted(storage), info: fieldInfo))) }   // footnotes as [^n]
+
+    /// Header and footer as plain text and page numbers, for formats without rich headers (ODT, RTF).
+    var plainSetup: PageSetup {
+        var s = setup
+        guard let hf = setup.hf else { return s }
+        s.header = HeaderFooter.plain(hf.header).0
+        let (footer, page) = HeaderFooter.plain(hf.footer)
+        s.footer = footer
+        s.pageNumbers = page || HeaderFooter.plain(hf.header).1
+        return s
+    }
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
-        if type == .plain { return encode(Notes.flatten(Revisions.accepted(storage)).string) }
+        if type == .plain { return encode(Notes.flatten(Fields.flatten(Revisions.accepted(storage), info: fieldInfo)).string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
             o.pageSize = setup.size
@@ -122,18 +160,33 @@ final class TextDocument: NSDocument {
             o.columns = setup.columns
             o.columnSpacing = setup.columnSpacing
             o.paragraphStyle = Styles.wordStyle
+            o.styles = styles.docxStyles()
+            o.headerFooter = setup.hf
+            o.title = docInfo.title
+            o.author = docInfo.author
+            o.background = background
+            o.watermark = watermark
+            o.autoHyphenation = hyphenate
+            let pages = offscreenPages()
+            let fieldInfo = fieldInfo
+            o.fieldResult = { f, i in
+                i < 0 ? Fields.value(f, at: i, FieldContext(page: 1, pages: pages.cards.count, info: fieldInfo, storage: self.storage))
+                    : Fields.value(f, at: i, pages.fieldContext(page: pages.pageNumber(at: i)))
+            }
+            defer { pages.detach() }
             o.trackRevisions = trackChanges
             return DocxWriter.data(storage, options: o)
         }
         // Tracked changes are accepted. Other formats have no footnotes (ODT has): references become numbers,
         // notes a list at the end. Comments go to ODT, RTF and HTML through markers (Annotations.swift).
-        let accepted = Revisions.accepted(self.storage)
+        let accepted = Fields.flatten(Revisions.accepted(self.storage), info: fieldInfo)
+        let setup = plainSetup
         var comments: [DocComment] = [], notes: [DocNote] = []
         var storage: NSAttributedString
         switch type {
         case .openDocument:
             (storage, comments, notes) = CommentMarkers.insert(accepted, notes: true)
-            storage = Notes.flatten(storage)   // (only section geometry left to drop)
+            storage = OdtStyles.markParagraphs(Notes.flatten(storage))   // (only section geometry left to drop)
         case .rtf, .html:
             (storage, comments, _) = CommentMarkers.insert(Notes.flatten(accepted), notes: false, clamp: type == .html)
         default:
@@ -160,19 +213,14 @@ final class TextDocument: NSDocument {
             storage.enumerateAttribute(.paragraphStyle, in: range) { v, _, stop in
                 if let b = (v as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock, b.width(for: .border, edge: .minX) > 0 { borders = true; stop.pointee = true }
             }
-            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes)
+            return OdtFormat.finish(data, pictures: pictures, setup: setup, tableBorders: borders, comments: comments, notes: notes, styles: styles)
         }
         return try storage.data(from: range, documentAttributes: attrs)
     }
 
     /// Paginated PDF of the document: exactly the pages shown on screen.
-    func pdfData() -> Data {
-        let view = offscreenPages(accepted: true)
-        defer { view.detach() }
-        // Sections in another size or orientation: each page as its own sheet.
-        if view.hasMixedPageSizes { return view.pdfData() }
-        return PaginatedPDF.render(view, info: pageInfo())
-    }
+    /// (Sections in another size or orientation: each page as its own sheet; see pdfData(_:).)
+    func pdfData() -> Data { pdfData(PDFOptions()) }
 
     /// Paper = page size, no extra margins: each page card is one sheet.
     func pageInfo() -> NSPrintInfo {
@@ -213,6 +261,11 @@ final class TextDocument: NSDocument {
             tv.drawsBackground = false
         }
         view.ownedStorage = text   // layout managers don't retain their storage
+        let info = fieldInfo
+        view.info = { info }
+        view.background = background
+        view.watermark = watermark
+        view.layoutManager.hyphenationFactor = hyphenate ? 0.9 : 0
         view.layoutAll()
         return view
     }

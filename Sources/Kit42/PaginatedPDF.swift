@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 
 /// Renders a view to a paginated PDF through the print system (honours knowsPageRange/rectForPage
 /// and automatic pagination), without showing any panel.
@@ -14,5 +15,122 @@ public enum PaginatedPDF {
         op.showsProgressPanel = false
         op.run()
         return (try? Data(contentsOf: url)) ?? Data()
+    }
+}
+
+// MARK: - Bookmarks, links, notes and metadata
+
+public extension PaginatedPDF {
+    /// A heading for the PDF outline: page index from 0, `y` from the top of the page.
+    struct OutlineItem {
+        public var title: String
+        public var level: Int
+        public var page: Int
+        public var y: CGFloat
+        public init(title: String, level: Int, page: Int, y: CGFloat) { self.title = title; self.level = level; self.page = page; self.y = y }
+    }
+
+    /// A clickable area (rect from the page's top-left) to a web address or to a place in the document.
+    struct Link {
+        public var page: Int
+        public var rect: CGRect
+        public var url: URL?
+        public var target: (page: Int, y: CGFloat)?
+        public init(page: Int, rect: CGRect, url: URL? = nil, target: (page: Int, y: CGFloat)? = nil) {
+            self.page = page; self.rect = rect; self.url = url; self.target = target
+        }
+    }
+
+    /// A note annotation (comments of the document).
+    struct Note {
+        public var page: Int
+        public var rect: CGRect
+        public var text: String
+        public var author: String
+        public init(page: Int, rect: CGRect, text: String, author: String) { self.page = page; self.rect = rect; self.text = text; self.author = author }
+    }
+
+    /// Adds outline, links, notes and title/author to a PDF; `pages`: the pages to keep (indices from 0), nil all.
+    /// Pages are redrawn into a PDF context (named destinations, links, outline, metadata); notes are added with PDFKit.
+    static func finish(_ data: Data, title: String = "", author: String = "", creator: String = "", outline: [OutlineItem] = [],
+                       links: [Link] = [], notes: [Note] = [], pages keep: Set<Int>? = nil) -> Data {
+        guard let provider = CGDataProvider(data: data as CFData), let src = CGPDFDocument(provider), src.numberOfPages > 0 else { return data }
+        let count = src.numberOfPages
+        func kept(_ i: Int) -> Bool { i >= 0 && i < count && (keep?.contains(i) ?? true) }
+        let order = (0..<count).filter(kept)
+        let out = NSMutableData()
+        guard let consumer = CGDataConsumer(data: out as CFMutableData) else { return data }
+        var info: [CFString: Any] = [:]
+        if !title.isEmpty { info[kCGPDFContextTitle] = title }
+        if !author.isEmpty { info[kCGPDFContextAuthor] = author }
+        if !creator.isEmpty { info[kCGPDFContextCreator] = creator }
+        var first = src.page(at: 1)?.getBoxRect(.mediaBox) ?? CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let ctx = CGContext(consumer: consumer, mediaBox: &first, info as CFDictionary) else { return data }
+        // Named destinations: "p<page>_<y>" for every outline entry and link target.
+        func name(_ page: Int, _ y: CGFloat) -> String { "p\(page)_\(Int(y.rounded()))" }
+        var targets: [Int: Set<String>] = [:]
+        var ys: [String: CGFloat] = [:]
+        for l in links { if let t = l.target, kept(t.page) { let n = name(t.page, t.y); targets[t.page, default: []].insert(n); ys[n] = t.y } }
+        for i in order {
+            guard let page = src.page(at: i + 1) else { continue }
+            var box = page.getBoxRect(.mediaBox)
+            ctx.beginPage(mediaBox: &box)
+            ctx.drawPDFPage(page)
+            for n in targets[i] ?? [] { ctx.addDestination(n as CFString, at: CGPoint(x: box.minX, y: box.maxY - max(0, (ys[n] ?? 0) - 12))) }
+            for l in links where l.page == i {
+                let r = CGRect(x: box.minX + l.rect.minX, y: box.maxY - l.rect.maxY, width: l.rect.width, height: l.rect.height)
+                if let url = l.url { ctx.setURL(url as CFURL, for: r) } else if let t = l.target, kept(t.page) { ctx.setDestination(name(t.page, t.y) as CFString, for: r) }
+            }
+            ctx.endPage()
+        }
+        if !outline.isEmpty {
+            // Nested dictionaries: children under the last entry of a lower level.
+            final class Node { var title = ""; var page = 1; var rect = CGRect.zero; var level = -1; var children: [Node] = [] }
+            let root = Node()
+            var stack = [root]
+            for o in outline where kept(o.page) {
+                let n = Node()
+                n.title = o.title; n.level = o.level
+                n.page = (order.firstIndex(of: o.page) ?? 0) + 1
+                let box = src.page(at: o.page + 1)?.getBoxRect(.mediaBox) ?? .zero
+                n.rect = CGRect(x: box.minX, y: box.maxY - max(0, o.y - 12) - 20, width: box.width, height: 20)
+                while let last = stack.last, last.level >= o.level { stack.removeLast() }
+                (stack.last ?? root).children.append(n)
+                stack.append(n)
+            }
+            func dict(_ n: Node) -> [String: Any] {
+                var d: [String: Any] = [:]
+                if n.level >= 0 {
+                    d[kCGPDFOutlineTitle as String] = n.title
+                    d[kCGPDFOutlineDestination as String] = n.page
+                    d[kCGPDFOutlineDestinationRect as String] = n.rect.dictionaryRepresentation
+                }
+                if !n.children.isEmpty { d[kCGPDFOutlineChildren as String] = n.children.map(dict) }
+                return d
+            }
+            if !root.children.isEmpty { CGPDFContextSetOutline(ctx, dict(root) as CFDictionary) }
+        }
+        ctx.closePDF()
+        var result = out as Data
+        // Notes: PDFKit keeps the outline and links it reads, and adds the annotations.
+        if !notes.isEmpty, let doc = PDFDocument(data: result) {
+            for n in notes where kept(n.page) {
+                guard let k = order.firstIndex(of: n.page), let page = doc.page(at: k) else { continue }
+                let box = page.bounds(for: .mediaBox)
+                let r = CGRect(x: box.minX + n.rect.minX, y: box.maxY - n.rect.maxY, width: n.rect.width, height: n.rect.height)
+                let mark = PDFAnnotation(bounds: r, forType: .highlight, withProperties: nil)
+                mark.color = NSColor(calibratedRed: 1, green: 0.86, blue: 0.4, alpha: 0.5)
+                mark.contents = n.text
+                mark.userName = n.author
+                page.addAnnotation(mark)
+                let a = PDFAnnotation(bounds: CGRect(x: min(box.maxX - 20, r.maxX + 2), y: r.maxY - 16, width: 18, height: 18), forType: .text, withProperties: nil)
+                a.contents = n.text
+                a.userName = n.author
+                a.color = NSColor(calibratedRed: 1, green: 0.8, blue: 0.2, alpha: 1)
+                page.addAnnotation(a)
+            }
+            result = doc.dataRepresentation() ?? result
+        }
+        return result
     }
 }
