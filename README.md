@@ -113,12 +113,21 @@ Finder › Get Info › Open with › Change All.
 - Real pages on screen (text flows across sheets), paper size, orientation, margins, header/footer, page numbers —
   printed and exported exactly as shown. Table rows/columns insert/delete. Pictures and Word styles survive .docx round trips.
 - Footnotes (⌥⌘N): numbered automatically, shown at the bottom of their page, click to edit; read from and saved to .docx
-  (footnotes.xml; endnotes are read as footnotes), Markdown `[^1]`, a "Notes" list in RTF/ODT/HTML/text.
+  (footnotes.xml; endnotes are read as footnotes), .odt (text:note), Markdown `[^1]`, a "Notes" list in RTF/HTML/text.
 - Comments (⌥⌘M): highlighted text with cards in the margin (author, date, edit, resolve, delete); .docx comments.xml
-  with resolved state (commentsExtended.xml), read and written.
+  with resolved state (commentsExtended.xml), .odt office:annotation (resolved state as LibreOffice writes it) and
+  RTF Word annotations, read and written; Markdown export as `<!-- comment: … -->`, HTML as `<mark title="…">`.
+- Track changes (Edit › Track Changes, ⇧⌘E; Export As… is ⌥⇧⌘E): typed text becomes an insertion (underlined, in the
+  author's colour), deleted text stays struck through until accepted. Review menu: Show Markup (off = final view),
+  Next/Previous Change, Accept/Reject Change, Accept/Reject All; changes appear as cards next to the comments, with
+  accept and reject buttons. Undoable. Saved to .docx as w:ins / w:del (w:delText, paragraph marks) with
+  w:trackRevisions, read from Word and LibreOffice files; other formats, PDF and printing get the text with all
+  changes accepted. Commands (tables, footnotes, Replace All, …) are not tracked, nor are formatting changes.
 - Sections: Insert › Section Break (Next Page); each section has its own paper, orientation, margins and columns
-  (Document Setup applies to the cursor's section or the whole document). Columns 1–3 with spacing. Mixed page sizes
-  export to PDF page by page. Saved to .docx as sectPr / w:cols and read back (continuous breaks open a new page).
+  (Document Setup applies to the cursor's section or the whole document). Columns 1–3 with spacing; the last page of a
+  multi-column section balances its columns. Mixed page sizes export to PDF page by page. Saved to .docx as
+  sectPr / w:cols and read back (continuous breaks open a new page).
+- Dark mode: the window, rulers, comment and change cards follow the system; pages stay white paper with black text.
 - Table of contents from Title/Heading 1–3 with dot leaders, page numbers and links to the headings; Update rebuilds it
   in place. Saved as a Word TOC field with bookmarks and hyperlinks.
 - Find bar across all pages with replace; Find and Replace dialog (⌥⌘F): match case, whole words, regular expressions,
@@ -183,7 +192,7 @@ Finder › Get Info › Open with › Change All.
 
 ## Not implemented
 
-- GOST signatures (needs CryptoPro CSP), track changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
+- GOST signatures (needs CryptoPro CSP), tracked formatting changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
 
 ## Structure
 

@@ -58,6 +58,8 @@ extension DocWindowController {
                 }
             case "stats": print(TextStats.of(storage, NSRange(location: 0, length: storage.length), layout: paged.layoutManager), "pages", paged.cards.count)
             case "hidecomments": toggleCommentsAction(nil)
+            case "ruler": toggleRulerAction(nil)
+            case "editnote": if let n = Notes.all(in: storage).first?.1 { editNote(n) }
             case "findbar": finder.performAction(.showReplaceInterface)
             case "findnext": finder.performAction(.nextMatch)
             case "statistics": statisticsAction(nil)

@@ -542,6 +542,8 @@ final class PageCard: NSView {
     init(setup: PageSetup) {
         self.setup = setup
         super.init(frame: NSRect(origin: .zero, size: setup.size))
+        // Paper stays white with black text in dark mode (like Pages and Word): text views, selection, caret.
+        appearance = NSAppearance(named: .aqua)
         wantsLayer = true
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOpacity = 0.16
