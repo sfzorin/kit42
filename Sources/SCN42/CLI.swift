@@ -29,7 +29,8 @@ enum CLI {
         case "--detect-photos": detectPhotos(rest)
         case "--fake-scan": fakeScan(rest)
         case "--list-devices": listDevices(Double(rest.first ?? "") ?? 3)
-        case "--name": print(Exporter.expand(rest.first ?? SaveOptions.defaultTemplate, counter: 7, title: "Invoice No 4217"))
+        case "--name": let sample = "Invoice No 4217"
+            print(Exporter.expand(rest.first ?? SaveOptions.defaultTemplate, counter: 7, title: sample))
         default: return false
         }
         return true
@@ -171,16 +172,22 @@ enum CLI {
         var pages: [ScanPage] = []
         var finished = false
         scanner.open()
+        var priors: [Quad] = []
         func scanAreas(_ areas: [CGRect]) {
-            var queue = areas
+            var queue = Array(areas.enumerated())
             func next() {
                 guard !queue.isEmpty else { finished = true; return }
-                let area = queue.removeFirst()
+                let (index, area) = queue.removeFirst()
+                var options = settings.processing
+                if priors.indices.contains(index) { options.priorQuad = priors[index] }
                 let req = ScanRequest(source: settings.source, resolution: settings.resolution, colorMode: settings.colorMode, bitDepth: 8,
-                                      area: area, paper: nil, duplex: settings.duplex)
+                                      area: area, paper: nil, duplex: settings.duplex, lastInJob: queue.isEmpty)
+                let asked = Date()
                 scanner.scan(req, page: { raw in
-                    let p = ScanPage.make(raw, options: settings.processing)
-                    print("page \(pages.count + 1): \(raw.image.width)x\(raw.image.height)@\(Int(raw.dpi)) \(p.report.summary)")
+                    let t = Date()
+                    let p = ScanPage.make(raw, options: options)
+                    print(String(format: "page %d: %dx%d@%d scanned in %.1fs, processed in %.1fs: ", pages.count + 1, raw.image.width, raw.image.height,
+                                 Int(raw.dpi), t.timeIntervalSince(asked), Date().timeIntervalSince(t)) + p.report.summary)
                     if !(settings.removeBlank && p.report.blank) { pages.append(p) } else { print("  blank page removed") }
                 }, done: { error in
                     if let error { print("scan error: \(error.localizedDescription)") }
@@ -195,6 +202,11 @@ enum CLI {
                     guard case .success(let overview) = result else { print("overview failed"); finished = true; return }
                     let found = Processor.detectPhotos(overview).quads
                     let areas = found.map { Self.area(for: $0, in: overview) }
+                    priors = zip(found, areas).map { q, a in
+                        let n = q.scaled(1 / CGFloat(overview.width), 1 / CGFloat(overview.height))
+                        func rel(_ p: CGPoint) -> CGPoint { CGPoint(x: (p.x - a.minX) / a.width, y: (p.y - a.minY) / a.height) }
+                        return Quad(tl: rel(n.tl), tr: rel(n.tr), br: rel(n.br), bl: rel(n.bl))
+                    }
                     print("overview \(overview.width)x\(overview.height): \(areas.count) photos")
                     scanAreas(areas)
                 }

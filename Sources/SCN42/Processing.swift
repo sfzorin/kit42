@@ -19,6 +19,8 @@ struct ProcessOptions {
     var blankLimit = 0.0012
     /// Scan resolution: sizes of filters scale with it.
     var dpi = 300.0
+    /// Outline already known (from the overview), normalised to the image (0…1, origin top-left).
+    var priorQuad: Quad?
 }
 
 /// What processing found and did (shown in the CLI and kept with the page).
@@ -30,6 +32,7 @@ struct ProcessReport: Codable {
     var rotation = 0
     var ink = 0.0
     var blank = false
+    var tone = 0.0
     var inputSize = CGSize.zero
     var outputSize = CGSize.zero
 
@@ -39,7 +42,7 @@ struct ProcessReport: Codable {
         else { parts.append("crop=none") }
         parts.append(String(format: "deskew=%.2f°", deskewAngle))
         parts.append("rotate=\(rotation)°")
-        parts.append(String(format: "ink=%.3f%%", ink * 100))
+        parts.append(String(format: "ink=%.3f%% tone=%.1f", ink * 100, tone))
         if blank { parts.append("BLANK") }
         return parts.joined(separator: " ")
     }
@@ -63,14 +66,15 @@ enum Processor {
 
         if o.descreen, let d = descreen(image, dpi: o.dpi) { image = d }
 
-        if o.crop, let found = detectDocument(image) {
+        if o.crop, let found = cropQuad(image, o.priorQuad) {
             report.cropMethod = found.method
             report.quad = found.quad
             report.cropAngle = found.quad.angle
             if let c = perspectiveCrop(image, found.quad.inset(CGFloat(max(2, o.dpi / 100)))) { image = c }
         }
         // After a crop only a small correction is plausible; text skew beyond 8 degrees is more likely a picture's lines.
-        if o.deskew, let angle = skewAngle(image), abs(angle) >= 0.15, abs(angle) <= (report.cropMethod == nil ? 8 : 1.5) {
+        // Photos are straightened by their outline only.
+        if o.deskew, o.enhancement != .photo, let angle = skewAngle(image), abs(angle) >= 0.15, abs(angle) <= (report.cropMethod == nil ? 8 : 1.5) {
             report.deskewAngle = angle
             if let r = rotate(image, degrees: -angle) { image = r }
         }
@@ -80,7 +84,9 @@ enum Processor {
             if turn != 0, let r = rotate90(image, clockwise: turn) { image = r }
         }
         report.ink = inkCoverage(image)
-        report.blank = report.ink < o.blankLimit
+        // Blank = almost no ink and no picture either (a photo has no "ink" but plenty of tone variation).
+        report.tone = toneSpread(image)
+        report.blank = report.ink < o.blankLimit && report.tone < 10
 
         image = finish(image, o) ?? image
         report.outputSize = CGSize(width: image.width, height: image.height)
@@ -101,6 +107,15 @@ enum Processor {
     }
 
     // MARK: - Finding the document
+
+    /// The outline to cut: what detection finds, unless a known outline (from the overview) disagrees with it.
+    static func cropQuad(_ image: CGImage, _ prior: Quad?) -> (quad: Quad, method: String)? {
+        let found = detectDocument(image)
+        guard let prior else { return found }
+        let known = prior.scaled(CGFloat(image.width), CGFloat(image.height))
+        if let found, found.quad.iou(known) > 0.85 { return found }
+        return (known, "overview")
+    }
 
     /// The page lying on the glass: the scanner background around it is measured first (it is uniform),
     /// then Vision's document segmentation refines the corners when it agrees.
@@ -372,6 +387,22 @@ enum Processor {
         return Double(count) / Double(area)
     }
 
+    /// Standard deviation of the smoothed brightness inside the page (sensor noise averaged out).
+    static func toneSpread(_ image: CGImage) -> Double {
+        let g = Bitmap(image, maxSide: 300, gray: true).boxBlur(radius: 2)
+        let w = g.width, h = g.height, mx = w / 20, my = h / 20
+        var sum = 0.0, sq = 0.0, n = 0.0
+        for y in my..<(h - my) {
+            for x in mx..<(w - mx) {
+                let v = Double(g.data[y * w + x])
+                sum += v; sq += v * v; n += 1
+            }
+        }
+        guard n > 0 else { return 0 }
+        let mean = sum / n
+        return sqrt(max(0, sq / n - mean * mean))
+    }
+
     // MARK: - Clean-up
 
     /// Paper becomes white (shadows, yellowing and uneven light divided out), text dark and sharp;
@@ -452,6 +483,15 @@ enum Processor {
                     guard !seen[j] else { continue }
                     seen[j] = true
                     if lum(j, d) < t { whiten(j); stack.append(j) }
+                }
+            }
+            // Light streaks along the edges (paper meeting the scanner's backing) become paper too; ink stays.
+            if c == 4 || t >= 200 {
+                for y in 0..<h {
+                    for x in 0..<w where inBand(x, y) {
+                        let i = y * w + x
+                        if lum(i, d) > 175 { whiten(i) }
+                    }
                 }
             }
         }

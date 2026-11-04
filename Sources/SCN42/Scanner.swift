@@ -38,6 +38,8 @@ struct ScanRequest {
     var area: CGRect
     var paper: CGSize?
     var duplex: Bool
+    /// The last area of a job (the virtual scanner then moves on to its next glass image).
+    var lastInJob = true
 }
 
 /// A scanned image with its real resolution.
@@ -100,15 +102,24 @@ final class DeviceManager: NSObject, ICDeviceBrowserDelegate {
     static let shared = DeviceManager()
     private(set) var scanners: [ScannerBackend] = []
     private(set) var finishedLocalSearch = false
-    var onChange: (() -> Void)?
     private var browser: ICDeviceBrowser?
+    /// Posted when scanners come or go (object: nil) and when one's status changes (object: the scanner).
+    static let changed = Notification.Name("SCN42.devicesChanged")
+    static let statusChanged = Notification.Name("SCN42.scannerStatus")
+
+    private func onChange() { NotificationCenter.default.post(name: Self.changed, object: nil) }
+
+    private func add(_ s: ScannerBackend) {
+        s.onStatus = { [weak s] _ in if let s { NotificationCenter.default.post(name: DeviceManager.statusChanged, object: s) } }
+        scanners.append(s)
+    }
 
     func start() {
         guard browser == nil, scanners.isEmpty else { return }
         if let dir = ProcessInfo.processInfo.environment["K42_FAKE_SCANNER"] {
-            scanners = [FakeScanner(folder: URL(fileURLWithPath: dir))]
+            add(FakeScanner(folder: URL(fileURLWithPath: dir)))
             finishedLocalSearch = true
-            onChange?()
+            onChange()
             return
         }
         let b = ICDeviceBrowser()
@@ -122,7 +133,7 @@ final class DeviceManager: NSObject, ICDeviceBrowserDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
             guard let self, !self.finishedLocalSearch else { return }
             self.finishedLocalSearch = true
-            self.onChange?()
+            self.onChange()
         }
     }
 
@@ -134,18 +145,18 @@ final class DeviceManager: NSObject, ICDeviceBrowserDelegate {
 
     func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
         guard let scanner = device as? ICScannerDevice, !scanners.contains(where: { $0.id == (scanner.uuidString ?? scanner.name ?? "") }) else { return }
-        scanners.append(ICScanner(device: scanner))
-        if !moreComing { onChange?() }
+        add(ICScanner(device: scanner))
+        if !moreComing { onChange() }
     }
 
     func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
         scanners.removeAll { ($0 as? ICScanner)?.device === device }
-        if !moreGoing { onChange?() }
+        if !moreGoing { onChange() }
     }
 
     func deviceBrowserDidEnumerateLocalDevices(_ browser: ICDeviceBrowser) {
         finishedLocalSearch = true
-        onChange?()
+        onChange()
     }
 }
 
@@ -408,7 +419,7 @@ final class FakeScanner: ScannerBackend {
     }
 
     var id: String { "virtual:" + folder.path }
-    var name: String { L("Virtual Scanner (test images)") }
+    var name: String { L("Virtual Scanner") }
     var connection: String { L("Virtual") }
     var sources: [ScanSource] {
         var s: [ScanSource] = []
@@ -484,7 +495,7 @@ final class FakeScanner: ScannerBackend {
                 guard i < urls.count, !cancelled else {
                     DispatchQueue.main.async {
                         self.status = .ready
-                        if request.source == .flatbed { self.glassIndex += 1 }
+                        if request.source == .flatbed && request.lastInJob { self.glassIndex += 1 }
                         done(self.cancelled ? ScanError(message: L("The scan was cancelled.")) : nil)
                     }
                     return

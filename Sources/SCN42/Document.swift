@@ -28,6 +28,8 @@ final class ScanPage {
         var o = options
         o.dpi = raw.dpi
         var geometry = o
+        // Photos are straightened by their outline only (text skew would read their lines).
+        geometry.deskew = o.deskew && o.enhancement != .photo
         geometry.enhancement = .none
         geometry.colorMode = .color
         geometry.brightness = 0
