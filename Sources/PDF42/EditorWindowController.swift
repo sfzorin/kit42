@@ -1048,7 +1048,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool { validate(item.action, tag: item.tag, menuItem: nil) }
 
-    func validateMenuItem(_ item: NSMenuItem) -> Bool { validate(item.action, tag: item.tag, menuItem: item) }
+    @objc func toggleAllPanelsAction(_ sender: Any?) { Panels.toggleAll(in: window) }
+
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        Panels.fullScreenOptions   // bars slide in only at the top edge
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleAllPanelsAction(_:)) {
+            item.title = Panels.allHidden(in: window) ? L("Show All Panels") : L("Hide All Panels")
+            return true
+        }
+        return validate(item.action, tag: item.tag, menuItem: item)
+    }
 
     private func validate(_ action: Selector?, tag: Int, menuItem: NSMenuItem?) -> Bool {
         guard let pdf else { return false }
@@ -1098,3 +1110,5 @@ final class ClosureTarget: NSObject {
 private extension CGFloat {
     func clamped(_ lo: CGFloat, _ hi: CGFloat) -> CGFloat { Swift.min(hi, Swift.max(lo, self)) }
 }
+
+extension EditorWindowController: PanelHiding {}

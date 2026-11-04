@@ -1064,6 +1064,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func actualSizeAction(_ sender: Any?) { grid.zoom = 1 }
 
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
+    @objc func toggleFormulaBarAction(_ sender: Any?) { formulaBar.isHidden.toggle() }
+    @objc func toggleAllPanelsAction(_ sender: Any?) { Panels.toggleAll(in: window) }
+
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        Panels.fullScreenOptions   // bars slide in only at the top edge
+    }
+
 
     @objc func goToCellAction(_ sender: Any?) { window?.makeFirstResponder(nameBox) }
 
@@ -1140,6 +1147,10 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let style = sheet[grid.active].style
         switch item.action {
+        case #selector(toggleAllPanelsAction(_:)):
+            item.title = Panels.allHidden(in: window) ? L("Show All Panels") : L("Hide All Panels")
+        case #selector(toggleFormulaBarAction(_:)):
+            item.title = formulaBar.isHidden ? L("Show Formula Bar") : L("Hide Formula Bar")
         case #selector(toggleBold(_:)): item.state = style.bold ? .on : .off
         case #selector(toggleItalic(_:)): item.state = style.italic ? .on : .off
         case #selector(toggleUnderline(_:)): item.state = style.underline ? .on : .off
@@ -1170,3 +1181,5 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { doc?.undoManager }
 }
+
+extension SheetWindowController: PanelHiding {}

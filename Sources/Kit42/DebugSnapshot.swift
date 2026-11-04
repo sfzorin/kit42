@@ -14,6 +14,11 @@ public enum DebugSnapshot {
                 window.setContentSize(NSSize(width: size[0], height: size[1]))
             }
             prepare?()
+            // K42_HIDE_PANELS=1 runs View › Hide All Panels first.
+            if env["K42_HIDE_PANELS"] != nil,
+               let controller = NSApp.orderedWindows.first(where: { $0.isVisible })?.windowController as? PanelHiding {
+                controller.toggleAllPanelsAction(nil)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 // K42_SNAPSHOT_POPOVER=1 captures an open popover instead of the window.
                 let popover = env["K42_SNAPSHOT_POPOVER"] != nil

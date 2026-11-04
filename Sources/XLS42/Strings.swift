@@ -465,4 +465,6 @@ let xls42Strings: [[String]] = [
     ["Transpose", "Транспонировать", "Devrik"],
     ["Paste:", "Вставить:", "Yapıştır:"],
     ["Operation:", "Операция:", "İşlem:"],
+    ["Hide Formula Bar", "Скрыть строку формул", "Formül Çubuğunu Gizle"],
+    ["Show Formula Bar", "Показать строку формул", "Formül Çubuğunu Göster"],
 ]

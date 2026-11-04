@@ -97,7 +97,13 @@ public enum MenuBar {
         view += [
             .item(item(L("Show Sidebar"), #selector(NSSplitViewController.toggleSidebar(_:)), "s", [.command, .control])),
             .item(item(L("Show Toolbar"), #selector(NSWindow.toggleToolbarShown(_:)), "t", [.command, .option])),
+            .item({
+                let i = item(L("Show Toolbar Labels"), #selector(ToolbarLabelsToggle.toggleToolbarLabels(_:)))
+                i.target = ToolbarLabelsToggle.shared
+                return i
+            }()),
             .item(item(L("Customize Toolbar…"), #selector(NSWindow.runToolbarCustomizationPalette(_:)))),
+            .item(item(L("Hide All Panels"), #selector(PanelHiding.toggleAllPanelsAction(_:)), "\\", [.command, .shift])),
             .separator,
             .item(item(L("Enter Full Screen"), #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])),
         ]

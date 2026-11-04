@@ -82,6 +82,7 @@ enum Cmd {
     static let zoomIn = Command(L("Zoom In"), #selector(W.zoomInAction(_:)), symbol: "plus.magnifyingglass", shortcut: Shortcut("+"))
     static let zoomOut = Command(L("Zoom Out"), #selector(W.zoomOutAction(_:)), symbol: "minus.magnifyingglass", shortcut: Shortcut("-"))
     static let actualSize = Command(L("Actual Size"), #selector(W.actualSizeAction(_:)), shortcut: Shortcut("0"))
+    static let formulaBar = Command(L("Hide Formula Bar"), #selector(W.toggleFormulaBarAction(_:)), shortcut: Shortcut("b", [.command, .option, .shift]))
     static let formatBar = Command(L("Hide Format Bar"), #selector(W.toggleFormatBarAction(_:)), symbol: "textformat",
                                    shortcut: Shortcut("a", [.command, .shift]), toolTip: L("Format bar"), label: L("Format"))
     static let gridlines = Command(L("Gridlines"), #selector(W.toggleGridlines(_:)))
@@ -138,7 +139,7 @@ enum Cmd {
         spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator, .command(fillDown), .command(fillRight)]
         spec.find = [.command(find), .command(findNext), .command(replace), .command(goToCell)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator,
-                     .command(formatBar), .command(gridlines), .separator,
+                     .command(formatBar), .command(formulaBar), .command(gridlines), .separator,
                      .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]
         spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum), .command(insertFunction),
                        .command(defineName), .separator, .command(insertPicture), .command(stamps), .submenu(L("Chart"), charts.menuElements),

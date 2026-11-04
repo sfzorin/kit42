@@ -85,4 +85,7 @@ let kit42Strings: [[String]] = [
     ["The file is damaged", "Файл повреждён", "Dosya hasarlı"],
     ["Unsupported compression in archive (%d)", "Неподдерживаемое сжатие в архиве (%d)", "Arşivde desteklenmeyen sıkıştırma (%d)"],
     ["More", "Ещё", "Daha fazla"],
+    ["Show Toolbar Labels", "Подписи в панели инструментов", "Araç Çubuğu Etiketleri"],
+    ["Hide All Panels", "Скрыть все панели", "Tüm Panelleri Gizle"],
+    ["Show All Panels", "Показать все панели", "Tüm Panelleri Göster"],
 ]

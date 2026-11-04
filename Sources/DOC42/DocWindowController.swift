@@ -627,7 +627,32 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool { true }
 
+    /// Ruler and comments shown before "Hide All Panels", brought back after.
+    private var panelsBefore: (ruler: Bool, comments: Bool)?
+
+    @objc func toggleAllPanelsAction(_ sender: Any?) {
+        Panels.toggleAll(in: window) { [self] hide in
+            if hide {
+                panelsBefore = (!ruler.isHidden, comments.shown)
+                if !ruler.isHidden { toggleRulerAction(nil) }
+                if comments.shown { toggleCommentsAction(nil) }
+            } else if let before = panelsBefore {
+                if before.ruler, ruler.isHidden { toggleRulerAction(nil) }
+                if before.comments, !comments.shown { toggleCommentsAction(nil) }
+                panelsBefore = nil
+            }
+        }
+    }
+
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        Panels.fullScreenOptions   // bars slide in only at the top edge
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleAllPanelsAction(_:)) {
+            item.title = Panels.allHidden(in: window) ? L("Show All Panels") : L("Hide All Panels")
+            return true
+        }
         let attrs = currentAttributes
         let font = attrs[.font] as? NSFont
         let traits = font.map { NSFontManager.shared.traits(of: $0) } ?? []
@@ -672,3 +697,5 @@ final class PopupObserver: NSObject {
     init(_ handler: @escaping () -> Void) { self.handler = handler }
     @objc func changed() { handler() }
 }
+
+extension DocWindowController: PanelHiding {}
