@@ -2,7 +2,7 @@
 # Builds Suite42 apps into build/<App>.app.
 #   ./build.sh                 # all apps
 #   ./build.sh PDF42           # one app
-#   ./build.sh PDF42 install   # and copy to ~/Applications
+#   ./build.sh PDF42 install   # and copy to /Applications
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -35,10 +35,9 @@ for APP_NAME in $APPS; do
   echo "Built $APP"
 
   if [[ "$INSTALL" == "install" ]]; then
-    mkdir -p ~/Applications
-    rm -rf ~/Applications/$APP_NAME.app
-    cp -R "$APP" ~/Applications/
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ~/Applications/$APP_NAME.app
-    echo "Installed ~/Applications/$APP_NAME.app"
+    rm -rf /Applications/$APP_NAME.app
+    cp -R "$APP" /Applications/
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/$APP_NAME.app
+    echo "Installed /Applications/$APP_NAME.app"
   fi
 done

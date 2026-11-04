@@ -7,7 +7,7 @@ No dependencies: AppKit, PDFKit, Security; works offline. Interface in English, 
 ```bash
 git clone https://github.com/sfzorin/kit42.git && cd kit42
 ./build.sh                  # all apps → build/*.app
-./build.sh PDF42 install    # one app, plus a copy in ~/Applications
+./build.sh PDF42 install    # one app, plus a copy in /Applications
 ```
 
 Requires Xcode Command Line Tools (Swift 5.9+), macOS 14+.
