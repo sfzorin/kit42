@@ -1,5 +1,5 @@
 // Draws AppIcon.iconset (16…1024 px) for a Suite42 app, macOS 11+ style.
-// usage: swift make_icon.swift <out-dir> <PDF42|DOC42|XLS42|IMG42> [preview.png]
+// usage: swift make_icon.swift <out-dir> <PDF42|DOC42|XLS42|IMG42|PPT42> [preview.png]
 //
 // Family look: a coloured squircle (Apple icon grid: 824/1024 body, 100 px margins, soft drop shadow)
 // carrying a white document sheet with a folded corner; the sheet shows what the app is about.
@@ -20,6 +20,7 @@ let palette: [String: (top: NSColor, bottom: NSColor, mark: NSColor)] = [
     "DOC42": (rgb(0x4FA3FF), rgb(0x1659D6), rgb(0x1E63E0)),
     "XLS42": (rgb(0x3FD486), rgb(0x0E8A4A), rgb(0x12924F)),
     "IMG42": (rgb(0xB57CFF), rgb(0x6A2BD9), rgb(0x7A3BE6)),
+    "PPT42": (rgb(0xFFB547), rgb(0xE5671A), rgb(0xEC6F1C)),
 ]
 guard let colors = palette[app] else { fatalError("unknown app \(app)") }
 
@@ -191,6 +192,46 @@ func drawIcon(small: Bool) {
                     let w = cw * (0.35 + CGFloat((r * 7 + c * 3) % 4) * 0.1)
                     rounded(NSRect(x: grid.minX + CGFloat(c + 1) * cw - w - 22, y: grid.minY + CGFloat(r) * rh + rh / 2 - 9, width: w, height: 18), 9).fill()
                 }
+            }
+        }
+
+    case "PPT42":
+        // A slide (landscape, orange title bar) with a bar chart, and a pie under it.
+        let slide = NSRect(x: inner.minX - 18, y: inner.maxY - (small ? 300 : 262), width: inner.width + 36, height: small ? 290 : 248)
+        let slidePath = rounded(slide, small ? 26 : 18)
+        rgb(0xFFF3E6).setFill()
+        slidePath.fill()
+        mark.setStroke()
+        slidePath.lineWidth = small ? 16 : 8
+        slidePath.stroke()
+        // Title bar
+        mark.setFill()
+        rounded(NSRect(x: slide.minX + (small ? 40 : 34), y: slide.maxY - (small ? 82 : 62), width: slide.width * 0.5, height: small ? 36 : 24), small ? 18 : 12).fill()
+        // Bars
+        let heights: [CGFloat] = small ? [0.35, 0.7] : [0.3, 0.55, 0.42, 0.8]
+        let base = slide.minY + (small ? 36 : 30)
+        let maxH = slide.height - (small ? 140 : 112)
+        let bw: CGFloat = small ? 70 : 42
+        let gap = (slide.width - (small ? 80 : 68) - bw * CGFloat(heights.count)) / CGFloat(max(1, heights.count - 1))
+        for (i, h) in heights.enumerated() {
+            (i == heights.count - 1 ? mark : rgb(0xF5A25A)).setFill()
+            rounded(NSRect(x: slide.minX + (small ? 40 : 34) + CGFloat(i) * (bw + gap), y: base, width: bw, height: maxH * h), small ? 10 : 7).fill()
+        }
+        // Pie and legend lines below the slide
+        let pieR: CGFloat = small ? 78 : 64
+        let pieCenter = NSPoint(x: inner.minX + pieR + 4, y: slide.minY - (small ? 40 : 46) - pieR)
+        rgb(0xF5A25A).setFill()
+        NSBezierPath(ovalIn: NSRect(x: pieCenter.x - pieR, y: pieCenter.y - pieR, width: pieR * 2, height: pieR * 2)).fill()
+        let wedge = NSBezierPath()
+        wedge.move(to: pieCenter)
+        wedge.appendArc(withCenter: pieCenter, radius: pieR, startAngle: 90, endAngle: -30, clockwise: true)
+        wedge.close()
+        mark.setFill()
+        wedge.fill()
+        if !small {
+            gray.setFill()
+            for i in 0..<3 {
+                rounded(NSRect(x: pieCenter.x + pieR + 36, y: pieCenter.y + 34 - CGFloat(i) * 42, width: inner.width - pieR * 2 - 40 - CGFloat(i) * 30, height: 20), 10).fill()
             }
         }
 
