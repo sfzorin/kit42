@@ -362,6 +362,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             contentSplit.setPosition(contentSplit.bounds.height, ofDividerAt: 0)
         }
         contentSplit.adjustSubviews()
+        canvas.updateFrame()
     }
 
     var inspectorShown: Bool { !inspectorItem.isCollapsed }
@@ -390,6 +391,10 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     func windowWillClose(_ notification: Notification) {
         if SlideShowController.current?.owner === self { SlideShowController.current?.end() }
     }
+
+    func windowDidResize(_ notification: Notification) { canvas.updateFrame() }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) { canvas.updateFrame() }
 
     func windowDidResignKey(_ notification: Notification) {
         doc?.endSilentEdit()

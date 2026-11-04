@@ -36,6 +36,15 @@ extension DeckWindowController {
             for r in 0..<min(2, t.numberOfRows) { print("row \(r) \(t.rect(ofRow: r)) view \(t.view(atColumn: 0, row: r, makeIfNecessary: false)?.frame ?? .zero)") }
             print("split \(contentSplit.frame) notes \(contentSplit.arrangedSubviews.map { $0.frame })")
         }
+        // K42_CANVAS_PNG=path: the slide area of the canvas as drawn on screen (compare with --export).
+        if let path = env["K42_CANVAS_PNG"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let c = self?.canvas, let rep = c.bitmapImageRepForCachingDisplay(in: c.slideRect) else { return }
+                c.cacheDisplay(in: c.slideRect, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                print("canvas: \(c.slideRect) scale \(c.scale) visible \(c.enclosingScrollView?.visibleContentSize ?? .zero)")
+            }
+        }
         if env["K42_PRINT_INFO"] != nil { print(CLI.info(deck, name: "deck")) }
         if let path = env["K42_SAVE"] {
             commitEditing()

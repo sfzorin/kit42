@@ -38,9 +38,9 @@ final class SorterView: NSView {
     }
 
     func deckChanged() {
-        let width = enclosingScrollView?.contentSize.width ?? bounds.width
+        let width = enclosingScrollView?.visibleContentSize.width ?? bounds.width
         let rows = Int(ceil(Double(deck.slides.count) / Double(columns)))
-        let h = max(enclosingScrollView?.contentSize.height ?? 400, gap + CGFloat(rows) * (cellHeight + gap + labelH) + gap)
+        let h = max(enclosingScrollView?.visibleContentSize.height ?? 400, gap + CGFloat(rows) * (cellHeight + gap + labelH) + gap)
         setFrameSize(NSSize(width: width, height: h))
         needsDisplay = true
     }
@@ -383,7 +383,7 @@ final class NotesPageView: NSView, NSTextViewDelegate {
     override var isFlipped: Bool { true }
 
     private var pageRect: CGRect {
-        let avail = (enclosingScrollView?.contentSize.width ?? bounds.width) - 80
+        let avail = (enclosingScrollView?.visibleContentSize.width ?? bounds.width) - 80
         let w = min(680, max(320, avail))
         return CGRect(x: (bounds.width - w) / 2, y: 30, width: w, height: w * 842 / 595)
     }
@@ -396,8 +396,8 @@ final class NotesPageView: NSView, NSTextViewDelegate {
 
     func reload() {
         guard let owner else { return }
-        let width = enclosingScrollView?.contentSize.width ?? 800
-        setFrameSize(NSSize(width: width, height: max(enclosingScrollView?.contentSize.height ?? 600, pageRect.maxY + 30)))
+        let width = enclosingScrollView?.visibleContentSize.width ?? 800
+        setFrameSize(NSSize(width: width, height: max(enclosingScrollView?.visibleContentSize.height ?? 600, pageRect.maxY + 30)))
         let p = pageRect, s = slideRect, m = p.width * 54 / 595
         notes.frame = CGRect(x: s.minX - 4, y: s.maxY + 22, width: s.width + 8, height: p.maxY - m - s.maxY - 22)
         loading = true
