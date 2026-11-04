@@ -14,7 +14,7 @@ public enum PaginatedPDF {
         op.showsPrintPanel = false
         op.showsProgressPanel = false
         op.run()
-        return (try? Data(contentsOf: url)) ?? Data()
+        return consistentXref((try? Data(contentsOf: url)) ?? Data())
     }
 }
 
@@ -131,6 +131,75 @@ public extension PaginatedPDF {
             }
             result = doc.dataRepresentation() ?? result
         }
-        return result
+        return consistentXref(result)
+    }
+
+    /// The same file with a cross-reference table that lists only objects really in it: Quartz and PDFKit
+    /// leave entries "in use at offset 0" for objects they never wrote (readers report the file as damaged).
+    /// Entries that don't point at "N G obj" become free; the table is written anew (one section).
+    static func consistentXref(_ data: Data) -> Data {
+        let b = [UInt8](data)
+        guard let sx = lastRange(of: Array("startxref".utf8), in: b) else { return data }
+        var i = sx + 9
+        while i < b.count, isSpace(b[i]) { i += 1 }
+        var xrefAt = 0
+        while i < b.count, b[i] >= 48, b[i] <= 57 { xrefAt = xrefAt * 10 + Int(b[i] - 48); i += 1 }
+        guard xrefAt > 0, xrefAt + 4 < b.count, Array(b[xrefAt..<xrefAt + 4]) == Array("xref".utf8) else { return data }
+        // Classic table: subsections "first count", then 20-byte entries, then the trailer.
+        var p = xrefAt + 4
+        func skip() { while p < b.count, isSpace(b[p]) { p += 1 } }
+        func number() -> Int? {
+            skip()
+            var v = 0, any = false
+            while p < b.count, b[p] >= 48, b[p] <= 57 { v = v * 10 + Int(b[p] - 48); p += 1; any = true }
+            return any ? v : nil
+        }
+        var entries: [Int: (offset: Int, gen: Int)] = [:]
+        while true {
+            skip()
+            if p + 7 <= b.count, Array(b[p..<p + 7]) == Array("trailer".utf8) { break }
+            guard let first = number(), let count = number() else { return data }
+            for k in 0..<count {
+                guard let off = number(), let gen = number() else { return data }
+                skip()
+                guard p < b.count else { return data }
+                let kind = b[p]; p += 1
+                if kind == UInt8(ascii: "n") { entries[first + k] = (off, gen) }
+            }
+        }
+        let trailerStart = p
+        let trailerText = String(decoding: b[trailerStart..<sx], as: UTF8.self)
+        guard !trailerText.contains("/Prev") else { return data }   // incremental files: left as they are
+        func points(_ n: Int, _ off: Int) -> Bool {
+            guard off > 0, off < b.count else { return false }
+            let head = String(decoding: b[off..<min(b.count, off + 24)], as: UTF8.self)
+            return head.hasPrefix("\(n) ") && head.contains("obj")
+        }
+        let size = max((entries.keys.max() ?? 0) + 1, 1)
+        let used = entries.filter { points($0.key, $0.value.offset) }
+        guard used.count != entries.count else { return data }
+        let free = (1..<size).filter { used[$0] == nil }
+        var next: [Int: Int] = [:]
+        for (k, n) in free.enumerated() { next[n] = k + 1 < free.count ? free[k + 1] : 0 }
+        var x = "xref\n0 \(size)\n" + String(format: "%010d 65535 f\r\n", free.first ?? 0)
+        for n in 1..<size {
+            if let e = used[n] { x += String(format: "%010d %05d n\r\n", e.offset, e.gen) } else { x += String(format: "%010d 00001 f\r\n", next[n] ?? 0) }
+        }
+        var trailer = trailerText.replacingOccurrences(of: "/Size\\s+\\d+", with: "/Size \(size)", options: .regularExpression)
+        if !trailer.hasSuffix("\n") { trailer += "\n" }
+        let out = Array(b[0..<xrefAt]) + Array((x + trailer + "startxref\n\(xrefAt)\n%%EOF\n").utf8)
+        return Data(out)
+    }
+
+    private static func isSpace(_ c: UInt8) -> Bool { c == 32 || c == 10 || c == 13 || c == 9 || c == 12 || c == 0 }
+
+    private static func lastRange(of needle: [UInt8], in b: [UInt8]) -> Int? {
+        guard b.count >= needle.count else { return nil }
+        var i = b.count - needle.count
+        while i >= 0 {
+            if b[i] == needle[0], Array(b[i..<i + needle.count]) == needle { return i }
+            i -= 1
+        }
+        return nil
     }
 }
