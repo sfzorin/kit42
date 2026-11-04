@@ -333,6 +333,8 @@ extension PageOverlay {
                     if let area = o.redactionArea { areas[i, default: []].append(area) }
                 } else if a is TemporaryHighlight, !keepTemporary {
                     lifted.append((a, page))
+                } else if a is LinkBorderMarker {
+                    lifted.append((a, page))
                 } else if only == nil, a.isWhiteout {
                     covers[i, default: []].append(a)
                     areas[i, default: []].append(RedactionArea(rect: a.bounds, fill: (1, 1, 1)))
@@ -378,7 +380,7 @@ extension PageOverlay {
                 continue
             }
             // Redaction boxes are already in the rewritten content: no need to redraw the page for them.
-            list.removeAll { $0 is RedactOverlay }
+            list.removeAll { $0 is RedactOverlay || $0 is CropRemovalOverlay }
             if !list.isEmpty, let baked = redraw(page, overlay: { ctx in
                 for o in list { ctx.saveGState(); o.render(in: ctx, box: box, rotation: rotation); ctx.restoreGState() }
             }) { replacements.append((i, baked)) }
@@ -420,7 +422,7 @@ extension PageOverlay {
 
     /// Bakes overlays into a copy of the document (export, print).
     static func bakedDocument(_ pdf: PDFDocument) -> PDFDocument {
-        guard pdf.pageCount > 0, (0..<pdf.pageCount).contains(where: { pdf.page(at: $0)?.annotations.contains { $0 is PageOverlay || $0 is TemporaryHighlight || $0.isWhiteout } == true }),
+        guard pdf.pageCount > 0, (0..<pdf.pageCount).contains(where: { pdf.page(at: $0)?.annotations.contains { $0 is PageOverlay || $0 is TemporaryHighlight || $0 is LinkBorderMarker || $0.isWhiteout } == true }),
               let data = bakedData(pdf), let copy = PDFDocument(data: data) else { return pdf }
         return copy
     }

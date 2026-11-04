@@ -9,6 +9,8 @@ final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectio
     /// Called to move pages (indices) before `to`, and to insert files at an index.
     var onMove: (([Int], Int) -> Void)?
     var onDropFiles: (([URL], Int) -> Void)?
+    /// Page label (logical number) for a page index, nil to show the physical number.
+    var labelProvider: ((Int) -> String?)?
 
     private let collection = NSCollectionView()
     private var cache: [ObjectIdentifier: NSImage] = [:]
@@ -49,6 +51,13 @@ final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectio
         pageChanged()
     }
 
+    /// Page labels changed: only the captions.
+    func reloadLabels() {
+        let selection = collection.selectionIndexPaths
+        collection.reloadData()
+        collection.selectionIndexPaths = selection
+    }
+
     /// Re-render one page (after annotations changed).
     func refresh(_ page: PDFPage) {
         cache[ObjectIdentifier(page)] = nil
@@ -83,7 +92,9 @@ final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectio
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: ThumbnailItem.id, for: indexPath) as! ThumbnailItem
         if let page = pdfView?.document?.page(at: indexPath.item) {
-            item.configure(image: image(for: page), number: indexPath.item + 1, size: Self.pictureSize(page))
+            let n = indexPath.item + 1
+            let label = labelProvider?(indexPath.item).flatMap { $0 == "\(n)" ? nil : $0 }
+            item.configure(image: image(for: page), number: label.map { "\($0) (\(n))" } ?? "\(n)", size: Self.pictureSize(page))
         }
         return item
     }
@@ -174,11 +185,11 @@ final class ThumbnailItem: NSCollectionViewItem {
         view = v
     }
 
-    func configure(image: NSImage, number: Int, size: NSSize) {
+    func configure(image: NSImage, number: String, size: NSSize) {
         picture.image = image
         pictureWidth?.constant = size.width
         pictureHeight?.constant = size.height
-        label.stringValue = "\(number)"
+        label.stringValue = number
     }
 
     override var isSelected: Bool {

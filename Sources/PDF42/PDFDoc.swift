@@ -11,6 +11,8 @@ final class PDFDoc: NSDocument {
     private(set) var signatures: [SignatureInfo] = []
     /// Save the "Compare With…" highlights into the file (off: they are only shown).
     var keepCompareHighlights = false
+    /// Outline edits, properties, page labels, initial view, attachments (written after PDFKit, see `DocumentWriter`).
+    var extras = DocumentExtras()
 
     override init() {
         pdf = PDFDocument()
@@ -73,6 +75,7 @@ final class PDFDoc: NSDocument {
         pdf = doc
         originalData = data
         signatures = PDFSignatureVerifier.verify(data)
+        extras = DocumentExtras.read(data, pdf: doc)
     }
 
     override func data(ofType typeName: String) throws -> Data {
@@ -86,7 +89,7 @@ final class PDFDoc: NSDocument {
         if report.pages.contains(where: { $0.glyphs > 0 || $0.images > 0 || $0.rasterized != nil }) {
             DispatchQueue.main.async { [weak self] in self?.editor?.showRedactionResult(report) }
         }
-        return AcroFormFixer.ensureFields(baked.data)
+        return DocumentWriter.apply(AcroFormFixer.ensureFields(baked.data), extras: extras, pdf: pdf)
     }
 
     override func write(to url: URL, ofType typeName: String) throws {
