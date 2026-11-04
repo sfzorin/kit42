@@ -215,6 +215,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.scrollRowToVisible(row)
         guard let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView, let field = cell.textField else { return }
         field.isEditable = true
+        field.drawsBackground = true
+        field.backgroundColor = .textBackgroundColor
+        field.textColor = .textColor
         field.delegate = self
         view.window?.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
@@ -223,6 +226,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func controlTextDidEndEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
         field.isEditable = false
+        field.drawsBackground = false
         let row = outlineView.row(for: field)
         guard row >= 0, let item = outlineView.item(atRow: row) as? PDFOutline else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)

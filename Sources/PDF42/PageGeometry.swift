@@ -52,9 +52,9 @@ enum PageGeometry {
         // Page-space edges: (minX, maxY, maxX, minY) amounts for the displayed (left, top, right, bottom).
         let (l, t, r, b): (CGFloat, CGFloat, CGFloat, CGFloat)
         switch ((rotation % 360) + 360) % 360 {
-        case 90: (l, t, r, b) = (bottom, left, top, right)     // displayed top is the page's left edge
+        case 90: (l, t, r, b) = (top, right, bottom, left)     // turned clockwise: the page's left edge is on top
         case 180: (l, t, r, b) = (right, bottom, left, top)
-        case 270: (l, t, r, b) = (top, right, bottom, left)
+        case 270: (l, t, r, b) = (bottom, left, top, right)
         default: (l, t, r, b) = (left, top, right, bottom)
         }
         let rect = CGRect(x: media.minX + l, y: media.minY + b, width: media.width - l - r, height: media.height - t - b)
@@ -65,9 +65,9 @@ enum PageGeometry {
     static func margins(crop: CGRect, media: CGRect, rotation: Int) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
         let l = crop.minX - media.minX, b = crop.minY - media.minY, r = media.maxX - crop.maxX, t = media.maxY - crop.maxY
         switch ((rotation % 360) + 360) % 360 {
-        case 90: return (t, r, b, l)
+        case 90: return (b, l, t, r)
         case 180: return (r, b, l, t)
-        case 270: return (b, l, t, r)
+        case 270: return (t, r, b, l)
         default: return (l, t, r, b)
         }
     }
