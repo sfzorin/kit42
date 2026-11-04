@@ -45,7 +45,18 @@ lets you switch extensions off.
   (⌥-click: one word), edit it in place, Return applies, Esc cancels. The original glyphs are covered with white and the
   new text is drawn on the same baseline in the original font (when installed; otherwise Helvetica/Times) and size.
   Double-click to re-edit, undo works; on save the edit is flattened into the page content. A multi-line selection + ⌘E
-  places an editable text box instead. (The original text stays under the cover: this is not a redaction.)
+  places an editable text box instead. On save the replaced text is truly removed from the file (see Redaction).
+- Redaction: the Redact tool (Markup menu / markup bar) marks boxes (black, or any colour picked); they can be moved,
+  resized, deleted. Markup › Apply Redactions… (after a warning) or saving removes everything under the boxes, under
+  edited text and under Whiteout boxes from the file: glyphs are cut out of the text operators (Tj/TJ/'/", all text state
+  operators, Form XObjects, Type0/CID 2-byte and embedded-CMap fonts, simple TrueType/Type1 fonts with /Widths or the
+  standard 14 metrics, Type3) and replaced by equal TJ offsets, so the rest of the line does not move; image pixels
+  under a box are overwritten and the image re-encoded (raw samples in their colour space, JPEG/JPEG 2000 re-encoded);
+  notes, text boxes, markup, links and form fields mostly under a box are dropped; /ActualText of marked content and
+  the page thumbnail go too; the file is rewritten without the old objects. Vector graphics stay (under the box).
+  Pages that cannot be rewritten safely (vertical text, unknown CMaps, inline images under a box…) become a 300 dpi
+  picture with an OCR text layer, and the app says so. CLI: `--redact in out x,y,w,h[@page] … [white]` prints what
+  was removed (so does `--edit-text`).
 - Forms: fill existing AcroForm fields with the Select tool (values are saved). Form menu / markup bar: drag to add a
   text field, checkbox or dropdown list with a name (and options); with a form tool, fields can be moved, resized and
   deleted. Saved as real widgets with an /AcroForm entry and checkbox on/off appearances, fillable in Acrobat and Preview.
@@ -58,7 +69,7 @@ lets you switch extensions off.
   highlighted in the document. The highlights are not saved unless "Keep highlights when saving" is ticked.
 - Command line (headless): `--watermark in out TEXT [pages]`, `--number-pages in out [format] [position] [skip-first]`,
   `--split in dir 1-2,3|every:N|each`, `--merge out a.pdf b.png …`, `--compare a b [marked.pdf]`,
-  `--edit-text in out OLD NEW`, `--add-field in out`, `--fill in out name=value …`, `--fields file`.
+  `--edit-text in out OLD NEW`, `--redact in out x,y,w,h[@page] …`, `--add-field in out`, `--fill in out name=value …`, `--fields file`.
 - Signatures and stamps (⇧⌘K): a library of PNGs/scans, the white background is removed automatically.
 - Digital signature (⌥⌘D): standard PDF signature (PKCS#7/CMS, adbe.pkcs7.detached, SHA-256), readable by Acrobat.
   Certificate from the macOS Keychain, .p12 import or a self-signed one. Counter-signing is supported
@@ -71,6 +82,10 @@ lets you switch extensions off.
   compressed copy or compress the open document; a file is never made bigger. CLI: `--compress in out [smallest|balanced|high]`.
 - Export: Word (.docx), RTF, HTML, text, PNG/JPEG pages (72–300 dpi), copy with a password.
 - Import: open PNG/JPEG/HEIC/TIFF as PDF, "New PDF from Images…", insert images as pages.
+- UI checks: `PDF42 file.pdf` with `K42_SNAPSHOT=out.png` (+ `K42_SNAPSHOT_SHEET=1`), `K42_APPEARANCE=dark|light`,
+  `K42_MARKUP`, `K42_TOOL=n`, `K42_REDACT="x,y,w,h;…"`, `K42_COMPRESS`, `K42_STAMPS`, `K42_COMPARE=other.pdf`,
+  `K42_ACTION=watermarkAction|pageNumbersAction|splitAction|signDocumentAction|applyRedactionsAction|mergeList|textField|…`
+  (opens that dialog for the snapshot).
 
 ## XLS42 — spreadsheets (.xlsx, .xls, .ods, .csv)
 

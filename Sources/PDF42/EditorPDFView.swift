@@ -173,7 +173,7 @@ final class EditorPDFView: PDFView {
             tempAnnotation = annotation
             updateInkPreview()
 
-        case .rectangle, .oval, .whiteout:
+        case .rectangle, .oval, .whiteout, .redact:
             drag = .create
             let annotation = PDFAnnotation(bounds: CGRect(origin: point, size: CGSize(width: 1, height: 1)),
                                            forType: tool == .oval ? .circle : .square, withProperties: nil)
@@ -305,6 +305,9 @@ final class EditorPDFView: PDFView {
             } else if tool.isFormField {
                 guard let temp = tempAnnotation else { return }
                 editor?.createFormField(tool.fieldKind, in: temp.bounds, on: page)
+            } else if tool == .redact {
+                guard let temp = tempAnnotation, temp.bounds.width > 2, temp.bounds.height > 2 else { return }
+                editor?.add(RedactOverlay(bounds: temp.bounds, color: color), to: page, name: L("Redact"))
             } else {
                 guard let temp = tempAnnotation, temp.bounds.width > 4, temp.bounds.height > 4 else { return }
                 let annotation = PDFAnnotation(bounds: temp.bounds, forType: tool == .oval ? .circle : .square, withProperties: nil)

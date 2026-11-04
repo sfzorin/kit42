@@ -78,10 +78,15 @@ final class PDFDoc: NSDocument {
     override func data(ofType typeName: String) throws -> Data {
         editor?.prepareForSave()
         // Watermarks, page numbers and edited text become page content; new form fields get an /AcroForm entry.
-        guard let data = PageOverlay.bakedData(pdf, keepTemporary: keepCompareHighlights).map(AcroFormFixer.ensureFields) else {
+        // Text and images under edited text, whiteout boxes and redaction marks are removed from the file.
+        guard let baked = PageOverlay.bake(pdf, keepTemporary: keepCompareHighlights) else {
             throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
         }
-        return data
+        let report = baked.report
+        if report.pages.contains(where: { $0.glyphs > 0 || $0.images > 0 || $0.rasterized != nil }) {
+            DispatchQueue.main.async { [weak self] in self?.editor?.showRedactionResult(report) }
+        }
+        return AcroFormFixer.ensureFields(baked.data)
     }
 
     override func write(to url: URL, ofType typeName: String) throws {

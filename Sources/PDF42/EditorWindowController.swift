@@ -27,7 +27,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         .group([.tool(Cmd.tool(.select))]),
         .tools([Cmd.tool(.highlight), Cmd.tool(.underline), Cmd.tool(.strikeOut)]),
         .tools([Cmd.tool(.ink), Cmd.tool(.rectangle), Cmd.tool(.oval), Cmd.tool(.whiteout)]),
-        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .tool(Cmd.tool(.editText))]),
+        .group([.tool(Cmd.tool(.text)), .tool(Cmd.tool(.note)), .tool(Cmd.tool(.editText)), .tool(Cmd.tool(.redact))]),
         .tools([Cmd.tool(.textField), Cmd.tool(.checkBox), Cmd.tool(.choiceField)]),
         .group([.view(colorButton), .view(widthButton)]),
     ])
@@ -1089,6 +1089,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return true
         case #selector(removeWatermarksAction(_:)):
             return hasRemovableOverlays
+        case #selector(applyRedactionsAction(_:)):
+            return !pendingRedactions.isEmpty
         case #selector(clearCompareHighlightsAction(_:)):
             return hasCompareHighlights
         case #selector(splitAction(_:)):
