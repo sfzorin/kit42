@@ -369,9 +369,43 @@ struct PPTXWriter {
         }
     }
 
+    /// SmartArt written back with its parts (texts patched in), or nil when its shapes changed otherwise.
+    func diagramFrame(_ o: SlideObject, rels: Rels) -> String? {
+        guard let d = o.diagram else { return nil }
+        let ch = Diagram.change(o)
+        guard ch != .other else { return nil }
+        var drawingData = d.drawing?.data, dataData = d.data?.data
+        if ch == .text {
+            let p = Diagram.patched(o, writer: self, rels: rels)
+            drawingData = p.drawing ?? drawingData
+            dataData = p.data ?? dataData
+        }
+        func put(_ part: PackagePart?, data: Data?, stem: String) -> String? {
+            guard let part else { return nil }
+            let p = PackagePart(name: part.name, data: data ?? part.data, contentType: part.contentType, rels: part.rels)
+            return sink.write(p, at: sink.path(folder: "ppt/diagrams", stem: stem, ext: "xml"))
+        }
+        func rel(_ type: String, _ path: String?) -> String? { path.map { rels.add(type, sink.relative(from: "ppt/slides/slide1.xml", to: $0)) } }
+        let drawRel = rel(Diagram.relDrawing, put(d.drawing, data: drawingData, stem: "drawing"))
+        if let drawRel, var s = dataData.map({ String(decoding: $0, as: UTF8.self) }),
+           let r = s.range(of: "relId=\"[^\"]*\"", options: .regularExpression, range: s.range(of: "dataModelExt").map { $0.lowerBound..<s.endIndex }) {
+            s.replaceSubrange(r, with: "relId=\"\(drawRel)\"")
+            dataData = Data(s.utf8)
+        }
+        let dm = rel("\(Self.relBase)/diagramData", put(d.data, data: dataData, stem: "data"))
+        let lo = rel("\(Self.relBase)/diagramLayout", put(d.layout, data: nil, stem: "layout"))
+        let qs = rel("\(Self.relBase)/diagramQuickStyle", put(d.style, data: nil, stem: "quickStyle"))
+        let cs = rel("\(Self.relBase)/diagramColors", put(d.colors, data: nil, stem: "colors"))
+        var x = "<p:graphicFrame>" + nv(o, kind: "GraphicFrame", extra: "<p:cNvGraphicFramePr/>", ph: false) + xfrm(o, prefix: "p")
+        x += "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/diagram\"><dgm:relIds xmlns:dgm=\"\(Diagram.nsDgm)\""
+        for (k, v) in [("dm", dm), ("lo", lo), ("qs", qs), ("cs", cs)] { if let v { x += " r:\(k)=\"\(v)\"" } }
+        return x + "/></a:graphicData></a:graphic></p:graphicFrame>"
+    }
+
     func object(_ o: SlideObject, rels: Rels, slide: Slide?) -> String {
         switch o.kind {
         case .group:
+            if let x = diagramFrame(o, rels: rels) { return x }
             var x = "<p:grpSp>" + nv(o, kind: "GrpSp", extra: "<p:cNvGrpSpPr/>", ph: false)
             let rot = o.rotation != 0 ? " rot=\"\(Int(o.rotation * 60000))\"" : ""
             let f = o.frame

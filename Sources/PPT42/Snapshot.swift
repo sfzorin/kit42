@@ -102,6 +102,20 @@ extension DeckWindowController {
                 let s = Int(v[0]), r = Int(v[1])
                 if m.series.indices.contains(s), m.series[s].values.indices.contains(r) { m.series[s].values[r] = v[2] }
             } }
+        case "childtext":
+            // childtext:<object index>,<child index>,<text> (text of a shape inside a group or SmartArt)
+            let p = arg.split(separator: ",", maxSplits: 2).map(String.init)
+            if p.count == 3, let i = Int(p[0]), let k = Int(p[1]), displayedSlide.objects.indices.contains(i) {
+                let id = displayedSlide.objects[i].id
+                changeSlide(L("Typing")) { s in s.update(id) { o in
+                    guard o.children.indices.contains(k) else { return }
+                    if var t = o.children[k].text, !t.paragraphs.isEmpty {
+                        if t.paragraphs[0].runs.isEmpty { t.paragraphs[0].runs = [TextRun(text: p[2])] } else { t.paragraphs[0].runs = [TextRun(text: p[2], props: t.paragraphs[0].runs[0].props)] }
+                        o.children[k].text = t
+                    }
+                } }
+            }
+        case "toshapes": convertToShapesAction(nil)
         case "bold": boldAction(nil)
         case "italic": italicAction(nil)
         case "underline": underlineAction(nil)

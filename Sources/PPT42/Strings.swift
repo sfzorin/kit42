@@ -478,4 +478,6 @@ let ppt42Strings: [[String]] = [
     ["Area", "С областями", "Alan"],
     ["Doughnut", "Кольцевая", "Halka"],
     ["Scatter", "Точечная", "Dağılım"],
+    ["Convert to Shapes", "Преобразовать в фигуры", "Şekillere Dönüştür"],
+    ["Some objects (OLE objects, SmartArt without a drawing) are shown as placeholders and are not saved.", "Некоторые объекты (OLE, SmartArt без рисунка) показаны заглушками и не сохраняются.", "Bazı nesneler (OLE nesneleri, çizimi olmayan SmartArt) yer tutucu olarak gösterilir ve kaydedilmez."],
 ]

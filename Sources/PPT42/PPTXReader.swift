@@ -668,6 +668,14 @@ struct PPTXReader {
         o.shadow = spPr?.child("effectLst").map { $0.child("outerShdw") != nil } ?? styleShadow
         if let tx = e.child("txBody") {
             o.text = readTextBody(tx, part: part, base: base?.text)
+            // SmartArt drawings: the text has its own box (dsp:txXfrm).
+            if let (r, _, _, _) = xfrm(e.child("txXfrm")), r.width > 0, var t = o.text {
+                t.insets.left += max(0, r.minX - o.frame.minX)
+                t.insets.top += max(0, r.minY - o.frame.minY)
+                t.insets.right += max(0, o.frame.maxX - r.maxX)
+                t.insets.bottom += max(0, o.frame.maxY - r.maxY)
+                o.text = t
+            }
             if let fontColor, var t = o.text {
                 for i in 0..<9 where t.listStyle[i].run.color == nil { t.listStyle.levels[i].run.color = fontColor }
                 o.text = t
@@ -762,7 +770,33 @@ struct PPTXReader {
             o.placeholder = nil
             return o
         }
-        // SmartArt, OLE: a box saying what was there (a fallback picture when the file has one).
+        if uri.hasSuffix("/diagram"), let ids = data.child("relIds") {
+            let srels = rels(part)
+            func pkg(_ attr: String) -> PackagePart? { ids.a(attr).flatMap { srels[$0]?.target }.flatMap { package($0) } }
+            let dm = pkg("dm")
+            var drawingPath: String?
+            if let dmx = xmlRoot(dm?.data), let rid = dmx.descendants("dataModelExt").first?.a("relId") { drawingPath = srels[rid]?.target }
+            if drawingPath == nil { drawingPath = srels.values.first { $0.type == Diagram.relDrawing }?.target }
+            if let dp = drawingPath, let root = xmlRoot(zip[dp]), let tree = root.child("spTree") {
+                var kids: [SlideObject] = []
+                var modelIDs: [String?] = []
+                for el in tree.elements {
+                    kids += readElement(el, part: dp, inherit: [])
+                    if el.localName == "sp" { modelIDs.append(el.a("modelId")) }
+                }
+                func shift(_ list: inout [SlideObject]) { for i in list.indices { list[i].offset(by: CGSize(width: o.frame.minX, height: o.frame.minY)) } }
+                shift(&kids)
+                if !kids.isEmpty {
+                    o.kind = .group
+                    o.children = kids
+                    o.name = o.name.isEmpty ? "SmartArt" : o.name
+                    o.diagram = DiagramSource(data: dm, layout: pkg("lo"), style: pkg("qs"), colors: pkg("cs"), drawing: package(dp), children: kids, modelIDs: modelIDs, frame: o.frame)
+                    o.placeholder = nil
+                    return o
+                }
+            }
+        }
+        // SmartArt without a drawing, OLE: a box saying what was there (a fallback picture when the file has one).
         o.kind = .shape
         o.unsupported = uri.contains("chart") ? L("Chart (not supported)") : uri.contains("diagram") ? L("SmartArt (not supported)") : L("Object (not supported)")
         if let pic = data.descendants("pic").first, let blip = pic.child("blipFill") {

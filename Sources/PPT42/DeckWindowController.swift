@@ -318,7 +318,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private func updateBanner() {
         let lost = deck.slides.flatMap { $0.objects }.contains { $0.unsupported != nil }
         if lost {
-            banner.show(.warning, L("Some objects (charts, SmartArt) are shown as placeholders and are not saved."))
+            banner.show(.warning, L("Some objects (OLE objects, SmartArt without a drawing) are shown as placeholders and are not saved."))
         } else {
             banner.hide()
         }
@@ -462,6 +462,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return !isEditingText && (hasSel && normal || mode == .sorter || window?.firstResponder === thumbnails.table)
         case #selector(groupAction(_:)): return normal && selection.count > 1 && !isEditingText
         case #selector(ungroupAction(_:)): return normal && selectedObjects.contains { $0.kind == .group } && !isEditingText
+        case #selector(convertToShapesAction(_:)): return normal && selectedObjects.contains { $0.diagram != nil } && !isEditingText
         case #selector(arrangeAction(_:)): return normal && hasSel && !isEditingText
         case #selector(alignObjectsAction(_:)): return normal && hasSel
         case #selector(distributeAction(_:)): return normal && selection.count > 2

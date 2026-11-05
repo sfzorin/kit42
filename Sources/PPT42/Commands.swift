@@ -119,6 +119,7 @@ enum Cmd {
         Command(L("Distribute Vertically"), #selector(W.distributeAction(_:)), symbol: "distribute.vertical.center", tag: 1),
     ]
     static let group = Command(L("Group"), #selector(W.groupAction(_:)), symbol: "square.on.square.dashed", shortcut: Shortcut("g", [.command, .option]))
+    static let convertToShapes = Command(L("Convert to Shapes"), #selector(W.convertToShapesAction(_:)), symbol: "square.on.square.squareshape.controlhandles")
     static let ungroup = Command(L("Ungroup"), #selector(W.ungroupAction(_:)), shortcut: Shortcut("g", [.command, .option, .shift]))
 
     // Slide
@@ -172,7 +173,7 @@ enum Cmd {
             .separator,
             .submenu(L("Arrange"), arrange.menuElements),
             .submenu(L("Align"), alignObjects.menuElements + [.separator] + distribute.menuElements),
-            .command(group), .command(ungroup),
+            .command(group), .command(ungroup), .command(convertToShapes),
             .separator,
             .submenu(L("Table"), tableRows.menuElements + [.separator] + tableColumns.menuElements),
         ]
