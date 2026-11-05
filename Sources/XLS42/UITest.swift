@@ -124,6 +124,7 @@ enum UITest {
 
         failed += features(w, doc)
         failed += data(w, doc)
+        failed += filesAndArrays(w, doc)
         restoreClipboard()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         exit(failed == 0 ? 0 : 1)
