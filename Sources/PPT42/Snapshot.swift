@@ -117,6 +117,11 @@ extension DeckWindowController {
             }
         case "toshapes": convertToShapesAction(nil)
         case "comment": addComment(arg)
+        case "newlayout": newLayoutAction(nil)
+        case "layoutsel": selectMaster(Int(arg))
+        case "renamelayout": if let li = editedLayout { renameLayout(li, arg) }
+        case "deletelayout": deleteLayoutAction(nil)
+        case "placeholder": insertPlaceholderAction(tag)
         case "reply":
             // reply:<comment index>:<text>
             let p = arg.split(separator: ":", maxSplits: 1).map(String.init)

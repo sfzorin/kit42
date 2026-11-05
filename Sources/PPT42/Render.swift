@@ -54,16 +54,17 @@ enum Renderer {
     }
 
     /// Master view: master background and shapes, then the sample placeholders (master styles only) with dashed outlines.
-    static func drawMaster(deck: Deck, objects: [SlideObject], in ctx: CGContext, textHidden: Set<Int> = []) {
+    static func drawMaster(deck: Deck, objects: [SlideObject], in ctx: CGContext, textHidden: Set<Int> = [], layout: Layout? = nil) {
         let gc = NSGraphicsContext(cgContext: ctx, flipped: true)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = gc
         defer { NSGraphicsContext.restoreGraphicsState() }
         let bounds = CGRect(origin: .zero, size: deck.size)
-        drawFill(deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
+        drawFill(layout?.background ?? deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
         var options = RenderOptions()
         options.textHidden = textHidden
-        for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
+        if layout?.showMasterShapes ?? true { for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) } }
+        for o in layout?.objects ?? [] { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
         for o in objects {
             drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options)
             ctx.saveGState()

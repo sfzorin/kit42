@@ -195,9 +195,38 @@ private struct ODPWriterImpl {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(Self.ns)><office:styles>\(common)</office:styles>"
             + "<office:automatic-styles>\(pageLayout)\(auto.xml)</office:automatic-styles>"
             + "<office:master-styles><style:master-page style:name=\"Default\" style:page-layout-name=\"PM1\" draw:style-name=\"\(masterDP)\">\(masterShapes)"
-            + "<presentation:notes style:page-layout-name=\"PM2\"><draw:page-thumbnail presentation:class=\"page\" svg:width=\"17cm\" svg:height=\"\(odfLength(17 * pointsPerCm * deck.size.height / deck.size.width))\" svg:x=\"2cm\" svg:y=\"2cm\"/>"
+            + notesMaster + "</style:master-page>" + layoutMasters(auto) + "</office:master-styles></office:document-styles>"
+    }
+
+    var notesMaster: String {
+        "<presentation:notes style:page-layout-name=\"PM2\"><draw:page-thumbnail presentation:class=\"page\" svg:width=\"17cm\" svg:height=\"\(odfLength(17 * pointsPerCm * deck.size.height / deck.size.width))\" svg:x=\"2cm\" svg:y=\"2cm\"/>"
             + "<draw:frame presentation:class=\"notes\" presentation:placeholder=\"true\" svg:width=\"17cm\" svg:height=\"12cm\" svg:x=\"2cm\" svg:y=\"14.5cm\"><draw:text-box/></draw:frame></presentation:notes>"
-            + "</style:master-page></office:master-styles></office:document-styles>"
+    }
+
+    /// One master page per layout (as LibreOffice shows PowerPoint layouts): master and layout shapes, placeholder frames.
+    func layoutMasters(_ auto: ODFAutoStyles) -> String {
+        var x = ""
+        for (i, l) in deck.layouts.enumerated() {
+            let bg = drawingPageProps(l.background ?? deck.master.background, slide: nil)
+            let dp = auto.style("drawing-page", "dp", "<style:drawing-page-properties draw:background-size=\"full\"\(bg)/>")
+            x += "<style:master-page style:name=\"PPT42-L\(i + 1)\" style:display-name=\"\(xmlEscape(Themes.displayName(l)))\" style:page-layout-name=\"PM1\" draw:style-name=\"\(dp)\">"
+            if l.showMasterShapes {
+                for o in deck.master.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
+            }
+            for o in l.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto) }
+            var outline = 0
+            for p in l.placeholders {
+                guard let ph = p.placeholder, !ph.isFooter else { continue }
+                let cls = presentationClass(ph)
+                guard ["title", "subtitle", "outline", "graphic"].contains(cls) else { continue }
+                if cls == "outline" { outline += 1 }
+                let st = auto.style("presentation", "pr", "<style:graphic-properties draw:fill=\"none\" draw:stroke=\"none\" draw:auto-grow-height=\"false\"/>",
+                                    attrs: " style:parent-style-name=\"\(parentStyle(cls))\"")
+                x += "<draw:frame presentation:style-name=\"\(st)\" draw:layer=\"backgroundobjects\"\(position(p.frame, rotation: p.rotation)) presentation:class=\"\(cls)\" presentation:placeholder=\"true\"\(p.name.isEmpty ? "" : " draw:name=\"\(xmlEscape(p.name))\"")>\(cls == "graphic" ? "<draw:image/>" : "<draw:text-box/>")</draw:frame>"
+            }
+            x += notesMaster + "</style:master-page>"
+        }
+        return x
     }
 
     func markers() -> String {
@@ -221,9 +250,9 @@ private struct ODPWriterImpl {
         let dp = styles.style("drawing-page", "dp", "<style:drawing-page-properties\(props)/>")
         let number = Renderer.number(of: index, deck: deck)
         let pid = "page\(index + 1)"
-        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"Default\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(xmlEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
-        // Layout decoration (ODF has no layouts): drawn on the slide.
-        for o in deck.layout(of: slide)?.objects ?? [] { x += object(o, slide: nil, number: number, styles: styles) }
+        let masterPage = deck.layouts.indices.contains(slide.layout) ? "PPT42-L\(slide.layout + 1)" : "Default"
+        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"\(masterPage)\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(xmlEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
+
         for o in slide.objects {
             var shape = object(o, slide: slide, number: number, styles: styles)
             if slide.animations.contains(where: { $0.target == o.id }), let space = shape.firstIndex(of: " "), let close = shape.firstIndex(of: ">"), space < close {

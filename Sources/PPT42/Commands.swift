@@ -126,6 +126,13 @@ enum Cmd {
 
     // Slide
     static var layouts: [Command] { [] }
+    static let newLayout = Command(L("New Layout"), #selector(W.newLayoutAction(_:)), symbol: "rectangle.badge.plus")
+    static let duplicateLayout = Command(L("Duplicate Layout"), #selector(W.duplicateLayoutAction(_:)))
+    static let renameLayout = Command(L("Rename Layout…"), #selector(W.renameLayoutAction(_:)))
+    static let deleteLayout = Command(L("Delete Layout"), #selector(W.deleteLayoutAction(_:)))
+    static let placeholders: [Command] = [L("Content"), L("Text"), L("Picture"), L("Title")].enumerated().map {
+        Command($0.element, #selector(W.insertPlaceholderAction(_:)), tag: $0.offset)
+    }
     static let background = Command(L("Background…"), #selector(W.backgroundAction(_:)), symbol: "paintbrush")
     static let hideSlide = Command(L("Hide Slide"), #selector(W.hideSlideAction(_:)), symbol: "eye.slash")
     static let transitions: [Command] = TransitionKind.allCases.enumerated().map {
@@ -182,7 +189,9 @@ enum Cmd {
         spec.custom = [
             (L("Slide"), [.command(newSlide), .command(duplicateSlide), .command(deleteSlide), .separator, .item(layoutItem), .command(background),
                           .submenu(L("Transition"), transitions.menuElements), .command(hideSlide), .separator,
-                          .submenu(L("Theme"), themes.menuElements), .submenu(L("Slide Size"), slideSizes.menuElements)]),
+                          .submenu(L("Theme"), themes.menuElements), .submenu(L("Slide Size"), slideSizes.menuElements), .separator,
+                          .submenu(L("Master Layouts"), [.command(newLayout), .command(duplicateLayout), .command(renameLayout), .command(deleteLayout), .separator,
+                                                         .submenu(L("Insert Placeholder"), placeholders.menuElements)])]),
             (L("Slide Show"), [.command(play), .command(playCurrent), .command(rehearse), .separator, .command(showSettings)]),
         ]
         spec.help = [.command(welcome)]

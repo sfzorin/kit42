@@ -131,7 +131,7 @@ final class SlideCanvas: NSView {
         options.number = Renderer.number(of: owner.current, deck: deck)
         if let id = editor.objectID { options.textHidden = [id] }
         if isMaster {
-            Renderer.drawMaster(deck: deck, objects: slide.objects, in: ctx, textHidden: options.textHidden)
+            Renderer.drawMaster(deck: deck, objects: slide.objects, in: ctx, textHidden: options.textHidden, layout: owner.editedLayout.map { deck.layouts[$0] })
         } else {
             Renderer.draw(slide, deck: deck, in: ctx, options: options)
         }

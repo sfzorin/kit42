@@ -33,6 +33,8 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private(set) lazy var notesPage = NotesPageView(owner: self)
     private let notesPageScroll = NSScrollView()
     let banner = BannerView()
+    /// Master view: nil = the slide master, else the layout being edited.
+    var masterSelection: Int?
     /// The open chart data sheet.
     var chartEditor: ChartDataEditor?
     private var sidebarItem: NSSplitViewItem!
@@ -227,7 +229,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     /// The slide shown in the canvas: the real one, or the master sample in master view.
     var displayedSlide: Slide {
-        if mode == .master { return MasterView.sampleSlide(deck: deck, layout: nil) }
+        if mode == .master { return MasterView.sampleSlide(deck: deck, layout: editedLayout) }
         return currentSlide ?? Slide(layout: 0)
     }
 
@@ -306,7 +308,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let n = deck.slides.count
         var sub = n == 0 ? L("No slides") : L("Slide %d of %d", current + 1, n)
         switch mode {
-        case .master: sub = L("Master")
+        case .master: sub = L("Master") + " · " + MasterView.label(deck: deck, layout: editedLayout)
         case .outline: sub = L("Outline") + " · " + sub
         case .sorter: sub = L("Slide Sorter") + " · " + sub
         case .notesPage: sub = L("Notes Page") + " · " + sub
@@ -330,8 +332,13 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         commitEditing()
         if mode == .outline { outline.apply() }
         doc?.endSilentEdit()
+        let wasMaster = mode == .master
         mode = m
         selection = []
+        if (m == .master) != wasMaster {
+            if m == .master { masterSelection = nil }
+            thumbnails.reload()
+        }
         switch m {
         case .normal, .master: install(contentSplit)
         case .outline:
@@ -454,8 +461,12 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let editable = mode == .normal || mode == .master
         let hasSel = !selection.isEmpty
         switch action {
+        case #selector(newLayoutAction(_:)): return mode == .master
+        case #selector(duplicateLayoutAction(_:)), #selector(renameLayoutAction(_:)), #selector(insertPlaceholderAction(_:)): return editedLayout != nil
+        case #selector(deleteLayoutAction(_:)): return editedLayout != nil && deck.layouts.count > 1
         case #selector(deleteAction(_:)):
             if isEditingText { return false }
+            if editedLayout != nil { return hasSel }
             if mode == .sorter || window?.firstResponder === thumbnails.table { return deck.slides.count > 0 }
             return hasSel && canvasFocused && normal
         case #selector(duplicateAction(_:)):

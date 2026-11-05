@@ -78,6 +78,8 @@ private struct ODPReaderImpl {
     var pageLayouts: [String: CGSize] = [:]
     var masters: [String: XMLElement] = [:]
     var nextID = 2
+    /// Master page name → layout index (our own files).
+    var layoutByMaster: [String: Int] = [:]
     var masterName = "Default"
     /// While reading content.xml, automatic styles of content win over styles.xml.
     var inContent = false
@@ -103,21 +105,78 @@ private struct ODPReaderImpl {
         let pages = content.child("body")?.child("presentation")?.children("page") ?? []
         // Slide size and master background from the master of the first page.
         masterName = pages.first?.a("master-page-name") ?? masters.keys.sorted().first ?? "Default"
+        // Our own files: one master page per layout ("PPT42-L1"…), the slide master in "Default".
+        let ours = masters.keys.filter { $0.hasPrefix("PPT42-L") }.sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
+        // Files from LibreOffice with several master pages (one per PowerPoint layout): each master page becomes a layout.
+        var used: [String] = []
+        for p in pages { if let m = p.a("master-page-name"), masters[m] != nil, !used.contains(m) { used.append(m) } }
+        if !ours.isEmpty, masters["Default"] != nil || masters[masterName] != nil {
+            if masters["Default"] != nil { masterName = "Default" }
+            readLayouts(ours, own: true)
+        } else if used.count > 1 {
+            readLayouts(used, own: false)
+        }
+        let separateMasters = !ours.isEmpty || used.count > 1
         if let master = masters[masterName] {
             if let pl = master.a("page-layout-name"), let size = pageLayouts[pl], size.width > 0, size.height > 0, size != deck.size {
                 deck.resize(to: size)
             }
             if let dp = master.a("style-name"), let fill = pageFill(dp, explicitOnly: false) { deck.master.background = fill }
             var objects: [SlideObject] = []
-            for e in master.elements where e.localName != "notes" && e.a("class") == nil {
+            for e in master.elements where e.localName != "notes" && e.a("class") == nil && (ours.isEmpty || masterName == "Default" || e.a("layer") == "backgroundobjects") {
                 objects += readShape(e, slide: nil)
             }
-            deck.master.objects = objects
+            // Decoration of LibreOffice's master pages belongs to their layouts.
+            deck.master.objects = separateMasters && ours.isEmpty ? [] : objects
+        }
+        if separateMasters {
+            // Layout backgrounds equal to the master's are inherited.
+            for i in deck.layouts.indices where deck.layouts[i].background == deck.master.background { deck.layouts[i].background = nil }
         }
         inContent = true
         for page in pages { deck.slides.append(readPage(page)) }
         if deck.slides.isEmpty { deck.slides = [deck.newSlide(layout: 0)] }
         return deck
+    }
+
+    /// Layouts from our master pages: their decoration (layer "layout") and placeholder frames.
+    mutating func readLayouts(_ names: [String], own: Bool) {
+        let footers = deck.master.placeholders.filter { $0.placeholder?.isFooter == true }
+        var layouts: [Layout] = []
+        for name in names {
+            guard let m = masters[name] else { continue }
+            var l = Layout(name: m.a("display-name") ?? name, type: "cust")
+            if let dp = m.a("style-name"), let fill = pageFill(dp, explicitOnly: false) { l.background = fill }
+            var placeholders: [SlideObject] = []
+            var id = 2, idx = 1
+            var classes: [String] = []
+            for e in m.elements where e.localName != "notes" {
+                if let cls = e.a("class") {
+                    guard ["title", "outline", "subtitle", "graphic", "object", "text"].contains(cls) else { continue }
+                    classes.append(cls)
+                    let (frame, _) = geometry(e)
+                    let type = cls == "title" ? "title" : cls == "subtitle" ? "subTitle" : cls == "graphic" ? "pic" : "body"
+                    var o = Themes.placeholder(id, type, idx: type == "title" ? nil : idx, frame, name: e.a("name") ?? "")
+                    if type == "pic" { o.kind = .picture; o.text = nil }
+                    if type != "title" { idx += 1 }
+                    id += 1
+                    placeholders.append(o)
+                } else if !own || e.a("layer") != "backgroundobjects" {
+                    l.objects += readShape(e, slide: nil)
+                }
+            }
+            if classes.contains("subtitle") { l.type = "title"; for i in placeholders.indices where placeholders[i].placeholder?.type == "title" { placeholders[i].placeholder?.type = "ctrTitle" } }
+            else if classes.contains("graphic") { l.type = "picTx" }
+            else if classes.filter({ $0 == "outline" }).count >= 2 { l.type = "twoObj" }
+            else if classes.contains("outline") { l.type = "obj" }
+            else if classes.contains("title") { l.type = "titleOnly" }
+            else { l.type = "blank" }
+            for var f in footers { f.id = id; id += 1; placeholders.append(f) }
+            l.placeholders = placeholders
+            layoutByMaster[name] = layouts.count
+            layouts.append(l)
+        }
+        if !layouts.isEmpty { deck.layouts = layouts }
     }
 
     // MARK: Style collection
@@ -242,7 +301,9 @@ private struct ODPReaderImpl {
         nextID = 2
         var objects: [SlideObject] = []
         // Pages on another master (LibreOffice makes one per pptx layout): its background and shapes.
-        if let mname = page.a("master-page-name"), mname != masterName, let master = masters[mname] {
+        if let mname = page.a("master-page-name"), let li = layoutByMaster[mname] {
+            slide.layout = li
+        } else if let mname = page.a("master-page-name"), mname != masterName, let master = masters[mname] {
             if slide.background == nil, let ms = master.a("style-name") {
                 inContent = false
                 let p = props(ms, "drawing-page")
@@ -306,7 +367,7 @@ private struct ODPReaderImpl {
         else if titles > 0 { type = "titleOnly" }
         else { type = "blank" }
         let own = page.a("layout").flatMap { deck.layoutIndex(type: $0) }
-        slide.layout = own ?? deck.layoutIndex(type: type) ?? 0
+        if let mname = page.a("master-page-name"), let li = layoutByMaster[mname] { slide.layout = li } else { slide.layout = own ?? deck.layoutIndex(type: type) ?? 0 }
         let layoutType = deck.layouts.indices.contains(slide.layout) ? deck.layouts[slide.layout].type : type
         if layoutType == "title" {
             for i in objects.indices where objects[i].placeholder?.type == "title" { objects[i].placeholder?.type = "ctrTitle" }

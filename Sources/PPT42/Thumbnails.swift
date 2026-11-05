@@ -41,6 +41,8 @@ final class ThumbnailRow: NSTableRowView {
 final class ThumbnailCell: NSView {
     var image: NSImage? { didSet { needsDisplay = true } }
     var number = 1 { didSet { needsDisplay = true } }
+    /// Shown instead of the number (master view: M, layout numbers).
+    var label: String? { didSet { needsDisplay = true } }
     var selected = false { didSet { needsDisplay = true } }
     var isCurrent = false { didSet { needsDisplay = true } }
     var slideHidden = false { didSet { needsDisplay = true } }
@@ -57,7 +59,7 @@ final class ThumbnailCell: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let r = slideRect
-        let num = NSAttributedString(string: "\(number)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: isCurrent ? .semibold : .regular),
+        let num = NSAttributedString(string: label ?? "\(number)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: isCurrent ? .semibold : .regular),
                                                                        .foregroundColor: isCurrent ? NSColor.labelColor : NSColor.secondaryLabelColor])
         num.draw(at: CGPoint(x: r.minX - 8 - num.size().width, y: r.minY))
         if slideHidden, let eye = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 9, weight: .regular)) {
@@ -159,7 +161,7 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
     /// Redraws only the slides that changed.
     func deckChanged(from old: Deck) {
         guard isViewLoaded else { return }
-        if old.slides.count != deck.slides.count || old.slides.map(\.uid) != deck.slides.map(\.uid) || ThumbnailCache.look(old) != ThumbnailCache.look(deck) {
+        if masterMode || old.slides.count != deck.slides.count || old.slides.map(\.uid) != deck.slides.map(\.uid) || ThumbnailCache.look(old) != ThumbnailCache.look(deck) {
             table.reloadData()
         } else {
             let changed = IndexSet(deck.slides.indices.filter { deck.slides[$0] != old.slides[$0] })
@@ -171,6 +173,17 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
     func syncSelection() {
         guard isViewLoaded, let owner else { return }
         syncing = true
+        if masterMode {
+            let sel = owner.editedLayout.map { $0 + 1 } ?? 0
+            table.selectRowIndexes([sel], byExtendingSelection: false)
+            for row in 0..<table.numberOfRows {
+                guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? ThumbnailCell else { continue }
+                cell.selected = row == sel
+                cell.isCurrent = row == sel
+            }
+            syncing = false
+            return
+        }
         table.selectRowIndexes(owner.slideSelection.filteredIndexSet { $0 < table.numberOfRows }, byExtendingSelection: false)
         if owner.current < table.numberOfRows { table.scrollRowToVisible(owner.current) }
         for row in 0..<table.numberOfRows {
@@ -181,7 +194,23 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
         syncing = false
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { deck.slides.count }
+    var masterMode: Bool { owner?.mode == .master }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { masterMode ? 1 + deck.layouts.count : deck.slides.count }
+
+    /// Master view: picture of the master (row 0) or a layout.
+    func masterImage(_ row: Int, width: Int) -> NSImage {
+        let layout = row == 0 ? nil : row - 1
+        let objects = MasterView.sampleObjects(deck: deck, layout: layout)
+        let scale = CGFloat(width) / deck.size.width
+        let img = NSImage(size: NSSize(width: CGFloat(width), height: (deck.size.height * scale).rounded()), flipped: true) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.scaleBy(x: scale, y: scale)
+            Renderer.drawMaster(deck: self.deck, objects: objects, in: ctx, layout: layout.map { self.deck.layouts[$0] })
+            return true
+        }
+        return img
+    }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         let w = max(60, table.bounds.width - 42)
@@ -193,6 +222,20 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = (tableView.makeView(withIdentifier: .init("thumb"), owner: nil) as? ThumbnailCell) ?? ThumbnailCell()
         cell.identifier = .init("thumb")
+        if masterMode {
+            cell.aspect = deck.size.width / deck.size.height
+            cell.label = row == 0 ? "M" : "\(row)"
+            cell.slideHidden = false
+            cell.hasTransition = false
+            cell.toolTip = MasterView.label(deck: deck, layout: row == 0 ? nil : row - 1)
+            cell.image = masterImage(row, width: Int(max(160, (table.bounds.width - 42) * (view.window?.backingScaleFactor ?? 2))))
+            let sel = (owner?.editedLayout).map { $0 + 1 } ?? 0
+            cell.selected = row == sel
+            cell.isCurrent = row == sel
+            return cell
+        }
+        cell.label = nil
+        cell.toolTip = nil
         guard deck.slides.indices.contains(row) else { return cell }
         let s = deck.slides[row]
         cell.aspect = deck.size.width / deck.size.height
@@ -208,6 +251,11 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !syncing, let owner else { return }
+        if masterMode {
+            let r = table.selectedRow
+            if r >= 0 { owner.selectMaster(r == 0 ? nil : r - 1) }
+            return
+        }
         let rows = table.selectedRowIndexes
         guard !rows.isEmpty else { syncSelection(); return }
         let clicked = table.clickedRow >= 0 && rows.contains(table.clickedRow) ? table.clickedRow : (rows.contains(owner.current) ? owner.current : rows.first!)
@@ -219,6 +267,7 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
     // MARK: - Drag to reorder
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        if masterMode { return nil }
         let item = NSPasteboardItem()
         item.setString("\(row)", forType: Self.rowType)
         return item
@@ -241,6 +290,11 @@ final class ThumbnailsController: NSViewController, NSTableViewDataSource, NSTab
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        if masterMode {
+            if table.clickedRow >= 0 { owner?.selectMaster(table.clickedRow == 0 ? nil : table.clickedRow - 1) }
+            for c in [Cmd.newLayout, Cmd.duplicateLayout, Cmd.renameLayout, Cmd.deleteLayout] { menu.addItem(c.menuItem()) }
+            return
+        }
         if table.clickedRow >= 0, owner?.slideSelection.contains(table.clickedRow) == false { owner?.select(slide: table.clickedRow) }
         for c in [Cmd.newSlide, Cmd.duplicateSlide, Cmd.deleteSlide] { menu.addItem(c.menuItem()) }
         menu.addItem(.separator())
