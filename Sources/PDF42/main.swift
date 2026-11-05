@@ -36,6 +36,9 @@ if args.count >= 4, args[1] == "--compress" {
     }
     exit(0)
 }
+// GOST signatures through CryptoPro CSP (GOSTCLI.swift): --gost-status, --gost-certs, --gost-sign, --gost-sign-file,
+// --gost-verify, --poa-check.
+if let code = GOSTCLI.run(args) { exit(code) }
 if args.count >= 3, args[1] == "--verify" {
     let data = try Data(contentsOf: URL(fileURLWithPath: args[2]))
     for s in PDFSignatureVerifier.verify(data) {

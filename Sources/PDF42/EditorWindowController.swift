@@ -262,6 +262,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         let details = L("Details")
         if signatures.contains(where: { $0.status == .invalid }) {
             banner.show(.error, L("Signature invalid — the document was changed after signing (%@)", names), action: details, handler: showSignatures)
+        } else if signatures.contains(where: { $0.status == .notChecked }) {
+            banner.show(.warning, L("Signed by %@ with a GOST signature. Install CryptoPro CSP to verify it", names), action: details, handler: showSignatures)
+        } else if signatures.contains(where: { $0.powerOfAttorney.contains { $0.level == .error } }) {
+            banner.show(.error, L("Signed by %@, but the power of attorney does not match the signature", names), action: details, handler: showSignatures)
         } else if signatures.contains(where: { $0.status == .untrusted }) {
             banner.show(.warning, L("Signed by %@. The signature is intact, but the certificate is not confirmed by a certification authority", names), action: details, handler: showSignatures)
         } else if signatures.last?.coversWholeFile == false {
@@ -570,7 +574,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         }
         let stamp = pdfView.selectedAnnotation as? ImageStampAnnotation
         let stampPage = pdfView.selectedPage
-        guard let (chosen, visible) = SignDialog.run(stampSelected: stamp != nil) else { return }
+        guard let (chosen, visible, chosenAttachments) = SignDialog.run(stampSelected: stamp != nil) else { return }
         var options = chosen
 
         prepareForSave()
@@ -582,7 +586,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
                 let box = page.bounds(for: .cropBox)
                 rect = CGRect(x: box.maxX - 36 - 220, y: box.minY + 36, width: 220, height: 72)
             }
-            let appearance = Self.signatureAppearance(size: rect.size, image: stamp?.image, name: options.identity.name,
+            let appearance = Self.signatureAppearance(size: rect.size, image: stamp?.image, name: options.signer.name,
                                                       reason: options.reason, date: Date())
             options.visible = (pdf.index(for: page), rect, appearance)
             if let stamp, !(alreadySigned && !doc.isDocumentEdited) {
@@ -590,13 +594,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
                 removedStamp = (stamp, page)
             }
         }
-        let base: Data
+        let unsignedBase: Data
         if alreadySigned, !doc.isDocumentEdited, let original = doc.originalData {
-            base = original
+            unsignedBase = original
         } else if let data = PageOverlay.bakedData(pdf).map(AcroFormFixer.ensureFields) {
-            base = data
+            unsignedBase = data
         } else { return }
         if let (a, p) = removedStamp { p.addAnnotation(a) }
+        // A power of attorney (МЧД) is embedded first, so the signature covers it.
+        let base: Data
+        do { base = try PDFSigner.embed(chosenAttachments, into: unsignedBase) } catch { presentError(error); return }
 
         var signed: Data
         do { signed = try PDFSigner.sign(base, options: options) } catch {

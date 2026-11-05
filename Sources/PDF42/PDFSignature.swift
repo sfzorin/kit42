@@ -2,23 +2,65 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 import Kit42
+import PDFKit
 import Security
 
 /// Digital signatures in the standard PDF way (adbe.pkcs7.detached, CMS over /ByteRange),
 /// compatible with Adobe Acrobat and other validators.
 enum PDFSigner {
+    /// Where the key lives: the macOS Keychain (RSA/ECDSA) or CryptoPro CSP (GOST).
+    enum Signer {
+        case keychain(SigningIdentity)
+        case cryptoPro(CryptoPro.Certificate, CryptoPro.SignOptions)
+
+        var name: String {
+            switch self {
+            case .keychain(let id): return id.name
+            case .cryptoPro(let cert, _): return cert.name
+            }
+        }
+        var isGOST: Bool { if case .cryptoPro = self { return true } else { return false } }
+    }
+
     struct Options {
-        var identity: SigningIdentity
+        var signer: Signer
         var reason: String
         var location: String
         /// Visible signature: page index, rectangle in page space, rendered appearance.
         var visible: (page: Int, rect: CGRect, appearance: CGImage)?
         /// RFC 3161 time-stamping authority, e.g. http://timestamp.digicert.com
         var timestampURL: URL?
+
+        init(signer: Signer, reason: String, location: String) {
+            self.signer = signer
+            self.reason = reason
+            self.location = location
+        }
+
+        init(identity: SigningIdentity, reason: String, location: String) {
+            self.init(signer: .keychain(identity), reason: reason, location: location)
+        }
     }
 
-    /// Reserved bytes for the CMS signature (hex doubles it).
+    /// Reserved bytes for the CMS signature (hex doubles it). GOST CAdES from CSP carries the whole chain
+    /// and, with a timestamp, the TSA certificates too.
     static let signatureCapacity = 16_384
+    static let gostSignatureCapacity = 40_960
+
+    /// Embeds files (e.g. a power of attorney and its signature) as an incremental update, so existing
+    /// signatures stay valid. Used before signing, so the new signature covers them.
+    static func embed(_ files: [EmbeddedFile], into base: Data) throws -> Data {
+        guard !files.isEmpty else { return base }
+        guard let pdf = PDFDocument(data: base), let writer = Writer(base) else { throw PDFStructureError.malformed("attachments") }
+        var extras = DocumentExtras.read(base, pdf: pdf)
+        for f in files {
+            extras.files.removeAll { $0.name == f.name }
+            extras.files.append(f)
+        }
+        extras.dirty = [.files]
+        writer.write(extras: extras, pdf: pdf, pdfa: false)
+        return writer.finish(base)
+    }
 
     /// Appends a signature as an incremental update. `base` must use a classic xref table
     /// (any file saved by PDF42/PDFKit, or a file signed by PDF42).
@@ -104,9 +146,12 @@ enum PDFSigner {
         updates[widgetNum] = "<< /Type /Annot /Subtype /Widget /FT /Sig /T \(pdfTextString("Signature\(fieldCount + 1)")) /F 132 /Rect \(rectText)\(appearance) /P \(pageNum) \(file.gen(pageNum)) R /V \(sigNum) 0 R >>"
 
         let byteRangePlaceholder = "[0 0000000000 0000000000 0000000000]"
-        let contentsPlaceholder = "<" + String(repeating: "0", count: signatureCapacity * 2) + ">"
-        var sig = "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange \(byteRangePlaceholder) /Contents \(contentsPlaceholder) /M \(pdfDate(Date()))"
-        sig += " /Name \(pdfTextString(options.identity.name))"
+        let capacity = options.signer.isGOST ? gostSignatureCapacity : signatureCapacity
+        let contentsPlaceholder = "<" + String(repeating: "0", count: capacity * 2) + ">"
+        // GOST: "CryptoPro PDF" names the preferred handler (Acrobat with the CryptoPro PDF plug-in).
+        let filter = options.signer.isGOST ? "/CryptoPro#20PDF" : "/Adobe.PPKLite"
+        var sig = "<< /Type /Sig /Filter \(filter) /SubFilter /adbe.pkcs7.detached /ByteRange \(byteRangePlaceholder) /Contents \(contentsPlaceholder) /M \(pdfDate(Date()))"
+        sig += " /Name \(pdfTextString(options.signer.name))"
         if !options.reason.isEmpty { sig += " /Reason \(pdfTextString(options.reason))" }
         if !options.location.isEmpty { sig += " /Location \(pdfTextString(options.location))" }
         sig += " /Prop_Build << /App << /Name /PDF42 >> >> >>"
@@ -154,9 +199,17 @@ enum PDFSigner {
         out.replaceSubrange(brStart..<brStart + padded.utf8.count, with: Array(padded.utf8))
 
         let signed = Data(out[0..<a] + out[b..<out.count])
-        var cms = try cmsSign(signed, identity: options.identity.identity)
-        if let url = options.timestampURL { cms = try Timestamp.add(to: cms, tsa: url) }
-        guard cms.count <= signatureCapacity else { throw PDFStructureError.unsupported(L("the signature is too large (%d bytes)", cms.count)) }
+        var cms: Data
+        switch options.signer {
+        case .keychain(let id):
+            cms = try cmsSign(signed, identity: id.identity)
+            if let url = options.timestampURL { cms = try Timestamp.add(to: cms, tsa: url) }
+        case .cryptoPro(_, var gost):
+            // CSP adds the timestamp itself (CAdES-T).
+            gost.tsa = options.timestampURL ?? gost.tsa
+            cms = try CryptoPro.signDetached(signed, options: gost)
+        }
+        guard cms.count <= capacity else { throw PDFStructureError.unsupported(L("the signature is too large (%d bytes)", cms.count)) }
         let hex = cms.map { String(format: "%02X", $0) }.joined()
         out.replaceSubrange(a + 1..<a + 1 + hex.utf8.count, with: Array(hex.utf8))
         return Data(out)
@@ -234,7 +287,8 @@ enum CertificateError: LocalizedError {
 
 /// Result of checking one signature.
 struct SignatureInfo {
-    enum Status { case valid, untrusted, invalid }
+    /// `notChecked`: a GOST signature while CryptoPro CSP is not installed.
+    enum Status { case valid, untrusted, invalid, notChecked }
 
     var signer = L("Unknown")
     var email: String?
@@ -247,18 +301,29 @@ struct SignatureInfo {
     var problem: String?
     /// Trusted time from an RFC 3161 timestamp, if the signature has one.
     var timestamp: Date?
+    /// GOST signature (checked through CryptoPro CSP).
+    var isGOST = false
+    /// Extra lines: algorithm, SNILS / INN / OGRN of a qualified certificate.
+    var details: [String] = []
+    /// Results of checking an attached power of attorney (МЧД).
+    var powerOfAttorney: [PowerOfAttorney.Finding] = []
+    /// Signer certificate as parsed from the CMS (for GOST signatures).
+    var certificate: CertificateInfo?
+    var filter: String?
 
     var summary: String {
         switch status {
         case .valid: return coversWholeFile ? L("Signature is valid") : L("Valid for its version; the document was extended after signing")
         case .untrusted: return L("The signature is intact, but the certificate is not verified")
         case .invalid: return problem ?? L("Signature is invalid")
+        case .notChecked: return L("GOST signature: not checked, CryptoPro CSP is not installed")
         }
     }
 }
 
 enum PDFSignatureVerifier {
-    static func verify(_ data: Data) -> [SignatureInfo] {
+    /// `attachments`: embedded files, searched for a power of attorney (МЧД) and its signature.
+    static func verify(_ data: Data, attachments: [EmbeddedFile] = []) -> [SignatureInfo] {
         let bytes = [UInt8](data)
         var results: [SignatureInfo] = []
         var pos = 0
@@ -279,13 +344,70 @@ enum PDFSignatureVerifier {
             check(cms: cms, signed: signed, into: &info)
             results.append(info)
         }
+        if !results.isEmpty, let poa = attachments.first(where: { PowerOfAttorney.looksLike($0.data) }),
+           let parsed = PowerOfAttorney(xml: poa.data) {
+            let sig = attachments.first { $0.name != poa.name && ($0.name == poa.name + ".sig" || $0.name == poa.name + ".p7s"
+                || ($0.name.hasPrefix((poa.name as NSString).deletingPathExtension) && ($0.name.hasSuffix(".sig") || $0.name.hasSuffix(".p7s")))) }
+            // The МЧД concerns the representative's signatures; others (e.g. the principal's own) are left alone,
+            // unless no signature matches, which is then reported on all of them.
+            let matching = results.indices.filter { parsed.isRepresentative(results[$0].certificate) }
+            for i in matching.isEmpty ? Array(results.indices) : matching {
+                results[i].powerOfAttorney = parsed.check(signer: results[i].certificate, signedAt: results[i].date,
+                                                          xml: poa.data, poaSignature: sig?.data)
+            }
+        }
         return results
+    }
+
+    /// GOST CMS: signer details from the CMS itself, the cryptographic check through CryptoPro CSP.
+    static func checkGOST(cms: Data, signed: Data, parsed: CMSInfo?, into info: inout SignatureInfo) {
+        info.isGOST = true
+        describe(parsed, into: &info)
+        guard CryptoPro.isInstalled else {
+            info.status = .notChecked
+            info.trustMessage = CryptoPro.installHelp
+            return
+        }
+        do {
+            let v = try CryptoPro.verifyDetached(signed, signature: cms)
+            switch v.status {
+            case .valid: info.status = .valid
+            case .untrusted: info.status = .untrusted; info.trustMessage = v.message
+            case .invalid: info.status = .invalid; info.problem = L("The document was changed after signing") + (v.message.map { "\n" + $0 } ?? "")
+            }
+        } catch {
+            info.status = .invalid
+            info.problem = error.localizedDescription
+        }
+    }
+
+    /// Signer, time and qualified-certificate fields parsed from the CMS (no verification).
+    static func describe(_ parsed: CMSInfo?, into info: inout SignatureInfo) {
+        guard let signer = parsed?.signers.first else { return }
+        if let t = signer.signingTime { info.date = t }
+        if let c = signer.certificate {
+            info.certificate = c
+            info.signer = c.displayName
+            if let s = c.snils { info.details.append(L("SNILS %@", s)) }
+            if let i = c.inn { info.details.append(L("INN %@", i)) }
+            if let i = c.innLE, i != c.inn { info.details.append(L("Organisation INN %@", i)) }
+            if let o = c.ogrn { info.details.append(L("OGRN %@", o)) }
+            info.details.append(L("Issued by %@", c.issuerName))
+            if let until = c.notAfter { info.details.append(L("Certificate valid until %@", until.formatted(date: .long, time: .omitted))) }
+        }
+        let alg = signer.signatureAlgorithm.isEmpty ? signer.certificate?.publicKeyAlgorithm ?? "" : signer.signatureAlgorithm
+        if !alg.isEmpty { info.details.append(L("Algorithm: %@", GOST.algorithmName(alg))) }
     }
 
     private static func check(cms: Data, signed: Data, into info: inout SignatureInfo) {
         let message = derTrimmed(cms)
         guard !message.isEmpty else {
             info.problem = L("The signature is damaged (CMS cannot be read)")
+            return
+        }
+        let parsed = CMSInfo(message)
+        if parsed?.isGOST == true || info.filter == "CryptoPro PDF" || info.filter == "CryptoPro#20PDF" {
+            checkGOST(cms: message, signed: signed, parsed: parsed, into: &info)
             return
         }
         func decoder(detached: Data?) -> CMSDecoder? {
@@ -361,6 +483,10 @@ enum PDFSignatureVerifier {
             guard case .raw(let raw)? = try? lexer.parse() else { return nil }
             let s = decodePDFString(raw)
             return s.isEmpty ? nil : s
+        }
+        if let p = PDFSigner.find("/Filter", in: region, from: 0) {
+            var lexer = PDFLexer(bytes: region, pos: p + 7)
+            info.filter = (try? lexer.parse())?.nameValue
         }
         info.reason = value("Reason")
         info.location = value("Location")

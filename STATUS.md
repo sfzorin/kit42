@@ -220,3 +220,86 @@ scenario inserts one); DOCX keeps the stamp in front of the text but not the mul
 
 Verified: PDF42 debug build, `--mark-samples` sheets inspected (smooth at 100 %, four copies per style visibly
 different). `audit-ui.py --app PDF42` 6/6 (samples, generator windows).
+
+## GOST signatures with CryptoPro CSP — feasibility — 2026-11-06
+
+Goal: ГОСТ Р 34.10-2012 qualified signatures in PDF42 on macOS through the user's own CryptoPro CSP, with no
+bundled GOST cryptography. CryptoPro PDF exists only for Windows and Kontur.Krypto has no macOS client, so
+this is an open gap on the Mac.
+
+What CryptoPro CSP 5.0 provides on macOS (from CryptoPro's macOS install guides and published command references;
+**not yet observed on this machine**: CSP was not installed during this work, see the implementation section):
+
+- A macOS installer (`.dmg`/`.pkg`) that installs into `/opt/cprocsp`. The command-line tools are
+  `/opt/cprocsp/bin/cryptcp` (CMS sign/verify), `/opt/cprocsp/bin/certmgr` (certificate stores),
+  `/opt/cprocsp/bin/csptest` (key containers) and `/opt/cprocsp/sbin/cpconfig` (licence/configuration). The PKCS#11
+  module is `/opt/cprocsp/lib/libcppkcs11.dylib`.
+- Containers on disk (`HDIMAGE`) and on tokens (Rutoken, JaCarta since CSP 5.0). The personal store `uMy` links certificates
+  to containers (`PrivateKey Link`). `cryptcp -sign -detached -der -thumbprint <SHA-1>` writes a detached CMS
+  (CAdES-BES with `-cadesbes`, CAdES-T with `-cadest -cadestsa <url>`). `cryptcp -verify -verall -detached <data> -f <sig>`
+  verifies it, and `[ErrorCode: 0x00000000]` in the output means success.
+
+Chosen route: the `cryptcp`/`certmgr`/`csptest` command-line tools. PKCS#11 would only give raw signatures:
+PDF42 would have to build CMS/CAdES itself and implement chain and revocation checking itself, which CSP already does.
+Apple's Security framework has no GOST algorithms, so GOST CMS cannot be verified with `CMSDecoder`.
+PDF42 parses GOST CMS and certificates (DER) itself only to display the signer (name, SNILS, INN, OGRN) and to
+check the power of attorney; every cryptographic operation goes through CSP.
+
+Licensing and distribution:
+
+- CSP is not redistributed. Users download it from cryptopro.ru (registration required) and install it with
+  administrator rights. A fresh install runs under a 90-day trial licence; after that a purchased serial number is
+  needed (`cpconfig -license -set`). Whether verification keeps working after the trial expires is not verified.
+- `cryptcp` is part of the CSP distribution, but CryptoPro has historically licensed some `cryptcp` uses separately;
+  confirm the terms with CryptoPro before commercial distribution of PDF42 with this feature.
+- Test certificates: the CryptoPro test CA for GOST 2012 is at `https://testgost2012.cryptopro.ru/certsrv`.
+  It issues certificates for requests made by `cryptcp -creatrqst`; they are valid only for a short time and have no legal
+  force, and its root must be installed into `uRoot`. CryptoPro sites present a TLS certificate from the Russian
+  Минцифры root, so macOS `curl` rejects them unless that root is trusted (observed here).
+
+## GOST signatures with CryptoPro CSP — implementation — 2026-11-06
+
+Local branch `claude/vigorous-rubin-627576`; not merged, pushed or released.
+
+Implemented in PDF42 (details in [README.md](README.md#pdf42--pdf)):
+
+- `Sources/Kit42/DER.swift`: a read-only DER/BER, X.509 and CMS SignedData parser. It extracts the signer, signing time,
+  algorithms and the SNILS/INN/OGRN attributes for display and power-of-attorney matching; it performs no cryptography.
+- `Sources/PDF42/CryptoPro.swift`: CSP detection and installation help; `certmgr -list`/`-export` for the
+  certificate picker (English and Russian labels); `csptest -keyset -enum_cont` for containers and
+  `certmgr -inst -cont` to install a container's certificate; `cryptcp -sign -detached -der` with `-cadesbes`, or
+  `-cadest -cadestsa`; and `cryptcp -verify -verall -detached … -f sig`. A second `-nochain` run tells
+  "untrusted certificate" apart from "changed document".
+- PDF signing: `PDFSigner.Signer` is a Keychain identity or a CryptoPro certificate. GOST signatures reserve 40 KB for
+  CMS and set `/Filter /CryptoPro#20PDF`. Verification sends GOST CMS (by OID, or the CryptoPro PDF filter) to
+  CSP; without CSP the status is "not checked".
+- МЧД (`PowerOfAttorney.swift`): EMCHD_1 and format 002 XML. The МЧД is embedded before signing as an incremental update and
+  checked on verification (dates, representative SNILS/INN, principal INN, the МЧД's own signature through CSP).
+  When a PDF has several signatures, it is applied to the representative's signatures.
+- UI: GOST certificates and PIN in Sign Document, an МЧД picker, Signature › CryptoPro CSP… / Sign Any File with GOST (.sig)… /
+  Verify Detached Signature (.sig)…, and a banner for unchecked GOST signatures and МЧД mismatches. Strings are in RU/TR.
+
+Verification on this machine (macOS 27.0.1 arm64, debug build):
+
+| Check | Result |
+|---|---|
+| `swift build` (all products) | Passed. |
+| `PDF42 --selftest` | 15/15 groups passed. 4 are new: the TC 26 reference GOST 2012 CMS (`signed_a111`, 512-bit signer) is parsed with its signer, signing time and Streebog-512 OID; a PDF with that CMS and no CSP gives `notChecked`; `certmgr` output is parsed with English and Russian labels; МЧД fields and expiry are read. |
+| `audit-gost-cli.py` (stand-in CSP) | 24/24 passed: status, certificate and container listing, wrong PIN, detached `.sig` sign/verify/tamper/untrusted chain. МЧД cases: both formats, windows-1251, another representative, expired, the МЧД's own signature. PDF cases: sign with an embedded МЧД, a counter-signature keeping the first valid, tampered content, no CSP. |
+| `--gost-verify` on the TC 26 vectors `signed_a111`/`signed_a121` (no CSP) | Signer, issuer, validity and the 256/512 algorithm shown; exit 3 (not checked). |
+| RSA `.p12` `--sign`/`--verify` | Unchanged: a self-signed certificate is reported intact but untrusted. |
+| `audit-ui.py --app PDF42` | 5/6. `mark-samples` hit the script's 60 s timeout; run alone, it succeeded (222 files) in 66 s on this debug build. That is the signature generator's workload, untouched here. Main window light/dark, properties and generator windows passed. |
+| `check_strings.py` | No new problems; the one remaining (DOC42 "Signature or Stamp") predates this change. |
+
+**Not verified — no real CryptoPro CSP was available.** CSP was not installed, installing it needs administrator rights
+and a cryptopro.ru account, and this work had neither. So **the task's done-criterion (a test-CA certificate signs and
+verifies a PDF and a detached signature end to end on a real CSP install) is not yet met.**
+The stand-in tools (`scripts/fake-cryptopro`) imitate `cryptcp`/`certmgr`/`csptest` with OpenSSL RSA. They exercise
+PDF42's own code paths, not GOST cryptography or CryptoPro's actual option names and output. Still to confirm on a
+Mac with CSP 5.0 and a test-CA certificate:
+`python3 scripts/audit-gost-cli.py --real --thumbprint <SHA1> --pin <PIN> --snils <SNILS>`. That run confirms the
+`-cadesbes`/`-cadest` options, the `certmgr -export` and `csptest -enum_cont` syntax, the chain/`-nochain` error codes,
+and PIN entry without `-pin` (stdin is closed; CSP may need its own PIN dialog).
+Interoperability of the signed PDF with CryptoPro PDF in Acrobat (Windows) and with the FNS/Госуслуги `.sig` checkers is
+also unverified. The Sign Document dialog with GOST entries was compiled but not opened on screen; the PDF42 UI audit
+does not cover the signing dialog.

@@ -162,6 +162,10 @@ enum PDFSelfTest {
             ("testEmptySignatureIsReportedAsInvalid", testEmptySignatureIsReportedAsInvalid),
             ("testUntrustedNamesBecomeSingleFileNames", testUntrustedNamesBecomeSingleFileNames),
             ("testExtractionStaysInsideDirectoryAndPreservesExistingFiles", testExtractionStaysInsideDirectoryAndPreservesExistingFiles),
+            ("testGOSTReferenceCMSIsParsed", testGOSTReferenceCMSIsParsed),
+            ("testGOSTSignatureInPDFWithoutCSPIsNotChecked", testGOSTSignatureInPDFWithoutCSPIsNotChecked),
+            ("testCertmgrListIsParsed", testCertmgrListIsParsed),
+            ("testPowerOfAttorneyIsParsed", testPowerOfAttorneyIsParsed),
         ]
         for (name, run) in checks {
             let before = failures
