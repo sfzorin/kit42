@@ -57,7 +57,7 @@ enum Cmd {
         }
     }
     static let image = Command(L("Image…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]),
-                               toolTip: L("Insert an image"), label: L("Image"))
+                               toolTip: L("Insert an image"), label: L("Picture"))
     static let table = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option, .shift]),
                                toolTip: L("Insert a table"), label: L("Table"))
     static let chart = Command(L("Chart…"), #selector(W.insertChartAction(_:)), symbol: "chart.bar", shortcut: Shortcut("c", [.command, .option, .shift]),

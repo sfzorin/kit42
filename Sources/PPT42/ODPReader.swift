@@ -760,6 +760,8 @@ private struct ODPReaderImpl {
             let paras = readParagraphs(e, frameStyle: styleName(e), cls: nil)
             t.paragraphs = paras
             o.text = t
+            // LibreOffice writes PowerPoint text boxes as unfilled, unstroked rectangles: they stay text boxes.
+            if o.geometry == "rect", o.custom == nil, o.fill.isNone, o.line.color == nil, !t.isEmpty { o.kind = .textBox }
             return [o]
         case "line", "connector", "measure":
             o.kind = .line

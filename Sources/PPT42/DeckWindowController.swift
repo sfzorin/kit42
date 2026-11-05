@@ -49,7 +49,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let newSlideButton = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 48, height: 28), pullsDown: true)
         toolbarController = ToolbarController(identifier: "PPT42.toolbar", elements: [
             .toggleSidebar, .sidebarSeparator,
-            .view(id: "newSlide", label: L("New Slide"), newSlideButton),
+            .view(id: "newSlide", label: L("Slide"), newSlideButton),
             .command(Cmd.textBox),
             .view(id: "shape", label: L("Shape"), shapeButton),
             .command(Cmd.image), .command(Cmd.table),
@@ -188,6 +188,15 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
+        // Narrow windows (long Russian labels): the sidebar button and the main inserts stay, Format/Inspector go to » first.
+        for item in window?.toolbar?.items ?? [] {
+            switch item.itemIdentifier.rawValue {
+            case NSToolbarItem.Identifier.toggleSidebar.rawValue, "newSlide": item.visibilityPriority = .high
+            case Cmd.formatBar.id, Cmd.inspector.id, Cmd.table.id: item.visibilityPriority = .low
+            default: break
+            }
+            if item.itemIdentifier == .toggleSidebar { item.visibilityPriority = .user; item.label = L("Sidebar") }
+        }
         window?.layoutIfNeeded()
         setNotesHeight(120)
         if let split = splitController.splitView as NSSplitView?, sidebarItem.viewController.view.frame.width < 170 {
