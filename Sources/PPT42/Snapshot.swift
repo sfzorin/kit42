@@ -63,7 +63,7 @@ extension DeckWindowController {
     /// size:<pt>, color:<RRGGBB>, align:<0-3>, bullets:<0-2>, indent, outdent, group, ungroup, front, back, alignobj:<0-5>,
     /// distribute:<0-1>, layout:<i>, transition:<i>, hide, theme:<i>, size169, size43, selectall, select:<i,j>, slide:<n>,
     /// type:<text> (types into the edited object), endedit, undo, redo, copy, paste, copyslide, pasteslide, move:<dx>,<dy>,
-    /// rotate:<deg>, fill:<RRGGBB>, build:<0-4>, find:<text>, replace:<a>=<b>, outline:<text with \t and \n>, notes:<text>.
+    /// rotate:<deg>, fill:<RRGGBB>, anim:<effect>[,trigger,dur,delay], find:<text>, replace:<a>=<b>, outline:<text with \t and \n>, notes:<text>.
     func run(_ cmd: String) {
         let parts = cmd.split(separator: ":", maxSplits: 1).map(String.init)
         let name = parts[0], arg = parts.count > 1 ? parts[1] : ""
@@ -175,9 +175,13 @@ extension DeckWindowController {
         case "line": let c = hex(arg); setLine { $0.color = c; $0.width = 3 }
         case "shadow": changeSelected(L("Shadow")) { $0.shadow = true }
         case "opacity": let v = CGFloat(Double(arg) ?? 1); changeSelected(L("Opacity")) { $0.opacity = v }
-        case "build":
-            let i = Int(arg) ?? 0
-            changeSelected(L("Animation")) { $0.build = i == 0 ? nil : BuildEffect.allCases[min(i - 1, 3)] }
+        case "anim":
+            // anim:<effect>[,<trigger>[,<duration>[,<delay>]]] on the selected objects
+            let p = arg.split(separator: ",").map(String.init)
+            if let e = AnimEffect(rawValue: p.first ?? "") {
+                let trig = p.count > 1 ? AnimTrigger(rawValue: p[1]) ?? .onClick : .onClick
+                addAnimation(e, trigger: trig, duration: p.count > 2 ? Double(p[2]) : nil, delay: p.count > 3 ? Double(p[3]) : nil)
+            }
         case "find":
             finder.show()
             finder.setQuery(arg)

@@ -77,7 +77,6 @@ enum CLI {
         if let ph = o.placeholder { s += " ph=\(ph.type)\(ph.idx.map { ":\($0)" } ?? "")" }
         s += String(format: " [%.0f,%.0f %.0f×%.0f]", o.frame.minX, o.frame.minY, o.frame.width, o.frame.height)
         if o.rotation != 0 { s += String(format: " rot=%.0f", o.rotation) }
-        if o.build != nil { s += " build=\(o.build!.rawValue)" }
         if let m = o.media { s += " media=\(m)" }
         if let c = o.clip { s += " \(c.audio ? "audio" : "video")=\(c.media)\(c.autoplay ? " autoplay" : "")\(c.loop ? " loop" : "")" }
         if let m = o.chart { s += " chart=\(m.kind.rawValue)/\(m.grouping.rawValue) series=\(m.series.count) categories=\(m.categories.count)\(m.title.map { " title=“\($0)”" } ?? "")" }
@@ -107,6 +106,7 @@ enum CLI {
             if slide.background != nil { s += ", own background" }
             for o in slide.objects { s += "\n" + describe(o) }
             if !slide.notes.isEmpty { s += "\n    notes: “\(slide.notes.replacingOccurrences(of: "\n", with: " ⏎ ").prefix(80))”" }
+            for a in slide.animations { s += "\n    animation #\(a.target) \(a.describe)" }
             for c in slide.comments {
                 s += "\n    comment \(c.initials) “\(c.text.prefix(60))”\(c.resolved ? " (resolved)" : "")"
                 for r in c.replies { s += "\n      reply \(r.initials) “\(r.text.prefix(60))”" }

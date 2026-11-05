@@ -987,16 +987,6 @@ struct PPTXReader {
 
     func readTiming(_ slide: XMLElement, into s: inout Slide) {
         guard let timing = slide.child("timing") else { return }
-        for ctn in timing.descendants("cTn") where ctn.a("presetClass") == "entr" {
-            guard let spid = ctn.descendants("spTgt").first?.int("spid") else { continue }
-            let effect: BuildEffect
-            switch ctn.int("presetID") ?? 1 {
-            case 1: effect = .appear
-            case 2: effect = .flyIn
-            case 53, 21, 23: effect = .zoom
-            default: effect = .fade
-            }
-            if s.object(spid)?.build == nil { s.update(spid) { $0.build = effect } }
-        }
+        s.animations = TimingXML.read(timing) { readColor($0) }
     }
 }

@@ -6,7 +6,8 @@ final class InspectorController: NSViewController {
     weak var owner: DeckWindowController?
     private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text"), "", ""], trackingMode: .selectOne, target: nil, action: nil)
     private let slidePane = NSStackView(), shapePane = NSStackView(), textPane = NSStackView()
-    let animationPane = NSStackView()
+    private(set) lazy var animationPane = AnimationPane(owner: owner!)
+    var selectedTab: Int { tabs.selectedSegment }
     private(set) lazy var commentsPane = CommentsPane(owner: owner!)
     private let scroll = NSScrollView()
     private var updating = false
@@ -37,7 +38,6 @@ final class InspectorController: NSViewController {
     private let opacity = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let corner = NSSlider(value: 16, minValue: 0, maxValue: 50, target: nil, action: nil)
     private let shadow = NSButton(checkboxWithTitle: L("Shadow"), target: nil, action: nil)
-    private let buildPopup = NSPopUpButton()
     private let mediaHeader = NSTextField(labelWithString: L("MEDIA"))
     private let mediaAutoplay = NSButton(checkboxWithTitle: L("Play automatically"), target: nil, action: nil)
     private let mediaLoop = NSButton(checkboxWithTitle: L("Loop"), target: nil, action: nil)
@@ -82,7 +82,7 @@ final class InspectorController: NSViewController {
             tabs.setImage(NSImage(systemSymbolName: sym, accessibilityDescription: tip), forSegment: 3 + i)
             tabs.setToolTip(tip, forSegment: 3 + i)
         }
-        for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2), (animationPane, 3)] {
+        for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2)] {
             pane.orientation = .vertical
             pane.alignment = .leading
             pane.spacing = 10
@@ -228,7 +228,6 @@ final class InspectorController: NSViewController {
         for s in [opacity, corner] { s.translatesAutoresizingMaskIntoConstraints = false; s.widthAnchor.constraint(equalToConstant: 140).isActive = true }
         shadow.target = self
         shadow.action = #selector(shadowChanged)
-        popup(buildPopup, [L("None"), L("Appear"), L("Fade In"), L("Fly In"), L("Zoom")], #selector(buildChanged), width: 110)
         noSelection.textColor = .secondaryLabelColor
         noSelection.preferredMaxLayoutWidth = 220
         popup(chartType, ChartKind.allCases.map(\.name), #selector(chartChanged), width: 150)
@@ -265,7 +264,6 @@ final class InspectorController: NSViewController {
             header(L("FILL")), grid([(L("Fill:"), [fillKind, fillColor, fillColor2])]),
             header(L("LINE")), grid([(L("Colour:"), [lineColor, lineWidth, unit(L("pt"))]), (L("Dash:"), [lineDash]), (L("Start:"), [headPopup]), (L("End:"), [tailPopup])]),
             header(L("EFFECTS")), grid([(L("Opacity:"), [opacity]), (L("Corners:"), [corner]), ("", [shadow])]),
-            header(L("ANIMATION")), grid([(L("Build in:"), [buildPopup])]),
         ], in: .top)
     }
 
@@ -334,6 +332,7 @@ final class InspectorController: NSViewController {
         animationPane.isHidden = tabs.selectedSegment != 3
         commentsPane.isHidden = tabs.selectedSegment != 4
         reload()
+        owner?.canvas.needsDisplay = true
     }
 
     // MARK: - Reading the selection
@@ -436,8 +435,6 @@ final class InspectorController: NSViewController {
                 chartGridlines.state = m.gridlines ? .on : .off
                 chartGridlines.isEnabled = m.kind.hasAxes
             }
-            buildPopup.selectItem(at: o.build.map { (BuildEffect.allCases.firstIndex(of: $0) ?? 0) + 1 } ?? 0)
-            buildPopup.isEnabled = !master
             for f in [posX, posY, width, height, rotation] { f.isEnabled = true }
         }
 
@@ -644,13 +641,6 @@ final class InspectorController: NSViewController {
         guard !updating, let owner else { return }
         let on = shadow.state == .on
         owner.changeSelected(L("Shadow")) { $0.shadow = on }
-    }
-
-    @objc private func buildChanged() {
-        guard !updating, let owner else { return }
-        let i = buildPopup.indexOfSelectedItem
-        let b: BuildEffect? = i <= 0 ? nil : BuildEffect.allCases[i - 1]
-        owner.changeSelected(L("Animation")) { $0.build = b }
     }
 
     // MARK: - Text actions

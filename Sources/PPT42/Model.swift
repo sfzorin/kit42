@@ -472,11 +472,6 @@ enum ObjectKind: String {
     case shape, textBox, picture, table, group, line, chart
 }
 
-/// Entrance animation played on click in the slide show (p:timing).
-enum BuildEffect: String, CaseIterable {
-    case appear, fade, flyIn, zoom
-}
-
 struct SlideObject: Equatable {
     var id: Int
     var name = ""
@@ -508,7 +503,6 @@ struct SlideObject: Equatable {
     /// SmartArt behind a group (its drawing's shapes are the children).
     var diagram: DiagramSource?
     var children: [SlideObject] = []
-    var build: BuildEffect?
     /// Description / alt text.
     var descr = ""
     /// Shapes the reader could not represent (charts, SmartArt) are kept as a picture fallback or a box.
@@ -519,7 +513,7 @@ struct SlideObject: Equatable {
             && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.custom == b.custom && a.fill == b.fill && a.line == b.line
             && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media && a.clip == b.clip
             && a.crop.left == b.crop.left && a.crop.top == b.crop.top && a.crop.right == b.crop.right && a.crop.bottom == b.crop.bottom
-            && a.table == b.table && a.chart == b.chart && a.diagram == b.diagram && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported
+            && a.table == b.table && a.chart == b.chart && a.diagram == b.diagram && a.children == b.children && a.descr == b.descr && a.unsupported == b.unsupported
     }
 
     init(id: Int, kind: ObjectKind, frame: CGRect) {
@@ -591,6 +585,8 @@ struct Slide: Equatable {
     var transition = Transition()
     var showMasterShapes = true
     var comments: [Comment] = []
+    /// Object animations in play order.
+    var animations: [Animation] = []
 
     var title: String {
         objects.first { $0.placeholder?.isTitle == true }?.text?.plainText ?? ""

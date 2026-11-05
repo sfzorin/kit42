@@ -97,7 +97,9 @@ final class SlideShowController: NSObject {
 
     var slideIndex: Int { order.indices.contains(position) ? order[position] : 0 }
     var slide: Slide { deck.slides[slideIndex] }
-    var builds: [SlideObject] { slide.objects.filter { $0.build != nil } }
+    /// Animation groups of the current slide (one per click; the first may play by itself).
+    var timeline: AnimationTimeline { AnimationTimeline(slide.animations.filter { a in slide.object(a.target) != nil }) }
+    var groupCount: Int { timeline.groups.count }
 
     // MARK: - Start and end
 
@@ -158,34 +160,27 @@ final class SlideShowController: NSObject {
 
     // MARK: - Rendering
 
-    /// Picture of slide `i` with `revealed` builds.
-    func image(slide i: Int, revealed: Int, width: Int? = nil) -> CGImage? {
-        let key = "\(i):\(revealed):\(width ?? pixelWidth)"
+    /// Picture of slide `i` after `revealed` animation groups.
+    func image(slide i: Int, revealed: Int, width: Int? = nil, hidden: Set<Int> = []) -> CGImage? {
+        let key = "\(i):\(revealed):\(width ?? pixelWidth):\(hidden.sorted())"
         if let c = cache[key] { return c }
-        let s = deck.slides[i]
-        let pending = s.objects.filter { $0.build != nil }.dropFirst(revealed).map(\.id)
+        let s = deck.slides[i].animated(after: revealed, size: deck.size)
         var o = RenderOptions()
-        o.hidden = Set(pending)
+        o.hidden = hidden
         o.number = Renderer.number(of: i, deck: deck)
         let img = Renderer.image(s, deck: deck, pixelWidth: width ?? pixelWidth, options: o)
         if let img { cache[key] = img }
         return img
     }
 
-    private func render(animated: Bool, transition: Transition? = nil, build: BuildEffect? = nil, buildObject: SlideObject? = nil) {
+    private func render(animated: Bool, transition: Transition? = nil, group: Int? = nil) {
         let old = view.image
-        let new = image(slide: slideIndex, revealed: step)
-        view.blank = nil
-        if animated, let old, let new {
-            if let build, let obj = buildObject {
-                animateBuild(build, object: obj, old: old, new: new)
-            } else if let t = transition, t.kind != .none {
-                animateTransition(t, old: old, new: new)
-            } else {
-                view.image = new
-            }
+        if let group, animated, view.layer != nil {
+            animateGroup(group)
         } else {
-            view.image = new
+            let new = image(slide: slideIndex, revealed: step)
+            view.blank = nil
+            if animated, let old, let new, let t = transition, t.kind != .none { animateTransition(t, old: old, new: new) } else { view.image = new }
         }
         presenter?.update()
         scheduleAuto()
@@ -257,65 +252,141 @@ final class SlideShowController: NSObject {
         CATransaction.commit()
     }
 
-    private func animateBuild(_ effect: BuildEffect, object o: SlideObject, old: CGImage, new: CGImage) {
-        guard effect != .appear, view.layer != nil else { view.image = new; return }
-        // The object alone, animated over the previous state.
-        var s = slide
-        s.objects = [o]
-        var opts = RenderOptions()
-        opts.objectsOnly = true
-        opts.number = Renderer.number(of: slideIndex, deck: deck)
-        guard let objImage = Renderer.image(s, deck: deck, pixelWidth: pixelWidth, options: opts, opaque: false) else { view.image = new; return }
-        let base = overlay(old)
-        let objLayer = CALayer()
-        objLayer.frame = base.bounds
-        objLayer.contents = objImage
-        objLayer.contentsGravity = .resize
-        base.addSublayer(objLayer)
+    /// Plays animation group `k` (step k → k + 1) with Core Animation over the slide without the animated objects.
+    private func animateGroup(_ k: Int) {
+        if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil { print("animate group", k, "of", timeline.groups.count, timeline.groups.map { $0.items.map { $0.anim.effect.rawValue } }) }
+        let tl = timeline
+        guard tl.groups.indices.contains(k) else { view.image = image(slide: slideIndex, revealed: step); return }
+        let g = tl.groups[k]
+        let ids = Set(g.items.map { $0.anim.target })
+        let from = slide.animated(after: k, size: deck.size), to = slide.animated(after: k + 1, size: deck.size)
+        guard let baseImage = image(slide: slideIndex, revealed: k + 1, hidden: ids) else { return }
+        let final = image(slide: slideIndex, revealed: k + 1)
+        view.blank = nil
+        let base = overlay(baseImage)
+        view.image = final
+        let flipped = base.contentsAreFlipped() == false
+        let scale = base.bounds.width / deck.size.width
+        func objectImage(_ s: Slide, _ id: Int) -> CGImage? {
+            guard let o = s.object(id) else { return nil }
+            var one = s
+            one.objects = [o]
+            var opts = RenderOptions()
+            opts.objectsOnly = true
+            opts.number = Renderer.number(of: slideIndex, deck: deck)
+            return Renderer.image(one, deck: deck, pixelWidth: pixelWidth, options: opts, opaque: false)
+        }
+        func layer(_ img: CGImage, centre: CGPoint) -> CALayer {
+            let l = CALayer()
+            l.contents = img
+            l.contentsGravity = .resize
+            l.anchorPoint = CGPoint(x: centre.x / deck.size.width, y: flipped ? centre.y / deck.size.height : 1 - centre.y / deck.size.height)
+            l.frame = base.bounds
+            base.addSublayer(l)
+            return l
+        }
+        // Slide y offsets in layer units (the layer tree may be flipped).
+        func dy(_ v: CGFloat) -> CGFloat { (flipped ? v : -v) * scale }
+        let now = CACurrentMediaTime()
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self, weak base] in
-            self?.view.image = new
             base?.removeFromSuperlayer()
             if self?.transitionLayer === base { self?.transitionLayer = nil }
         }
-        let dur = 0.5
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0; fade.toValue = 1; fade.duration = dur
-        objLayer.add(fade, forKey: "fade")
-        if effect == .flyIn {
-            let move = CABasicAnimation(keyPath: "position.y")
-            move.fromValue = objLayer.position.y - base.bounds.height
-            move.toValue = objLayer.position.y
-            move.duration = dur
-            move.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            objLayer.add(move, forKey: "fly")
-        } else if effect == .zoom {
-            let r = Renderer.number(of: 0, deck: deck) >= 0 ? o.frame : .zero
-            let sx = base.bounds.width / deck.size.width
-            objLayer.anchorPoint = CGPoint(x: r.midX / deck.size.width, y: 1 - r.midY / deck.size.height)
-            objLayer.frame = base.bounds
-            _ = sx
-            let scale = CABasicAnimation(keyPath: "transform.scale")
-            scale.fromValue = 0.2; scale.toValue = 1; scale.duration = dur
-            objLayer.add(scale, forKey: "zoom")
+        for it in g.items {
+            let a = it.anim
+            let state = a.effect.cls == .entrance ? to : from
+            guard let o = state.object(a.target), let img = objectImage(state, a.target) else { continue }
+            let c = CGPoint(x: o.frame.midX, y: o.frame.midY)
+            let l = layer(img, centre: c)
+            let begin = now + it.start + a.delay
+            let dur = max(0.001, a.duration)
+            func add(_ anim: CAAnimation, _ key: String, hold: Bool = true) {
+                anim.beginTime = begin
+                anim.duration = anim.duration > 0 ? anim.duration : dur
+                anim.fillMode = .both
+                anim.isRemovedOnCompletion = false
+                l.add(anim, forKey: key)
+            }
+            func basic(_ path: String, _ f: Any, _ t: Any, timing: CAMediaTimingFunctionName = .easeInEaseOut) -> CABasicAnimation {
+                let b = CABasicAnimation(keyPath: path)
+                b.fromValue = f; b.toValue = t
+                b.timingFunction = CAMediaTimingFunction(name: timing)
+                return b
+            }
+            // Off-slide offset for flying in/out.
+            let off: (CGFloat, CGFloat) = {
+                switch a.direction {
+                case "t": return (0, -(o.frame.maxY + 4))
+                case "l": return (-(o.frame.maxX + 4), 0)
+                case "r": return (deck.size.width - o.frame.minX + 4, 0)
+                default: return (0, deck.size.height - o.frame.minY + 4)
+                }
+            }()
+            switch a.effect {
+            case .appear: add(basic("opacity", 0, 1), "o")
+            case .fade, .wipe: add(basic("opacity", 0, 1), "o")
+            case .flyIn:
+                add(basic("transform.translation.x", off.0 * scale, 0, timing: .easeOut), "x")
+                add(basic("transform.translation.y", dy(off.1), 0, timing: .easeOut), "y")
+            case .zoom:
+                add(basic("transform.scale", 0.05, 1), "s")
+                add(basic("opacity", 0, 1), "o")
+            case .disappear: add(basic("opacity", 1, 0), "o")
+            case .fadeOut: add(basic("opacity", 1, 0), "o")
+            case .flyOut:
+                add(basic("transform.translation.x", 0, off.0 * scale, timing: .easeIn), "x")
+                add(basic("transform.translation.y", 0, dy(off.1), timing: .easeIn), "y")
+            case .zoomOut:
+                add(basic("transform.scale", 1, 0.05), "s")
+                add(basic("opacity", 1, 0), "o")
+            case .pulse:
+                let p = basic("transform.scale", 1, 1.05)
+                p.duration = dur / 2
+                p.autoreverses = true
+                add(p, "s")
+            case .spin:
+                add(basic("transform.rotation.z", 0, (flipped ? 1 : -1) * CGFloat(a.amount) * .pi / 180), "r")
+            case .grow: add(basic("transform.scale", 1, CGFloat(a.amount)), "s")
+            case .colorChange:
+                add(basic("opacity", 1, 0), "o")
+                if let img2 = objectImage(to, a.target) {
+                    let l2 = layer(img2, centre: c)
+                    let f = basic("opacity", 0, 1)
+                    f.beginTime = begin; f.duration = dur; f.fillMode = .both; f.isRemovedOnCompletion = false
+                    l2.add(f, forKey: "o")
+                }
+            case .path:
+                let xs = CAKeyframeAnimation(keyPath: "transform.translation.x")
+                xs.values = a.path.map { $0.x * deck.size.width * scale }
+                let ys = CAKeyframeAnimation(keyPath: "transform.translation.y")
+                ys.values = a.path.map { dy($0.y * deck.size.height) }
+                add(xs, "x"); add(ys, "y")
+            }
         }
         CATransaction.commit()
     }
 
     private func scheduleAuto() {
         autoTimer?.invalidate()
-        guard let t = slide.transition.advanceAfter, step >= builds.count else { return }
-        autoTimer = Timer.scheduledTimer(withTimeInterval: max(0.5, t), repeats: false) { [weak self] _ in self?.next() }
+        guard let t = slide.transition.advanceAfter, step >= groupCount else { return }
+        autoTimer = Timer.scheduledTimer(withTimeInterval: max(0.5, t + (timeline.groups.last?.duration ?? 0)), repeats: false) { [weak self] _ in self?.next() }
+    }
+
+    /// The first group plays by itself when it starts with "with/after previous".
+    private func playAutomaticGroup() {
+        guard step == 0, timeline.groups.first?.automatic == true else { return }
+        step = 1
+        render(animated: true, group: 0)
     }
 
     // MARK: - Navigation
 
     func next() {
         if view.blank != nil { view.blank = nil; return }
-        if step < builds.count {
-            let o = builds[step]
+        if step < groupCount {
             step += 1
-            render(animated: true, build: o.build, buildObject: o)
+            render(animated: true, group: step - 1)
             return
         }
         guard position + 1 < order.count else {
@@ -325,14 +396,17 @@ final class SlideShowController: NSObject {
         position += 1
         step = 0
         render(animated: true, transition: slide.transition)
+        let delay = slide.transition.kind == .none ? 0 : slide.transition.duration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.playAutomaticGroup() }
     }
 
     func previous() {
         if view.blank != nil { view.blank = nil; return }
-        if step > 0 { step -= 1; render(animated: false); return }
+        let first = timeline.groups.first?.automatic == true ? 1 : 0
+        if step > first { step -= 1; render(animated: false); return }
         guard position > 0 else { return }
         position -= 1
-        step = builds.count
+        step = groupCount
         render(animated: false)
     }
 
@@ -340,6 +414,7 @@ final class SlideShowController: NSObject {
         position = min(max(0, p), order.count - 1)
         step = 0
         render(animated: true, transition: slide.transition)
+        playAutomaticGroup()
     }
 
     /// Jump to slide number `n` (as numbered in the deck).
@@ -494,7 +569,7 @@ final class PresenterWindowController: NSWindowController, NSWindowDelegate {
         let width = 1400
         currentView.image = show.image(slide: show.slideIndex, revealed: show.step, width: width)
         currentView.blank = show.isBlank ? .black : nil
-        if show.step < show.builds.count {
+        if show.step < show.groupCount {
             nextView.image = show.image(slide: show.slideIndex, revealed: show.step + 1, width: 900)
             nextLabel.stringValue = L("Next: build")
         } else if show.position + 1 < show.order.count {

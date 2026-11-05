@@ -226,7 +226,7 @@ private struct ODPWriterImpl {
         for o in deck.layout(of: slide)?.objects ?? [] { x += object(o, slide: nil, number: number, styles: styles) }
         for o in slide.objects {
             var shape = object(o, slide: slide, number: number, styles: styles)
-            if o.build != nil, let space = shape.firstIndex(of: " "), let close = shape.firstIndex(of: ">"), space < close {
+            if slide.animations.contains(where: { $0.target == o.id }), let space = shape.firstIndex(of: " "), let close = shape.firstIndex(of: ">"), space < close {
                 // Build targets need an id.
                 shape.insert(contentsOf: " xml:id=\"\(pid)s\(o.id)\" draw:id=\"\(pid)s\(o.id)\"", at: space)
             }
@@ -281,35 +281,15 @@ private struct ODPWriterImpl {
         return x + "</presentation:notes>"
     }
 
-    /// Transition (anim:transitionFilter, as LibreOffice writes it) and entrance builds on click.
+    /// Transition (anim:transitionFilter, as LibreOffice writes it) and the animations.
     func timing(_ s: Slide, pageID: String) -> String {
-        let builds = s.objects.filter { $0.build != nil }
-        guard s.transition.kind != .none || !builds.isEmpty else { return "" }
+        let seq = AnimationODF.mainSequence(s, target: { "\(pageID)s\($0)" }, hex: { color($0) })
+        guard s.transition.kind != .none || !seq.isEmpty else { return "" }
         var x = "<anim:par presentation:node-type=\"timing-root\">"
         if s.transition.kind != .none {
             x += "<anim:par smil:begin=\"\(pageID).begin\"><anim:transitionFilter smil:dur=\"\(String(format: "%.2f", s.transition.duration))s\"\(smilTransition(s.transition))/></anim:par>"
         }
-        x += "<anim:seq presentation:node-type=\"main-sequence\">"
-        for o in builds {
-            let target = "\(pageID)s\(o.id)"
-            let effect = o.build ?? .appear
-            let preset = ["appear": "ooo-entrance-appear", "fade": "ooo-entrance-fade-in", "flyIn": "ooo-entrance-fly-in", "zoom": "ooo-entrance-zoom"][effect.rawValue] ?? "ooo-entrance-appear"
-            x += "<anim:par smil:begin=\"next\"><anim:par smil:begin=\"0s\"><anim:par smil:begin=\"0s\" smil:fill=\"hold\" presentation:node-type=\"on-click\" presentation:preset-class=\"entrance\" presentation:preset-id=\"\(preset)\"\(effect == .flyIn ? " presentation:preset-sub-type=\"from-bottom\"" : "")>"
-            x += "<anim:set smil:begin=\"0s\" smil:dur=\"0.001s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"visibility\" smil:to=\"visible\"/>"
-            switch effect {
-            case .appear: break
-            case .fade:
-                x += "<anim:transitionFilter smil:dur=\"0.5s\" smil:targetElement=\"\(target)\" smil:type=\"fade\" smil:subtype=\"crossfade\"/>"
-            case .flyIn:
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"x\" smil:values=\"x;x\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"y\" smil:values=\"1+height/2;y\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-            case .zoom:
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"width\" smil:values=\"0;width\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"height\" smil:values=\"0;height\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-            }
-            x += "</anim:par></anim:par></anim:par>"
-        }
-        return x + "</anim:seq></anim:par>"
+        return x + seq + "</anim:par>"
     }
 
     func smilTransition(_ t: Transition) -> String {

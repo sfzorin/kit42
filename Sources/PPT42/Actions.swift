@@ -416,6 +416,7 @@ extension DeckWindowController {
         guard deck.slides.indices.contains(i) else { return }
         doc?.change(L("Delete")) { d in
             d.slides[i].objects.removeAll { ids.contains($0.id) }
+            d.slides[i].animations.removeAll { ids.contains($0.target) }
             d.pruneMedia()
         }
         selection = []

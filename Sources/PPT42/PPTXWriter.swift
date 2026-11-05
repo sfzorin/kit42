@@ -721,42 +721,5 @@ struct PPTXWriter {
         return x + "</p:transition>"
     }
 
-    func timing(_ s: Slide) -> String {
-        let builds = s.objects.filter { $0.build != nil }
-        guard !builds.isEmpty else { return "" }
-        var id = 3
-        func next() -> Int { id += 1; return id - 1 }
-        var clicks = ""
-        for o in builds {
-            let effect = o.build ?? .appear
-            let spid = o.id
-            let preset: (Int, Int) = effect == .appear ? (1, 0) : effect == .fade ? (10, 0) : effect == .flyIn ? (2, 4) : (53, 16)
-            let outer = next(), mid = next(), eff = next(), set = next()
-            var anims = "<p:set><p:cBhvr><p:cTn id=\"\(set)\" dur=\"1\" fill=\"hold\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>"
-            func anim(_ attr: String, _ from: String, _ to: String) -> String {
-                "<p:anim calcmode=\"lin\" valueType=\"num\"><p:cBhvr additive=\"base\"><p:cTn id=\"\(next())\" dur=\"500\" fill=\"hold\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl><p:attrNameLst><p:attrName>\(attr)</p:attrName></p:attrNameLst></p:cBhvr><p:tavLst><p:tav tm=\"0\"><p:val><p:strVal val=\"\(from)\"/></p:val></p:tav><p:tav tm=\"100000\"><p:val><p:strVal val=\"\(to)\"/></p:val></p:tav></p:tavLst></p:anim>"
-            }
-            switch effect {
-            case .appear: break
-            case .fade:
-                anims += "<p:animEffect transition=\"in\" filter=\"fade\"><p:cBhvr><p:cTn id=\"\(next())\" dur=\"500\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl></p:cBhvr></p:animEffect>"
-            case .flyIn:
-                anims += anim("ppt_x", "#ppt_x", "#ppt_x") + anim("ppt_y", "1+#ppt_h/2", "#ppt_y")
-            case .zoom:
-                anims += anim("ppt_w", "0", "#ppt_w") + anim("ppt_h", "0", "#ppt_h")
-                anims += "<p:animEffect transition=\"in\" filter=\"fade\"><p:cBhvr><p:cTn id=\"\(next())\" dur=\"500\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl></p:cBhvr></p:animEffect>"
-            }
-            clicks += "<p:par><p:cTn id=\"\(outer)\" fill=\"hold\"><p:stCondLst><p:cond delay=\"indefinite\"/></p:stCondLst><p:childTnLst>"
-            clicks += "<p:par><p:cTn id=\"\(mid)\" fill=\"hold\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst><p:childTnLst>"
-            clicks += "<p:par><p:cTn id=\"\(eff)\" presetID=\"\(preset.0)\" presetClass=\"entr\" presetSubtype=\"\(preset.1)\" fill=\"hold\"\(o.text != nil && o.kind != .picture ? " grpId=\"0\"" : "") nodeType=\"clickEffect\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst><p:childTnLst>"
-            clicks += anims + "</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"
-        }
-        var x = "<p:timing><p:tnLst><p:par><p:cTn id=\"1\" dur=\"indefinite\" restart=\"never\" nodeType=\"tmRoot\"><p:childTnLst>"
-        x += "<p:seq concurrent=\"1\" nextAc=\"seek\"><p:cTn id=\"2\" dur=\"indefinite\" nodeType=\"mainSeq\"><p:childTnLst>\(clicks)</p:childTnLst></p:cTn>"
-        x += "<p:prevCondLst><p:cond evt=\"onPrev\" delay=\"0\"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst><p:nextCondLst><p:cond evt=\"onNext\" delay=\"0\"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq>"
-        x += "</p:childTnLst></p:cTn></p:par></p:tnLst>"
-        let blds = builds.filter { $0.text != nil && $0.kind != .picture && $0.kind != .table && $0.kind != .group }.map { "<p:bldP spid=\"\($0.id)\" grpId=\"0\" animBg=\"1\"/>" }.joined()
-        if !blds.isEmpty { x += "<p:bldLst>\(blds)</p:bldLst>" }
-        return x + "</p:timing>"
-    }
+    func timing(_ s: Slide) -> String { TimingXML.write(s) { color($0) } }
 }

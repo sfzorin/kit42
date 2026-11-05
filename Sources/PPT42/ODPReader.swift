@@ -292,13 +292,7 @@ private struct ODPReaderImpl {
                 let t = transition(p)
                 if t.kind != .none { slide.transition.kind = t.kind; slide.transition.direction = t.direction; slide.transition.duration = t.duration }
             }
-            for effect in timing.descendants("par") where effect.a("preset-class") == "entrance" {
-                let target = effect.descendants("set").first?.a("targetElement") ?? effect.elements.compactMap { $0.a("targetElement") }.first
-                guard let target, let id = ids[target] else { continue }
-                let preset = effect.a("preset-id") ?? ""
-                let build: BuildEffect = preset.contains("appear") ? .appear : preset.contains("fly") ? .flyIn : preset.contains("zoom") ? .zoom : .fade
-                for i in objects.indices where objects[i].id == id && objects[i].build == nil { objects[i].build = build }
-            }
+            slide.animations = AnimationODF.read(timing, ids: ids)
         }
         // Layout from the placeholders present.
         let classes = objects.compactMap { $0.placeholder?.type }

@@ -144,11 +144,10 @@ extension Deck {
         }
         var b1 = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 520, y: 170, width: 360, height: 60)); id += 1
         b1.text = TextBody(paragraphs: [Paragraph("Appears on click", run: RunProps(size: 24))])
-        b1.build = .appear
         var b2 = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 520, y: 250, width: 360, height: 60)); id += 1
         b2.text = TextBody(paragraphs: [Paragraph("Fades in next", run: RunProps(size: 24, color: PColor(scheme: "accent1")))])
-        b2.build = .fade
         s5.objects += [b1, b2]
+        s5.animations = [Animation(target: b1.id, effect: .appear), Animation(target: b2.id, effect: .fade)]
         var num = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 820, y: 480, width: 80, height: 30)); id += 1
         var np = Paragraph()
         np.runs = [TextRun(text: "5", props: RunProps(size: 12), field: "slidenum")]

@@ -138,6 +138,9 @@ final class SlideCanvas: NSView {
         ctx.restoreGState()
         drawSelection(ctx)
         if owner.mode == .normal { CommentMarkers.draw(slide, in: ctx, toView: { self.toView($0) }, scale: scale) }
+        if owner.mode == .normal, owner.animationTabShown {
+            AnimationMarkers.draw(slide, deck: deck, selected: owner.inspector.animationPane.selected, in: ctx, toView: { self.toView($0) })
+        }
         // Guides, rubber band, creation preview
         ctx.saveGState()
         ctx.setStrokeColor(NSColor.systemPink.cgColor)
