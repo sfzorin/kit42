@@ -190,4 +190,35 @@ extension SelfTest {
         }
         return failed
     }
+
+    /// `XLS42 --model-demo out.xlsx|ods`: a Solver model, a split window, named cell styles and array formulas (format checks).
+    static func modelDemo() -> Workbook {
+        var wb = Workbook()
+        wb.sheets = [Sheet(name: "Plan 1"), Sheet(name: "Styles")]
+        func put(_ s: Int, _ a1: String, _ input: String) {
+            var c = Cell(); c.input = input; c.value = input.hasPrefix("=") ? .empty : XLSX.constant(input)
+            wb.sheets[s][CellRef(a1)!] = c
+        }
+        for (a, v) in [("A1", "0"), ("B1", "0"), ("C1", "=3*A1+5*B1"), ("D1", "=A1"), ("E1", "=2*B1"), ("F1", "=3*A1+2*B1"), ("G1", "4"),
+                       ("A3", "1"), ("A4", "2"), ("A5", "3"), ("C3", "=A3:A5*2"), ("D3", "=SUM(A3:A5*A3:A5)")] { put(0, a, v) }
+        wb.sheets[0][CellRef("C3")!].array = true
+        wb.sheets[0].arrays[CellRef("C3")!] = CellRange("C3:C5")!
+        wb.sheets[0][CellRef("D3")!].array = true
+        wb.sheets[0].arrays[CellRef("D3")!] = CellRange("D3")!
+        var m = SolverModel(objective: CellRef("C1")!, goal: .max, variables: [CellRef("A1")!, CellRef("B1")!])
+        m.constraints = [.init(lhs: CellRange("D1")!, op: .le, rhs: "$G$1"), .init(lhs: CellRange("E1")!, op: .le, rhs: "12"),
+                         .init(lhs: CellRange("F1")!, op: .le, rhs: "18"), .init(lhs: CellRange("A1")!, op: .int), .init(lhs: CellRange("B1")!, op: .ge, rhs: "1")]
+        wb.sheets[0].solver = m
+        wb.sheets[0].split = SheetSplit(x: 200, y: 100, topLeft: CellRef("A1")!, bottomRight: CellRef("D6")!, activePane: "bottomRight")
+        for (i, name) in ["Heading 1", "Good", "Bad", "Neutral", "Accent1", "Note", "Total"].enumerated() {
+            put(1, "A\(i + 1)", name)
+            wb.sheets[1][CellRef("A\(i + 1)")!].style = CellStyles.applied(CellStyles.preset(named: name)!, to: .default)
+        }
+        var mine = CellStyle.default
+        mine.italic = true; mine.fill = NSColor(srgbRed: 0.8, green: 0.9, blue: 1, alpha: 1); mine.styleName = "Mine"
+        wb.cellStyles["Mine"] = mine
+        put(1, "B1", "mine")
+        wb.sheets[1][CellRef("B1")!].style = mine
+        return Calculator.recalculate(wb)
+    }
 }

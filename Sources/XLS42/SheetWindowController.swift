@@ -999,6 +999,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func freezeFirstColumnAction(_ sender: Any?) { setFreeze(rows: 0, cols: sheet.frozenCols == 1 && sheet.frozenRows == 0 ? 0 : 1) }
 
     private func setFreeze(rows: Int, cols: Int) {
+        // Freezing replaces a split window (as in Excel and Calc).
+        if grid.split != nil, rows > 0 || cols > 0 { setSplit(nil) }
         // Start from the top-left so the frozen part shows the first rows/columns.
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)

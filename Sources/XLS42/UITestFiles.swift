@@ -120,7 +120,7 @@ extension UITest {
         select("N1", to: "N2")
         w.applyCellStyle(named: "Heading")
         check("document style applied by name", cell("N2").style.styleName == "Heading" && cell("N2").style.fontSize == 24 && cell("N1").style.bold)
-        let item = NSMenuItem(title: "Heading", action: #selector(w.applyCellStyleAction(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: L("Heading"), action: #selector(w.applyCellStyleAction(_:)), keyEquivalent: "")
         item.representedObject = "Heading"
         select("N1")
         check("its menu item is checked for the cell", w.validateMenuItem(item) && item.state == .on)

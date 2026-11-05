@@ -151,15 +151,20 @@ lets you switch extensions off.
   A1/$A$1, ranges, other sheets, whole columns, array constants {1,2;3,4}; recalculation with cycle detection.
 - Arrays like Excel 365: operators and scalar functions work element by element (`=SUM(A1:A9*B1:B9)`,
   `=MAX(IF(…))`); dynamic-array formulas spill into the cells below/right (#SPILL! when something is in the way) and are
-  saved as array formulas (`.xlsx` with Excel's dynamic-array marking, `.ods` matrix formulas); CSE array formulas from
-  files are kept. `XLS42 --lo-compare` writes ~490 test formulas to `.xlsx` (or `ods`), lets LibreOffice compute them
+  saved as array formulas (`.xlsx` with Excel's dynamic-array marking, `.ods` matrix formulas). Edit › Enter Array
+  Formula (⌘⇧Return, in the cell or the formula bar) enters a classic Ctrl+Shift+Enter formula over the selected range:
+  the formula bar shows `{=…}` in every cell of it, the result fills the range (single rows/columns repeat, extra cells
+  #N/A, as in Excel/Calc), only the whole range can be edited (⌘⇧Return again) or cleared ("You can't change part of an
+  array"). Saved as legacy array formulas (`.xlsx` `t="array" ref=…` without the dynamic-array `cm`; `.ods`
+  `table:number-matrix-columns/rows-spanned`), and read from Excel and LibreOffice files the same way. `XLS42 --lo-compare` writes ~490 test formulas to `.xlsx` (or `ods`), lets LibreOffice compute them
   headless with a private profile and compares: all agree except functions LibreOffice 25.2 lacks, array formulas
   LibreOffice only computes with Ctrl+Shift+Enter, locale formatting (FIXED/DOLLAR) and a few places where XLS42
   follows Excel (WEEKNUM type 1 at year end, MROUND/ATAN2 errors, PERCENTRANK truncating, TYPE(TRUE)=4, CONVERT
   constants).
 - Editing: formula bar, cell references picked with the mouse, copy and paste with formula shifting, fill down/right,
   insert/delete rows and columns with formulas adjusted, sorting, sheets, AutoSum, selection totals.
-- Freeze panes: at the selected cell, top row or first column — frozen rows/columns stay while scrolling (saved to .xlsx).
+- Freeze panes: at the selected cell, top row or first column — frozen rows/columns stay while scrolling (saved to .xlsx
+  and .ods; the .ods view settings declare the `ooo:` namespace, without which LibreOffice ignored them).
 - Export to PDF: current sheet, all sheets or the selection; automatic orientation, fit to width, gridlines;
   pages break at row/column boundaries. Printing uses the same layout. CSV export (delimiter choice, UTF-8), CSV/TSV import as a sheet.
 - Context menu on cells; formatting bar with font, size, colours, alignment, number formats, borders.
@@ -202,11 +207,21 @@ lets you switch extensions off.
   sheet); Edit › Fill › Down/Right/Up/Left and Series… (linear, growth, dates by day/weekday/month/year, step, end).
 - Tools › Goal Seek… (secant method with a bracketing fallback) and Solver… (target max/min/value, variable cells,
   ≤ ≥ = constraints, integer and binary variables, non-negative option; linear models with the simplex method and
-  branch and bound, nonlinear ones with Nelder–Mead and penalties). Results are one undo step.
+  branch and bound, nonlinear ones with Nelder–Mead and penalties). Results are one undo step. The model is kept with
+  the sheet and saved the way Excel and LibreOffice keep theirs, so the Solver dialog opens prefilled in all three:
+  hidden sheet-scoped names `solver_opt`, `solver_typ` (1 max, 2 min, 3 value) and `solver_val`, `solver_adj`,
+  `solver_lhsN/relN/rhsN` (1 ≤, 2 =, 3 ≥, 4 integer, 5 binary), `solver_num`, `solver_neg`, `solver_eng`/`solver_lin`
+  (simplex or nonlinear) plus Excel's option defaults — `definedName localSheetId=… hidden="1"` in `.xlsx`, the sheet's
+  own `table:named-expressions` in `.ods` (what LibreOffice 24.2+ writes, with its `solver_lo_eng`). Options from other
+  programs are kept; the model follows inserted/deleted rows and columns. Checked with LibreOffice 25.2 (its
+  `SolverSettings` API reads XLS42's models from both formats and solves them; models LibreOffice wrote open in XLS42).
 - Sheet menu: insert, delete, rename, move or copy (to a position, with a new name), tab colour, hide and show,
   protect workbook structure. Tab colours, hidden sheets and structure protection are saved in `.xlsx` and `.ods`.
 - View › Split Window: two or four panes at the active cell, the left/top panes scroll on their own (freeze is turned
-  off). View › Status Bar (⌥⇧⌘S): sum/average/count of the selection (right-click to choose min, max, count numbers),
+  off; Freeze Panes replaces a split). The split is saved per sheet and restored on open: `.xlsx` `sheetView/pane
+  state="split"` with xSplit/ySplit in twips (headers included, as Excel measures), `topLeftCell` of both panes and the
+  active pane; `.ods` settings `HorizontalSplitMode`/`VerticalSplitMode` = 1 with the positions in pixels and
+  `PositionLeft/Right/Top/Bottom`. Splits made by Excel and LibreOffice open as splits. View › Status Bar (⌥⇧⌘S): sum/average/count of the selection (right-click to choose min, max, count numbers),
   sheet number and a zoom slider; hidden with View › Hide All Panels too.
 - Insert › Hyperlink… (⌘K): web, mail, file or a place in the workbook (`#Sheet2!A1`); ⌘-click (or a click on the
   selected link) opens it; HYPERLINK() cells work the same. Saved in `.xlsx` (hyperlink relationships/locations) and
@@ -214,12 +229,17 @@ lets you switch extensions off.
 - Format › Cells… (⌥⌘1): number categories and custom codes with a preview, font and effects (double underline),
   alignment (indent, rotation, vertically stacked, wrap, shrink to fit), borders (line styles, colour, outer and inner
   lines), background, protection (locked, hidden formula). Format › Cell Styles: Normal, Title, Heading 1–3, Good, Bad,
-  Neutral, Accent 1–3, Input, Calculation, Note, Warning Text, Total, Hyperlink, Currency, Percent, Comma — saved as
-  named cell styles in `.xlsx`.
+  Neutral, Accent 1–3, Input, Calculation, Note, Warning Text, Total, Hyperlink, Currency, Percent, Comma, then the
+  document's own styles (e.g. LibreOffice's Heading, Text, Footnote, Status, Result). Saved as named cell styles in
+  `.xlsx` (cellStyleXfs/cellStyles, cells by xfId) and `.ods` (`style:style` of family table-cell in `office:styles` with
+  `style:display-name`, cells' automatic styles with `style:parent-style-name`; Accent1 ↔ LibreOffice's "Accent 1",
+  "Excel Built-in Good" from LibreOffice's .xlsx import ↔ Good). Styles read from files stay on the cells, unused
+  document styles are kept too.
 - Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas incl. ~490 function cases checked against
   LibreOffice, formats, data tools, solver, file round trips) and `--uitest` (editing operations in a window; the
   clipboard is restored afterwards). `--feature-demo out.xlsx|ods` writes a file with the sheet features for checks in
-  other apps.
+  other apps, `--model-demo out.xlsx|ods` one with a Solver model, a split window, named cell styles and array formulas;
+  `--info file` prints them (solver, split, styles, arrays) for any file.
 
 ## DOC42 — documents (.docx, .doc, .rtf, .odt, .md, .txt)
 

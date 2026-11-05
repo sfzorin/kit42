@@ -99,6 +99,15 @@ if let i = CommandLine.arguments.firstIndex(of: "--feature-demo"), CommandLine.a
     exit(0)
 }
 
+// XLS42 --model-demo out.(xlsx|ods): solver model, split window, named cell styles, array formulas (for format checks)
+if let i = CommandLine.arguments.firstIndex(of: "--model-demo"), CommandLine.arguments.count > i + 1 {
+    let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let data = SelfTest.modelDemo()
+    try (out.pathExtension.lowercased() == "ods" ? ODS.write(data) : XLSX.write(data)).write(to: out)
+    print("wrote \(out.path)")
+    exit(0)
+}
+
 // XLS42 --export-pdf in.xlsx out.pdf [all|landscape|nogrid|nofit]
 if let i = CommandLine.arguments.firstIndex(of: "--export-pdf"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments
