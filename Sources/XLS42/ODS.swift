@@ -108,6 +108,7 @@ enum ODS {
                 let cells = r.children ?? []
                 let rowHeight = r.attr("style-name").flatMap { styles[$0]?.rowHeight }
                 let collapsed = r.attr("visibility") == "collapse"
+                if r.attr("visibility") == "filter" { for k in 0..<min(repeatRows, 100_000) { sheet.filterHidden.insert(row + k) } }
                 if level > 0 {
                     for k in 0..<min(repeatRows, 1000) {
                         sheet.rowLevels[row + k] = min(level, Sheet.maxOutlineLevel)
@@ -199,6 +200,7 @@ enum ODS {
                 wb.names[name] = (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
             }
         }
+        readDatabaseRanges(spreadsheet, &wb)
         PivotFiles.readODS(spreadsheet, &wb)
         // Freeze panes and gridlines from settings.xml
         if let settings = xml("settings.xml") {
@@ -583,7 +585,8 @@ enum ODS {
                 t += groupTags(sheet, r, rows: true, open: &openRows)
                 let h = sheet.height(r)
                 let styleHeight = h == 0 ? (sheet.rowHeights[r].flatMap { $0 > 0 ? $0 : nil } ?? sheet.defaultRowHeight) : h
-                t += "<table:table-row table:style-name=\"\(rowStyle(styleHeight))\"\(h == 0 ? " table:visibility=\"collapse\"" : "")>"
+                let visibility = sheet.filterHidden.contains(r) ? " table:visibility=\"filter\"" : h == 0 ? " table:visibility=\"collapse\"" : ""
+                t += "<table:table-row table:style-name=\"\(rowStyle(styleHeight))\"\(visibility)>"
                 var empty = 0
                 func flushEmpty() { if empty > 0 { t += "<table:table-cell\(empty > 1 ? " table:number-columns-repeated=\"\(empty)\"" : "")/>"; empty = 0 } }
                 for c in 0...lastCol {
@@ -614,6 +617,7 @@ enum ODS {
             }
             body += "</table:named-expressions>"
         }
+        body += databaseRangesXML(wb)
         body += PivotFiles.odsXML(wb)
 
         let ns = """

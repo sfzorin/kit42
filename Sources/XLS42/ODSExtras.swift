@@ -206,4 +206,67 @@ extension ODS {
         }
         return x
     }
+
+    // MARK: - AutoFilter (database ranges with filter conditions)
+
+    static let odfOperators: [FilterCondition.Op: String] = [
+        .equal: "=", .notEqual: "!=", .greaterThan: ">", .lessThan: "<", .greaterThanOrEqual: ">=", .lessThanOrEqual: "<=",
+        .contains: "contains", .notContains: "does-not-contain", .beginsWith: "begins-with", .endsWith: "ends-with",
+        .top: "top values", .bottom: "bottom values", .topPercent: "top percent", .bottomPercent: "bottom percent",
+        .empty: "empty", .notEmpty: "!empty",
+    ]
+
+    /// table:database-ranges for the AutoFilter of each sheet (value lists and conditions).
+    static func databaseRangesXML(_ wb: Workbook) -> String {
+        var x = ""
+        for (si, sheet) in wb.sheets.enumerated() {
+            guard let f = sheet.autoFilter else { continue }
+            x += "<table:database-range table:name=\"__Anonymous_Sheet_DB__\(si)\" table:target-range-address=\"\(xmlEscape(odfRange(sheet.name, f)))\" table:display-filter-buttons=\"true\">"
+            var items: [String] = []
+            func condition(_ field: Int, _ c: FilterCondition) -> String {
+                let numeric = Double(c.value.replacingOccurrences(of: ",", with: ".")) != nil
+                return "<table:filter-condition table:field-number=\"\(field)\" table:value=\"\(xmlEscape(c.value))\" table:operator=\"\(xmlEscape(odfOperators[c.op] ?? "="))\" table:data-type=\"\(numeric ? "number" : "text")\"/>"
+            }
+            for (col, cf) in sheet.customFilters.sorted(by: { $0.key < $1.key }) where f.cols.contains(col) {
+                let parts = cf.conditions.map { condition(col - f.start.col, $0) }
+                items.append(cf.and || parts.count < 2 ? parts.joined() : "<table:filter-or>" + parts.joined() + "</table:filter-or>")
+            }
+            for (col, values) in sheet.filterValues.sorted(by: { $0.key < $1.key }) where f.cols.contains(col) && sheet.customFilters[col] == nil {
+                let sorted = values.sorted()
+                items.append("<table:filter-condition table:field-number=\"\(col - f.start.col)\" table:value=\"\(xmlEscape(sorted.first ?? ""))\" table:operator=\"=\">"
+                             + sorted.map { "<table:filter-set-item table:value=\"\(xmlEscape($0))\"/>" }.joined() + "</table:filter-condition>")
+            }
+            if !items.isEmpty { x += "<table:filter><table:filter-and>" + items.joined() + "</table:filter-and></table:filter>" }
+            x += "</table:database-range>"
+        }
+        return x.isEmpty ? "" : "<table:database-ranges>" + x + "</table:database-ranges>"
+    }
+
+    static func readDatabaseRanges(_ spreadsheet: XMLElement, _ wb: inout Workbook) {
+        for db in spreadsheet.child("database-ranges")?.children("database-range") ?? [] {
+            guard db.attr("display-filter-buttons") == "true" || db.child("filter") != nil,
+                  let addr = db.attr("target-range-address"), let r = rangeFromODF(addr),
+                  let range = CellRange(r.range.replacingOccurrences(of: "$", with: "")) else { continue }
+            guard let si = r.sheet.flatMap({ wb.sheetIndex(named: $0) }) else { continue }
+            wb.sheets[si].autoFilter = range
+            var reverse = Dictionary(odfOperators.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
+            reverse["!contains"] = .notContains; reverse["begins"] = .beginsWith; reverse["ends"] = .endsWith
+            func parse(_ c: XMLElement) -> (Int, FilterCondition, [String])? {
+                guard let field = c.attr("field-number").flatMap(Int.init) else { return nil }
+                let op = reverse[(c.attr("operator") ?? "=").lowercased()] ?? .equal
+                let set = c.children("filter-set-item").compactMap { $0.attr("value") }
+                return (range.start.col + field, FilterCondition(op: op, value: c.attr("value") ?? ""), set)
+            }
+            guard let and = db.child("filter")?.child("filter-and") ?? db.child("filter") else { continue }
+            for e in (and.children ?? []).compactMap({ $0 as? XMLElement }) {
+                if e.localName == "filter-condition", let (col, cond, set) = parse(e) {
+                    if set.count > 1 || (cond.op == .equal && !set.isEmpty) { wb.sheets[si].filterValues[col] = Set(set) }
+                    else { wb.sheets[si].customFilters[col, default: ColumnFilter(conditions: [])].conditions.append(cond) }
+                } else if e.localName == "filter-or" {
+                    let parts = e.children("filter-condition").compactMap(parse)
+                    if let col = parts.first?.0 { wb.sheets[si].customFilters[col] = ColumnFilter(conditions: parts.map(\.1), and: false) }
+                }
+            }
+        }
+    }
 }

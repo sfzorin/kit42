@@ -79,6 +79,15 @@ extension SelfTest {
         let back = (try? XLSX.read(XLSX.write(f)))?.sheets[0]
         check("filter conditions round trip in .xlsx", back?.customFilters[1] == f.sheets[0].customFilters[1] && back?.filterHidden == f.sheets[0].filterHidden,
               "\(String(describing: back?.customFilters))")
+        let odsBack = (try? ODS.read(ODS.write(f)))?.sheets[0]
+        check("filter conditions round trip in .ods", odsBack?.customFilters[1] == f.sheets[0].customFilters[1] && odsBack?.filterHidden == f.sheets[0].filterHidden
+              && odsBack?.autoFilter == list, "\(String(describing: odsBack?.customFilters)) \(String(describing: odsBack?.filterHidden))")
+        var values = f
+        values.sheets[0].customFilters = [:]
+        values.sheets[0].filterValues = [2: ["North", "East"]]
+        DataTools.refilter(&values.sheets[0], workbook: values)
+        let valuesBack = (try? ODS.read(ODS.write(values)))?.sheets[0]
+        check("filter value lists round trip in .ods", valuesBack?.filterValues == values.sheets[0].filterValues, "\(String(describing: valuesBack?.filterValues))")
         var top = f
         top.sheets[0].customFilters = [1: ColumnFilter(conditions: [.init(op: .top, value: "2")])]
         DataTools.refilter(&top.sheets[0], workbook: top)
@@ -239,6 +248,16 @@ extension SelfTest {
         good.style.rotation = -30
         wb.sheets[0][CellRef("B2")!] = good
         wb.sheets[0].rowBreaks = [10]
+        // A filtered table on the third sheet: Qty > 6 and Region begins with "N".
+        for (r, row) in [["Item", "Qty", "Region"], ["pen", "5", "North"], ["pencil", "12", "South"], ["paper", "40", "North"], ["ink", "8", "Nordic"]].enumerated() {
+            for (c, v) in row.enumerated() {
+                var cell = Cell(); cell.input = v; cell.value = XLSX.constant(v)
+                wb.sheets[2][CellRef(row: r, col: c)] = cell
+            }
+        }
+        wb.sheets[2].autoFilter = CellRange("A1:C5")
+        wb.sheets[2].customFilters = [1: ColumnFilter(conditions: [.init(op: .greaterThan, value: "6")]), 2: ColumnFilter(conditions: [.init(op: .beginsWith, value: "N")])]
+        DataTools.refilter(&wb.sheets[2], workbook: wb)
         return wb
     }
 }
