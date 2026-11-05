@@ -63,6 +63,7 @@ enum Cmd {
     static let chart = Command(L("Chart…"), #selector(W.insertChartAction(_:)), symbol: "chart.bar", shortcut: Shortcut("c", [.command, .option, .shift]),
                                toolTip: L("Insert a chart"), label: L("Chart"))
     static let media = Command(L("Video or Audio…"), #selector(W.insertMediaAction(_:)), symbol: "film", toolTip: L("Insert a video or audio file"), label: L("Media"))
+    static let comment = Command(L("Comment"), #selector(W.insertCommentAction(_:)), symbol: "text.bubble", shortcut: Shortcut("m", [.command, .option]))
     static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature", shortcut: Shortcut("k", [.command, .shift]))
     static let slideNumber = Command(L("Slide Number"), #selector(W.insertSlideNumberAction(_:)), symbol: "number")
     static let date = Command(L("Date"), #selector(W.insertDateAction(_:)), symbol: "calendar")
@@ -164,7 +165,7 @@ enum Cmd {
                                               .command(zoomIn), .command(zoomOut), .command(zoomFit), .command(actualSize), .separator, .command(guides)]
         spec.insert = [.command(newSlide), .item(newSlideItem), .command(duplicateSlide), .command(deleteSlide), .separator,
                        .command(textBox), .submenu(L("Shape"), shapeMenu), .command(image), .command(table), .command(chart), .command(media), .command(stamps), .separator,
-                       .command(slideNumber), .command(date)]
+                       .command(slideNumber), .command(date), .separator, .command(comment)]
         spec.format = [
             .submenu(L("Font"), [.command(bold), .command(italic), .command(underline), .command(strike), .separator,
                                  .command(bigger), .command(smaller), .separator, .command(superscript), .command(subscriptCmd), .separator, .command(clearFormatting)]),

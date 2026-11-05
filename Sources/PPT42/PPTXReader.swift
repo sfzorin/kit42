@@ -93,6 +93,8 @@ struct PPTXReader {
     var themeLines: [LineStyle] = []
     var themeShadows: [Bool] = []
     var mediaByPart: [String: String] = [:]
+    var commentAuthors: [String: (String, String)] = [:]
+    var modernAuthors: [String: (String, String)] = [:]
     var contentTypes: (overrides: [String: String], defaults: [String: String]) = ([:], [:])
 
     static func read(_ data: Data) throws -> Deck {
@@ -126,6 +128,12 @@ struct PPTXReader {
         }
         if let n = pres.int("firstSlideNum") { deck.firstSlideNumber = n }
         let presRels = rels(presPath)
+        if let t = presRels.values.first(where: { $0.type.hasSuffix("/commentAuthors") })?.target, let root = xmlRoot(zip[t]) {
+            for a in root.children("cmAuthor") { if let id = a.a("id") { commentAuthors[id] = (a.a("name") ?? "", a.a("initials") ?? "") } }
+        }
+        if let t = presRels.values.first(where: { $0.type.hasSuffix("/authors") })?.target, let root = xmlRoot(zip[t]) {
+            for a in root.children("author") { if let id = a.a("id") { modernAuthors[id] = (a.a("name") ?? "", a.a("initials") ?? "") } }
+        }
 
         // Master, theme, layouts
         let masterPath = pres.child("sldMasterIdLst")?.children("sldMasterId").first.flatMap { $0.rid.flatMap { presRels[$0]?.target } }
@@ -193,6 +201,7 @@ struct PPTXReader {
             let (ph, obj) = readTree(xml.path("cSld", "spTree"), part: path, inherit: inherit, keepOrder: true)
             slide.objects = ph + obj
             slide.transition = readTransition(xml)
+            slide.comments = readComments(srels)
             readTiming(xml, into: &slide)
             if let notesPath = srels.values.first(where: { $0.type.hasSuffix("/notesSlide") })?.target, let notes = xmlRoot(zip[notesPath]) {
                 slide.notes = readNotes(notes)
@@ -531,6 +540,47 @@ struct PPTXReader {
         guard let e else { return l }
         for i in 0..<9 { if let lv = e.child("lvl\(i + 1)pPr") { l[i] = readLevel(lv, part: part) } }
         return l
+    }
+
+    /// Legacy comments (with PowerPoint 2013 threads) and modern threaded comments.
+    func readComments(_ srels: [String: (target: String, type: String, external: Bool)]) -> [Comment] {
+        var out: [Comment] = []
+        for r in srels.values where r.type.hasSuffix("/comments") && !r.type.contains("2018") {
+            guard let root = xmlRoot(zip[r.target]) else { continue }
+            var byKey: [String: Int] = [:]
+            for cm in root.children("cm") {
+                let a = commentAuthors[cm.a("authorId") ?? ""] ?? (L("Unknown"), "?")
+                var c = Comment(author: a.0, initials: a.1.isEmpty ? Comment.initials(a.0) : a.1, date: CommentDates.parse(cm.a("dt")) ?? Date(),
+                                text: cm.child("text")?.stringValue ?? "")
+                if let pos = cm.child("pos") { c.position = CGPoint(x: (pos.num("x") ?? 0) / 8, y: (pos.num("y") ?? 0) / 8) }
+                if let mine = cm.descendants("comment").first(where: { $0.uri == "urn:sfzorin:ppt42" }) {
+                    c.resolved = mine.bool("resolved") ?? false
+                    c.objectID = mine.int("object")
+                }
+                if let parent = cm.descendants("parentCm").first, let k = byKey["\(parent.a("authorId") ?? "")/\(parent.a("idx") ?? "")"] {
+                    out[k].replies.append(c)
+                } else {
+                    byKey["\(cm.a("authorId") ?? "")/\(cm.a("idx") ?? "")"] = out.count
+                    out.append(c)
+                }
+            }
+        }
+        for r in srels.values where r.type.contains("2018") && r.type.hasSuffix("/comments") {
+            guard let root = xmlRoot(zip[r.target]) else { continue }
+            func make(_ e: XMLElement) -> Comment {
+                let a = modernAuthors[e.a("authorId") ?? ""] ?? (L("Unknown"), "?")
+                let text = e.child("txBody").map { tb in tb.children("p").map { $0.descendants("t").map { $0.stringValue ?? "" }.joined() }.joined(separator: "\n") } ?? ""
+                return Comment(author: a.0, initials: a.1.isEmpty ? Comment.initials(a.0) : a.1, date: CommentDates.parse(e.a("created")) ?? Date(), text: text)
+            }
+            for cm in root.children("cm") {
+                var c = make(cm)
+                c.resolved = cm.a("status") == "resolved"
+                if let pos = cm.child("pos") { c.position = CGPoint(x: (pos.num("x") ?? 0) / emuPerPoint, y: (pos.num("y") ?? 0) / emuPerPoint) }
+                c.replies = (cm.child("replyLst")?.children("reply") ?? []).map(make)
+                out.append(c)
+            }
+        }
+        return out
     }
 
     func readNotes(_ root: XMLElement) -> String {

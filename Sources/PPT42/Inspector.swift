@@ -4,8 +4,10 @@ import Kit42
 /// Right panel: Slide / Shape / Text tabs.
 final class InspectorController: NSViewController {
     weak var owner: DeckWindowController?
-    private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text")], trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text"), "", ""], trackingMode: .selectOne, target: nil, action: nil)
     private let slidePane = NSStackView(), shapePane = NSStackView(), textPane = NSStackView()
+    let animationPane = NSStackView()
+    private(set) lazy var commentsPane = CommentsPane(owner: owner!)
     private let scroll = NSScrollView()
     private var updating = false
 
@@ -76,7 +78,11 @@ final class InspectorController: NSViewController {
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
         tabs.segmentDistribution = .fillEqually
-        for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2)] {
+        for (i, (sym, tip)) in [("sparkles", L("Animation")), ("text.bubble", L("Comments"))].enumerated() {
+            tabs.setImage(NSImage(systemSymbolName: sym, accessibilityDescription: tip), forSegment: 3 + i)
+            tabs.setToolTip(tip, forSegment: 3 + i)
+        }
+        for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2), (animationPane, 3)] {
             pane.orientation = .vertical
             pane.alignment = .leading
             pane.spacing = 10
@@ -85,7 +91,8 @@ final class InspectorController: NSViewController {
         buildShapePane()
         buildTextPane()
 
-        let content = NSStackView(views: [tabs, slidePane, shapePane, textPane])
+        buildAnimationPane()
+        let content = NSStackView(views: [tabs, slidePane, shapePane, textPane, animationPane, commentsPane])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 14
@@ -99,7 +106,7 @@ final class InspectorController: NSViewController {
             content.topAnchor.constraint(equalTo: flipped.topAnchor), content.bottomAnchor.constraint(equalTo: flipped.bottomAnchor),
             tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
         ])
-        for pane in [slidePane, shapePane, textPane] {
+        for pane in [slidePane, shapePane, textPane, animationPane, commentsPane] as [NSStackView] {
             pane.translatesAutoresizingMaskIntoConstraints = false
             pane.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -32).isActive = true
         }
@@ -307,6 +314,11 @@ final class InspectorController: NSViewController {
         ], in: .top)
     }
 
+    func focusNewComment() {
+        _ = view
+        commentsPane.window?.makeFirstResponder(commentsPane.input)
+    }
+
     // MARK: - Tabs
 
     func select(tab: Int) {
@@ -319,6 +331,8 @@ final class InspectorController: NSViewController {
         slidePane.isHidden = tabs.selectedSegment != 0
         shapePane.isHidden = tabs.selectedSegment != 1
         textPane.isHidden = tabs.selectedSegment != 2
+        animationPane.isHidden = tabs.selectedSegment != 3
+        commentsPane.isHidden = tabs.selectedSegment != 4
         reload()
     }
 
@@ -334,6 +348,8 @@ final class InspectorController: NSViewController {
         let deck = owner.deck
         let slide = owner.currentSlide
         let master = owner.mode == .master
+        commentsPane.reload()
+        reloadAnimations()
         // Slide
         layoutPopup.removeAllItems()
         layoutPopup.addItems(withTitles: deck.layouts.map(Themes.displayName))

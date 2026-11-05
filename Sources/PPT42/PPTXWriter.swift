@@ -143,6 +143,7 @@ struct PPTXWriter {
         types += "<Override PartName=\"/ppt/tableStyles.xml\" ContentType=\"\(pml).tableStyles+xml\"/>"
         types += "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
         types += "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>"
+        if !commentAuthors.isEmpty { types += "<Override PartName=\"/ppt/commentAuthors.xml\" ContentType=\"\(pml).commentAuthors+xml\"/>" }
         types += "</Types>"
         put("[Content_Types].xml", types)
 
@@ -170,6 +171,15 @@ struct PPTXWriter {
         _ = pres.add("\(Self.relBase)/viewProps", "viewProps.xml")
         _ = pres.add("\(Self.relBase)/theme", "theme/theme1.xml")
         _ = pres.add("\(Self.relBase)/tableStyles", "tableStyles.xml")
+        if !commentAuthors.isEmpty {
+            _ = pres.add("\(Self.relBase)/commentAuthors", "commentAuthors.xml")
+            var x = Self.head + "<p:cmAuthorLst \(Self.ns)>"
+            for (i, a) in commentAuthors.enumerated() {
+                let last = deck.slides.flatMap { $0.comments.flatMap { [$0] + $0.replies } }.filter { $0.author == a.0 }.count
+                x += "<p:cmAuthor id=\"\(i)\" name=\"\(xmlEscape(a.0))\" initials=\"\(xmlEscape(a.1))\" lastIdx=\"\(last)\" clrIdx=\"\(i % 8)\"/>"
+            }
+            put("ppt/commentAuthors.xml", x + "</p:cmAuthorLst>")
+        }
         let cx = emu(deck.size.width), cy = emu(deck.size.height)
         let sizeType = abs(deck.size.width / deck.size.height - 16.0 / 9) < 0.01 ? (cx == 12192000 ? "" : " type=\"screen16x9\"") : abs(deck.size.width / deck.size.height - 4.0 / 3) < 0.01 ? " type=\"screen4x3\"" : " type=\"custom\""
         var p = Self.head + "<p:presentation \(Self.ns) saveSubsetFonts=\"1\"\(deck.firstSlideNumber != 1 ? " firstSlideNum=\"\(deck.firstSlideNumber)\"" : "")>"
@@ -238,8 +248,57 @@ struct PPTXWriter {
             _ = rels.add("\(Self.relBase)/notesSlide", "../notesSlides/notesSlide\(i + 1).xml")
             writeNotes(i)
         }
+        if !s.comments.isEmpty {
+            _ = rels.add("\(Self.relBase)/comments", "../comments/comment\(i + 1).xml")
+            put("ppt/comments/comment\(i + 1).xml", commentsXML(s.comments))
+            sink.overrides["/ppt/comments/comment\(i + 1).xml"] = "application/vnd.openxmlformats-officedocument.presentationml.comments+xml"
+        }
         put("ppt/slides/slide\(i + 1).xml", x)
         put("ppt/slides/_rels/slide\(i + 1).xml.rels", rels.xml)
+    }
+
+    /// Authors of all comments in order of appearance: (name, initials).
+    var commentAuthors: [(String, String)] {
+        var out: [(String, String)] = []
+        for s in deck.slides { for c in s.comments.flatMap({ [$0] + $0.replies }) where !out.contains(where: { $0.0 == c.author }) { out.append((c.author, c.initials)) } }
+        return out
+    }
+
+    /// Legacy comments (p:cmLst) with PowerPoint 2013 threading for replies and our resolved flag.
+    func commentsXML(_ list: [Comment]) -> String {
+        let authors = commentAuthors
+        var counters: [String: Int] = [:]
+        // Indexes continue through the deck per author.
+        for s in deck.slides {
+            if s.comments == list { break }
+            for c in s.comments.flatMap({ [$0] + $0.replies }) { counters[c.author, default: 0] += 1 }
+        }
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var x = Self.head + "<p:cmLst \(Self.ns)>"
+        func one(_ c: Comment, parent: (Int, Int)?) -> (Int, Int) {
+            let aid = authors.firstIndex { $0.0 == c.author } ?? 0
+            counters[c.author, default: 0] += 1
+            let idx = counters[c.author]!
+            var date = df.string(from: c.date)
+            if date.hasSuffix("Z") { date.removeLast() }
+            x += "<p:cm authorId=\"\(aid)\" dt=\"\(date)\" idx=\"\(idx)\"><p:pos x=\"\(Int(c.position.x * 8))\" y=\"\(Int(c.position.y * 8))\"/><p:text>\(xmlEscape(c.text))</p:text>"
+            var ext = ""
+            if let parent {
+                ext += "<p:ext uri=\"{C676402C-5697-4E1C-873F-D02D1690AC5C}\"><p15:threadingInfo xmlns:p15=\"http://schemas.microsoft.com/office/powerpoint/2012/main\" timeZoneBias=\"0\"><p15:parentCm authorId=\"\(parent.0)\" idx=\"\(parent.1)\"/></p15:threadingInfo></p:ext>"
+            }
+            if c.resolved || c.objectID != nil {
+                ext += "<p:ext uri=\"{5E1A3C42-0B7D-4F3E-9A42-0C11A5E0FF42}\"><ppt42:comment xmlns:ppt42=\"urn:sfzorin:ppt42\" resolved=\"\(c.resolved ? 1 : 0)\"\(c.objectID.map { " object=\"\($0)\"" } ?? "")/></p:ext>"
+            }
+            if !ext.isEmpty { x += "<p:extLst>\(ext)</p:extLst>" }
+            x += "</p:cm>"
+            return (aid, idx)
+        }
+        for c in list {
+            let p = one(c, parent: nil)
+            for r in c.replies { _ = one(r, parent: p) }
+        }
+        return x + "</p:cmLst>"
     }
 
     mutating func writeNotes(_ i: Int) {

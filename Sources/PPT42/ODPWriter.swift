@@ -150,7 +150,7 @@ private struct ODPWriterImpl {
     xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" \
     xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" \
     xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:smil="urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0" \
-    xmlns:anim="urn:oasis:names:tc:opendocument:xmlns:animation:1.0" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" xmlns:ppt42="urn:sfzorin:ppt42" office:version="1.3"
+    xmlns:anim="urn:oasis:names:tc:opendocument:xmlns:animation:1.0" xmlns:officeooo="http://openoffice.org/2009/office" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" xmlns:ppt42="urn:sfzorin:ppt42" office:version="1.3"
     """
 
     func metaXML() -> String {
@@ -232,9 +232,29 @@ private struct ODPWriterImpl {
             }
             x += shape
         }
+        x += annotations(slide)
         x += timing(slide, pageID: pid)
         x += notes(slide, index: index, styles: styles)
         return x + "</draw:page>"
+    }
+
+    /// Comments as LibreOffice Impress annotations (replies follow their comment).
+    func annotations(_ s: Slide) -> String {
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var x = ""
+        for c in s.comments {
+            for (k, item) in ([c] + c.replies).enumerated() {
+                var date = df.string(from: item.date)
+                if date.hasSuffix("Z") { date.removeLast() }
+                x += "<officeooo:annotation svg:x=\"\(odfLength(c.position.x))\" svg:y=\"\(odfLength(c.position.y))\" svg:width=\"0.35cm\" svg:height=\"0.35cm\""
+                if k == 0 { x += " ppt42:resolved=\"\(c.resolved)\"" } else { x += " ppt42:reply=\"true\"" }
+                x += "><dc:creator>\(xmlEscape(item.author))</dc:creator><dc:date>\(date)</dc:date><meta:creator-initials>\(xmlEscape(item.initials))</meta:creator-initials>"
+                x += item.text.components(separatedBy: "\n").map { "<text:p>\(odfText($0))</text:p>" }.joined()
+                x += "</officeooo:annotation>"
+            }
+        }
+        return x
     }
 
     func layoutName(_ s: Slide) -> String {

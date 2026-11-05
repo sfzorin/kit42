@@ -137,6 +137,7 @@ final class SlideCanvas: NSView {
         }
         ctx.restoreGState()
         drawSelection(ctx)
+        if owner.mode == .normal { CommentMarkers.draw(slide, in: ctx, toView: { self.toView($0) }, scale: scale) }
         // Guides, rubber band, creation preview
         ctx.saveGState()
         ctx.setStrokeColor(NSColor.systemPink.cgColor)
@@ -336,6 +337,10 @@ final class SlideCanvas: NSView {
             editor.end()
         }
         moved = false
+        if owner.mode == .normal, CommentMarkers.rects(slide, scale: scale).contains(where: { $0.1.contains(p) }) {
+            owner.showInspector(true, tab: 4)
+            return
+        }
         if insertTool != nil {
             drag = .create(start: p)
             creating = (p, p)

@@ -264,6 +264,13 @@ private struct ODPReaderImpl {
             switch e.localName {
             case "notes":
                 slide.notes = readNotes(e)
+            case "annotation":
+                var c = Comment(author: e.child("creator")?.stringValue ?? L("Unknown"), initials: "", date: CommentDates.parse(e.child("date")?.stringValue) ?? Date(),
+                                text: e.children("p").map { $0.stringValue ?? "" }.joined(separator: "\n"))
+                c.initials = e.child("creator-initials")?.stringValue ?? Comment.initials(c.author)
+                c.position = CGPoint(x: odfPoints(e.a("x")) ?? 10, y: odfPoints(e.a("y")) ?? 10)
+                c.resolved = e.a("resolved") == "true"
+                if e.a("reply") == "true", !slide.comments.isEmpty { slide.comments[slide.comments.count - 1].replies.append(c) } else { slide.comments.append(c) }
             case "par", "seq":
                 timing = e
             case "forms", "animations":

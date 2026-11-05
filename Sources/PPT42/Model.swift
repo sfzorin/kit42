@@ -590,6 +590,7 @@ struct Slide: Equatable {
     var hidden = false
     var transition = Transition()
     var showMasterShapes = true
+    var comments: [Comment] = []
 
     var title: String {
         objects.first { $0.placeholder?.isTitle == true }?.text?.plainText ?? ""

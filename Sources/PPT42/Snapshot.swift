@@ -25,7 +25,7 @@ extension DeckWindowController {
         if let z = env["K42_ZOOM"].flatMap(Double.init) { canvas.zoom = CGFloat(z) }
         if let script = env["K42_DO"] { for cmd in script.split(separator: ";") { run(String(cmd)) } }
         if let i = env["K42_INSPECTOR"] {
-            let tab = ["slide": 0, "shape": 1, "text": 2][i] ?? (selection.isEmpty ? 0 : 1)
+            let tab = ["slide": 0, "shape": 1, "text": 2, "animation": 3, "comments": 4][i] ?? (selection.isEmpty ? 0 : 1)
             showInspector(true, tab: tab)
         }
         if env["K42_EDIT"] != nil, let o = selectedObjects.first { canvas.editor.begin(o, at: nil) }
@@ -116,6 +116,15 @@ extension DeckWindowController {
                 } }
             }
         case "toshapes": convertToShapesAction(nil)
+        case "comment": addComment(arg)
+        case "reply":
+            // reply:<comment index>:<text>
+            let p = arg.split(separator: ":", maxSplits: 1).map(String.init)
+            if p.count == 2, let k = Int(p[0]), let c = currentSlide?.comments, c.indices.contains(k) { replyComment(c[k].id, p[1]) }
+        case "resolve":
+            if let k = Int(arg), let c = currentSlide?.comments, c.indices.contains(k) { changeComment(c[k].id, L("Resolve")) { $0.resolved.toggle() } }
+        case "delcomment":
+            if let k = Int(arg), let c = currentSlide?.comments, c.indices.contains(k) { deleteComment(c[k].id) }
         case "media":
             insertMedia(URL(fileURLWithPath: arg), autoplay: true)
         case "bold": boldAction(nil)
