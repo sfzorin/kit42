@@ -144,11 +144,10 @@ extension Deck {
         }
         var b1 = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 520, y: 170, width: 360, height: 60)); id += 1
         b1.text = TextBody(paragraphs: [Paragraph("Appears on click", run: RunProps(size: 24))])
-        b1.build = .appear
         var b2 = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 520, y: 250, width: 360, height: 60)); id += 1
         b2.text = TextBody(paragraphs: [Paragraph("Fades in next", run: RunProps(size: 24, color: PColor(scheme: "accent1")))])
-        b2.build = .fade
         s5.objects += [b1, b2]
+        s5.animations = [Animation(target: b1.id, effect: .appear), Animation(target: b2.id, effect: .fade)]
         var num = SlideObject(id: id, kind: .textBox, frame: CGRect(x: 820, y: 480, width: 80, height: 30)); id += 1
         var np = Paragraph()
         np.runs = [TextRun(text: "5", props: RunProps(size: 12), field: "slidenum")]
@@ -182,7 +181,104 @@ extension Deck {
         hb.text = TextBody(paragraphs: [hp])
         s8.objects.append(hb)
         d.slides.append(s8)
+        d.addDemoExtras()
         d.normalizeIDs()
         return d
+    }
+
+    /// Charts, presets with adjust values, custom geometry, SmartArt-like group, media, comments, animations, a custom layout.
+    mutating func addDemoExtras() {
+        func title(_ s: inout Slide, _ t: String) {
+            for i in s.objects.indices where s.objects[i].placeholder?.isTitle == true { s.objects[i].text?.paragraphs = [Paragraph(t)] }
+        }
+        // 9. Charts
+        var s9 = newSlide(layout: 4)
+        title(&s9, "Charts")
+        var col = SlideObject(id: 30, kind: .chart, frame: CGRect(x: 50, y: 140, width: 440, height: 340))
+        var m = ChartModel.sample(.column)
+        m.title = Optional("Sales by quarter")  // demo content, not UI
+        m.dataLabels = true
+        m.valAxisTitle = "M€"
+        col.chart = m
+        var pie = SlideObject(id: 31, kind: .chart, frame: CGRect(x: 510, y: 140, width: 400, height: 340))
+        var pm = ChartModel.sample(.doughnut)
+        pm.title = Optional("Budget")
+        pm.percentLabels = true
+        pie.chart = pm
+        s9.objects += [col, pie]
+        s9.animations = [Animation(target: 30, effect: .fade), Animation(target: 31, effect: .zoom, trigger: .afterPrevious)]
+        slides.append(s9)
+
+        // 10. Preset shapes with adjust values and a custom outline
+        var s10 = newSlide(layout: 4)
+        title(&s10, "Preset and Custom Shapes")
+        var id = 40
+        func shape(_ prst: String, _ r: CGRect, _ c: String, adjust: [String: Int] = [:]) -> SlideObject {
+            var o = SlideObject(id: id, kind: .shape, frame: r)
+            id += 1
+            o.geometry = prst
+            o.adjust = adjust
+            o.fill = .solid(PColor(scheme: c))
+            o.line = LineStyle(color: PColor(scheme: c, mods: [.init(name: "shade", val: 50000)]), width: 1)
+            o.text = TextBody(paragraphs: [Paragraph()], anchor: .middle)
+            return o
+        }
+        s10.objects += [
+            shape("cloud", CGRect(x: 60, y: 150, width: 160, height: 110), "accent1"),
+            shape("lightningBolt", CGRect(x: 250, y: 150, width: 110, height: 130), "accent4"),
+            shape("smileyFace", CGRect(x: 390, y: 150, width: 120, height: 120), "accent6", adjust: ["adj": -4653]),
+            shape("wedgeRoundRectCallout", CGRect(x: 550, y: 150, width: 180, height: 90), "accent2", adjust: ["adj1": -30000, "adj2": 90000, "adj3": 16667]),
+            shape("rightArrow", CGRect(x: 760, y: 160, width: 150, height: 80), "accent5", adjust: ["adj1": 30000, "adj2": 70000]),
+            shape("flowChartMultidocument", CGRect(x: 60, y: 320, width: 150, height: 110), "accent3"),
+            shape("star12", CGRect(x: 250, y: 310, width: 130, height: 130), "accent2"),
+            shape("can", CGRect(x: 420, y: 310, width: 100, height: 130), "accent1"),
+        ]
+        // A custom outline (a:custGeom) with guides and an arc.
+        var c = SlideObject(id: id, kind: .shape, frame: CGRect(x: 570, y: 300, width: 300, height: 150)); id += 1
+        var g = CustomGeometry()
+        g.guides = [GeoGuide(name: "rad", fmla: "*/ h 1 2")]
+        g.paths = [GeoPath(commands: [.move("0", "h"), .line("0", "rad"), .arc(wR: "rad", hR: "rad", st: "cd2", sw: "cd2"), .line("w", "h"), .close])]
+        c.custom = g
+        c.geometry = "custom"
+        c.fill = .gradient(Gradient(stops: [GradientStop(position: 0, color: PColor(scheme: "accent1")), GradientStop(position: 1, color: PColor(scheme: "accent5"))], angle: 0))
+        c.text = TextBody(paragraphs: [Paragraph("Custom outline", run: RunProps(size: 18, color: PColor(scheme: "bg1")))], anchor: .bottom)
+        s10.objects.append(c)
+        s10.animations = [Animation(target: 40, effect: .flyIn), Animation(target: 41, effect: .spin, trigger: .withPrevious),
+                          Animation(target: 42, effect: .pulse), Animation(target: 43, effect: .colorChange),
+                          Animation(target: 44, effect: .path), Animation(target: 45, effect: .fadeOut, trigger: .afterPrevious)]
+        var cm = Comment.new("Check the colours of the callout", at: CGPoint(x: 734, y: 150), object: 43)
+        cm.author = "PPT42 Demo"; cm.initials = "PD"
+        var reply = Comment.new("Done", at: cm.position)
+        reply.author = "Reviewer"; reply.initials = "RV"
+        cm.replies = [reply]
+        s10.comments = [cm]
+        slides.append(s10)
+
+        // 11. Media: a short generated clip (its own poster frame) and a custom layout from the master view.
+        var quote = Layout(name: "Quote", type: "cust")
+        quote.placeholders = [Themes.placeholder(2, "title", idx: nil, CGRect(x: 120, y: 150, width: 720, height: 200), name: "Quote Title", anchor: .middle,
+                                                 style: LevelStyle(align: .center, run: RunProps(size: 40, italic: true)))]
+        quote.objects = [{ var o = SlideObject(id: 90, kind: .line, frame: .zero); o.setLine(from: CGPoint(x: 380, y: 380), to: CGPoint(x: 580, y: 380))
+            o.line = LineStyle(color: PColor(scheme: "accent1"), width: 3); return o }()]
+        layouts.append(quote)
+        var s11 = newSlide(layout: layouts.count - 1)
+        title(&s11, "“Every feature, one deck.”")
+        var clipDeck = Deck.makeDefault()
+        clipDeck.setText(slide: 0, placeholder: "ctrTitle", [Paragraph("PPT42")])
+        clipDeck.slides[0].transition = Transition()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("ppt42-demo-\(ProcessInfo.processInfo.processIdentifier).mp4")
+        var o = VideoExport.Options()
+        o.width = 320
+        o.secondsPerSlide = 1
+        if (try? VideoExport.export(clipDeck, to: tmp, options: o)) != nil, let data = try? Data(contentsOf: tmp),
+           let poster = Renderer.image(clipDeck.slides[0], deck: clipDeck, pixelWidth: 320).flatMap({ NSBitmapImageRep(cgImage: $0).representation(using: .png, properties: [:]) }) {
+            var v = SlideObject(id: 60, kind: .picture, frame: CGRect(x: 700, y: 400, width: 192, height: 108))
+            v.media = addMedia(poster, ext: "png")
+            v.clip = MediaClip(media: addClip(data, ext: "mp4"), audio: false, autoplay: false, loop: true)
+            v.name = "Clip"
+            s11.objects.append(v)
+        }
+        try? FileManager.default.removeItem(at: tmp)
+        slides.append(s11)
     }
 }

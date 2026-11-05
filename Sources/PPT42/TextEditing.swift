@@ -350,10 +350,29 @@ final class TextEditController: NSObject, NSTextViewDelegate {
 
     // MARK: - Formatting while editing
 
+    /// Formatting while editing is its own undo step in the editor (typing before and after stays separate).
+    private func registerFormatUndo(_ name: String) {
+        guard let s = textView.textStorage else { return }
+        textView.breakUndoCoalescing()
+        let before = NSAttributedString(attributedString: s), sel = textView.selectedRange(), typing = textView.typingAttributes
+        undo.registerUndo(withTarget: self) { ed in ed.restoreFormatting(before, sel, typing, name) }
+        undo.setActionName(name)
+    }
+
+    private func restoreFormatting(_ a: NSAttributedString, _ sel: NSRange, _ typing: [NSAttributedString.Key: Any], _ name: String) {
+        registerFormatUndo(name)
+        textView.textStorage?.setAttributedString(a)
+        textView.setSelectedRange(NSRange(location: min(sel.location, a.length), length: min(sel.length, max(0, a.length - sel.location))))
+        textView.typingAttributes = typing
+        layout()
+        canvas?.owner?.formatBar.sync()
+    }
+
     /// Character formatting on the selection (or the typing attributes).
     func applyRun(_ f: (inout RunProps) -> Void) {
         guard let storage = textView.textStorage, let c = context else { return }
         let r = textView.selectedRange()
+        if r.length > 0 { registerFormatUndo(L("Format")) }
         if r.length == 0 {
             // An empty paragraph keeps the formatting as its end properties.
             if let s = textView.textStorage, (s.string as NSString).paragraphRange(for: r).length <= 3 { applyPara { _, _, end in f(&end) } }
@@ -387,6 +406,7 @@ final class TextEditController: NSObject, NSTextViewDelegate {
     /// Paragraph formatting on the paragraphs touched by the selection.
     func applyPara(_ f: (inout Int, inout LevelStyle, inout RunProps) -> Void) {
         guard let storage = textView.textStorage else { return }
+        registerFormatUndo(L("Format"))
         let ns = storage.string as NSString
         let sel = textView.selectedRange()
         var ranges = [ns.paragraphRange(for: sel)]

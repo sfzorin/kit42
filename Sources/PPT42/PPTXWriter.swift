@@ -5,6 +5,61 @@ import Kit42
 struct PPTXWriter {
     let deck: Deck
     private var zip = ZipArchive()
+    /// Extra parts written while writing slides (charts, workbooks, diagrams, media), with their content types.
+    let sink = PartSink()
+
+    final class PartSink {
+        var files: [String: Data] = [:]
+        var overrides: [String: String] = [:]
+        var defaults: [String: String] = [:]
+        var counters: [String: Int] = [:]
+
+        /// A free path "folder/stemN.ext" (or the preferred name when free).
+        func path(folder: String, stem: String, ext: String, preferred: String? = nil) -> String {
+            if let p = preferred, files["\(folder)/\(p)"] == nil { return "\(folder)/\(p)" }
+            var n = counters[folder + stem, default: 0]
+            var p: String
+            repeat { n += 1; p = "\(folder)/\(stem)\(n).\(ext)" } while files[p] != nil
+            counters[folder + stem] = n
+            return p
+        }
+
+        func add(_ path: String, _ data: Data, type: String?) {
+            files[path] = data
+            let ext = (path as NSString).pathExtension.lowercased()
+            guard let type, type != "application/octet-stream" || ext != "xml" else { return }
+            if ext == "xml" { overrides["/" + path] = type } else if defaults[ext] == nil { defaults[ext] = type }
+        }
+
+        /// Writes a kept part and the parts it refers to; returns its path.
+        func write(_ p: PackagePart, at path: String) -> String {
+            var rels: [(String, String, String, Bool)] = []
+            for r in p.rels {
+                if let ext = r.external { rels.append((r.id, r.type, ext, true)); continue }
+                guard let child = r.part else { continue }
+                let folder = (child.name as NSString).deletingLastPathComponent
+                let name = (child.name as NSString).lastPathComponent
+                let ext = (name as NSString).pathExtension
+                let childPath = self.path(folder: folder, stem: (name as NSString).deletingPathExtension, ext: ext, preferred: files["\(folder)/\(name)"] == nil ? name : nil)
+                _ = write(child, at: childPath)
+                rels.append((r.id, r.type, relative(from: path, to: childPath), false))
+            }
+            add(path, p.data, type: p.contentType)
+            if !rels.isEmpty {
+                var x = PPTXWriter.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                for r in rels { x += "<Relationship Id=\"\(r.0)\" Type=\"\(r.1)\" Target=\"\(xmlEscape(r.2))\"\(r.3 ? " TargetMode=\"External\"" : "")/>" }
+                files[relsPath(path)] = Data((x + "</Relationships>").utf8)
+            }
+            return path
+        }
+
+        func relative(from a: String, to b: String) -> String {
+            let fa = a.split(separator: "/").dropLast().map(String.init), fb = b.split(separator: "/").map(String.init)
+            var i = 0
+            while i < fa.count, i < fb.count - 1, fa[i] == fb[i] { i += 1 }
+            return (Array(repeating: "..", count: fa.count - i) + fb[i...]).joined(separator: "/")
+        }
+    }
 
     static let nsA = "http://schemas.openxmlformats.org/drawingml/2006/main"
     static let nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -13,10 +68,14 @@ struct PPTXWriter {
     static var ns: String { "xmlns:a=\"\(nsA)\" xmlns:r=\"\(nsR)\" xmlns:p=\"\(nsP)\"" }
     static let head = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
 
-    static func data(_ deck: Deck) -> Data {
+    static func data(_ deck: Deck, template: Bool = false) -> Data {
         var w = PPTXWriter(deck: deck)
+        w.template = template
         return w.write()
     }
+
+    /// .potx: the same package with the template content type.
+    var template = false
 
     init(deck: Deck) { self.deck = deck }
 
@@ -53,6 +112,12 @@ struct PPTXWriter {
     mutating func write() -> Data {
         let n = deck.slides.count
         let hasNotes = deck.slides.contains { !$0.notes.isEmpty }
+        writeMaster()
+        for i in deck.layouts.indices { writeLayout(i) }
+        for i in 0..<n { writeSlide(i) }
+        if hasNotes { writeNotesMaster() }
+        for (name, data) in deck.media { zip["ppt/media/\(name)"] = data }
+        for (path, data) in sink.files { zip[path] = data }
         var types = Self.head + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
         types += "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
         types += "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
@@ -60,8 +125,12 @@ struct PPTXWriter {
                             ("tiff", "image/tiff"), ("svg", "image/svg+xml")] {
             types += "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>"
         }
+        for (ext, mime) in sink.defaults.sorted(by: { $0.key < $1.key }) where !["png", "jpeg", "jpg", "gif", "bmp", "tiff", "svg", "xml", "rels"].contains(ext) {
+            types += "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>"
+        }
+        for (part, mime) in sink.overrides.sorted(by: { $0.key < $1.key }) { types += "<Override PartName=\"\(xmlEscape(part))\" ContentType=\"\(mime)\"/>" }
         let pml = "application/vnd.openxmlformats-officedocument.presentationml"
-        types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).presentation.main+xml\"/>"
+        types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).\(template ? "template" : "presentation").main+xml\"/>"
         types += "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"\(pml).slideMaster+xml\"/>"
         for i in deck.layouts.indices { types += "<Override PartName=\"/ppt/slideLayouts/slideLayout\(i + 1).xml\" ContentType=\"\(pml).slideLayout+xml\"/>" }
         for i in 0..<n { types += "<Override PartName=\"/ppt/slides/slide\(i + 1).xml\" ContentType=\"\(pml).slide+xml\"/>" }
@@ -78,6 +147,7 @@ struct PPTXWriter {
         types += "<Override PartName=\"/ppt/tableStyles.xml\" ContentType=\"\(pml).tableStyles+xml\"/>"
         types += "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
         types += "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>"
+        if !commentAuthors.isEmpty { types += "<Override PartName=\"/ppt/commentAuthors.xml\" ContentType=\"\(pml).commentAuthors+xml\"/>" }
         types += "</Types>"
         put("[Content_Types].xml", types)
 
@@ -105,6 +175,15 @@ struct PPTXWriter {
         _ = pres.add("\(Self.relBase)/viewProps", "viewProps.xml")
         _ = pres.add("\(Self.relBase)/theme", "theme/theme1.xml")
         _ = pres.add("\(Self.relBase)/tableStyles", "tableStyles.xml")
+        if !commentAuthors.isEmpty {
+            _ = pres.add("\(Self.relBase)/commentAuthors", "commentAuthors.xml")
+            var x = Self.head + "<p:cmAuthorLst \(Self.ns)>"
+            for (i, a) in commentAuthors.enumerated() {
+                let last = deck.slides.flatMap { $0.comments.flatMap { [$0] + $0.replies } }.filter { $0.author == a.0 }.count
+                x += "<p:cmAuthor id=\"\(i)\" name=\"\(xmlEscape(a.0))\" initials=\"\(xmlEscape(a.1))\" lastIdx=\"\(last)\" clrIdx=\"\(i % 8)\"/>"
+            }
+            put("ppt/commentAuthors.xml", x + "</p:cmAuthorLst>")
+        }
         let cx = emu(deck.size.width), cy = emu(deck.size.height)
         let sizeType = abs(deck.size.width / deck.size.height - 16.0 / 9) < 0.01 ? (cx == 12192000 ? "" : " type=\"screen16x9\"") : abs(deck.size.width / deck.size.height - 4.0 / 3) < 0.01 ? " type=\"screen4x3\"" : " type=\"custom\""
         var p = Self.head + "<p:presentation \(Self.ns) saveSubsetFonts=\"1\"\(deck.firstSlideNumber != 1 ? " firstSlideNum=\"\(deck.firstSlideNumber)\"" : "")>"
@@ -119,12 +198,6 @@ struct PPTXWriter {
         put("ppt/viewProps.xml", Self.head + "<p:viewPr \(Self.ns)><p:normalViewPr><p:restoredLeft sz=\"15620\"/><p:restoredTop sz=\"94660\"/></p:normalViewPr><p:gridSpacing cx=\"76200\" cy=\"76200\"/></p:viewPr>")
         put("ppt/tableStyles.xml", Self.head + "<a:tblStyleLst xmlns:a=\"\(Self.nsA)\" def=\"{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}\"/>")
         put("ppt/theme/theme1.xml", themeXML(deck.theme))
-
-        writeMaster()
-        for i in deck.layouts.indices { writeLayout(i) }
-        for i in 0..<n { writeSlide(i) }
-        if hasNotes { writeNotesMaster() }
-        for (name, data) in deck.media { zip["ppt/media/\(name)"] = data }
         return zip.data()
     }
 
@@ -179,8 +252,57 @@ struct PPTXWriter {
             _ = rels.add("\(Self.relBase)/notesSlide", "../notesSlides/notesSlide\(i + 1).xml")
             writeNotes(i)
         }
+        if !s.comments.isEmpty {
+            _ = rels.add("\(Self.relBase)/comments", "../comments/comment\(i + 1).xml")
+            put("ppt/comments/comment\(i + 1).xml", commentsXML(s.comments))
+            sink.overrides["/ppt/comments/comment\(i + 1).xml"] = "application/vnd.openxmlformats-officedocument.presentationml.comments+xml"
+        }
         put("ppt/slides/slide\(i + 1).xml", x)
         put("ppt/slides/_rels/slide\(i + 1).xml.rels", rels.xml)
+    }
+
+    /// Authors of all comments in order of appearance: (name, initials).
+    var commentAuthors: [(String, String)] {
+        var out: [(String, String)] = []
+        for s in deck.slides { for c in s.comments.flatMap({ [$0] + $0.replies }) where !out.contains(where: { $0.0 == c.author }) { out.append((c.author, c.initials)) } }
+        return out
+    }
+
+    /// Legacy comments (p:cmLst) with PowerPoint 2013 threading for replies and our resolved flag.
+    func commentsXML(_ list: [Comment]) -> String {
+        let authors = commentAuthors
+        var counters: [String: Int] = [:]
+        // Indexes continue through the deck per author.
+        for s in deck.slides {
+            if s.comments == list { break }
+            for c in s.comments.flatMap({ [$0] + $0.replies }) { counters[c.author, default: 0] += 1 }
+        }
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var x = Self.head + "<p:cmLst \(Self.ns)>"
+        func one(_ c: Comment, parent: (Int, Int)?) -> (Int, Int) {
+            let aid = authors.firstIndex { $0.0 == c.author } ?? 0
+            counters[c.author, default: 0] += 1
+            let idx = counters[c.author]!
+            var date = df.string(from: c.date)
+            if date.hasSuffix("Z") { date.removeLast() }
+            x += "<p:cm authorId=\"\(aid)\" dt=\"\(date)\" idx=\"\(idx)\"><p:pos x=\"\(Int(c.position.x * 8))\" y=\"\(Int(c.position.y * 8))\"/><p:text>\(xmlEscape(c.text))</p:text>"
+            var ext = ""
+            if let parent {
+                ext += "<p:ext uri=\"{C676402C-5697-4E1C-873F-D02D1690AC5C}\"><p15:threadingInfo xmlns:p15=\"http://schemas.microsoft.com/office/powerpoint/2012/main\" timeZoneBias=\"0\"><p15:parentCm authorId=\"\(parent.0)\" idx=\"\(parent.1)\"/></p15:threadingInfo></p:ext>"
+            }
+            if c.resolved || c.objectID != nil {
+                ext += "<p:ext uri=\"{5E1A3C42-0B7D-4F3E-9A42-0C11A5E0FF42}\"><ppt42:comment xmlns:ppt42=\"urn:sfzorin:ppt42\" resolved=\"\(c.resolved ? 1 : 0)\"\(c.objectID.map { " object=\"\($0)\"" } ?? "")/></p:ext>"
+            }
+            if !ext.isEmpty { x += "<p:extLst>\(ext)</p:extLst>" }
+            x += "</p:cm>"
+            return (aid, idx)
+        }
+        for c in list {
+            let p = one(c, parent: nil)
+            for r in c.replies { _ = one(r, parent: p) }
+        }
+        return x + "</p:cmLst>"
     }
 
     mutating func writeNotes(_ i: Int) {
@@ -251,11 +373,40 @@ struct PPTXWriter {
     }
 
     func geometry(_ o: SlideObject) -> String {
+        if let c = o.custom { return custGeom(c) }
         var prst = o.geometry
         if prst == "arrow" { prst = "straightConnector1" }
         if o.adjust.isEmpty { return "<a:prstGeom prst=\"\(prst)\"><a:avLst/></a:prstGeom>" }
         let gd = o.adjust.sorted { $0.key < $1.key }.map { "<a:gd name=\"\($0.key)\" fmla=\"val \($0.value)\"/>" }.joined()
         return "<a:prstGeom prst=\"\(prst)\"><a:avLst>\(gd)</a:avLst></a:prstGeom>"
+    }
+
+    func custGeom(_ c: CustomGeometry) -> String {
+        func gds(_ l: [GeoGuide]) -> String { l.map { "<a:gd name=\"\(xmlEscape($0.name))\" fmla=\"\(xmlEscape($0.fmla))\"/>" }.joined() }
+        var x = "<a:custGeom><a:avLst>\(gds(c.adjust))</a:avLst><a:gdLst>\(gds(c.guides))</a:gdLst><a:ahLst/><a:cxnLst/>"
+        let r = c.rect ?? ["l", "t", "r", "b"]
+        x += "<a:rect l=\"\(r[0])\" t=\"\(r[1])\" r=\"\(r[2])\" b=\"\(r[3])\"/><a:pathLst>"
+        func pt(_ a: String, _ b: String) -> String { "<a:pt x=\"\(a)\" y=\"\(b)\"/>" }
+        for p in c.paths {
+            var attrs = ""
+            if let w = p.w { attrs += " w=\"\(Int(w))\"" }
+            if let h = p.h { attrs += " h=\"\(Int(h))\"" }
+            if p.fill != .norm { attrs += " fill=\"\(p.fill.rawValue)\"" }
+            if !p.stroke { attrs += " stroke=\"0\"" }
+            x += "<a:path\(attrs)>"
+            for cmd in p.commands {
+                switch cmd {
+                case .move(let a, let b): x += "<a:moveTo>\(pt(a, b))</a:moveTo>"
+                case .line(let a, let b): x += "<a:lnTo>\(pt(a, b))</a:lnTo>"
+                case .arc(let wR, let hR, let st, let sw): x += "<a:arcTo wR=\"\(wR)\" hR=\"\(hR)\" stAng=\"\(st)\" swAng=\"\(sw)\"/>"
+                case .quad(let a, let b, let c, let d): x += "<a:quadBezTo>\(pt(a, b))\(pt(c, d))</a:quadBezTo>"
+                case .cubic(let a, let b, let c, let d, let e, let f): x += "<a:cubicBezTo>\(pt(a, b))\(pt(c, d))\(pt(e, f))</a:cubicBezTo>"
+                case .close: x += "<a:close/>"
+                }
+            }
+            x += "</a:path>"
+        }
+        return x + "</a:pathLst></a:custGeom>"
     }
 
     func nv(_ o: SlideObject, kind: String, extra: String = "", ph: Bool = true) -> String {
@@ -274,15 +425,50 @@ struct PPTXWriter {
         case .textBox: return "TextBox \(o.id)"
         case .picture: return "Picture \(o.id)"
         case .table: return "Table \(o.id)"
+        case .chart: return "Chart \(o.id)"
         case .group: return "Group \(o.id)"
         case .line: return "Connector \(o.id)"
         case .shape: return "Shape \(o.id)"
         }
     }
 
+    /// SmartArt written back with its parts (texts patched in), or nil when its shapes changed otherwise.
+    func diagramFrame(_ o: SlideObject, rels: Rels) -> String? {
+        guard let d = o.diagram else { return nil }
+        let ch = Diagram.change(o)
+        guard ch != .other else { return nil }
+        var drawingData = d.drawing?.data, dataData = d.data?.data
+        if ch == .text {
+            let p = Diagram.patched(o, writer: self, rels: rels)
+            drawingData = p.drawing ?? drawingData
+            dataData = p.data ?? dataData
+        }
+        func put(_ part: PackagePart?, data: Data?, stem: String) -> String? {
+            guard let part else { return nil }
+            let p = PackagePart(name: part.name, data: data ?? part.data, contentType: part.contentType, rels: part.rels)
+            return sink.write(p, at: sink.path(folder: "ppt/diagrams", stem: stem, ext: "xml"))
+        }
+        func rel(_ type: String, _ path: String?) -> String? { path.map { rels.add(type, sink.relative(from: "ppt/slides/slide1.xml", to: $0)) } }
+        let drawRel = rel(Diagram.relDrawing, put(d.drawing, data: drawingData, stem: "drawing"))
+        if let drawRel, var s = dataData.map({ String(decoding: $0, as: UTF8.self) }),
+           let r = s.range(of: "relId=\"[^\"]*\"", options: .regularExpression, range: s.range(of: "dataModelExt").map { $0.lowerBound..<s.endIndex }) {
+            s.replaceSubrange(r, with: "relId=\"\(drawRel)\"")
+            dataData = Data(s.utf8)
+        }
+        let dm = rel("\(Self.relBase)/diagramData", put(d.data, data: dataData, stem: "data"))
+        let lo = rel("\(Self.relBase)/diagramLayout", put(d.layout, data: nil, stem: "layout"))
+        let qs = rel("\(Self.relBase)/diagramQuickStyle", put(d.style, data: nil, stem: "quickStyle"))
+        let cs = rel("\(Self.relBase)/diagramColors", put(d.colors, data: nil, stem: "colors"))
+        var x = "<p:graphicFrame>" + nv(o, kind: "GraphicFrame", extra: "<p:cNvGraphicFramePr/>", ph: false) + xfrm(o, prefix: "p")
+        x += "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/diagram\"><dgm:relIds xmlns:dgm=\"\(Diagram.nsDgm)\""
+        for (k, v) in [("dm", dm), ("lo", lo), ("qs", qs), ("cs", cs)] { if let v { x += " r:\(k)=\"\(v)\"" } }
+        return x + "/></a:graphicData></a:graphic></p:graphicFrame>"
+    }
+
     func object(_ o: SlideObject, rels: Rels, slide: Slide?) -> String {
         switch o.kind {
         case .group:
+            if let x = diagramFrame(o, rels: rels) { return x }
             var x = "<p:grpSp>" + nv(o, kind: "GrpSp", extra: "<p:cNvGrpSpPr/>", ph: false)
             let rot = o.rotation != 0 ? " rot=\"\(Int(o.rotation * 60000))\"" : ""
             let f = o.frame
@@ -295,7 +481,19 @@ struct PPTXWriter {
                 // Empty picture placeholder.
                 return "<p:sp>" + nv(o, kind: "Sp", extra: "<p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr>") + "<p:spPr>\(xfrm(o))</p:spPr></p:sp>"
             }
-            var x = "<p:pic>" + nv(o, kind: "Pic", extra: "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr>")
+            var x = "<p:pic>"
+            if let clip = o.clip {
+                let target = "../media/\(clip.media)"
+                let embed = rels.add("http://schemas.microsoft.com/office/2007/relationships/media", target)
+                let link = rels.add("\(Self.relBase)/\(clip.audio ? "audio" : "video")", target)
+                sink.defaults[clip.ext] = MediaClip.mime(clip.ext)
+                x += "<p:nvPicPr><p:cNvPr id=\"\(o.id)\" name=\"\(xmlEscape(o.name.isEmpty ? defaultName(o) : o.name))\"><a:hlinkClick r:id=\"\" action=\"ppaction://media\"/></p:cNvPr>"
+                x += "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr><a:\(clip.audio ? "audioFile" : "videoFile") r:link=\"\(link)\"/>"
+                x += "<p:extLst><p:ext uri=\"{DAA4B4D4-6D71-4841-9C94-3DE04A35F2DA}\"><p14:media xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\" r:embed=\"\(embed)\"/></p:ext>"
+                x += "<p:ext uri=\"{6C1E4F2B-7A3D-4B8E-9F42-0C11A5E0FF42}\"><ppt42:clip xmlns:ppt42=\"urn:sfzorin:ppt42\" autoplay=\"\(clip.autoplay ? 1 : 0)\" loop=\"\(clip.loop ? 1 : 0)\"/></p:ext></p:extLst></p:nvPr></p:nvPicPr>"
+            } else {
+                x += nv(o, kind: "Pic", extra: "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr>")
+            }
             x += "<p:blipFill><a:blip r:embed=\"\(rels.media(media))\">"
             if o.opacity < 1 { x += "<a:alphaModFix amt=\"\(Int(o.opacity * 100000))\"/>" }
             x += "</a:blip>"
@@ -311,6 +509,23 @@ struct PPTXWriter {
             x += xfrm(o, prefix: "p") + "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\">"
             x += table(t, rels: rels, slide: slide, object: o)
             return x + "</a:graphicData></a:graphic></p:graphicFrame>"
+        case .chart:
+            guard let m = o.chart else { return "" }
+            let path: String
+            if let part = m.untouchedPart {
+                path = sink.write(part, at: sink.path(folder: "ppt/charts", stem: "chart", ext: "xml"))
+            } else {
+                path = sink.path(folder: "ppt/charts", stem: "chart", ext: "xml")
+                let wb = sink.path(folder: "ppt/embeddings", stem: "Microsoft_Excel_Worksheet", ext: "xlsx")
+                sink.add(wb, ChartXML.workbook(m), type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                let relXML = Self.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"\(Self.relBase)/package\" Target=\"\(sink.relative(from: path, to: wb))\"/></Relationships>"
+                sink.files[relsPath(path)] = Data(relXML.utf8)
+                sink.add(path, Data(ChartXML.write(m, color: { color($0) }, workbookRel: "rId1").utf8), type: "application/vnd.openxmlformats-officedocument.drawingml.chart+xml")
+            }
+            let rid = rels.add("\(Self.relBase)/chart", sink.relative(from: "ppt/slides/slide1.xml", to: path))
+            var x = "<p:graphicFrame>" + nv(o, kind: "GraphicFrame", extra: "<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr>", ph: false)
+            x += xfrm(o, prefix: "p") + "<a:graphic><a:graphicData uri=\"\(ChartXML.nsC)\"><c:chart xmlns:c=\"\(ChartXML.nsC)\" r:id=\"\(rid)\"/></a:graphicData></a:graphic>"
+            return x + "</p:graphicFrame>"
         case .line:
             var x = "<p:cxnSp>" + nv(o, kind: "CxnSp", extra: "<p:cNvCxnSpPr/>", ph: false)
             x += "<p:spPr>\(xfrm(o))\(geometry(o))<a:noFill/>\(line(o.line, rels: rels))\(o.shadow ? shadow : "")</p:spPr></p:cxnSp>"
@@ -355,8 +570,9 @@ struct PPTXWriter {
         guard let c = l.color else { return "<a:ln><a:noFill/></a:ln>" }
         var x = "<a:ln w=\"\(emu(l.width))\"><a:solidFill>\(color(c, alpha: alpha))</a:solidFill>"
         if l.dash != .solid { x += "<a:prstDash val=\"\(l.dash == .dot ? "sysDot" : l.dash.rawValue)\"/>" }
-        if l.head != .none { x += "<a:headEnd type=\"\(l.head.rawValue)\"/>" }
-        if l.tail != .none { x += "<a:tailEnd type=\"\(l.tail.rawValue)\"/>" }
+        func sz(_ s: ArrowSize) -> String { s == ArrowSize() ? "" : " w=\"\(ArrowSize.names[s.w])\" len=\"\(ArrowSize.names[s.len])\"" }
+        if l.head != .none { x += "<a:headEnd type=\"\(l.head.rawValue)\"\(sz(l.headSize))/>" }
+        if l.tail != .none { x += "<a:tailEnd type=\"\(l.tail.rawValue)\"\(sz(l.tailSize))/>" }
         return x + "</a:ln>"
     }
 
@@ -393,8 +609,9 @@ struct PPTXWriter {
         if let ls = s.lineSpacing {
             kids += ls < 0 ? "<a:lnSpc><a:spcPts val=\"\(Int(-ls * 100))\"/></a:lnSpc>" : "<a:lnSpc><a:spcPct val=\"\(Int((ls * 100000).rounded()))\"/></a:lnSpc>"
         }
-        if let b = s.spaceBefore { kids += "<a:spcBef><a:spcPts val=\"\(Int(b * 100))\"/></a:spcBef>" }
-        if let a = s.spaceAfter { kids += "<a:spcAft><a:spcPts val=\"\(Int(a * 100))\"/></a:spcAft>" }
+        func spc(_ v: CGFloat) -> String { v < 0 ? "<a:spcPct val=\"\(Int((-v * 100000).rounded()))\"/>" : "<a:spcPts val=\"\(Int(v * 100))\"/>" }
+        if let b = s.spaceBefore { kids += "<a:spcBef>\(spc(b))</a:spcBef>" }
+        if let a = s.spaceAfter { kids += "<a:spcAft>\(spc(a))</a:spcAft>" }
         if let b = s.bullet {
             switch b.kind {
             case .none: kids += "<a:buNone/>"
@@ -510,42 +727,5 @@ struct PPTXWriter {
         return x + "</p:transition>"
     }
 
-    func timing(_ s: Slide) -> String {
-        let builds = s.objects.filter { $0.build != nil }
-        guard !builds.isEmpty else { return "" }
-        var id = 3
-        func next() -> Int { id += 1; return id - 1 }
-        var clicks = ""
-        for o in builds {
-            let effect = o.build ?? .appear
-            let spid = o.id
-            let preset: (Int, Int) = effect == .appear ? (1, 0) : effect == .fade ? (10, 0) : effect == .flyIn ? (2, 4) : (53, 16)
-            let outer = next(), mid = next(), eff = next(), set = next()
-            var anims = "<p:set><p:cBhvr><p:cTn id=\"\(set)\" dur=\"1\" fill=\"hold\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>"
-            func anim(_ attr: String, _ from: String, _ to: String) -> String {
-                "<p:anim calcmode=\"lin\" valueType=\"num\"><p:cBhvr additive=\"base\"><p:cTn id=\"\(next())\" dur=\"500\" fill=\"hold\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl><p:attrNameLst><p:attrName>\(attr)</p:attrName></p:attrNameLst></p:cBhvr><p:tavLst><p:tav tm=\"0\"><p:val><p:strVal val=\"\(from)\"/></p:val></p:tav><p:tav tm=\"100000\"><p:val><p:strVal val=\"\(to)\"/></p:val></p:tav></p:tavLst></p:anim>"
-            }
-            switch effect {
-            case .appear: break
-            case .fade:
-                anims += "<p:animEffect transition=\"in\" filter=\"fade\"><p:cBhvr><p:cTn id=\"\(next())\" dur=\"500\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl></p:cBhvr></p:animEffect>"
-            case .flyIn:
-                anims += anim("ppt_x", "#ppt_x", "#ppt_x") + anim("ppt_y", "1+#ppt_h/2", "#ppt_y")
-            case .zoom:
-                anims += anim("ppt_w", "0", "#ppt_w") + anim("ppt_h", "0", "#ppt_h")
-                anims += "<p:animEffect transition=\"in\" filter=\"fade\"><p:cBhvr><p:cTn id=\"\(next())\" dur=\"500\"/><p:tgtEl><p:spTgt spid=\"\(spid)\"/></p:tgtEl></p:cBhvr></p:animEffect>"
-            }
-            clicks += "<p:par><p:cTn id=\"\(outer)\" fill=\"hold\"><p:stCondLst><p:cond delay=\"indefinite\"/></p:stCondLst><p:childTnLst>"
-            clicks += "<p:par><p:cTn id=\"\(mid)\" fill=\"hold\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst><p:childTnLst>"
-            clicks += "<p:par><p:cTn id=\"\(eff)\" presetID=\"\(preset.0)\" presetClass=\"entr\" presetSubtype=\"\(preset.1)\" fill=\"hold\"\(o.text != nil && o.kind != .picture ? " grpId=\"0\"" : "") nodeType=\"clickEffect\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst><p:childTnLst>"
-            clicks += anims + "</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"
-        }
-        var x = "<p:timing><p:tnLst><p:par><p:cTn id=\"1\" dur=\"indefinite\" restart=\"never\" nodeType=\"tmRoot\"><p:childTnLst>"
-        x += "<p:seq concurrent=\"1\" nextAc=\"seek\"><p:cTn id=\"2\" dur=\"indefinite\" nodeType=\"mainSeq\"><p:childTnLst>\(clicks)</p:childTnLst></p:cTn>"
-        x += "<p:prevCondLst><p:cond evt=\"onPrev\" delay=\"0\"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst><p:nextCondLst><p:cond evt=\"onNext\" delay=\"0\"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq>"
-        x += "</p:childTnLst></p:cTn></p:par></p:tnLst>"
-        let blds = builds.filter { $0.text != nil && $0.kind != .picture && $0.kind != .table && $0.kind != .group }.map { "<p:bldP spid=\"\($0.id)\" grpId=\"0\" animBg=\"1\"/>" }.joined()
-        if !blds.isEmpty { x += "<p:bldLst>\(blds)</p:bldLst>" }
-        return x + "</p:timing>"
-    }
+    func timing(_ s: Slide) -> String { TimingXML.write(s) { color($0) } }
 }

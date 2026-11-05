@@ -33,6 +33,10 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private(set) lazy var notesPage = NotesPageView(owner: self)
     private let notesPageScroll = NSScrollView()
     let banner = BannerView()
+    /// Master view: nil = the slide master, else the layout being edited.
+    var masterSelection: Int?
+    /// The open chart data sheet.
+    var chartEditor: ChartDataEditor?
     private var sidebarItem: NSSplitViewItem!
     private var inspectorItem: NSSplitViewItem!
     private var notesCollapsedBeforeHide = false
@@ -45,7 +49,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let newSlideButton = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 48, height: 28), pullsDown: true)
         toolbarController = ToolbarController(identifier: "PPT42.toolbar", elements: [
             .toggleSidebar, .sidebarSeparator,
-            .view(id: "newSlide", label: L("New Slide"), newSlideButton),
+            .view(id: "newSlide", label: L("Slide"), newSlideButton),
             .command(Cmd.textBox),
             .view(id: "shape", label: L("Shape"), shapeButton),
             .command(Cmd.image), .command(Cmd.table),
@@ -66,8 +70,13 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         setupContent()
         window.toolbar = toolbarController.toolbar
         window.addTitlebarAccessoryViewController(formatBar.strip)
-        window.setFrameAutosaveName("PPT42.window")
-        if window.frame.width < 900 { window.setContentSize(NSSize(width: 1280, height: 820)); window.center() }
+        if PresentationDocument.testMode {
+            // Test runs leave the saved window frame alone (and do not activate the app).
+            window.center()
+        } else {
+            window.setFrameAutosaveName("PPT42.window")
+            if window.frame.width < 900 { window.setContentSize(NSSize(width: 1280, height: 820)); window.center() }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -100,12 +109,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             b.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
         style(shape, symbol: "square.on.circle", tip: L("Insert a shape"))
-        for (i, p) in Shapes.gallery.enumerated() {
-            let item = NSMenuItem(title: p.name, action: #selector(insertShapeAction(_:)), keyEquivalent: "")
-            item.tag = i
-            item.image = Shapes.icon(p.prst)
-            shape.menu?.addItem(item)
-        }
+        for item in Shapes.menuItems(action: #selector(insertShapeAction(_:)), target: nil) { shape.menu?.addItem(item) }
         style(newSlide, symbol: "plus.rectangle.on.rectangle", tip: L("Add a slide (choose a layout)"))
         newSlide.menu?.delegate = self
         newSlide.menu?.identifier = NSUserInterfaceItemIdentifier("toolbarNewSlide")
@@ -184,6 +188,15 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
+        // Narrow windows (long Russian labels): the sidebar button and the main inserts stay, Format/Inspector go to » first.
+        for item in window?.toolbar?.items ?? [] {
+            switch item.itemIdentifier.rawValue {
+            case NSToolbarItem.Identifier.toggleSidebar.rawValue, "newSlide": item.visibilityPriority = .high
+            case Cmd.formatBar.id, Cmd.inspector.id, Cmd.table.id: item.visibilityPriority = .low
+            default: break
+            }
+            if item.itemIdentifier == .toggleSidebar { item.visibilityPriority = .user; item.label = L("Sidebar") }
+        }
         window?.layoutIfNeeded()
         setNotesHeight(120)
         if let split = splitController.splitView as NSSplitView?, sidebarItem.viewController.view.frame.width < 170 {
@@ -225,7 +238,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     /// The slide shown in the canvas: the real one, or the master sample in master view.
     var displayedSlide: Slide {
-        if mode == .master { return MasterView.sampleSlide(deck: deck, layout: nil) }
+        if mode == .master { return MasterView.sampleSlide(deck: deck, layout: editedLayout) }
         return currentSlide ?? Slide(layout: 0)
     }
 
@@ -304,7 +317,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let n = deck.slides.count
         var sub = n == 0 ? L("No slides") : L("Slide %d of %d", current + 1, n)
         switch mode {
-        case .master: sub = L("Master")
+        case .master: sub = L("Master") + " · " + MasterView.label(deck: deck, layout: editedLayout)
         case .outline: sub = L("Outline") + " · " + sub
         case .sorter: sub = L("Slide Sorter") + " · " + sub
         case .notesPage: sub = L("Notes Page") + " · " + sub
@@ -316,7 +329,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private func updateBanner() {
         let lost = deck.slides.flatMap { $0.objects }.contains { $0.unsupported != nil }
         if lost {
-            banner.show(.warning, L("Some objects (charts, SmartArt) are shown as placeholders and are not saved."))
+            banner.show(.warning, L("Some objects (OLE objects, SmartArt without a drawing) are shown as placeholders and are not saved."))
         } else {
             banner.hide()
         }
@@ -328,8 +341,13 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         commitEditing()
         if mode == .outline { outline.apply() }
         doc?.endSilentEdit()
+        let wasMaster = mode == .master
         mode = m
         selection = []
+        if (m == .master) != wasMaster {
+            if m == .master { masterSelection = nil }
+            thumbnails.reload()
+        }
         switch m {
         case .normal, .master: install(contentSplit)
         case .outline:
@@ -452,14 +470,19 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         let editable = mode == .normal || mode == .master
         let hasSel = !selection.isEmpty
         switch action {
+        case #selector(newLayoutAction(_:)): return mode == .master
+        case #selector(duplicateLayoutAction(_:)), #selector(renameLayoutAction(_:)), #selector(insertPlaceholderAction(_:)): return editedLayout != nil
+        case #selector(deleteLayoutAction(_:)): return editedLayout != nil && deck.layouts.count > 1
         case #selector(deleteAction(_:)):
             if isEditingText { return false }
+            if editedLayout != nil { return hasSel }
             if mode == .sorter || window?.firstResponder === thumbnails.table { return deck.slides.count > 0 }
             return hasSel && canvasFocused && normal
         case #selector(duplicateAction(_:)):
             return !isEditingText && (hasSel && normal || mode == .sorter || window?.firstResponder === thumbnails.table)
         case #selector(groupAction(_:)): return normal && selection.count > 1 && !isEditingText
         case #selector(ungroupAction(_:)): return normal && selectedObjects.contains { $0.kind == .group } && !isEditingText
+        case #selector(convertToShapesAction(_:)): return normal && selectedObjects.contains { $0.diagram != nil } && !isEditingText
         case #selector(arrangeAction(_:)): return normal && hasSel && !isEditingText
         case #selector(alignObjectsAction(_:)): return normal && hasSel
         case #selector(distributeAction(_:)): return normal && selection.count > 2
@@ -467,7 +490,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case #selector(deleteSlideAction(_:)): return mode != .master && deck.slides.count > 0
         case #selector(insertTextBoxAction(_:)), #selector(insertShapeAction(_:)), #selector(insertShapeMenuAction(_:)),
              #selector(insertImageAction(_:)), #selector(insertTableAction(_:)), #selector(showStampsAction(_:)),
-             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)):
+             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)), #selector(insertChartAction(_:)), #selector(insertMediaAction(_:)), #selector(insertCommentAction(_:)):
             return normal && deck.slides.count > 0
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)):
             return normal && selectedObjects.count == 1 && selectedObjects.first?.kind == .table
@@ -477,7 +500,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return editable && (isEditingText || selectedObjects.contains { $0.text != nil || $0.kind == .table })
         case #selector(layoutAction(_:)), #selector(hideSlideAction(_:)), #selector(transitionAction(_:)), #selector(backgroundAction(_:)):
             return mode != .master && currentSlide != nil
-        case #selector(playAction(_:)), #selector(playCurrentAction(_:)), #selector(rehearseAction(_:)):
+        case #selector(playAction(_:)), #selector(playCurrentAction(_:)), #selector(rehearseAction(_:)), #selector(playInWindowAction(_:)):
             return deck.slides.contains { !$0.hidden } && SlideShowController.current == nil
         case #selector(findNextAction(_:)), #selector(findPreviousAction(_:)): return !finder.query.isEmpty
         case #selector(zoomInAction(_:)), #selector(zoomOutAction(_:)), #selector(zoomFitAction(_:)), #selector(actualSizeAction(_:)): return editable

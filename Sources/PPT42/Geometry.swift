@@ -6,38 +6,104 @@ enum Shapes {
     struct Preset {
         let prst: String
         let name: String
-        let symbol: String
+        let section: Int
     }
+
+    /// Gallery sections (Insert › Shape submenus).
+    static let sections: [String] = [L("Basic Shapes"), L("Arrows"), L("Flowchart"), L("Stars and Banners"), L("Callouts"), L("Brackets and Math"), L("Lines")]
 
     /// Insert › Shape gallery, in order.
     static let gallery: [Preset] = [
-        Preset(prst: "rect", name: L("Rectangle"), symbol: "rectangle"),
-        Preset(prst: "roundRect", name: L("Rounded Rectangle"), symbol: "rectangle.roundedtop"),
-        Preset(prst: "ellipse", name: L("Oval"), symbol: "oval"),
-        Preset(prst: "triangle", name: L("Triangle"), symbol: "triangle"),
-        Preset(prst: "rtTriangle", name: L("Right Triangle"), symbol: "triangle"),
-        Preset(prst: "diamond", name: L("Diamond"), symbol: "diamond"),
-        Preset(prst: "parallelogram", name: L("Parallelogram"), symbol: "rectangle"),
-        Preset(prst: "trapezoid", name: L("Trapezoid"), symbol: "rectangle"),
-        Preset(prst: "pentagon", name: L("Pentagon"), symbol: "pentagon"),
-        Preset(prst: "hexagon", name: L("Hexagon"), symbol: "hexagon"),
-        Preset(prst: "octagon", name: L("Octagon"), symbol: "octagon"),
-        Preset(prst: "star5", name: L("Star"), symbol: "star"),
-        Preset(prst: "plus", name: L("Cross"), symbol: "plus"),
-        Preset(prst: "heart", name: L("Heart"), symbol: "heart"),
-        Preset(prst: "donut", name: L("Donut"), symbol: "circle.circle"),
-        Preset(prst: "rightArrow", name: L("Right Arrow"), symbol: "arrow.right"),
-        Preset(prst: "leftArrow", name: L("Left Arrow"), symbol: "arrow.left"),
-        Preset(prst: "upArrow", name: L("Up Arrow"), symbol: "arrow.up"),
-        Preset(prst: "downArrow", name: L("Down Arrow"), symbol: "arrow.down"),
-        Preset(prst: "leftRightArrow", name: L("Left-Right Arrow"), symbol: "arrow.left.and.right"),
-        Preset(prst: "chevron", name: L("Chevron"), symbol: "chevron.right"),
-        Preset(prst: "homePlate", name: L("Pentagon Arrow"), symbol: "arrowshape.right"),
-        Preset(prst: "wedgeRectCallout", name: L("Rectangular Callout"), symbol: "text.bubble"),
-        Preset(prst: "wedgeEllipseCallout", name: L("Oval Callout"), symbol: "bubble.left"),
-        Preset(prst: "cloud", name: L("Cloud"), symbol: "cloud"),
-        Preset(prst: "line", name: L("Line"), symbol: "line.diagonal"),
-        Preset(prst: "arrow", name: L("Arrow"), symbol: "line.diagonal.arrow"),
+        Preset(prst: "rect", name: L("Rectangle"), section: 0),
+        Preset(prst: "roundRect", name: L("Rounded Rectangle"), section: 0),
+        Preset(prst: "ellipse", name: L("Oval"), section: 0),
+        Preset(prst: "triangle", name: L("Triangle"), section: 0),
+        Preset(prst: "rtTriangle", name: L("Right Triangle"), section: 0),
+        Preset(prst: "diamond", name: L("Diamond"), section: 0),
+        Preset(prst: "parallelogram", name: L("Parallelogram"), section: 0),
+        Preset(prst: "trapezoid", name: L("Trapezoid"), section: 0),
+        Preset(prst: "pentagon", name: L("Pentagon"), section: 0),
+        Preset(prst: "hexagon", name: L("Hexagon"), section: 0),
+        Preset(prst: "octagon", name: L("Octagon"), section: 0),
+        Preset(prst: "plus", name: L("Cross"), section: 0),
+        Preset(prst: "donut", name: L("Donut"), section: 0),
+        Preset(prst: "can", name: L("Can"), section: 0),
+        Preset(prst: "cube", name: L("Cube"), section: 0),
+        Preset(prst: "frame", name: L("Frame"), section: 0),
+        Preset(prst: "foldedCorner", name: L("Folded Corner"), section: 0),
+        Preset(prst: "bevel", name: L("Bevel"), section: 0),
+        Preset(prst: "plaque", name: L("Plaque"), section: 0),
+        Preset(prst: "pie", name: L("Pie"), section: 0),
+        Preset(prst: "blockArc", name: L("Block Arc"), section: 0),
+        Preset(prst: "teardrop", name: L("Teardrop"), section: 0),
+        Preset(prst: "heart", name: L("Heart"), section: 0),
+        Preset(prst: "smileyFace", name: L("Smiley Face"), section: 0),
+        Preset(prst: "sun", name: L("Sun"), section: 0),
+        Preset(prst: "moon", name: L("Moon"), section: 0),
+        Preset(prst: "lightningBolt", name: L("Lightning Bolt"), section: 0),
+        Preset(prst: "cloud", name: L("Cloud"), section: 0),
+        Preset(prst: "noSmoking", name: L("No Symbol"), section: 0),
+        Preset(prst: "rightArrow", name: L("Right Arrow"), section: 1),
+        Preset(prst: "leftArrow", name: L("Left Arrow"), section: 1),
+        Preset(prst: "upArrow", name: L("Up Arrow"), section: 1),
+        Preset(prst: "downArrow", name: L("Down Arrow"), section: 1),
+        Preset(prst: "leftRightArrow", name: L("Left-Right Arrow"), section: 1),
+        Preset(prst: "upDownArrow", name: L("Up-Down Arrow"), section: 1),
+        Preset(prst: "quadArrow", name: L("Quad Arrow"), section: 1),
+        Preset(prst: "chevron", name: L("Chevron"), section: 1),
+        Preset(prst: "homePlate", name: L("Pentagon Arrow"), section: 1),
+        Preset(prst: "notchedRightArrow", name: L("Notched Right Arrow"), section: 1),
+        Preset(prst: "stripedRightArrow", name: L("Striped Right Arrow"), section: 1),
+        Preset(prst: "bentArrow", name: L("Bent Arrow"), section: 1),
+        Preset(prst: "uturnArrow", name: L("U-Turn Arrow"), section: 1),
+        Preset(prst: "curvedRightArrow", name: L("Curved Right Arrow"), section: 1),
+        Preset(prst: "circularArrow", name: L("Circular Arrow"), section: 1),
+        Preset(prst: "rightArrowCallout", name: L("Right Arrow Callout"), section: 1),
+        Preset(prst: "flowChartProcess", name: L("Process"), section: 2),
+        Preset(prst: "flowChartAlternateProcess", name: L("Alternate Process"), section: 2),
+        Preset(prst: "flowChartDecision", name: L("Decision"), section: 2),
+        Preset(prst: "flowChartInputOutput", name: L("Data"), section: 2),
+        Preset(prst: "flowChartPredefinedProcess", name: L("Predefined Process"), section: 2),
+        Preset(prst: "flowChartDocument", name: L("Document"), section: 2),
+        Preset(prst: "flowChartMultidocument", name: L("Multidocument"), section: 2),
+        Preset(prst: "flowChartTerminator", name: L("Terminator"), section: 2),
+        Preset(prst: "flowChartPreparation", name: L("Preparation"), section: 2),
+        Preset(prst: "flowChartManualInput", name: L("Manual Input"), section: 2),
+        Preset(prst: "flowChartConnector", name: L("Connector"), section: 2),
+        Preset(prst: "flowChartOffpageConnector", name: L("Off-page Connector"), section: 2),
+        Preset(prst: "flowChartMagneticDisk", name: L("Magnetic Disk"), section: 2),
+        Preset(prst: "flowChartMerge", name: L("Merge"), section: 2),
+        Preset(prst: "star4", name: L("4-Point Star"), section: 3),
+        Preset(prst: "star5", name: L("Star"), section: 3),
+        Preset(prst: "star6", name: L("6-Point Star"), section: 3),
+        Preset(prst: "star8", name: L("8-Point Star"), section: 3),
+        Preset(prst: "star12", name: L("12-Point Star"), section: 3),
+        Preset(prst: "star24", name: L("24-Point Star"), section: 3),
+        Preset(prst: "irregularSeal1", name: L("Explosion"), section: 3),
+        Preset(prst: "ribbon2", name: L("Ribbon"), section: 3),
+        Preset(prst: "wave", name: L("Wave"), section: 3),
+        Preset(prst: "doubleWave", name: L("Double Wave"), section: 3),
+        Preset(prst: "verticalScroll", name: L("Vertical Scroll"), section: 3),
+        Preset(prst: "horizontalScroll", name: L("Horizontal Scroll"), section: 3),
+        Preset(prst: "wedgeRectCallout", name: L("Rectangular Callout"), section: 4),
+        Preset(prst: "wedgeRoundRectCallout", name: L("Rounded Rectangular Callout"), section: 4),
+        Preset(prst: "wedgeEllipseCallout", name: L("Oval Callout"), section: 4),
+        Preset(prst: "cloudCallout", name: L("Cloud Callout"), section: 4),
+        Preset(prst: "borderCallout1", name: L("Line Callout"), section: 4),
+        Preset(prst: "leftBracket", name: L("Left Bracket"), section: 5),
+        Preset(prst: "rightBracket", name: L("Right Bracket"), section: 5),
+        Preset(prst: "leftBrace", name: L("Left Brace"), section: 5),
+        Preset(prst: "rightBrace", name: L("Right Brace"), section: 5),
+        Preset(prst: "bracketPair", name: L("Double Bracket"), section: 5),
+        Preset(prst: "bracePair", name: L("Double Brace"), section: 5),
+        Preset(prst: "mathPlus", name: L("Plus Sign"), section: 5),
+        Preset(prst: "mathMinus", name: L("Minus Sign"), section: 5),
+        Preset(prst: "mathMultiply", name: L("Multiply Sign"), section: 5),
+        Preset(prst: "mathDivide", name: L("Division Sign"), section: 5),
+        Preset(prst: "mathEqual", name: L("Equal"), section: 5),
+        Preset(prst: "mathNotEqual", name: L("Not Equal"), section: 5),
+        Preset(prst: "line", name: L("Line"), section: 6),
+        Preset(prst: "arrow", name: L("Arrow"), section: 6),
     ]
 
     static let defaults: [String: [String: Int]] = [
@@ -54,8 +120,32 @@ enum Shapes {
         CGFloat(o[key] ?? o[key == "adj" ? "adj1" : key] ?? defaults[prst]?[key] ?? defaults[prst]?["adj"] ?? 0) / 100000
     }
 
+    /// Sub-paths of an object's outline (custom geometry, preset or built-in fallback).
+    static func subpaths(_ o: SlideObject) -> [GeoSubpath] {
+        subpaths(o.geometry, adjust: o.adjust, size: o.frame.size, custom: o.custom)
+    }
+
+    static func subpaths(_ prst: String, adjust: [String: Int] = [:], size: CGSize, custom: CustomGeometry? = nil) -> [GeoSubpath] {
+        if let custom { return OOXMLGeometry.subpaths(custom, size: size, adjust: adjust) }
+        if let def = PresetDef.all[prst], prst != "rect" { return def.subpaths(size: size, adjust: adjust) }
+        return [GeoSubpath(path: legacyPath(prst, adjust: adjust, size: size))]
+    }
+
+    /// The filled outline of an object (clipping, hit testing, ODF export).
+    static func path(_ o: SlideObject) -> CGPath { path(o.geometry, adjust: o.adjust, size: o.frame.size, custom: o.custom) }
+
     /// Outline of a preset in a box of `size` at the origin (y down).
-    static func path(_ prst: String, adjust: [String: Int] = [:], size: CGSize) -> CGPath {
+    static func path(_ prst: String, adjust: [String: Int] = [:], size: CGSize, custom: CustomGeometry? = nil) -> CGPath {
+        let subs = subpaths(prst, adjust: adjust, size: size, custom: custom)
+        let filled = subs.filter { $0.fill != .none }
+        let use = filled.isEmpty ? subs : filled
+        if use.count == 1 { return use[0].path }
+        let p = CGMutablePath()
+        for s in use { p.addPath(s.path) }
+        return p
+    }
+
+    static func legacyPath(_ prst: String, adjust: [String: Int] = [:], size: CGSize) -> CGPath {
         let w = size.width, h = size.height, ss = min(w, h)
         let p = CGMutablePath()
         func poly(_ pts: [CGPoint]) {
@@ -200,6 +290,13 @@ enum Shapes {
         return p
     }
 
+    /// Area for the text inside an object's geometry (box-relative).
+    static func textRect(_ o: SlideObject) -> CGRect {
+        if let c = o.custom { return OOXMLGeometry.textRect(c, size: o.frame.size, adjust: o.adjust) ?? CGRect(origin: .zero, size: o.frame.size) }
+        if o.geometry != "rect", let def = PresetDef.all[o.geometry], let r = def.textRect(size: o.frame.size, adjust: o.adjust) { return r }
+        return textRect(o.geometry, size: o.frame.size)
+    }
+
     /// Area for the text inside a preset (box-relative).
     static func textRect(_ prst: String, size: CGSize) -> CGRect {
         let box = CGRect(origin: .zero, size: size)
@@ -216,6 +313,24 @@ enum Shapes {
             return box.insetBy(dx: size.width * 0.25, dy: size.height * 0.25)
         default:
             return box
+        }
+    }
+
+    /// Menu items of the gallery, in section submenus.
+    static func menuItems(action: Selector, target: AnyObject?) -> [NSMenuItem] {
+        sections.enumerated().map { k, name in
+            let sec = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: name)
+            for (i, p) in gallery.enumerated() where p.section == k {
+                let item = NSMenuItem(title: p.name, action: action, keyEquivalent: "")
+                item.tag = i
+                item.target = target
+                item.image = icon(p.prst)
+                sub.addItem(item)
+            }
+            sec.submenu = sub
+            sec.image = icon(gallery.first { $0.section == k }?.prst ?? "rect")
+            return sec
         }
     }
 
@@ -251,16 +366,23 @@ enum Shapes {
     }
 
     /// Arrowhead at `tip`, pointing away from `from`.
-    static func arrowhead(_ kind: Arrowhead, tip: CGPoint, from: CGPoint, width: CGFloat) -> CGPath? {
+    /// Length and half width of an arrowhead on a line of `width`.
+    static func arrowMetrics(_ size: ArrowSize, width: CGFloat) -> (CGFloat, CGFloat) {
+        let w = max(1, width)
+        return (max(3, w * ArrowSize.factor(size.len)), max(1.5, w * ArrowSize.factor(size.w) / 2))
+    }
+
+    static func arrowhead(_ kind: Arrowhead, tip: CGPoint, from: CGPoint, width: CGFloat, size: ArrowSize = ArrowSize()) -> CGPath? {
         guard kind != .none else { return nil }
-        let len = max(6, width * 3.5), half = max(3, width * 2)
+        let (len, half) = arrowMetrics(size, width: width)
         let ang = atan2(tip.y - from.y, tip.x - from.x)
         let back = CGPoint(x: tip.x - cos(ang) * len, y: tip.y - sin(ang) * len)
         let nx = -sin(ang), ny = cos(ang)
         let p = CGMutablePath()
         switch kind {
         case .oval:
-            p.addEllipse(in: CGRect(x: tip.x - half, y: tip.y - half, width: half * 2, height: half * 2))
+            // An ellipse of width × length, along the line.
+            p.addEllipse(in: CGRect(x: -len / 2, y: -half, width: len, height: half * 2), transform: CGAffineTransform(translationX: tip.x, y: tip.y).rotated(by: ang))
         case .diamond:
             let mid = CGPoint(x: tip.x - cos(ang) * len / 2, y: tip.y - sin(ang) * len / 2)
             p.addLines(between: [CGPoint(x: tip.x + cos(ang) * len / 2, y: tip.y + sin(ang) * len / 2),

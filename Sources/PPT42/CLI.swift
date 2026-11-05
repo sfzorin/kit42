@@ -42,6 +42,12 @@ enum CLI {
                 if ext == "pdf" {
                     try Renderer.pdf(deck, notes: notes, includeHidden: rest.contains("--hidden")).write(to: URL(fileURLWithPath: out))
                     print("pdf: \(out)")
+                } else if ext == "mp4" || ext == "mov" {
+                    var o = VideoExport.Options()
+                    if let i = rest.firstIndex(of: "--seconds"), rest.indices.contains(i + 1), let v = Double(rest[i + 1]) { o.secondsPerSlide = v }
+                    if let i = rest.firstIndex(of: "--width"), rest.indices.contains(i + 1), let v = Int(rest[i + 1]) { o.width = v }
+                    try VideoExport.export(deck, to: URL(fileURLWithPath: out), options: o)
+                    print("movie: \(out)")
                 } else if ext == "rtf" || ext == "md" {
                     try Outline.export(deck, format: ext).write(to: URL(fileURLWithPath: out))
                     print("\(ext): \(out)")
@@ -64,7 +70,7 @@ enum CLI {
     static func usage() {
         print("""
         PPT42 --info file.pptx|odp …
-        PPT42 --export in.pptx out.pdf [--notes] [--hidden] | out-dir [--jpeg] [--width 1920] | out.rtf | out.md
+        PPT42 --export in.pptx out.pdf [--notes] [--hidden] | out-dir [--jpeg] [--width 1920] | out.rtf | out.md | out.mp4 [--seconds 5] [--width 1920]
         PPT42 --convert in.pptx out.odp (and back)
         PPT42 --demo out.pptx|odp
         """)
@@ -77,8 +83,11 @@ enum CLI {
         if let ph = o.placeholder { s += " ph=\(ph.type)\(ph.idx.map { ":\($0)" } ?? "")" }
         s += String(format: " [%.0f,%.0f %.0f×%.0f]", o.frame.minX, o.frame.minY, o.frame.width, o.frame.height)
         if o.rotation != 0 { s += String(format: " rot=%.0f", o.rotation) }
-        if o.build != nil { s += " build=\(o.build!.rawValue)" }
         if let m = o.media { s += " media=\(m)" }
+        if let c = o.clip { s += " \(c.audio ? "audio" : "video")=\(c.media)\(c.autoplay ? " autoplay" : "")\(c.loop ? " loop" : "")" }
+        if let m = o.chart { s += " chart=\(m.kind.rawValue)/\(m.grouping.rawValue) series=\(m.series.count) categories=\(m.categories.count)\(m.title.map { " title=“\($0)”" } ?? "")" }
+        if o.diagram != nil { s += " smartart" }
+        if o.custom != nil { s += " custom-geometry" }
         if let t = o.table { s += " table=\(t.rows.count)x\(t.columns.count)" }
         if o.unsupported != nil { s += " unsupported" }
         if let t = o.text, !t.isEmpty {
@@ -103,6 +112,11 @@ enum CLI {
             if slide.background != nil { s += ", own background" }
             for o in slide.objects { s += "\n" + describe(o) }
             if !slide.notes.isEmpty { s += "\n    notes: “\(slide.notes.replacingOccurrences(of: "\n", with: " ⏎ ").prefix(80))”" }
+            for a in slide.animations { s += "\n    animation #\(a.target) \(a.describe)" }
+            for c in slide.comments {
+                s += "\n    comment \(c.initials) “\(c.text.prefix(60))”\(c.resolved ? " (resolved)" : "")"
+                for r in c.replies { s += "\n      reply \(r.initials) “\(r.text.prefix(60))”" }
+            }
         }
         return s
     }
@@ -124,7 +138,9 @@ enum DeckIO {
         d.pruneMedia()
         switch ext.lowercased() {
         case "odp": return ODPWriter.data(d)
+        case "otp": return ODPWriter.data(d, template: true)
         case "pptx": return PPTXWriter.data(d)
+        case "potx": return PPTXWriter.data(d, template: true)
         case "pdf": return Renderer.pdf(d)
         default: throw DeckError.invalid(L("Unsupported file type: %@", ext))
         }

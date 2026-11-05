@@ -54,16 +54,17 @@ enum Renderer {
     }
 
     /// Master view: master background and shapes, then the sample placeholders (master styles only) with dashed outlines.
-    static func drawMaster(deck: Deck, objects: [SlideObject], in ctx: CGContext, textHidden: Set<Int> = []) {
+    static func drawMaster(deck: Deck, objects: [SlideObject], in ctx: CGContext, textHidden: Set<Int> = [], layout: Layout? = nil) {
         let gc = NSGraphicsContext(cgContext: ctx, flipped: true)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = gc
         defer { NSGraphicsContext.restoreGraphicsState() }
         let bounds = CGRect(origin: .zero, size: deck.size)
-        drawFill(deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
+        drawFill(layout?.background ?? deck.master.background, in: CGPath(rect: bounds, transform: nil), bounds: bounds, deck: deck, ctx: ctx)
         var options = RenderOptions()
         options.textHidden = textHidden
-        for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
+        if layout?.showMasterShapes ?? true { for o in deck.master.objects { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) } }
+        for o in layout?.objects ?? [] { drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options) }
         for o in objects {
             drawObject(o, slide: nil, deck: deck, ctx: ctx, options: options)
             ctx.saveGState()
@@ -124,25 +125,44 @@ enum Renderer {
             return
         case .picture:
             drawPicture(o, deck: deck, ctx: ctx)
+            if options.editing, let clip = o.clip { drawMediaBadge(o, audio: clip.audio, ctx: ctx) }
         case .table:
             ctx.saveGState()
             transform(for: o, ctx: ctx, flips: false)
             if let t = o.table { drawTable(t, object: o, slide: slide, deck: deck, ctx: ctx, options: options) }
             ctx.restoreGState()
             return
+        case .chart:
+            ctx.saveGState()
+            transform(for: o, ctx: ctx, flips: false)
+            let box = CGRect(origin: .zero, size: o.frame.size)
+            if !o.fill.isNone { drawFill(o.fill, in: CGPath(rect: box, transform: nil), bounds: box, deck: deck, ctx: ctx) }
+            if let m = o.chart { ChartRenderer.draw(m, deck: deck, in: box, ctx: ctx) }
+            if o.line.color != nil { stroke(CGPath(rect: box, transform: nil), o.line, deck: deck, ctx: ctx) }
+            ctx.restoreGState()
+            return
         case .shape, .textBox:
             ctx.saveGState()
             transform(for: o, ctx: ctx, flips: true)
-            let path = Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size)
+            let subs = Shapes.subpaths(o)
             if o.shadow && (!o.fill.isNone || o.line.color != nil) { setShadow(ctx) }
-            if !o.fill.isNone {
-                ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-                drawFill(o.fill, in: path, bounds: CGRect(origin: .zero, size: o.frame.size), deck: deck, ctx: ctx)
-                if o.line.color != nil { stroke(path, o.line, deck: deck, ctx: ctx) }
-                ctx.endTransparencyLayer()
-            } else if o.line.color != nil {
-                stroke(path, o.line, deck: deck, ctx: ctx)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            let box = CGRect(origin: .zero, size: o.frame.size)
+            for sp in subs where sp.fill != .none && !o.fill.isNone {
+                drawFill(o.fill, in: sp.path, bounds: box, deck: deck, ctx: ctx)
+                if sp.fill != .norm {
+                    // Shading of parts that look 3-D (can top, folded corner…).
+                    let dark = sp.fill == .darken || sp.fill == .darkenLess
+                    let k: CGFloat = sp.fill == .darken || sp.fill == .lighten ? 0.4 : 0.2
+                    ctx.saveGState()
+                    ctx.addPath(sp.path)
+                    ctx.setFillColor((dark ? NSColor.black : NSColor.white).withAlphaComponent(k).cgColor)
+                    ctx.fillPath(using: .evenOdd)
+                    ctx.restoreGState()
+                }
             }
+            if o.line.color != nil { for sp in subs where sp.stroke { stroke(sp.path, o.line, deck: deck, ctx: ctx) } }
+            ctx.endTransparencyLayer()
             ctx.restoreGState()
         }
         if o.unsupported != nil, o.media == nil {
@@ -168,7 +188,7 @@ enum Renderer {
     /// Text area of an object in its own coordinates (geometry text rect minus insets).
     static func textFrame(_ o: SlideObject) -> CGRect {
         let insets = o.text?.insets ?? NSEdgeInsets()
-        let r = Shapes.textRect(o.geometry, size: o.frame.size)
+        let r = Shapes.textRect(o)
         return CGRect(x: r.minX + insets.left, y: r.minY + insets.top,
                       width: max(1, r.width - insets.left - insets.right), height: max(1, r.height - insets.top - insets.bottom))
     }
@@ -313,18 +333,18 @@ enum Renderer {
         ctx.beginTransparencyLayer(auxiliaryInfo: nil)
         // Shorten the line under filled heads so the tip stays sharp.
         let len = hypot(b.x - a.x, b.y - a.y)
-        func inset(_ p: CGPoint, toward q: CGPoint, _ head: Arrowhead) -> CGPoint {
-            guard head != .none, head != .arrow, len > 0 else { return p }
-            let d = min(len / 2, max(6, w * 3.5) * 0.8)
+        func inset(_ p: CGPoint, toward q: CGPoint, _ head: Arrowhead, _ size: ArrowSize) -> CGPoint {
+            guard head != .none, head != .arrow, head != .oval, head != .diamond, len > 0 else { return p }
+            let d = min(len / 2, Shapes.arrowMetrics(size, width: w).0 * 0.8)
             return CGPoint(x: p.x + (q.x - p.x) / len * d, y: p.y + (q.y - p.y) / len * d)
         }
         let path = CGMutablePath()
-        path.move(to: inset(a, toward: b, o.line.head))
-        path.addLine(to: inset(b, toward: a, o.line.tail))
+        path.move(to: inset(a, toward: b, o.line.head, o.line.headSize))
+        path.addLine(to: inset(b, toward: a, o.line.tail, o.line.tailSize))
         stroke(path, o.line, deck: deck, ctx: ctx)
         let cg = color.resolved(deck.theme).cgColor
-        for (kind, tip, from) in [(o.line.head, a, b), (o.line.tail, b, a)] {
-            guard let head = Shapes.arrowhead(kind, tip: tip, from: from, width: w) else { continue }
+        for (kind, tip, from, size) in [(o.line.head, a, b, o.line.headSize), (o.line.tail, b, a, o.line.tailSize)] {
+            guard let head = Shapes.arrowhead(kind, tip: tip, from: from, width: w, size: size) else { continue }
             ctx.addPath(head)
             if kind == .arrow {
                 ctx.setStrokeColor(cg)
@@ -340,12 +360,29 @@ enum Renderer {
         ctx.endTransparencyLayer()
     }
 
+    /// Play badge on video and audio objects in the editing view.
+    static func drawMediaBadge(_ o: SlideObject, audio: Bool, ctx: CGContext) {
+        ctx.saveGState()
+        transform(for: o, ctx: ctx, flips: false)
+        let s = min(36, min(o.frame.width, o.frame.height) * 0.3)
+        let c = CGPoint(x: o.frame.width / 2, y: o.frame.height / 2)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+        ctx.fillEllipse(in: CGRect(x: c.x - s, y: c.y - s, width: s * 2, height: s * 2))
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.move(to: CGPoint(x: c.x - s * 0.35, y: c.y - s * 0.5))
+        ctx.addLine(to: CGPoint(x: c.x + s * 0.55, y: c.y))
+        ctx.addLine(to: CGPoint(x: c.x - s * 0.35, y: c.y + s * 0.5))
+        ctx.closePath()
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+
     static func drawPicture(_ o: SlideObject, deck: Deck, ctx: CGContext) {
         guard let name = o.media, let img = MediaCache.image(name, deck.media[name]) else { return }
         ctx.saveGState()
         transform(for: o, ctx: ctx, flips: true)
         let box = CGRect(origin: .zero, size: o.frame.size)
-        let path = Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size)
+        let path = Shapes.path(o)
         if o.shadow {
             ctx.saveGState()
             setShadow(ctx)
@@ -371,7 +408,7 @@ enum Renderer {
 
     static func cellDefaults(_ t: TableModel, row: Int) -> RunProps? {
         guard t.firstRow, row == 0 else { return RunProps(size: 18) }
-        return RunProps(size: 18, bold: true, color: PColor(scheme: "bg1"))
+        return RunProps(size: 18, bold: t.headerBold, color: PColor(scheme: "bg1"))
     }
 
     static func drawTable(_ t: TableModel, object o: SlideObject, slide: Slide?, deck: Deck, ctx: CGContext, options: RenderOptions) {

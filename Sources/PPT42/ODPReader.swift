@@ -78,6 +78,8 @@ private struct ODPReaderImpl {
     var pageLayouts: [String: CGSize] = [:]
     var masters: [String: XMLElement] = [:]
     var nextID = 2
+    /// Master page name → layout index (our own files).
+    var layoutByMaster: [String: Int] = [:]
     var masterName = "Default"
     /// While reading content.xml, automatic styles of content win over styles.xml.
     var inContent = false
@@ -103,21 +105,96 @@ private struct ODPReaderImpl {
         let pages = content.child("body")?.child("presentation")?.children("page") ?? []
         // Slide size and master background from the master of the first page.
         masterName = pages.first?.a("master-page-name") ?? masters.keys.sorted().first ?? "Default"
+        // Our own files: one master page per layout ("PPT42-L1"…), the slide master in "Default".
+        // Slide size first: layouts read below are in the page's coordinates.
+        if let master = masters[masterName], let pl = master.a("page-layout-name"), let size = pageLayouts[pl], size.width > 0, size.height > 0, size != deck.size {
+            deck.resize(to: size)
+        }
+        let ours = masters.keys.filter { $0.hasPrefix("PPT42-L") }.sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
+        // Files from LibreOffice with several master pages (one per PowerPoint layout): each master page becomes a layout.
+        var used: [String] = []
+        for p in pages { if let m = p.a("master-page-name"), masters[m] != nil, !used.contains(m) { used.append(m) } }
+        if !ours.isEmpty, masters["Default"] != nil || masters[masterName] != nil {
+            if masters["Default"] != nil { masterName = "Default" }
+            readLayouts(ours, own: true)
+        } else if used.count > 1 {
+            readLayouts(used, own: false)
+        }
+        let separateMasters = !ours.isEmpty || used.count > 1
         if let master = masters[masterName] {
             if let pl = master.a("page-layout-name"), let size = pageLayouts[pl], size.width > 0, size.height > 0, size != deck.size {
                 deck.resize(to: size)
             }
-            if let dp = master.a("style-name"), let fill = pageFill(dp, explicitOnly: false) { deck.master.background = fill }
+            if let fill = masterBackground(master) { deck.master.background = fill }
             var objects: [SlideObject] = []
-            for e in master.elements where e.localName != "notes" && e.a("class") == nil {
+            for e in master.elements where e.localName != "notes" && e.a("class") == nil && (ours.isEmpty || masterName == "Default" || e.a("layer") == "backgroundobjects") {
                 objects += readShape(e, slide: nil)
             }
-            deck.master.objects = objects
+            // Decoration of LibreOffice's master pages belongs to their layouts.
+            deck.master.objects = separateMasters && ours.isEmpty ? [] : objects
+        }
+        if separateMasters {
+            // Layout backgrounds equal to the master's are inherited.
+            for i in deck.layouts.indices where deck.layouts[i].background == deck.master.background { deck.layouts[i].background = nil }
         }
         inContent = true
         for page in pages { deck.slides.append(readPage(page)) }
         if deck.slides.isEmpty { deck.slides = [deck.newSlide(layout: 0)] }
         return deck
+    }
+
+    /// A master page's background: its drawing-page style, else the "<master>-background" presentation style (LibreOffice templates).
+    mutating func masterBackground(_ m: XMLElement) -> Fill? {
+        if let dp = m.a("style-name"), let fill = pageFill(dp, explicitOnly: false), !fill.isNone { return fill }
+        guard let name = m.a("name") else { return nil }
+        let g = props("\(name)-background", "graphic")
+        guard let kind = g["fill"], kind != "none" else { return m.a("style-name").flatMap { pageFill($0, explicitOnly: false) } }
+        return fill(g, kind: kind)
+    }
+
+    /// Layouts from our master pages: their decoration (layer "layout") and placeholder frames.
+    mutating func readLayouts(_ names: [String], own: Bool) {
+        let footers = deck.master.placeholders.filter { $0.placeholder?.isFooter == true }
+        var layouts: [Layout] = []
+        // Our layout master pages repeat the slide master's shapes: those are not layout shapes.
+        var masterFrames: [CGRect] = []
+        if own, let m = masters["Default"] {
+            for e in m.elements where e.localName != "notes" && e.a("class") == nil { masterFrames += readShape(e, slide: nil).map(\.frame) }
+        }
+        for name in names {
+            guard let m = masters[name] else { continue }
+            var l = Layout(name: m.a("display-name") ?? name, type: "cust")
+            if let fill = masterBackground(m) { l.background = fill }
+            var placeholders: [SlideObject] = []
+            var id = 2, idx = 1
+            var classes: [String] = []
+            for e in m.elements where e.localName != "notes" {
+                if let cls = e.a("class") {
+                    guard ["title", "outline", "subtitle", "graphic", "object", "text"].contains(cls) else { continue }
+                    classes.append(cls)
+                    let (frame, _) = geometry(e)
+                    let type = cls == "title" ? "title" : cls == "subtitle" ? "subTitle" : cls == "graphic" ? "pic" : "body"
+                    var o = Themes.placeholder(id, type, idx: type == "title" ? nil : idx, frame, name: e.a("name") ?? "")
+                    if type == "pic" { o.kind = .picture; o.text = nil }
+                    if type != "title" { idx += 1 }
+                    id += 1
+                    placeholders.append(o)
+                } else {
+                    l.objects += readShape(e, slide: nil).filter { o in !masterFrames.contains { abs($0.minX - o.frame.minX) < 0.5 && abs($0.minY - o.frame.minY) < 0.5 && abs($0.width - o.frame.width) < 0.5 && abs($0.height - o.frame.height) < 0.5 } }
+                }
+            }
+            if classes.contains("subtitle") { l.type = "title"; for i in placeholders.indices where placeholders[i].placeholder?.type == "title" { placeholders[i].placeholder?.type = "ctrTitle" } }
+            else if classes.contains("graphic") { l.type = "picTx" }
+            else if classes.filter({ $0 == "outline" }).count >= 2 { l.type = "twoObj" }
+            else if classes.contains("outline") { l.type = "obj" }
+            else if classes.contains("title") { l.type = "titleOnly" }
+            else { l.type = "blank" }
+            for var f in footers { f.id = id; id += 1; placeholders.append(f) }
+            l.placeholders = placeholders
+            layoutByMaster[name] = layouts.count
+            layouts.append(l)
+        }
+        if !layouts.isEmpty { deck.layouts = layouts }
     }
 
     // MARK: Style collection
@@ -242,7 +319,9 @@ private struct ODPReaderImpl {
         nextID = 2
         var objects: [SlideObject] = []
         // Pages on another master (LibreOffice makes one per pptx layout): its background and shapes.
-        if let mname = page.a("master-page-name"), mname != masterName, let master = masters[mname] {
+        if let mname = page.a("master-page-name"), let li = layoutByMaster[mname] {
+            slide.layout = li
+        } else if let mname = page.a("master-page-name"), mname != masterName, let master = masters[mname] {
             if slide.background == nil, let ms = master.a("style-name") {
                 inContent = false
                 let p = props(ms, "drawing-page")
@@ -264,6 +343,13 @@ private struct ODPReaderImpl {
             switch e.localName {
             case "notes":
                 slide.notes = readNotes(e)
+            case "annotation":
+                var c = Comment(author: e.child("creator")?.stringValue ?? L("Unknown"), initials: "", date: CommentDates.parse(e.child("date")?.stringValue) ?? Date(),
+                                text: e.children("p").map { $0.stringValue ?? "" }.joined(separator: "\n"))
+                c.initials = e.child("creator-initials")?.stringValue ?? Comment.initials(c.author)
+                c.position = CGPoint(x: odfPoints(e.a("x")) ?? 10, y: odfPoints(e.a("y")) ?? 10)
+                c.resolved = e.a("resolved") == "true"
+                if e.a("reply") == "true", !slide.comments.isEmpty { slide.comments[slide.comments.count - 1].replies.append(c) } else { slide.comments.append(c) }
             case "par", "seq":
                 timing = e
             case "forms", "animations":
@@ -285,13 +371,7 @@ private struct ODPReaderImpl {
                 let t = transition(p)
                 if t.kind != .none { slide.transition.kind = t.kind; slide.transition.direction = t.direction; slide.transition.duration = t.duration }
             }
-            for effect in timing.descendants("par") where effect.a("preset-class") == "entrance" {
-                let target = effect.descendants("set").first?.a("targetElement") ?? effect.elements.compactMap { $0.a("targetElement") }.first
-                guard let target, let id = ids[target] else { continue }
-                let preset = effect.a("preset-id") ?? ""
-                let build: BuildEffect = preset.contains("appear") ? .appear : preset.contains("fly") ? .flyIn : preset.contains("zoom") ? .zoom : .fade
-                for i in objects.indices where objects[i].id == id && objects[i].build == nil { objects[i].build = build }
-            }
+            slide.animations = AnimationODF.read(timing, ids: ids)
         }
         // Layout from the placeholders present.
         let classes = objects.compactMap { $0.placeholder?.type }
@@ -305,7 +385,7 @@ private struct ODPReaderImpl {
         else if titles > 0 { type = "titleOnly" }
         else { type = "blank" }
         let own = page.a("layout").flatMap { deck.layoutIndex(type: $0) }
-        slide.layout = own ?? deck.layoutIndex(type: type) ?? 0
+        if let mname = page.a("master-page-name"), let li = layoutByMaster[mname] { slide.layout = li } else { slide.layout = own ?? deck.layoutIndex(type: type) ?? 0 }
         let layoutType = deck.layouts.indices.contains(slide.layout) ? deck.layouts[slide.layout].type : type
         if layoutType == "title" {
             for i in objects.indices where objects[i].placeholder?.type == "title" { objects[i].placeholder?.type = "ctrTitle" }
@@ -386,6 +466,10 @@ private struct ODPReaderImpl {
                 grad.stops = [GradientStop(position: 0, color: b), GradientStop(position: 1, color: a)]
             }
             return .gradient(grad)
+        case "hatch":
+            // Hatching is approximated by its background colour (or a light tint of the hatch lines).
+            if g["fill-hatch-solid"] == "true", let c = hexColor(g["fill-color"]) { return .solid(opacity < 1 ? c.withAlpha(opacity) : c) }
+            return .solid((hexColor(g["fill-color"]) ?? PColor(rgb: 0x3465A4)).withAlpha(0.25))
         case "bitmap":
             if let n = g["fill-image-name"], let href = fillImages[n], let data = zip[href] {
                 return .picture(deck.addMedia(data, ext: imageExtension(data)))
@@ -424,6 +508,15 @@ private struct ODPReaderImpl {
         }
         l.head = arrowhead(g["marker-start"])
         l.tail = arrowhead(g["marker-end"])
+        // Marker width in line widths → small, medium, large.
+        func size(_ key: String) -> ArrowSize {
+            guard let mw = odfPoints(g[key]) else { return ArrowSize() }
+            let f = mw / max(1, l.width)
+            let v = f < 2.5 ? 0 : f < 4 ? 1 : 2
+            return ArrowSize(w: v, len: v)
+        }
+        l.headSize = size("marker-start-width")
+        l.tailSize = size("marker-end-width")
         return l
     }
 
@@ -555,7 +648,21 @@ private struct ODPReaderImpl {
         switch e.localName {
         case "frame":
             o.placeholder = placeholder(cls)
-            if let img = e.child("image") ?? e.child("object")?.child("image"), e.child("text-box") == nil, e.child("table") == nil {
+            if let obj = e.child("object"), let href = obj.a("href") {
+                let dir = href.hasPrefix("./") ? String(href.dropFirst(2)) : href
+                if let root = xmlRoot(zip["\(dir)/content.xml"]), var m = ChartODF.read(root) {
+                    var files: [String: Data] = [:]
+                    for (name, data) in zip.entries where name.hasPrefix(dir + "/") { files[String(name.dropFirst(dir.count + 1))] = data }
+                    m.original = ChartOriginal(model: m, part: nil, odf: files)
+                    o.kind = .chart
+                    o.chart = m
+                    o.placeholder = nil
+                    applyGraphics(g, to: &o)
+                    o.shadow = false
+                    return [o]
+                }
+            }
+            if let img = e.child("image") ?? e.child("object")?.child("image"), e.child("text-box") == nil, e.child("table") == nil, e.child("plugin") == nil {
                 o.kind = .picture
                 if let href = img.a("href"), let data = zip[href] { o.media = deck.addMedia(data, ext: imageExtension(data)) }
                 // A replacement picture of an embedded object comes after it.
@@ -565,6 +672,23 @@ private struct ODPReaderImpl {
                 if let op = percent(g["image-opacity"]) { o.opacity = op }
                 if o.media == nil && o.placeholder == nil { return [] }
                 if e.child("object") != nil { o.unsupported = nil }
+                return [o]
+            }
+            if let plugin = e.child("plugin"), let href = plugin.a("href"), let data = zip[href.hasPrefix("./") ? String(href.dropFirst(2)) : href] {
+                o.kind = .picture
+                o.placeholder = nil
+                let ext = (href as NSString).pathExtension.lowercased()
+                var clip = MediaClip(media: deck.addClip(data, ext: ext.isEmpty ? "mp4" : ext))
+                clip.audio = MediaClip.isAudio(ext)
+                for p in plugin.children("param") {
+                    if p.a("name") == "Loop" { clip.loop = p.a("value") == "true" }
+                    if p.a("name") == "ppt42-autoplay" { clip.autoplay = p.a("value") == "true" }
+                }
+                o.clip = clip
+                if let img = e.child("image"), let ih = img.a("href"), let d = zip[ih] { o.media = deck.addMedia(d, ext: imageExtension(d)) }
+                if o.media == nil, let poster = MediaFiles.audioPoster() { o.media = deck.addMedia(poster, ext: "png") }
+                applyGraphics(g, to: &o)
+                o.fill = .none
                 return [o]
             }
             if e.child("object") != nil || e.child("plugin") != nil {
@@ -605,6 +729,19 @@ private struct ODPReaderImpl {
                 if let ours = geo.a("prst") { o.geometry = ours }
                 else if type.hasPrefix("ooxml-") { o.geometry = String(type.dropFirst(6)) }
                 else { o.geometry = Self.prstByType[type] ?? "rect" }
+                if let mods = geo.a("modifiers"), type.hasPrefix("ooxml-"), let def = PresetDef.all[o.geometry] {
+                    let vals = mods.split(separator: " ").compactMap { Double($0) }
+                    for (n, v) in Swift.zip(def.adjNames, vals) { o.adjust[n] = Int(v) }
+                }
+                // Our own custom outlines, and shapes LibreOffice has no preset for: the literal path.
+                if o.geometry == "custom" || (Self.prstByType[type] == nil && !type.hasPrefix("ooxml-")) || type == "non-primitive" {
+                    if let d = geo.a("enhanced-path"), let c = Self.literalPath(d, viewBox: geo.a("viewBox"), size: frame.size) {
+                        o.custom = c
+                        o.geometry = "custom"
+                    } else if o.geometry == "custom" {
+                        o.geometry = "rect"
+                    }
+                }
                 o.flipH = geo.a("mirror-horizontal") == "true"
                 o.flipV = geo.a("mirror-vertical") == "true"
                 if let adj = geo.a("adjust") {
@@ -623,9 +760,19 @@ private struct ODPReaderImpl {
                 let n = e.int("corners") ?? 5
                 o.geometry = e.a("concave") == "true" ? "star5" : n == 3 ? "triangle" : n == 6 ? "hexagon" : n == 8 ? "octagon" : "pentagon"
             }
-            if e.localName == "polyline" || e.localName == "path" {
-                // No outline geometry in our model: keep the box with the stroke only.
-                o.geometry = "rect"
+            if e.localName == "polyline" || e.localName == "polygon" || e.localName == "path" {
+                var d = e.a("d") ?? ""
+                if e.localName != "path", let pts = e.a("points") {
+                    let nums = pts.replacingOccurrences(of: ",", with: " ").split(separator: " ")
+                    d = "M " + nums.joined(separator: " ")
+                    if e.localName == "polygon" { d += " Z" }
+                }
+                if let c = Self.literalPath(d, viewBox: e.a("viewBox"), size: frame.size, svg: true, open: e.localName == "polyline") {
+                    o.custom = c
+                    o.geometry = "custom"
+                } else {
+                    o.geometry = "rect"
+                }
             }
             applyGraphics(g, to: &o)
             if e.localName == "polyline" { o.fill = .none }
@@ -635,6 +782,8 @@ private struct ODPReaderImpl {
             let paras = readParagraphs(e, frameStyle: styleName(e), cls: nil)
             t.paragraphs = paras
             o.text = t
+            // LibreOffice writes PowerPoint text boxes as unfilled, unstroked rectangles: they stay text boxes.
+            if o.geometry == "rect", o.custom == nil, o.fill.isNone, o.line.color == nil, !t.isEmpty { o.kind = .textBox }
             return [o]
         case "line", "connector", "measure":
             o.kind = .line
@@ -660,6 +809,86 @@ private struct ODPReaderImpl {
         default:
             return []
         }
+    }
+
+    /// A path of plain numbers (svg:d or a draw:enhanced-path without formulas) as custom geometry in viewBox units.
+    static func literalPath(_ d: String, viewBox: String?, size: CGSize, svg: Bool = false, open: Bool = false) -> CustomGeometry? {
+        guard !d.contains("?"), !d.contains("$") else { return nil }
+        // Tokens: command letters and numbers.
+        var toks: [String] = []
+        var cur = ""
+        for ch in d {
+            if ch.isLetter && ch != "e" && ch != "E" { if !cur.isEmpty { toks.append(cur); cur = "" }; toks.append(String(ch)) }
+            else if ch == " " || ch == "," { if !cur.isEmpty { toks.append(cur); cur = "" } }
+            else if ch == "-" && !cur.isEmpty && !(cur.last == "e" || cur.last == "E") { toks.append(cur); cur = "-" }
+            else { cur.append(ch) }
+        }
+        if !cur.isEmpty { toks.append(cur) }
+        let vb = (viewBox ?? "").split(separator: " ").compactMap { Double($0) }
+        let vx = vb.count == 4 ? vb[0] : 0, vy = vb.count == 4 ? vb[1] : 0
+        let vw = vb.count == 4 && vb[2] > 0 ? vb[2] : Double(size.width * 100), vh = vb.count == 4 && vb[3] > 0 ? vb[3] : Double(size.height * 100)
+        let path = CGMutablePath()
+        var i = 0, cmd = "M"
+        var p = CGPoint.zero, start = CGPoint.zero, lastCtrl: CGPoint?
+        var fill = true, stroke = true
+        func num() -> CGFloat? {
+            guard i < toks.count, let v = Double(toks[i]) else { return nil }
+            i += 1
+            return CGFloat(v)
+        }
+        func pt(_ rel: Bool) -> CGPoint? {
+            guard let x = num(), let y = num() else { return nil }
+            return rel ? CGPoint(x: p.x + x, y: p.y + y) : CGPoint(x: x - CGFloat(vx), y: y - CGFloat(vy))
+        }
+        var guardCount = 0
+        while i < toks.count, guardCount < 100000 {
+            guardCount += 1
+            if Double(toks[i]) == nil { cmd = toks[i]; i += 1 }
+            let rel = svg && cmd == cmd.lowercased() && cmd != "N" && cmd != "F" && cmd != "S"
+            switch cmd.uppercased() {
+            case "M":
+                guard let q = pt(rel) else { i += 1; continue }
+                path.move(to: q); p = q; start = q
+                cmd = rel ? "l" : "L"
+            case "L":
+                guard let q = pt(rel) else { i += 1; continue }
+                if path.isEmpty { path.move(to: q) } else { path.addLine(to: q) }
+                p = q
+            case "H":
+                guard let x = num() else { i += 1; continue }
+                p = CGPoint(x: rel ? p.x + x : x - CGFloat(vx), y: p.y); path.addLine(to: p)
+            case "V":
+                guard let y = num() else { i += 1; continue }
+                p = CGPoint(x: p.x, y: rel ? p.y + y : y - CGFloat(vy)); path.addLine(to: p)
+            case "C":
+                guard let a = pt(rel), let b = pt(rel), let q = pt(rel) else { i += 1; continue }
+                path.addCurve(to: q, control1: a, control2: b); p = q; lastCtrl = b
+                continue
+            case "S":
+                if !svg { stroke = false; continue }
+                guard let b = pt(rel), let q = pt(rel) else { i += 1; continue }
+                let a = lastCtrl.map { CGPoint(x: 2 * p.x - $0.x, y: 2 * p.y - $0.y) } ?? p
+                path.addCurve(to: q, control1: a, control2: b); p = q; lastCtrl = b
+                continue
+            case "Q":
+                guard let a = pt(rel), let q = pt(rel) else { i += 1; continue }
+                path.addQuadCurve(to: q, control: a); p = q
+            case "Z":
+                path.closeSubpath(); p = start
+            case "N": break
+            case "F": if !svg { fill = false } else { i += 1 }
+            default:
+                // Arcs and other commands: not literal enough.
+                return nil
+            }
+            lastCtrl = nil
+        }
+        guard !path.isEmpty else { return nil }
+        // Into points of the shape box, then the stored path units (1/100 pt).
+        let sx = size.width / CGFloat(vw), sy = size.height / CGFloat(vh)
+        var t = CGAffineTransform(scaleX: sx, y: sy)
+        guard let scaled = path.copy(using: &t) else { return nil }
+        return CustomGeometry(path: scaled, size: size, fill: (fill && !open) ? .norm : .none, stroke: stroke)
     }
 
     // MARK: Tables

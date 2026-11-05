@@ -38,6 +38,34 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>OpenDocument Presentation Template</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.oasis-open.opendocument.presentation-template</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>PresentationDocument</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>PowerPoint Template</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.openxmlformats.presentationml.template</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>PresentationDocument</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>PowerPoint 97–2003 Presentation</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -79,5 +107,52 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 sfzorin</string>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>PowerPoint Template</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.openxmlformats.presentationml.template</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>potx</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.openxmlformats-officedocument.presentationml.template</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>OpenDocument Presentation Template</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.oasis-open.opendocument.presentation-template</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>otp</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.oasis.opendocument.presentation-template</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

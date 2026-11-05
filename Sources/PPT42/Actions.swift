@@ -19,6 +19,22 @@ extension DeckWindowController {
 
     /// Writes an edited version of the displayed slide back (master view: into the master).
     func commit(slide s: Slide, name: String) {
+        if mode == .master, let li = editedLayout {
+            doc?.change(name) { deck in
+                for o in s.objects {
+                    guard let i = deck.layouts[li].placeholders.firstIndex(where: { $0.id == o.id }) else { continue }
+                    deck.layouts[li].placeholders[i].frame = o.frame
+                    deck.layouts[li].placeholders[i].rotation = o.rotation
+                    deck.layouts[li].placeholders[i].fill = o.fill
+                    deck.layouts[li].placeholders[i].line = o.line
+                    if let t = o.text, var lt = deck.layouts[li].placeholders[i].text {
+                        lt.anchor = t.anchor; lt.insets = t.insets; lt.autofit = t.autofit; lt.listStyle = t.listStyle
+                        deck.layouts[li].placeholders[i].text = lt
+                    }
+                }
+            }
+            return
+        }
         if mode == .master {
             doc?.change(name) { deck in
                 for o in s.objects {
@@ -167,12 +183,7 @@ extension DeckWindowController {
 
     @objc func insertShapeMenuAction(_ sender: Any?) {
         let menu = NSMenu()
-        for (i, p) in Shapes.gallery.enumerated() {
-            let item = NSMenuItem(title: p.name, action: #selector(insertShapeAction(_:)), keyEquivalent: "")
-            item.tag = i
-            item.image = Shapes.icon(p.prst)
-            menu.addItem(item)
-        }
+        for item in Shapes.menuItems(action: #selector(insertShapeAction(_:)), target: nil) { menu.addItem(item) }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
@@ -415,12 +426,20 @@ extension DeckWindowController {
     // MARK: - Edit
 
     @objc func deleteAction(_ sender: Any?) {
+        if let li = editedLayout {
+            if window?.firstResponder === thumbnails.table { deleteLayoutAction(sender); return }
+            let ids = Set(selection)
+            doc?.change(L("Delete")) { d in d.layouts[li].placeholders.removeAll { ids.contains($0.id) } }
+            selection = []
+            return
+        }
         if mode == .sorter || window?.firstResponder === thumbnails.table { deleteSlideAction(sender); return }
         guard !selection.isEmpty else { return }
         let ids = Set(selection), i = current
         guard deck.slides.indices.contains(i) else { return }
         doc?.change(L("Delete")) { d in
             d.slides[i].objects.removeAll { ids.contains($0.id) }
+            d.slides[i].animations.removeAll { ids.contains($0.target) }
             d.pruneMedia()
         }
         selection = []
@@ -706,6 +725,22 @@ extension DeckWindowController {
     /// Character formatting: the edited text's selection, or all text of the selected objects (master view: the master styles).
     func applyRun(_ name: String, _ f: @escaping (inout RunProps) -> Void) {
         if isEditingText { canvas.editor.applyRun(f); return }
+        if let li = editedLayout {
+            // A layout's placeholders carry their own level styles.
+            let objs = selectedObjects
+            doc?.change(name) { d in
+                for o in objs {
+                    guard let k = d.layouts[li].placeholders.firstIndex(where: { $0.id == o.id }), d.layouts[li].placeholders[k].text != nil else { continue }
+                    let shown = MasterView.sampleSlide(deck: d, layout: li)
+                    for i in 0..<9 {
+                        var r = d.levelStyle(for: d.layouts[li].placeholders[k], on: shown, level: i).run
+                        f(&r)
+                        d.layouts[li].placeholders[k].text?.listStyle.levels[i].run = r
+                    }
+                }
+            }
+            return
+        }
         if mode == .master {
             let objs = selectedObjects
             doc?.change(name) { d in
@@ -748,6 +783,24 @@ extension DeckWindowController {
     /// Paragraph formatting (level and paragraph style) of the edited paragraphs or all paragraphs of the selection.
     func applyPara(_ name: String, _ f: @escaping (inout Int, inout LevelStyle) -> Void) {
         if isEditingText { canvas.editor.applyPara { level, props, _ in f(&level, &props) }; return }
+        if let li = editedLayout {
+            let objs = selectedObjects
+            doc?.change(name) { d in
+                for o in objs {
+                    guard let k = d.layouts[li].placeholders.firstIndex(where: { $0.id == o.id }), d.layouts[li].placeholders[k].text != nil else { continue }
+                    let shown = MasterView.sampleSlide(deck: d, layout: li)
+                    for i in 0..<9 {
+                        var level = i
+                        var st = d.levelStyle(for: d.layouts[li].placeholders[k], on: shown, level: i)
+                        let run = d.layouts[li].placeholders[k].text?.listStyle[i].run ?? RunProps()
+                        f(&level, &st)
+                        st.run = run
+                        d.layouts[li].placeholders[k].text?.listStyle[i] = st
+                    }
+                }
+            }
+            return
+        }
         if mode == .master {
             let objs = selectedObjects
             doc?.change(name) { d in
@@ -889,10 +942,12 @@ extension DeckWindowController {
     @objc func playCurrentAction(_ sender: Any?) { startShow(from: current, presenter: false) }
     @objc func rehearseAction(_ sender: Any?) { startShow(from: current, presenter: true, rehearse: true) }
 
-    func startShow(from index: Int, presenter: Bool, rehearse: Bool = false) {
+    @objc func playInWindowAction(_ sender: Any?) { startShow(from: current, presenter: false, windowed: true) }
+
+    func startShow(from index: Int, presenter: Bool, rehearse: Bool = false, windowed: Bool = false) {
         commitEditing()
         doc?.endSilentEdit()
-        let show = SlideShowController(owner: self, deck: deck, start: index, rehearse: rehearse)
+        let show = SlideShowController(owner: self, deck: deck, start: index, rehearse: rehearse, windowed: windowed)
         show.start()
     }
 

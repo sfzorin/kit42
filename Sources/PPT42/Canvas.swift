@@ -131,12 +131,16 @@ final class SlideCanvas: NSView {
         options.number = Renderer.number(of: owner.current, deck: deck)
         if let id = editor.objectID { options.textHidden = [id] }
         if isMaster {
-            Renderer.drawMaster(deck: deck, objects: slide.objects, in: ctx, textHidden: options.textHidden)
+            Renderer.drawMaster(deck: deck, objects: slide.objects, in: ctx, textHidden: options.textHidden, layout: owner.editedLayout.map { deck.layouts[$0] })
         } else {
             Renderer.draw(slide, deck: deck, in: ctx, options: options)
         }
         ctx.restoreGState()
         drawSelection(ctx)
+        if owner.mode == .normal { CommentMarkers.draw(slide, in: ctx, toView: { self.toView($0) }, scale: scale) }
+        if owner.mode == .normal, owner.animationTabShown {
+            AnimationMarkers.draw(slide, deck: deck, selected: owner.inspector.animationPane.selected, in: ctx, toView: { self.toView($0) })
+        }
         // Guides, rubber band, creation preview
         ctx.saveGState()
         ctx.setStrokeColor(NSColor.systemPink.cgColor)
@@ -197,6 +201,26 @@ final class SlideCanvas: NSView {
         return local.map { rotate($0, around: c, by: a) }
     }
 
+    /// Adjust handles (yellow diamonds) of a preset shape, in slide coordinates.
+    func adjustHandles(_ o: SlideObject) -> [CGPoint] {
+        guard !o.isLine, o.custom == nil, o.kind == .shape || o.kind == .textBox || o.kind == .picture,
+              let def = PresetDef.all[o.geometry], !def.handles.isEmpty else { return [] }
+        return def.handlePoints(size: o.frame.size, adjust: o.adjust).map { toSlideSpace($0, of: o) }
+    }
+
+    func toSlideSpace(_ q: CGPoint, of o: SlideObject) -> CGPoint {
+        let f = o.frame
+        let x = o.flipH ? f.width - q.x : q.x, y = o.flipV ? f.height - q.y : q.y
+        return rotate(CGPoint(x: f.minX + x, y: f.minY + y), around: CGPoint(x: f.midX, y: f.midY), by: o.rotation * .pi / 180)
+    }
+
+    func toShapeSpace(_ p: CGPoint, of o: SlideObject) -> CGPoint {
+        let f = o.frame
+        let q = rotate(p, around: CGPoint(x: f.midX, y: f.midY), by: -o.rotation * .pi / 180)
+        let x = q.x - f.minX, y = q.y - f.minY
+        return CGPoint(x: o.flipH ? f.width - x : x, y: o.flipV ? f.height - y : y)
+    }
+
     private func drawSelection(_ ctx: CGContext) {
         guard let owner else { return }
         let accent = NSColor.controlAccentColor
@@ -222,6 +246,17 @@ final class SlideCanvas: NSView {
                     let r = CGRect(x: v.x - 4, y: v.y - 4, width: 8, height: 8)
                     ctx.setFillColor(NSColor.white.cgColor)
                     if i == 8 || o.isLine { ctx.fillEllipse(in: r); ctx.strokeEllipse(in: r) } else { ctx.fill(r); ctx.stroke(r) }
+                }
+                if single {
+                    for h in adjustHandles(o) {
+                        let v = toView(h)
+                        ctx.move(to: CGPoint(x: v.x, y: v.y - 5)); ctx.addLine(to: CGPoint(x: v.x + 5, y: v.y))
+                        ctx.addLine(to: CGPoint(x: v.x, y: v.y + 5)); ctx.addLine(to: CGPoint(x: v.x - 5, y: v.y)); ctx.closePath()
+                        ctx.setFillColor(NSColor.systemYellow.cgColor)
+                        ctx.setStrokeColor(NSColor(white: 0.25, alpha: 1).cgColor)
+                        ctx.drawPath(using: .fillStroke)
+                    }
+                    ctx.setStrokeColor(accent.cgColor)
                 }
             }
             ctx.restoreGState()
@@ -288,6 +323,7 @@ final class SlideCanvas: NSView {
         case resize(id: Int, handle: Int, original: SlideObject)
         case rotate(id: Int, original: SlideObject)
         case lineEnd(id: Int, end: Int, original: SlideObject)
+        case adjust(id: Int, handle: Int, original: SlideObject)
         case rubber(start: CGPoint, base: [Int])
         case create(start: CGPoint)
     }
@@ -304,6 +340,10 @@ final class SlideCanvas: NSView {
             editor.end()
         }
         moved = false
+        if owner.mode == .normal, CommentMarkers.rects(slide, scale: scale).contains(where: { $0.1.contains(p) }) {
+            owner.showInspector(true, tab: 4)
+            return
+        }
         if insertTool != nil {
             drag = .create(start: p)
             creating = (p, p)
@@ -311,6 +351,12 @@ final class SlideCanvas: NSView {
         }
         if event.clickCount == 2, let o = hit(p) {
             doubleClick(o, at: p)
+            return
+        }
+        if owner.selection.count == 1, let o = slide.object(owner.selection[0]),
+           let k = adjustHandles(o).firstIndex(where: { hypot($0.x - p.x, $0.y - p.y) <= 6 / scale }) {
+            drag = .adjust(id: o.id, handle: k, original: o)
+            live = slide
             return
         }
         if let (o, h) = grabHandle(p) {
@@ -383,6 +429,13 @@ final class SlideCanvas: NSView {
             var s = slide
             s.update(id) { $0.rotation = a }
             live = s
+        case .adjust(let id, let k, let o):
+            guard let def = PresetDef.all[o.geometry] else { break }
+            let local = toShapeSpace(p, of: o)
+            let adj = def.drag(handle: k, to: local, size: o.frame.size, adjust: o.adjust)
+            var s = slide
+            s.update(id) { $0.adjust = adj }
+            live = s
         case .lineEnd(let id, let end, let o):
             var q = p
             let other = end == 0 ? o.lineEnd : o.lineStart
@@ -404,12 +457,13 @@ final class SlideCanvas: NSView {
             create(from: start, to: end, square: event.modifierFlags.contains(.shift))
         case .rubber:
             break
-        case .move, .resize, .rotate, .lineEnd:
+        case .move, .resize, .rotate, .lineEnd, .adjust:
             if moved, let s = live {
                 let name: String
                 switch drag {
                 case .move: name = L("Move")
                 case .rotate: name = L("Rotate")
+                case .adjust: name = L("Adjust Shape")
                 default: name = L("Resize")
                 }
                 owner.commit(slide: s, name: name)
@@ -428,6 +482,10 @@ final class SlideCanvas: NSView {
                 editor.begin(o, cell: (r, c), at: p)
                 return
             } }
+            return
+        }
+        if o.kind == .chart {
+            owner.editChart(o)
             return
         }
         if o.placeholder?.type == "pic" || (o.kind == .picture && o.media == nil) {

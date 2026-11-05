@@ -89,7 +89,13 @@ struct PPTXReader {
     /// Line widths of the theme's lnStyleLst (points).
     var themeLineWidths: [CGFloat] = [0.75, 1, 1.5]
     var themeBackgrounds: [Fill] = []
+    var themeFills: [Fill] = []
+    var themeLines: [LineStyle] = []
+    var themeShadows: [Bool] = []
     var mediaByPart: [String: String] = [:]
+    var commentAuthors: [String: (String, String)] = [:]
+    var modernAuthors: [String: (String, String)] = [:]
+    var contentTypes: (overrides: [String: String], defaults: [String: String]) = ([:], [:])
 
     static func read(_ data: Data) throws -> Deck {
         if data.starts(with: [0xD0, 0xCF, 0x11, 0xE0]) { throw DeckError.legacyPPT }
@@ -111,6 +117,10 @@ struct PPTXReader {
     }
 
     mutating func read() throws -> Deck {
+        if let ct = xmlRoot(zip["[Content_Types].xml"]) {
+            for o in ct.children("Override") { if let p = o.a("PartName"), let t = o.a("ContentType") { contentTypes.overrides[String(p.drop { $0 == "/" })] = t } }
+            for d in ct.children("Default") { if let e = d.a("Extension"), let t = d.a("ContentType") { contentTypes.defaults[e.lowercased()] = t } }
+        }
         let presPath = "ppt/presentation.xml"
         guard let pres = xmlRoot(zip[presPath]) else { throw DeckError.invalid(L("The file is not a PowerPoint presentation")) }
         if let sz = pres.child("sldSz"), let cx = sz.num("cx"), let cy = sz.num("cy"), cx > 0, cy > 0 {
@@ -118,6 +128,12 @@ struct PPTXReader {
         }
         if let n = pres.int("firstSlideNum") { deck.firstSlideNumber = n }
         let presRels = rels(presPath)
+        if let t = presRels.values.first(where: { $0.type.hasSuffix("/commentAuthors") })?.target, let root = xmlRoot(zip[t]) {
+            for a in root.children("cmAuthor") { if let id = a.a("id") { commentAuthors[id] = (a.a("name") ?? "", a.a("initials") ?? "") } }
+        }
+        if let t = presRels.values.first(where: { $0.type.hasSuffix("/authors") })?.target, let root = xmlRoot(zip[t]) {
+            for a in root.children("author") { if let id = a.a("id") { modernAuthors[id] = (a.a("name") ?? "", a.a("initials") ?? "") } }
+        }
 
         // Master, theme, layouts
         let masterPath = pres.child("sldMasterIdLst")?.children("sldMasterId").first.flatMap { $0.rid.flatMap { presRels[$0]?.target } }
@@ -185,6 +201,7 @@ struct PPTXReader {
             let (ph, obj) = readTree(xml.path("cSld", "spTree"), part: path, inherit: inherit, keepOrder: true)
             slide.objects = ph + obj
             slide.transition = readTransition(xml)
+            slide.comments = readComments(srels)
             readTiming(xml, into: &slide)
             if let notesPath = srels.values.first(where: { $0.type.hasSuffix("/notesSlide") })?.target, let notes = xmlRoot(zip[notesPath]) {
                 slide.notes = readNotes(notes)
@@ -195,6 +212,23 @@ struct PPTXReader {
     }
 
     // MARK: - Theme
+
+    func contentType(_ path: String) -> String {
+        contentTypes.overrides[path] ?? contentTypes.defaults[(path as NSString).pathExtension.lowercased()] ?? "application/octet-stream"
+    }
+
+    /// A part with the parts it refers to (kept verbatim for writing back).
+    func package(_ path: String, depth: Int = 0) -> PackagePart? {
+        guard let data = zip[path] else { return nil }
+        var list: [PackageRel] = []
+        if depth < 4 {
+            for (id, r) in rels(path).sorted(by: { $0.key < $1.key }) {
+                if r.external { list.append(PackageRel(id: id, type: r.type, external: r.target, part: nil)) }
+                else if let p = package(r.target, depth: depth + 1) { list.append(PackageRel(id: id, type: r.type, external: nil, part: p)) }
+            }
+        }
+        return PackagePart(name: path, data: data, contentType: contentType(path), rels: list)
+    }
 
     mutating func readTheme(_ root: XMLElement) {
         guard let elements = root.child("themeElements") else { return }
@@ -216,6 +250,9 @@ struct PPTXReader {
             let widths = fmt.child("lnStyleLst")?.children("ln").compactMap { $0.num("w").map { $0 / emuPerPoint } } ?? []
             if !widths.isEmpty { themeLineWidths = widths }
             themeBackgrounds = fmt.child("bgFillStyleLst")?.elements.compactMap { readFill(wrapping: $0, part: "") } ?? []
+            themeFills = fmt.child("fillStyleLst")?.elements.compactMap { readFill(wrapping: $0, part: "") } ?? []
+            themeLines = fmt.child("lnStyleLst")?.children("ln").map { ln in var l = LineStyle(color: PColor(scheme: "phClr")); readLine(ln, into: &l); return l } ?? []
+            themeShadows = fmt.child("effectStyleLst")?.children("effectStyle").map { $0.descendants("outerShdw").isEmpty == false } ?? []
         }
     }
 
@@ -311,6 +348,21 @@ struct PPTXReader {
         return name
     }
 
+    /// A theme style with its placeholder colour (phClr) replaced by `c`.
+    static func substitute(_ f: Fill, _ c: PColor) -> Fill {
+        func sub(_ x: PColor) -> PColor {
+            guard x.scheme == "phClr" else { return x }
+            var out = c
+            out.mods += x.mods
+            return out
+        }
+        switch f {
+        case .solid(let x): return .solid(sub(x))
+        case .gradient(var g): g.stops = g.stops.map { GradientStop(position: $0.position, color: sub($0.color)) }; return .gradient(g)
+        default: return f
+        }
+    }
+
     mutating func readBackground(_ cSld: XMLElement?, part: String) -> Fill? {
         guard let bg = cSld?.child("bg") else { return nil }
         if let pr = bg.child("bgPr") { return readFill(pr, part: part) }
@@ -359,8 +411,11 @@ struct PPTXReader {
             default: return .triangle
             }
         }
-        if let h = head(ln.child("headEnd")) { line.head = h }
-        if let t = head(ln.child("tailEnd")) { line.tail = t }
+        func size(_ e: XMLElement?) -> ArrowSize {
+            ArrowSize(w: ArrowSize.names.firstIndex(of: e?.a("w") ?? "med") ?? 1, len: ArrowSize.names.firstIndex(of: e?.a("len") ?? "med") ?? 1)
+        }
+        if let h = head(ln.child("headEnd")) { line.head = h; line.headSize = size(ln.child("headEnd")) }
+        if let t = head(ln.child("tailEnd")) { line.tail = t; line.tailSize = size(ln.child("tailEnd")) }
     }
 
     // MARK: - Text
@@ -395,7 +450,8 @@ struct PPTXReader {
         if let i = e.num("indent") { s.indent = i / emuPerPoint }
         func spacing(_ el: XMLElement?, lineSpacing: Bool) -> CGFloat? {
             guard let el else { return nil }
-            if let pct = el.child("spcPct")?.num("val") { return lineSpacing ? pct / 100000 : pct / 100000 * 12 }
+            // Paragraph spacing in percent of the line is kept negative (a fraction of the font's line height).
+            if let pct = el.child("spcPct")?.num("val") { return lineSpacing ? pct / 100000 : -pct / 100000 }
             if let pts = el.child("spcPts")?.num("val") { return lineSpacing ? -pts / 100 : pts / 100 }
             return nil
         }
@@ -488,6 +544,47 @@ struct PPTXReader {
         guard let e else { return l }
         for i in 0..<9 { if let lv = e.child("lvl\(i + 1)pPr") { l[i] = readLevel(lv, part: part) } }
         return l
+    }
+
+    /// Legacy comments (with PowerPoint 2013 threads) and modern threaded comments.
+    func readComments(_ srels: [String: (target: String, type: String, external: Bool)]) -> [Comment] {
+        var out: [Comment] = []
+        for r in srels.values where r.type.hasSuffix("/comments") && !r.type.contains("2018") {
+            guard let root = xmlRoot(zip[r.target]) else { continue }
+            var byKey: [String: Int] = [:]
+            for cm in root.children("cm") {
+                let a = commentAuthors[cm.a("authorId") ?? ""] ?? (L("Unknown"), "?")
+                var c = Comment(author: a.0, initials: a.1.isEmpty ? Comment.initials(a.0) : a.1, date: CommentDates.parse(cm.a("dt")) ?? Date(),
+                                text: cm.child("text")?.stringValue ?? "")
+                if let pos = cm.child("pos") { c.position = CGPoint(x: (pos.num("x") ?? 0) / 8, y: (pos.num("y") ?? 0) / 8) }
+                if let mine = cm.descendants("comment").first(where: { $0.uri == "urn:sfzorin:ppt42" }) {
+                    c.resolved = mine.bool("resolved") ?? false
+                    c.objectID = mine.int("object")
+                }
+                if let parent = cm.descendants("parentCm").first, let k = byKey["\(parent.a("authorId") ?? "")/\(parent.a("idx") ?? "")"] {
+                    out[k].replies.append(c)
+                } else {
+                    byKey["\(cm.a("authorId") ?? "")/\(cm.a("idx") ?? "")"] = out.count
+                    out.append(c)
+                }
+            }
+        }
+        for r in srels.values where r.type.contains("2018") && r.type.hasSuffix("/comments") {
+            guard let root = xmlRoot(zip[r.target]) else { continue }
+            func make(_ e: XMLElement) -> Comment {
+                let a = modernAuthors[e.a("authorId") ?? ""] ?? (L("Unknown"), "?")
+                let text = e.child("txBody").map { tb in tb.children("p").map { $0.descendants("t").map { $0.stringValue ?? "" }.joined() }.joined(separator: "\n") } ?? ""
+                return Comment(author: a.0, initials: a.1.isEmpty ? Comment.initials(a.0) : a.1, date: CommentDates.parse(e.a("created")) ?? Date(), text: text)
+            }
+            for cm in root.children("cm") {
+                var c = make(cm)
+                c.resolved = cm.a("status") == "resolved"
+                if let pos = cm.child("pos") { c.position = CGPoint(x: (pos.num("x") ?? 0) / emuPerPoint, y: (pos.num("y") ?? 0) / emuPerPoint) }
+                c.replies = (cm.child("replyLst")?.children("reply") ?? []).map(make)
+                out.append(c)
+            }
+        }
+        return out
     }
 
     func readNotes(_ root: XMLElement) -> String {
@@ -589,20 +686,32 @@ struct PPTXReader {
             for gd in g.child("avLst")?.children("gd") ?? [] {
                 if let n = gd.a("name"), let f = gd.a("fmla"), f.hasPrefix("val "), let v = Int(f.dropFirst(4).trimmingCharacters(in: .whitespaces)) { o.adjust[n] = v }
             }
-        } else if spPr?.child("custGeom") != nil {
-            o.geometry = "rect"
+        } else if let cg = spPr?.child("custGeom") {
+            o.custom = readCustomGeometry(cg)
+            o.geometry = "custom"
         }
         if ["line", "straightConnector1", "bentConnector2", "bentConnector3", "bentConnector4", "curvedConnector3"].contains(o.geometry) { o.kind = .line }
         // Theme style references (p:style) give the defaults; spPr overrides.
         var line = base?.line ?? LineStyle.none
         var fill = base?.fill ?? Fill.none
         var fontColor: PColor?
+        var styleShadow = false
         if let style = e.child("style") {
             if let ref = style.child("lnRef"), let idx = ref.int("idx"), idx > 0 {
                 line.color = readColor(ref)
                 line.width = themeLineWidths.indices.contains(idx - 1) ? themeLineWidths[idx - 1] : 1
+                if themeLines.indices.contains(idx - 1), let c = line.color {
+                    let tl = themeLines[idx - 1]
+                    line.dash = tl.dash
+                    if let tc = tl.color, tc.scheme == "phClr" { var x = c; x.mods += tc.mods; line.color = x }
+                }
             }
-            if let ref = style.child("fillRef"), let idx = ref.int("idx"), idx > 0, let c = readColor(ref) { fill = .solid(c) }
+            if let ref = style.child("fillRef"), let idx = ref.int("idx"), idx > 0, let c = readColor(ref) {
+                fill = themeFills.indices.contains(idx - 1) ? Self.substitute(themeFills[idx - 1], c) : .solid(c)
+            }
+            if let ref = style.child("effectRef"), let idx = ref.int("idx"), idx > 0, themeShadows.indices.contains(idx - 1), themeShadows[idx - 1] {
+                styleShadow = true
+            }
             fontColor = readColor(style.child("fontRef"))
         }
         if let f = readFill(spPr, part: part) { fill = f }
@@ -610,9 +719,17 @@ struct PPTXReader {
         o.fill = o.kind == .line ? .none : fill
         o.line = line
         if o.kind == .line, o.line.color == nil, spPr?.child("ln")?.child("noFill") == nil { o.line.color = PColor(scheme: "tx1") }
-        o.shadow = spPr?.child("effectLst")?.child("outerShdw") != nil
+        o.shadow = spPr?.child("effectLst").map { $0.child("outerShdw") != nil } ?? styleShadow
         if let tx = e.child("txBody") {
             o.text = readTextBody(tx, part: part, base: base?.text)
+            // SmartArt drawings: the text has its own box (dsp:txXfrm).
+            if let (r, _, _, _) = xfrm(e.child("txXfrm")), r.width > 0, var t = o.text {
+                t.insets.left += max(0, r.minX - o.frame.minX)
+                t.insets.top += max(0, r.minY - o.frame.minY)
+                t.insets.right += max(0, o.frame.maxX - r.maxX)
+                t.insets.bottom += max(0, o.frame.maxY - r.maxY)
+                o.text = t
+            }
             if let fontColor, var t = o.text {
                 for i in 0..<9 where t.listStyle[i].run.color == nil { t.listStyle.levels[i].run.color = fontColor }
                 o.text = t
@@ -627,6 +744,37 @@ struct PPTXReader {
             o.text = t
         }
         return o
+    }
+
+    func readCustomGeometry(_ e: XMLElement) -> CustomGeometry {
+        var g = CustomGeometry()
+        func guides(_ list: XMLElement?) -> [GeoGuide] {
+            (list?.children("gd") ?? []).compactMap { gd in gd.a("name").map { GeoGuide(name: $0, fmla: gd.a("fmla") ?? "val 0") } }
+        }
+        g.adjust = guides(e.child("avLst"))
+        g.guides = guides(e.child("gdLst"))
+        if let r = e.child("rect") { g.rect = [r.a("l") ?? "l", r.a("t") ?? "t", r.a("r") ?? "r", r.a("b") ?? "b"] }
+        for p in e.child("pathLst")?.children("path") ?? [] {
+            var gp = GeoPath()
+            gp.w = p.a("w").flatMap(Double.init)
+            gp.h = p.a("h").flatMap(Double.init)
+            gp.fill = GeoFill(rawValue: p.a("fill") ?? "norm") ?? .norm
+            gp.stroke = p.bool("stroke") ?? true
+            for c in p.elements {
+                let pts = c.children("pt").map { ($0.a("x") ?? "0", $0.a("y") ?? "0") }
+                switch c.localName {
+                case "moveTo": if let q = pts.first { gp.commands.append(.move(q.0, q.1)) }
+                case "lnTo": if let q = pts.first { gp.commands.append(.line(q.0, q.1)) }
+                case "arcTo": gp.commands.append(.arc(wR: c.a("wR") ?? "0", hR: c.a("hR") ?? "0", st: c.a("stAng") ?? "0", sw: c.a("swAng") ?? "0"))
+                case "quadBezTo": if pts.count >= 2 { gp.commands.append(.quad(pts[0].0, pts[0].1, pts[1].0, pts[1].1)) }
+                case "cubicBezTo": if pts.count >= 3 { gp.commands.append(.cubic(pts[0].0, pts[0].1, pts[1].0, pts[1].1, pts[2].0, pts[2].1)) }
+                case "close": gp.commands.append(.close)
+                default: break
+                }
+            }
+            g.paths.append(gp)
+        }
+        return g
     }
 
     mutating func readPicture(_ e: XMLElement, part: String, inherit: [SlideObject]) -> SlideObject? {
@@ -645,11 +793,29 @@ struct PPTXReader {
             }
         }
         if let g = spPr?.child("prstGeom")?.a("prst") { o.geometry = g }
+        if let cg = spPr?.child("custGeom") { o.custom = readCustomGeometry(cg); o.geometry = "custom" }
         var line = LineStyle.none
         readLine(spPr?.child("ln"), into: &line)
         o.line = line
         o.shadow = spPr?.child("effectLst")?.child("outerShdw") != nil
         if let amt = e.path("blipFill", "blip", "alphaModFix")?.num("amt") { o.opacity = amt / 100000 }
+        // Video and audio (a:videoFile / a:audioFile, p14:media with the embedded file).
+        if let nvPr = e.path("nvPicPr", "nvPr") {
+            let srels = rels(part)
+            let media = nvPr.descendants("media").first?.a("embed").flatMap { srels[$0] }
+            let file = nvPr.child("videoFile") ?? nvPr.child("audioFile") ?? nvPr.child("quickTimeFile")
+            let linked = file?.a("link").flatMap { srels[$0] }
+            if let target = (media ?? linked), !target.external, let data = zip[target.target] {
+                let ext = (target.target as NSString).pathExtension.lowercased()
+                var clip = MediaClip(media: deck.addClip(data, ext: ext.isEmpty ? "mp4" : ext))
+                clip.audio = nvPr.child("audioFile") != nil || MediaClip.isAudio(ext)
+                if let mine = nvPr.descendants("clip").first(where: { $0.uri == "urn:sfzorin:ppt42" }) {
+                    clip.autoplay = mine.bool("autoplay") ?? false
+                    clip.loop = mine.bool("loop") ?? false
+                }
+                o.clip = clip
+            }
+        }
         if o.media == nil && o.placeholder == nil { return nil }
         return o
     }
@@ -665,9 +831,44 @@ struct PPTXReader {
             o.placeholder = nil
             return o
         }
-        // Charts, SmartArt, OLE: a box saying what was there (a fallback picture when the file has one).
-        o.kind = .shape
         let uri = data.a("uri") ?? ""
+        if uri.hasSuffix("/chart"), let id = data.child("chart")?.rid, let target = rels(part)[id]?.target,
+           let pkg = package(target), let root = xmlRoot(pkg.data) {
+            var m = ChartXML.read(root) { readColor($0) }
+            m.original = ChartOriginal(model: m, part: pkg)
+            o.kind = .chart
+            o.chart = m
+            o.placeholder = nil
+            return o
+        }
+        if uri.hasSuffix("/diagram"), let ids = data.child("relIds") {
+            let srels = rels(part)
+            func pkg(_ attr: String) -> PackagePart? { ids.a(attr).flatMap { srels[$0]?.target }.flatMap { package($0) } }
+            let dm = pkg("dm")
+            var drawingPath: String?
+            if let dmx = xmlRoot(dm?.data), let rid = dmx.descendants("dataModelExt").first?.a("relId") { drawingPath = srels[rid]?.target }
+            if drawingPath == nil { drawingPath = srels.values.first { $0.type == Diagram.relDrawing }?.target }
+            if let dp = drawingPath, let root = xmlRoot(zip[dp]), let tree = root.child("spTree") {
+                var kids: [SlideObject] = []
+                var modelIDs: [String?] = []
+                for el in tree.elements {
+                    kids += readElement(el, part: dp, inherit: [])
+                    if el.localName == "sp" { modelIDs.append(el.a("modelId")) }
+                }
+                func shift(_ list: inout [SlideObject]) { for i in list.indices { list[i].offset(by: CGSize(width: o.frame.minX, height: o.frame.minY)) } }
+                shift(&kids)
+                if !kids.isEmpty {
+                    o.kind = .group
+                    o.children = kids
+                    o.name = o.name.isEmpty ? "SmartArt" : o.name
+                    o.diagram = DiagramSource(data: dm, layout: pkg("lo"), style: pkg("qs"), colors: pkg("cs"), drawing: package(dp), children: kids, modelIDs: modelIDs, frame: o.frame)
+                    o.placeholder = nil
+                    return o
+                }
+            }
+        }
+        // SmartArt without a drawing, OLE: a box saying what was there (a fallback picture when the file has one).
+        o.kind = .shape
         o.unsupported = uri.contains("chart") ? L("Chart (not supported)") : uri.contains("diagram") ? L("SmartArt (not supported)") : L("Object (not supported)")
         if let pic = data.descendants("pic").first, let blip = pic.child("blipFill") {
             o.kind = .picture
@@ -685,6 +886,10 @@ struct PPTXReader {
         if let pr = tbl.child("tblPr") {
             t.firstRow = pr.bool("firstRow") ?? false
             t.bandRows = pr.bool("bandRow") ?? false
+            // Header text weight from the style's first row (a:tcTxStyle b="on"); not bold otherwise, as LibreOffice shows it.
+            let id = pr.child("tableStyleId")?.stringValue ?? ""
+            let style = xmlRoot(zip["ppt/tableStyles.xml"])?.children("tblStyle").first { $0.a("styleId") == id }
+            t.headerBold = style?.path("firstRow", "tcTxStyle")?.a("b") == "on"
         }
         for (ri, tr) in rows.enumerated() {
             t.rows[ri] = (tr.num("h") ?? 370840) / emuPerPoint
@@ -790,16 +995,6 @@ struct PPTXReader {
 
     func readTiming(_ slide: XMLElement, into s: inout Slide) {
         guard let timing = slide.child("timing") else { return }
-        for ctn in timing.descendants("cTn") where ctn.a("presetClass") == "entr" {
-            guard let spid = ctn.descendants("spTgt").first?.int("spid") else { continue }
-            let effect: BuildEffect
-            switch ctn.int("presetID") ?? 1 {
-            case 1: effect = .appear
-            case 2: effect = .flyIn
-            case 53, 21, 23: effect = .zoom
-            default: effect = .fade
-            }
-            if s.object(spid)?.build == nil { s.update(spid) { $0.build = effect } }
-        }
+        s.animations = TimingXML.read(timing) { readColor($0) }
     }
 }

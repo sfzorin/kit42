@@ -205,8 +205,21 @@ struct LineStyle: Equatable {
     var dash: Dash = .solid
     var head: Arrowhead = .none
     var tail: Arrowhead = .none
+    /// Arrowhead width and length: 0 small, 1 medium, 2 large (a:headEnd w/len).
+    var headSize = ArrowSize()
+    var tailSize = ArrowSize()
 
     static let none = LineStyle(color: nil)
+}
+
+struct ArrowSize: Equatable {
+    var w = 1
+    var len = 1
+
+    static let names = ["sm", "med", "lg"]
+
+    /// Multiples of the line width (as PowerPoint and LibreOffice draw them).
+    static func factor(_ v: Int) -> CGFloat { [2, 3, 5][min(2, max(0, v))] }
 }
 
 // MARK: - Text
@@ -412,6 +425,8 @@ struct TableModel: Equatable {
     var accent = "accent1"
     var borderColor: PColor? = PColor(rgb: 0xFFFFFF)
     var borderWidth: CGFloat = 1
+    /// Header row text in bold (from the table style; LibreOffice's built-in styles are not bold).
+    var headerBold = true
 
     init(rows: Int, columns: Int, width: CGFloat, rowHeight: CGFloat = 28) {
         self.columns = Array(repeating: width / CGFloat(max(1, columns)), count: max(1, columns))
@@ -469,12 +484,7 @@ struct Placeholder: Equatable {
 enum TextRole { case title, body, other }
 
 enum ObjectKind: String {
-    case shape, textBox, picture, table, group, line
-}
-
-/// Entrance animation played on click in the slide show (p:timing).
-enum BuildEffect: String, CaseIterable {
-    case appear, fade, flyIn, zoom
+    case shape, textBox, picture, table, group, line, chart
 }
 
 struct SlideObject: Equatable {
@@ -490,6 +500,8 @@ struct SlideObject: Equatable {
     var geometry = "rect"
     /// Adjust values (prst-specific, 1/100000 of the shorter side for most).
     var adjust: [String: Int] = [:]
+    /// Custom outline (a:custGeom, ODF paths).
+    var custom: CustomGeometry?
     var fill: Fill = .none
     var line: LineStyle = .none
     var shadow = false
@@ -498,10 +510,14 @@ struct SlideObject: Equatable {
     var placeholder: Placeholder?
     /// Picture: media name and crop (fractions of each side: left, top, right, bottom).
     var media: String?
+    /// Video or audio played in the slide show (the picture is its poster).
+    var clip: MediaClip?
     var crop = NSEdgeInsets()
     var table: TableModel?
+    var chart: ChartModel?
+    /// SmartArt behind a group (its drawing's shapes are the children).
+    var diagram: DiagramSource?
     var children: [SlideObject] = []
-    var build: BuildEffect?
     /// Description / alt text.
     var descr = ""
     /// Shapes the reader could not represent (charts, SmartArt) are kept as a picture fallback or a box.
@@ -509,10 +525,10 @@ struct SlideObject: Equatable {
 
     static func == (a: SlideObject, b: SlideObject) -> Bool {
         a.id == b.id && a.name == b.name && a.kind == b.kind && a.frame == b.frame && a.rotation == b.rotation && a.flipH == b.flipH
-            && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.fill == b.fill && a.line == b.line
-            && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media
+            && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.custom == b.custom && a.fill == b.fill && a.line == b.line
+            && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media && a.clip == b.clip
             && a.crop.left == b.crop.left && a.crop.top == b.crop.top && a.crop.right == b.crop.right && a.crop.bottom == b.crop.bottom
-            && a.table == b.table && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported
+            && a.table == b.table && a.chart == b.chart && a.diagram == b.diagram && a.children == b.children && a.descr == b.descr && a.unsupported == b.unsupported
     }
 
     init(id: Int, kind: ObjectKind, frame: CGRect) {
@@ -583,6 +599,9 @@ struct Slide: Equatable {
     var hidden = false
     var transition = Transition()
     var showMasterShapes = true
+    var comments: [Comment] = []
+    /// Object animations in play order.
+    var animations: [Animation] = []
 
     var title: String {
         objects.first { $0.placeholder?.isTitle == true }?.text?.plainText ?? ""
@@ -713,6 +732,7 @@ struct Deck: Equatable {
         func visit(_ list: [SlideObject]) {
             for o in list {
                 if let m = o.media { used.insert(m) }
+                if let m = o.clip?.media { used.insert(m) }
                 if case .picture(let m) = o.fill { used.insert(m) }
                 visit(o.children)
             }

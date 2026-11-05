@@ -4,8 +4,9 @@ import Kit42
 /// Writes a Deck as an OpenDocument presentation (.odp). Every property is written explicitly
 /// (colours flattened with the theme, inherited text styles resolved), so LibreOffice shows what we draw.
 enum ODPWriter {
-    static func data(_ deck: Deck) -> Data {
+    static func data(_ deck: Deck, template: Bool = false) -> Data {
         var w = ODPWriterImpl(deck: deck)
+        w.template = template
         return w.write()
     }
 }
@@ -87,6 +88,10 @@ private final class ODFShared {
     var xml = ""
     private var names: [String: String] = [:]
     var pictures: [String: String] = [:]   // media name → zip path
+    /// Embedded sub-documents (charts): directory → files, plus manifest entries (path, media type).
+    var files: [String: Data] = [:]
+    var manifest: [(String, String)] = []
+    var objectCount = 0
 
     func named(_ kind: String, _ make: (String) -> String) -> String {
         if let n = names[kind] { return n }
@@ -106,6 +111,7 @@ private final class ODFShared {
 
 private struct ODPWriterImpl {
     let deck: Deck
+    var template = false
     var theme: Theme { deck.theme }
     let shared = ODFShared()
 
@@ -117,13 +123,14 @@ private struct ODPWriterImpl {
         let content = contentXML()
         let styles = stylesXML()
         var zip = ZipArchive()
-        zip["mimetype"] = Data("application/vnd.oasis.opendocument.presentation".utf8)
+        let mime = template ? "application/vnd.oasis.opendocument.presentation-template" : "application/vnd.oasis.opendocument.presentation"
+        zip["mimetype"] = Data(mime.utf8)
         zip.storedUncompressed.insert("mimetype")
         zip["content.xml"] = Data(content.utf8)
         zip["styles.xml"] = Data(styles.utf8)
         zip["meta.xml"] = Data(metaXML().utf8)
         var manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\">"
-        manifest += "<manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.3\" manifest:media-type=\"application/vnd.oasis.opendocument.presentation\"/>"
+        manifest += "<manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.3\" manifest:media-type=\"\(mime)\"/>"
         for f in ["content.xml", "styles.xml", "meta.xml"] { manifest += "<manifest:file-entry manifest:full-path=\"\(f)\" manifest:media-type=\"text/xml\"/>" }
         for (media, path) in shared.pictures.sorted(by: { $0.key < $1.key }) {
             guard let data = deck.media[media] else { continue }
@@ -132,6 +139,8 @@ private struct ODPWriterImpl {
             let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
             manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(mime)\"/>"
         }
+        for (path, data) in shared.files { zip[path] = data }
+        for (path, type) in shared.manifest { manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(type)\"/>" }
         manifest += "</manifest:manifest>"
         zip["META-INF/manifest.xml"] = Data(manifest.utf8)
         return zip.data()
@@ -144,7 +153,7 @@ private struct ODPWriterImpl {
     xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" \
     xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" \
     xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:smil="urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0" \
-    xmlns:anim="urn:oasis:names:tc:opendocument:xmlns:animation:1.0" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" xmlns:ppt42="urn:sfzorin:ppt42" office:version="1.3"
+    xmlns:anim="urn:oasis:names:tc:opendocument:xmlns:animation:1.0" xmlns:officeooo="http://openoffice.org/2009/office" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" xmlns:ppt42="urn:sfzorin:ppt42" office:version="1.3"
     """
 
     func metaXML() -> String {
@@ -183,15 +192,47 @@ private struct ODPWriterImpl {
         }
         common += "<style:style style:name=\"Default-outline1\" style:family=\"presentation\">\(neutral)</style:style>"
         for i in 2...9 { common += "<style:style style:name=\"Default-outline\(i)\" style:family=\"presentation\" style:parent-style-name=\"Default-outline\(i - 1)\"/>" }
+        // Layout master pages first: their styles and named fills belong in the lists below.
+        let layoutPages = layoutMasters(auto)
         common += markers()
         common += shared.xml
 
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(Self.ns)><office:styles>\(common)</office:styles>"
             + "<office:automatic-styles>\(pageLayout)\(auto.xml)</office:automatic-styles>"
             + "<office:master-styles><style:master-page style:name=\"Default\" style:page-layout-name=\"PM1\" draw:style-name=\"\(masterDP)\">\(masterShapes)"
-            + "<presentation:notes style:page-layout-name=\"PM2\"><draw:page-thumbnail presentation:class=\"page\" svg:width=\"17cm\" svg:height=\"\(odfLength(17 * pointsPerCm * deck.size.height / deck.size.width))\" svg:x=\"2cm\" svg:y=\"2cm\"/>"
+            + notesMaster + "</style:master-page>" + layoutPages + "</office:master-styles></office:document-styles>"
+    }
+
+    var notesMaster: String {
+        "<presentation:notes style:page-layout-name=\"PM2\"><draw:page-thumbnail presentation:class=\"page\" svg:width=\"17cm\" svg:height=\"\(odfLength(17 * pointsPerCm * deck.size.height / deck.size.width))\" svg:x=\"2cm\" svg:y=\"2cm\"/>"
             + "<draw:frame presentation:class=\"notes\" presentation:placeholder=\"true\" svg:width=\"17cm\" svg:height=\"12cm\" svg:x=\"2cm\" svg:y=\"14.5cm\"><draw:text-box/></draw:frame></presentation:notes>"
-            + "</style:master-page></office:master-styles></office:document-styles>"
+    }
+
+    /// One master page per layout (as LibreOffice shows PowerPoint layouts): master and layout shapes, placeholder frames.
+    func layoutMasters(_ auto: ODFAutoStyles) -> String {
+        var x = ""
+        for (i, l) in deck.layouts.enumerated() {
+            let bg = drawingPageProps(l.background ?? deck.master.background, slide: nil)
+            let dp = auto.style("drawing-page", "dp", "<style:drawing-page-properties draw:background-size=\"full\"\(bg)/>")
+            x += "<style:master-page style:name=\"PPT42-L\(i + 1)\" style:display-name=\"\(xmlEscape(Themes.displayName(l)))\" style:page-layout-name=\"PM1\" draw:style-name=\"\(dp)\">"
+            if l.showMasterShapes {
+                for o in deck.master.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
+            }
+            // LibreOffice shows only the background objects layer of master pages.
+            for o in l.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
+            var outline = 0
+            for p in l.placeholders {
+                guard let ph = p.placeholder, !ph.isFooter else { continue }
+                let cls = presentationClass(ph)
+                guard ["title", "subtitle", "outline", "graphic"].contains(cls) else { continue }
+                if cls == "outline" { outline += 1 }
+                let st = auto.style("presentation", "pr", "<style:graphic-properties draw:fill=\"none\" draw:stroke=\"none\" draw:auto-grow-height=\"false\"/>",
+                                    attrs: " style:parent-style-name=\"\(parentStyle(cls))\"")
+                x += "<draw:frame presentation:style-name=\"\(st)\" draw:layer=\"backgroundobjects\"\(position(p.frame, rotation: p.rotation)) presentation:class=\"\(cls)\" presentation:placeholder=\"true\"\(p.name.isEmpty ? "" : " draw:name=\"\(xmlEscape(p.name))\"")>\(cls == "graphic" ? "<draw:image/>" : "<draw:text-box/>")</draw:frame>"
+            }
+            x += notesMaster + "</style:master-page>"
+        }
+        return x
     }
 
     func markers() -> String {
@@ -215,20 +256,40 @@ private struct ODPWriterImpl {
         let dp = styles.style("drawing-page", "dp", "<style:drawing-page-properties\(props)/>")
         let number = Renderer.number(of: index, deck: deck)
         let pid = "page\(index + 1)"
-        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"Default\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(xmlEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
-        // Layout decoration (ODF has no layouts): drawn on the slide.
-        for o in deck.layout(of: slide)?.objects ?? [] { x += object(o, slide: nil, number: number, styles: styles) }
+        let masterPage = deck.layouts.indices.contains(slide.layout) ? "PPT42-L\(slide.layout + 1)" : "Default"
+        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"\(masterPage)\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(xmlEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
+
         for o in slide.objects {
             var shape = object(o, slide: slide, number: number, styles: styles)
-            if o.build != nil, let space = shape.firstIndex(of: " "), let close = shape.firstIndex(of: ">"), space < close {
+            if slide.animations.contains(where: { $0.target == o.id }), let space = shape.firstIndex(of: " "), let close = shape.firstIndex(of: ">"), space < close {
                 // Build targets need an id.
                 shape.insert(contentsOf: " xml:id=\"\(pid)s\(o.id)\" draw:id=\"\(pid)s\(o.id)\"", at: space)
             }
             x += shape
         }
+        x += annotations(slide)
         x += timing(slide, pageID: pid)
         x += notes(slide, index: index, styles: styles)
         return x + "</draw:page>"
+    }
+
+    /// Comments as LibreOffice Impress annotations (replies follow their comment).
+    func annotations(_ s: Slide) -> String {
+        let df = ISO8601DateFormatter()
+        df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var x = ""
+        for c in s.comments {
+            for (k, item) in ([c] + c.replies).enumerated() {
+                var date = df.string(from: item.date)
+                if date.hasSuffix("Z") { date.removeLast() }
+                x += "<officeooo:annotation svg:x=\"\(odfLength(c.position.x))\" svg:y=\"\(odfLength(c.position.y))\" svg:width=\"0.35cm\" svg:height=\"0.35cm\""
+                if k == 0 { x += " ppt42:resolved=\"\(c.resolved)\"" } else { x += " ppt42:reply=\"true\"" }
+                x += "><dc:creator>\(xmlEscape(item.author))</dc:creator><dc:date>\(date)</dc:date><meta:creator-initials>\(xmlEscape(item.initials))</meta:creator-initials>"
+                x += item.text.components(separatedBy: "\n").map { "<text:p>\(odfText($0))</text:p>" }.joined()
+                x += "</officeooo:annotation>"
+            }
+        }
+        return x
     }
 
     func layoutName(_ s: Slide) -> String {
@@ -255,35 +316,15 @@ private struct ODPWriterImpl {
         return x + "</presentation:notes>"
     }
 
-    /// Transition (anim:transitionFilter, as LibreOffice writes it) and entrance builds on click.
+    /// Transition (anim:transitionFilter, as LibreOffice writes it) and the animations.
     func timing(_ s: Slide, pageID: String) -> String {
-        let builds = s.objects.filter { $0.build != nil }
-        guard s.transition.kind != .none || !builds.isEmpty else { return "" }
+        let seq = AnimationODF.mainSequence(s, target: { "\(pageID)s\($0)" }, hex: { color($0) })
+        guard s.transition.kind != .none || !seq.isEmpty else { return "" }
         var x = "<anim:par presentation:node-type=\"timing-root\">"
         if s.transition.kind != .none {
             x += "<anim:par smil:begin=\"\(pageID).begin\"><anim:transitionFilter smil:dur=\"\(String(format: "%.2f", s.transition.duration))s\"\(smilTransition(s.transition))/></anim:par>"
         }
-        x += "<anim:seq presentation:node-type=\"main-sequence\">"
-        for o in builds {
-            let target = "\(pageID)s\(o.id)"
-            let effect = o.build ?? .appear
-            let preset = ["appear": "ooo-entrance-appear", "fade": "ooo-entrance-fade-in", "flyIn": "ooo-entrance-fly-in", "zoom": "ooo-entrance-zoom"][effect.rawValue] ?? "ooo-entrance-appear"
-            x += "<anim:par smil:begin=\"next\"><anim:par smil:begin=\"0s\"><anim:par smil:begin=\"0s\" smil:fill=\"hold\" presentation:node-type=\"on-click\" presentation:preset-class=\"entrance\" presentation:preset-id=\"\(preset)\"\(effect == .flyIn ? " presentation:preset-sub-type=\"from-bottom\"" : "")>"
-            x += "<anim:set smil:begin=\"0s\" smil:dur=\"0.001s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"visibility\" smil:to=\"visible\"/>"
-            switch effect {
-            case .appear: break
-            case .fade:
-                x += "<anim:transitionFilter smil:dur=\"0.5s\" smil:targetElement=\"\(target)\" smil:type=\"fade\" smil:subtype=\"crossfade\"/>"
-            case .flyIn:
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"x\" smil:values=\"x;x\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"y\" smil:values=\"1+height/2;y\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-            case .zoom:
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"width\" smil:values=\"0;width\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-                x += "<anim:animate smil:dur=\"0.5s\" smil:fill=\"hold\" smil:targetElement=\"\(target)\" smil:attributeName=\"height\" smil:values=\"0;height\" smil:keyTimes=\"0;1\" presentation:additive=\"base\"/>"
-            }
-            x += "</anim:par></anim:par></anim:par>"
-        }
-        return x + "</anim:seq></anim:par>"
+        return x + seq + "</anim:par>"
     }
 
     func smilTransition(_ t: Transition) -> String {
@@ -390,9 +431,10 @@ private struct ODPWriterImpl {
         x += " svg:stroke-color=\"\(color(c))\" svg:stroke-width=\"\(odfLength(l.width))\" draw:stroke-linejoin=\"round\""
         let a = c.alpha * opacity
         if a < 0.999 { x += " svg:stroke-opacity=\"\(pct(a))\"" }
-        let mw = odfLength(max(6, l.width * 3.5) * 1.15)
-        if let m = markerName(l.head) { x += " draw:marker-start=\"\(m)\" draw:marker-start-width=\"\(mw)\" draw:marker-start-center=\"\(l.head == .oval || l.head == .diamond)\"" }
-        if let m = markerName(l.tail) { x += " draw:marker-end=\"\(m)\" draw:marker-end-width=\"\(mw)\" draw:marker-end-center=\"\(l.tail == .oval || l.tail == .diamond)\"" }
+        // LibreOffice markers keep their aspect: the width follows the arrowhead's width.
+        func mw(_ s: ArrowSize) -> String { odfLength(Shapes.arrowMetrics(s, width: l.width).1 * 2) }
+        if let m = markerName(l.head) { x += " draw:marker-start=\"\(m)\" draw:marker-start-width=\"\(mw(l.headSize))\" draw:marker-start-center=\"\(l.head == .oval || l.head == .diamond)\"" }
+        if let m = markerName(l.tail) { x += " draw:marker-end=\"\(m)\" draw:marker-end-width=\"\(mw(l.tailSize))\" draw:marker-end-center=\"\(l.tail == .oval || l.tail == .diamond)\"" }
         return x
     }
 
@@ -462,6 +504,8 @@ private struct ODPWriterImpl {
             return picture(o, styles: styles)
         case .table:
             return table(o, slide: slide, number: number, styles: styles)
+        case .chart:
+            return chartFrame(o, styles: styles)
         case .shape, .textBox:
             if o.placeholder != nil || (o.kind == .textBox && o.geometry == "rect") { return frame(o, slide: slide, number: number, styles: styles) }
             return customShape(o, slide: slide, number: number, styles: styles)
@@ -549,8 +593,15 @@ private struct ODPWriterImpl {
         let vb = "0 0 \(Int((o.frame.width * scale).rounded())) \(Int((o.frame.height * scale).rounded()))"
         // OOXML preset name (LibreOffice writes it back to pptx as that preset) with our exact outline as the path.
         // No draw:text-areas: with ooxml-* types LibreOffice misplaces the text when they are absolute.
-        let type = "ooxml-\(o.geometry)"
-        let path = enhancedPath(Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size), scale: scale)
+        let type = o.custom != nil ? "non-primitive" : "ooxml-\(o.geometry)"
+        // Every sub-path, with its own no-fill / no-stroke (smiley mouths, callout lines, scroll curls).
+        let path = Shapes.subpaths(o).map { sp -> String in
+            var s = enhancedPath(sp.path, scale: scale)
+            s.removeLast()
+            if sp.fill == .none { s += "F " }
+            if !sp.stroke { s += "S " }
+            return s + "N"
+        }.joined(separator: " ")
         x += "<draw:enhanced-geometry svg:viewBox=\"\(vb)\" draw:type=\"\(type)\" ppt42:prst=\"\(xmlEscape(o.geometry))\" draw:enhanced-path=\"\(path)\""
         if o.flipH { x += " draw:mirror-horizontal=\"true\"" }
         if o.flipV { x += " draw:mirror-vertical=\"true\"" }
@@ -579,6 +630,52 @@ private struct ODPWriterImpl {
         return "<draw:line draw:style-name=\"\(st)\" draw:layer=\"layout\" svg:x1=\"\(odfLength(a.x))\" svg:y1=\"\(odfLength(a.y))\" svg:x2=\"\(odfLength(b.x))\" svg:y2=\"\(odfLength(b.y))\"><text:p/></draw:line>"
     }
 
+    /// A chart as an embedded chart sub-document with a replacement picture.
+    func chartFrame(_ o: SlideObject, styles: ODFAutoStyles) -> String {
+        guard let m = o.chart else { return "" }
+        shared.objectCount += 1
+        let dir = "Object \(shared.objectCount)"
+        if let files = m.untouchedODF {
+            for (name, data) in files { shared.files["\(dir)/\(name)"] = data }
+            for name in files.keys.sorted() where name.hasSuffix(".xml") { shared.manifest.append(("\(dir)/\(name)", "text/xml")) }
+        } else {
+            let content = ChartODF.content(m, size: o.frame.size, font: theme.minorFont) { color($0) }
+            shared.files["\(dir)/content.xml"] = Data(content.utf8)
+            shared.files["\(dir)/styles.xml"] = Data(ChartODF.styles().utf8)
+            shared.manifest += [("\(dir)/content.xml", "text/xml"), ("\(dir)/styles.xml", "text/xml")]
+        }
+        shared.manifest.append(("\(dir)/", "application/vnd.oasis.opendocument.chart"))
+        var replacement = ""
+        if let png = chartPNG(o) {
+            shared.files["ObjectReplacements/\(dir)"] = png
+            shared.manifest.append(("ObjectReplacements/\(dir)", "image/png"))
+            replacement = "<draw:image xlink:href=\"./ObjectReplacements/\(dir)\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>"
+        }
+        var g = fillProps(o.fill) + strokeProps(o.line)
+        g += " draw:shadow=\"hidden\""
+        var x = "<draw:frame draw:style-name=\"\(styles.style("graphic", "gr", "<style:graphic-properties\(g)/>"))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
+        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        x += "><draw:object draw:notify-on-update-of-ranges=\"\" xlink:href=\"./\(dir)\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>\(replacement)"
+        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        return x + "</draw:frame>"
+    }
+
+    func chartPNG(_ o: SlideObject) -> Data? {
+        guard let m = o.chart else { return nil }
+        let scale: CGFloat = 2
+        let w = max(1, Int(o.frame.width * scale)), h = max(1, Int(o.frame.height * scale))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: scale, y: -scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        ChartRenderer.draw(m, deck: deck, in: CGRect(origin: .zero, size: o.frame.size), ctx: ctx)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+    }
+
     func picture(_ o: SlideObject, styles: ODFAutoStyles) -> String {
         guard let media = o.media else { return "" }
         let path = shared.picture(media)
@@ -600,6 +697,14 @@ private struct ODPWriterImpl {
         if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
         let ext = (media as NSString).pathExtension.lowercased()
         let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
+        if let clip = o.clip, let data = deck.media[clip.media] {
+            let path = "Media/\(clip.media)"
+            shared.files[path] = data
+            shared.manifest.append((path, MediaClip.mime(clip.ext)))
+            x += "><draw:plugin xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"application/vnd.sun.star.media\">"
+            x += "<draw:param draw:name=\"Loop\" draw:value=\"\(clip.loop)\"/><draw:param draw:name=\"Mute\" draw:value=\"false\"/><draw:param draw:name=\"VolumeDB\" draw:value=\"0\"/><draw:param draw:name=\"Zoom\" draw:value=\"fit\"/>"
+            x += "<draw:param draw:name=\"ppt42-autoplay\" draw:value=\"\(clip.autoplay)\"/></draw:plugin"
+        }
         x += "><draw:image xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"\(mime)\"><text:p/></draw:image>"
         if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
         return x + "</draw:frame>"
@@ -682,7 +787,8 @@ private struct ODPWriterImpl {
         let marL = s.marL ?? 0, indent = s.indent ?? 0
         // Bulleted paragraphs keep their indents in the list level (text:space-before / min-label-width), as LibreOffice does.
         x += " fo:margin-left=\"\(odfLength(bulleted ? 0 : max(0, marL)))\" fo:margin-right=\"0cm\" fo:text-indent=\"\(odfLength(bulleted ? 0 : (marL + indent < 0 ? -marL : indent)))\""
-        x += " fo:margin-top=\"\(odfLength(s.spaceBefore ?? 0))\" fo:margin-bottom=\"\(odfLength(s.spaceAfter ?? 0))\""
+        func spc(_ v: CGFloat?) -> CGFloat { guard let v else { return 0 }; return v < 0 ? -v * (s.run.size ?? 18) * 1.2 : v }
+        x += " fo:margin-top=\"\(odfLength(spc(s.spaceBefore)))\" fo:margin-bottom=\"\(odfLength(spc(s.spaceAfter)))\""
         if let ls = s.lineSpacing {
             x += ls < 0 ? " fo:line-height=\"\(odfLength(-ls))\"" : " fo:line-height=\"\(pct(ls))\""
         } else {

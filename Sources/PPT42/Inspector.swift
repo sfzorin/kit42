@@ -4,8 +4,11 @@ import Kit42
 /// Right panel: Slide / Shape / Text tabs.
 final class InspectorController: NSViewController {
     weak var owner: DeckWindowController?
-    private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text")], trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text"), "", ""], trackingMode: .selectOne, target: nil, action: nil)
     private let slidePane = NSStackView(), shapePane = NSStackView(), textPane = NSStackView()
+    private(set) lazy var animationPane = AnimationPane(owner: owner!)
+    var selectedTab: Int { tabs.selectedSegment }
+    private(set) lazy var commentsPane = CommentsPane(owner: owner!)
     private let scroll = NSScrollView()
     private var updating = false
 
@@ -35,7 +38,17 @@ final class InspectorController: NSViewController {
     private let opacity = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let corner = NSSlider(value: 16, minValue: 0, maxValue: 50, target: nil, action: nil)
     private let shadow = NSButton(checkboxWithTitle: L("Shadow"), target: nil, action: nil)
-    private let buildPopup = NSPopUpButton()
+    private let mediaHeader = NSTextField(labelWithString: L("MEDIA"))
+    private let mediaAutoplay = NSButton(checkboxWithTitle: L("Play automatically"), target: nil, action: nil)
+    private let mediaLoop = NSButton(checkboxWithTitle: L("Loop"), target: nil, action: nil)
+    private var mediaGrid = NSGridView()
+    // Chart
+    private let chartHeader = NSTextField(labelWithString: L("CHART"))
+    private var chartGrid = NSGridView()
+    private let chartType = NSPopUpButton(), chartStack = NSPopUpButton(), chartLegend = NSPopUpButton(), chartLabels = NSPopUpButton()
+    private let chartTitle = NSTextField(), catTitle = NSTextField(), valTitle = NSTextField()
+    private let chartGridlines = NSButton(checkboxWithTitle: L("Gridlines"), target: nil, action: nil)
+    private let chartData = NSButton(title: L("Edit Data…"), target: nil, action: nil)
     private let noSelection = NSTextField(wrappingLabelWithString: L("Select an object on the slide to change its size, fill and line."))
 
     // Text
@@ -65,6 +78,10 @@ final class InspectorController: NSViewController {
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
         tabs.segmentDistribution = .fillEqually
+        for (i, (sym, tip)) in [("sparkles", L("Animation")), ("text.bubble", L("Comments"))].enumerated() {
+            tabs.setImage(NSImage(systemSymbolName: sym, accessibilityDescription: tip), forSegment: 3 + i)
+            tabs.setToolTip(tip, forSegment: 3 + i)
+        }
         for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2)] {
             pane.orientation = .vertical
             pane.alignment = .leading
@@ -74,7 +91,8 @@ final class InspectorController: NSViewController {
         buildShapePane()
         buildTextPane()
 
-        let content = NSStackView(views: [tabs, slidePane, shapePane, textPane])
+        buildAnimationPane()
+        let content = NSStackView(views: [tabs, slidePane, shapePane, textPane, animationPane, commentsPane])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 14
@@ -88,7 +106,7 @@ final class InspectorController: NSViewController {
             content.topAnchor.constraint(equalTo: flipped.topAnchor), content.bottomAnchor.constraint(equalTo: flipped.bottomAnchor),
             tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
         ])
-        for pane in [slidePane, shapePane, textPane] {
+        for pane in [slidePane, shapePane, textPane, animationPane, commentsPane] as [NSStackView] {
             pane.translatesAutoresizingMaskIntoConstraints = false
             pane.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -32).isActive = true
         }
@@ -210,17 +228,42 @@ final class InspectorController: NSViewController {
         for s in [opacity, corner] { s.translatesAutoresizingMaskIntoConstraints = false; s.widthAnchor.constraint(equalToConstant: 140).isActive = true }
         shadow.target = self
         shadow.action = #selector(shadowChanged)
-        popup(buildPopup, [L("None"), L("Appear"), L("Fade In"), L("Fly In"), L("Zoom")], #selector(buildChanged), width: 110)
         noSelection.textColor = .secondaryLabelColor
         noSelection.preferredMaxLayoutWidth = 220
+        popup(chartType, ChartKind.allCases.map(\.name), #selector(chartChanged), width: 150)
+        popup(chartStack, [L("Clustered"), L("Stacked"), L("100% Stacked")], #selector(chartChanged), width: 150)
+        popup(chartLegend, [L("None"), L("Right"), L("Bottom"), L("Top"), L("Left")], #selector(chartChanged), width: 110)
+        popup(chartLabels, [L("None"), L("Values"), L("Percentages")], #selector(chartChanged), width: 130)
+        for f in [chartTitle, catTitle, valTitle] {
+            f.target = self; f.action = #selector(chartChanged)
+            f.translatesAutoresizingMaskIntoConstraints = false
+            f.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        }
+        chartTitle.placeholderString = L("No title")
+        catTitle.placeholderString = L("None")
+        valTitle.placeholderString = L("None")
+        chartGridlines.target = self; chartGridlines.action = #selector(chartChanged)
+        chartData.target = self; chartData.action = #selector(chartDataClicked)
+        chartData.bezelStyle = .rounded
+        chartData.controlSize = .small
+        chartHeader.font = .systemFont(ofSize: 11, weight: .semibold)
+        chartHeader.textColor = .secondaryLabelColor
+        chartGrid = grid([(L("Type:"), [chartType]), (L("Stacking:"), [chartStack]), (L("Title:"), [chartTitle]), (L("Legend:"), [chartLegend]),
+                          (L("Data labels:"), [chartLabels]), (L("Category axis:"), [catTitle]), (L("Value axis:"), [valTitle]),
+                          ("", [chartGridlines]), ("", [chartData])])
+        mediaHeader.font = .systemFont(ofSize: 11, weight: .semibold)
+        mediaHeader.textColor = .secondaryLabelColor
+        for b in [mediaAutoplay, mediaLoop] { b.target = self; b.action = #selector(mediaChanged) }
+        mediaGrid = grid([("", [mediaAutoplay]), ("", [mediaLoop])])
         shapePane.setViews([
             noSelection,
+            mediaHeader, mediaGrid,
+            chartHeader, chartGrid,
             header(L("SIZE AND POSITION")),
             grid([(L("Position:"), [posX, posY, unit(L("cm"))]), (L("Size:"), [width, height, unit(L("cm"))]), (L("Rotation:"), [rotation, unit("°")])]),
             header(L("FILL")), grid([(L("Fill:"), [fillKind, fillColor, fillColor2])]),
             header(L("LINE")), grid([(L("Colour:"), [lineColor, lineWidth, unit(L("pt"))]), (L("Dash:"), [lineDash]), (L("Start:"), [headPopup]), (L("End:"), [tailPopup])]),
             header(L("EFFECTS")), grid([(L("Opacity:"), [opacity]), (L("Corners:"), [corner]), ("", [shadow])]),
-            header(L("ANIMATION")), grid([(L("Build in:"), [buildPopup])]),
         ], in: .top)
     }
 
@@ -269,6 +312,11 @@ final class InspectorController: NSViewController {
         ], in: .top)
     }
 
+    func focusNewComment() {
+        _ = view
+        commentsPane.window?.makeFirstResponder(commentsPane.input)
+    }
+
     // MARK: - Tabs
 
     func select(tab: Int) {
@@ -281,7 +329,10 @@ final class InspectorController: NSViewController {
         slidePane.isHidden = tabs.selectedSegment != 0
         shapePane.isHidden = tabs.selectedSegment != 1
         textPane.isHidden = tabs.selectedSegment != 2
+        animationPane.isHidden = tabs.selectedSegment != 3
+        commentsPane.isHidden = tabs.selectedSegment != 4
         reload()
+        owner?.canvas.needsDisplay = true
     }
 
     // MARK: - Reading the selection
@@ -296,6 +347,8 @@ final class InspectorController: NSViewController {
         let deck = owner.deck
         let slide = owner.currentSlide
         let master = owner.mode == .master
+        commentsPane.reload()
+        reloadAnimations()
         // Slide
         layoutPopup.removeAllItems()
         layoutPopup.addItems(withTitles: deck.layouts.map(Themes.displayName))
@@ -336,6 +389,12 @@ final class InspectorController: NSViewController {
         let o = objs.first
         noSelection.isHidden = o != nil
         for v in shapePane.arrangedSubviews where v !== noSelection { v.isHidden = o == nil }
+        chartHeader.isHidden = o?.chart == nil
+        chartGrid.isHidden = o?.chart == nil
+        mediaHeader.isHidden = o?.clip == nil
+        mediaGrid.isHidden = o?.clip == nil
+        mediaAutoplay.state = o?.clip?.autoplay == true ? .on : .off
+        mediaLoop.state = o?.clip?.loop == true ? .on : .off
         if let o {
             posX.stringValue = cm(o.frame.minX); posY.stringValue = cm(o.frame.minY)
             width.stringValue = cm(o.frame.width); height.stringValue = cm(o.frame.height)
@@ -363,8 +422,19 @@ final class InspectorController: NSViewController {
             corner.isEnabled = o.geometry == "roundRect"
             corner.doubleValue = Double(o.adjust["adj"] ?? 16667) / 1000
             shadow.state = o.shadow ? .on : .off
-            buildPopup.selectItem(at: o.build.map { (BuildEffect.allCases.firstIndex(of: $0) ?? 0) + 1 } ?? 0)
-            buildPopup.isEnabled = !master
+            if let m = o.chart {
+                chartType.selectItem(at: ChartKind.allCases.firstIndex(of: m.kind) ?? 0)
+                chartStack.selectItem(at: ChartGrouping.allCases.firstIndex(of: m.grouping) ?? 0)
+                chartStack.isEnabled = m.kind != .pie && m.kind != .doughnut && m.kind != .scatter
+                chartTitle.stringValue = m.title ?? ""
+                chartLegend.selectItem(at: m.legend.map { ["r": 1, "b": 2, "t": 3, "l": 4][$0] ?? 1 } ?? 0)
+                chartLabels.selectItem(at: m.percentLabels ? 2 : m.dataLabels ? 1 : 0)
+                catTitle.stringValue = m.catAxisTitle ?? ""
+                valTitle.stringValue = m.valAxisTitle ?? ""
+                for f in [catTitle, valTitle] { f.isEnabled = m.kind.hasAxes }
+                chartGridlines.state = m.gridlines ? .on : .off
+                chartGridlines.isEnabled = m.kind.hasAxes
+            }
             for f in [posX, posY, width, height, rotation] { f.isEnabled = true }
         }
 
@@ -519,6 +589,42 @@ final class InspectorController: NSViewController {
         }
     }
 
+    @objc private func chartChanged() {
+        guard !updating, let owner else { return }
+        let kind = ChartKind.allCases[max(0, chartType.indexOfSelectedItem)]
+        let grouping = ChartGrouping.allCases[max(0, chartStack.indexOfSelectedItem)]
+        let title = chartTitle.stringValue, legend = [nil, "r", "b", "t", "l"][max(0, chartLegend.indexOfSelectedItem)]
+        let labels = chartLabels.indexOfSelectedItem, ct = catTitle.stringValue, vt = valTitle.stringValue, grid = chartGridlines.state == .on
+        owner.changeChart(L("Chart")) { m in
+            if m.kind != kind {
+                if (kind == .pie || kind == .doughnut) != (m.kind == .pie || m.kind == .doughnut) { m.varyColors = kind == .pie || kind == .doughnut }
+                if kind == .scatter, m.series.allSatisfy({ $0.xValues.isEmpty }) {
+                    for i in m.series.indices { m.series[i].xValues = m.series[i].values.indices.map { Double($0 + 1) } }
+                }
+                m.kind = kind
+            }
+            m.grouping = grouping
+            m.title = title.isEmpty ? nil : title
+            m.legend = legend
+            m.dataLabels = labels == 1
+            m.percentLabels = labels == 2
+            m.catAxisTitle = ct.isEmpty ? nil : ct
+            m.valAxisTitle = vt.isEmpty ? nil : vt
+            m.gridlines = grid
+        }
+    }
+
+    @objc private func mediaChanged() {
+        guard !updating, let owner else { return }
+        let a = mediaAutoplay.state == .on, l = mediaLoop.state == .on
+        owner.changeSelected(L("Media")) { o in o.clip?.autoplay = a; o.clip?.loop = l }
+    }
+
+    @objc private func chartDataClicked() {
+        guard let owner, let o = owner.selectedObjects.first(where: { $0.kind == .chart }) else { return }
+        owner.editChart(o)
+    }
+
     @objc private func opacityChanged() {
         guard !updating, let owner else { return }
         let v = CGFloat(opacity.doubleValue / 100)
@@ -535,13 +641,6 @@ final class InspectorController: NSViewController {
         guard !updating, let owner else { return }
         let on = shadow.state == .on
         owner.changeSelected(L("Shadow")) { $0.shadow = on }
-    }
-
-    @objc private func buildChanged() {
-        guard !updating, let owner else { return }
-        let i = buildPopup.indexOfSelectedItem
-        let b: BuildEffect? = i <= 0 ? nil : BuildEffect.allCases[i - 1]
-        owner.changeSelected(L("Animation")) { $0.build = b }
     }
 
     // MARK: - Text actions

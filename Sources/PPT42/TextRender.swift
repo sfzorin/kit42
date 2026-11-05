@@ -151,8 +151,12 @@ enum TextRender {
         if let ls = s.lineSpacing {
             if ls < 0 { p.minimumLineHeight = -ls * scale; p.maximumLineHeight = -ls * scale } else { p.lineHeightMultiple = ls }
         }
-        p.paragraphSpacingBefore = (s.spaceBefore ?? 0) * scale
-        p.paragraphSpacing = (s.spaceAfter ?? 0) * scale
+        func spacing(_ v: CGFloat?) -> CGFloat {
+            guard let v else { return 0 }
+            return v < 0 ? -v * (s.run.size ?? 18) * 1.2 * scale : v * scale
+        }
+        p.paragraphSpacingBefore = spacing(s.spaceBefore)
+        p.paragraphSpacing = spacing(s.spaceAfter)
         _ = size
         p.lineBreakMode = .byWordWrapping
         return p
@@ -193,7 +197,11 @@ enum TextRender {
                 attrs[.pptMarker] = true
                 attrs[.pptPara] = paraBox
                 attrs[.pptRun] = RunBox(para.runs.first?.props ?? para.endProps)
-                out.append(NSAttributedString(string: mark + "\t", attributes: attrs))
+                // A marker wider than the hanging indent is followed by the text directly (as LibreOffice lays it out).
+                let markWidth = NSAttributedString(string: mark, attributes: attrs).size().width
+                let start = max(0, (style.marL ?? 0) + (style.indent ?? 0)) * c.scale
+                let overruns = start + markWidth > (style.marL ?? 0) * c.scale - 0.5
+                out.append(NSAttributedString(string: mark + (overruns ? "\u{200A}" : "\t"), attributes: attrs))
             } else {
                 counters[lvl] = 0
             }

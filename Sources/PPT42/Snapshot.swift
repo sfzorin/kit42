@@ -25,11 +25,12 @@ extension DeckWindowController {
         if let z = env["K42_ZOOM"].flatMap(Double.init) { canvas.zoom = CGFloat(z) }
         if let script = env["K42_DO"] { for cmd in script.split(separator: ";") { run(String(cmd)) } }
         if let i = env["K42_INSPECTOR"] {
-            let tab = ["slide": 0, "shape": 1, "text": 2][i] ?? (selection.isEmpty ? 0 : 1)
+            let tab = ["slide": 0, "shape": 1, "text": 2, "animation": 3, "comments": 4][i] ?? (selection.isEmpty ? 0 : 1)
             showInspector(true, tab: tab)
         }
         if env["K42_EDIT"] != nil, let o = selectedObjects.first { canvas.editor.begin(o, at: nil) }
         if env["K42_LAYOUTS"] != nil { showLayoutPicker() }
+        if env["K42_TEMPLATES"] != nil { TemplateGallery.show() }
         if env["K42_DUMP_SIDEBAR"] != nil {
             let t = thumbnails.table
             print("table frame \(t.frame) cols \(t.tableColumns.map { $0.width }) clip \(t.enclosingScrollView?.contentView.frame ?? .zero) sidebar \(thumbnails.view.frame)")
@@ -54,8 +55,15 @@ extension DeckWindowController {
             } catch { print("save failed: \(error)") }
         }
         if env["K42_SHOW"] != nil || env["K42_PRESENTER"] != nil {
-            startShow(from: current, presenter: env["K42_PRESENTER"] != nil, rehearse: env["K42_PRESENTER"] != nil && env["K42_SHOW"] == nil)
+            startShow(from: current, presenter: env["K42_PRESENTER"] != nil, rehearse: env["K42_PRESENTER"] != nil && env["K42_SHOW"] == nil, windowed: env["K42_SHOW"] == "window")
             for _ in 0..<(env["K42_SHOW_STEPS"].flatMap(Int.init) ?? 0) { SlideShowController.current?.next() }
+            // K42_SHOW_KEYS=gl… : keys pressed in the show (g overview, l laser, p pen, e erase, c cursor).
+            for ch in env["K42_SHOW_KEYS"] ?? "" {
+                if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                            characters: String(ch), charactersIgnoringModifiers: String(ch), isARepeat: false, keyCode: 0) {
+                    _ = SlideShowController.current?.handleKey(e)
+                }
+            }
         }
     }
 
@@ -63,7 +71,7 @@ extension DeckWindowController {
     /// size:<pt>, color:<RRGGBB>, align:<0-3>, bullets:<0-2>, indent, outdent, group, ungroup, front, back, alignobj:<0-5>,
     /// distribute:<0-1>, layout:<i>, transition:<i>, hide, theme:<i>, size169, size43, selectall, select:<i,j>, slide:<n>,
     /// type:<text> (types into the edited object), endedit, undo, redo, copy, paste, copyslide, pasteslide, move:<dx>,<dy>,
-    /// rotate:<deg>, fill:<RRGGBB>, build:<0-4>, find:<text>, replace:<a>=<b>, outline:<text with \t and \n>, notes:<text>.
+    /// rotate:<deg>, fill:<RRGGBB>, anim:<effect>[,trigger,dur,delay], find:<text>, replace:<a>=<b>, outline:<text with \t and \n>, notes:<text>.
     func run(_ cmd: String) {
         let parts = cmd.split(separator: ":", maxSplits: 1).map(String.init)
         let name = parts[0], arg = parts.count > 1 ? parts[1] : ""
@@ -86,6 +94,52 @@ extension DeckWindowController {
             var o = SlideObject(id: 0, kind: .table, frame: CGRect(x: 180, y: 170, width: 600, height: t.size.height))
             o.table = t
             insert([o], name: L("Insert Table"))
+        case "chart":
+            // chart:<kind> inserts a sample chart; chart:edit opens the data sheet.
+            if arg == "edit" { editChart(selectedObjects.first { $0.kind == .chart }); break }
+            insertChart(ChartModel.sample(ChartKind(rawValue: arg) ?? .column))
+        case "chartkind": let k = ChartKind(rawValue: arg) ?? .column; changeChart(L("Chart Type")) { $0.kind = k }
+        case "charttitle": changeChart(L("Chart Title")) { $0.title = arg.isEmpty ? nil : arg }
+        case "chartstack": let g = ChartGrouping(rawValue: arg) ?? .stacked; changeChart(L("Chart Type")) { $0.grouping = g }
+        case "chartlabels": changeChart(L("Data Labels")) { $0.dataLabels = arg != "0" }
+        case "chartlegend": changeChart(L("Legend")) { $0.legend = arg.isEmpty || arg == "none" ? nil : arg }
+        case "chartvalue":
+            // chartvalue:<series>,<row>,<value>
+            let v = arg.split(separator: ",").compactMap { Double($0) }
+            if v.count == 3 { changeChart(L("Chart Data")) { m in
+                let s = Int(v[0]), r = Int(v[1])
+                if m.series.indices.contains(s), m.series[s].values.indices.contains(r) { m.series[s].values[r] = v[2] }
+            } }
+        case "childtext":
+            // childtext:<object index>,<child index>,<text> (text of a shape inside a group or SmartArt)
+            let p = arg.split(separator: ",", maxSplits: 2).map(String.init)
+            if p.count == 3, let i = Int(p[0]), let k = Int(p[1]), displayedSlide.objects.indices.contains(i) {
+                let id = displayedSlide.objects[i].id
+                changeSlide(L("Typing")) { s in s.update(id) { o in
+                    guard o.children.indices.contains(k) else { return }
+                    if var t = o.children[k].text, !t.paragraphs.isEmpty {
+                        if t.paragraphs[0].runs.isEmpty { t.paragraphs[0].runs = [TextRun(text: p[2])] } else { t.paragraphs[0].runs = [TextRun(text: p[2], props: t.paragraphs[0].runs[0].props)] }
+                        o.children[k].text = t
+                    }
+                } }
+            }
+        case "toshapes": convertToShapesAction(nil)
+        case "comment": addComment(arg)
+        case "newlayout": newLayoutAction(nil)
+        case "layoutsel": selectMaster(Int(arg))
+        case "renamelayout": if let li = editedLayout { renameLayout(li, arg) }
+        case "deletelayout": deleteLayoutAction(nil)
+        case "placeholder": insertPlaceholderAction(tag)
+        case "reply":
+            // reply:<comment index>:<text>
+            let p = arg.split(separator: ":", maxSplits: 1).map(String.init)
+            if p.count == 2, let k = Int(p[0]), let c = currentSlide?.comments, c.indices.contains(k) { replyComment(c[k].id, p[1]) }
+        case "resolve":
+            if let k = Int(arg), let c = currentSlide?.comments, c.indices.contains(k) { changeComment(c[k].id, L("Resolve")) { $0.resolved.toggle() } }
+        case "delcomment":
+            if let k = Int(arg), let c = currentSlide?.comments, c.indices.contains(k) { deleteComment(c[k].id) }
+        case "media":
+            insertMedia(URL(fileURLWithPath: arg), autoplay: true)
         case "bold": boldAction(nil)
         case "italic": italicAction(nil)
         case "underline": underlineAction(nil)
@@ -119,6 +173,9 @@ extension DeckWindowController {
         case "type": canvas.editor.textView.insertText(arg.replacingOccurrences(of: "\\n", with: "\n"), replacementRange: canvas.editor.textView.selectedRange())
         case "selecttext": canvas.editor.textView.selectAll(nil)
         case "endedit": commitEditing()
+        case "editundo": canvas.editor.textView.undoManager?.undo()
+        case "tick": RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        case "dumpruns": print("runs:", canvas.editor.textView.textStorage.map { TextRender.paragraphs(from: $0).map { $0.runs.map { "\($0.text)\($0.props.bold == true ? "[b]" : "")" } } } ?? [])
         case "dumpedit": print("editor active=\(canvas.editor.isActive) text=\(canvas.editor.textView.string.debugDescription) sel=\(selection)")
         case "undo": commitEditing(); doc?.undoManager?.undo()
         case "redo": doc?.undoManager?.redo()
@@ -134,9 +191,13 @@ extension DeckWindowController {
         case "line": let c = hex(arg); setLine { $0.color = c; $0.width = 3 }
         case "shadow": changeSelected(L("Shadow")) { $0.shadow = true }
         case "opacity": let v = CGFloat(Double(arg) ?? 1); changeSelected(L("Opacity")) { $0.opacity = v }
-        case "build":
-            let i = Int(arg) ?? 0
-            changeSelected(L("Animation")) { $0.build = i == 0 ? nil : BuildEffect.allCases[min(i - 1, 3)] }
+        case "anim":
+            // anim:<effect>[,<trigger>[,<duration>[,<delay>]]] on the selected objects
+            let p = arg.split(separator: ",").map(String.init)
+            if let e = AnimEffect(rawValue: p.first ?? "") {
+                let trig = p.count > 1 ? AnimTrigger(rawValue: p[1]) ?? .onClick : .onClick
+                addAnimation(e, trigger: trig, duration: p.count > 2 ? Double(p[2]) : nil, delay: p.count > 3 ? Double(p[3]) : nil)
+            }
         case "find":
             finder.show()
             finder.setQuery(arg)

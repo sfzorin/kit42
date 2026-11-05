@@ -10,6 +10,7 @@ enum Cmd {
     static let exportPDF = Command(L("Export as PDF…"), #selector(W.exportPDFAction(_:)), symbol: "doc.richtext", shortcut: Shortcut("e", [.command, .option]))
     static let exportNotesPDF = Command(L("Export Notes Pages as PDF…"), #selector(W.exportNotesPDFAction(_:)))
     static let exportImages = Command(L("Export Images…"), #selector(W.exportImagesAction(_:)), symbol: "photo.on.rectangle")
+    static let exportMovie = Command(L("Export as Movie…"), #selector(W.exportMovieAction(_:)), symbol: "film")
     static let exportOutline = Command(L("Export Outline…"), #selector(W.exportOutlineAction(_:)))
 
     // Edit
@@ -49,10 +50,21 @@ enum Cmd {
     static var shapes: [Command] {
         Shapes.gallery.enumerated().map { Command($0.element.name, #selector(W.insertShapeAction(_:)), tag: $0.offset) }
     }
+    /// Insert › Shape: one submenu per gallery section.
+    static var shapeMenu: [MenuElement] {
+        let all = shapes
+        return Shapes.sections.enumerated().map { k, name in
+            .submenu(name, Shapes.gallery.indices.filter { Shapes.gallery[$0].section == k }.map { .command(all[$0]) })
+        }
+    }
     static let image = Command(L("Image…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]),
-                               toolTip: L("Insert an image"), label: L("Image"))
+                               toolTip: L("Insert an image"), label: L("Picture"))
     static let table = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option, .shift]),
                                toolTip: L("Insert a table"), label: L("Table"))
+    static let chart = Command(L("Chart…"), #selector(W.insertChartAction(_:)), symbol: "chart.bar", shortcut: Shortcut("c", [.command, .option, .shift]),
+                               toolTip: L("Insert a chart"), label: L("Chart"))
+    static let media = Command(L("Video or Audio…"), #selector(W.insertMediaAction(_:)), symbol: "film", toolTip: L("Insert a video or audio file"), label: L("Media"))
+    static let comment = Command(L("Comment"), #selector(W.insertCommentAction(_:)), symbol: "text.bubble", shortcut: Shortcut("m", [.command, .option]))
     static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature", shortcut: Shortcut("k", [.command, .shift]))
     static let slideNumber = Command(L("Slide Number"), #selector(W.insertSlideNumberAction(_:)), symbol: "number")
     static let date = Command(L("Date"), #selector(W.insertDateAction(_:)), symbol: "calendar")
@@ -110,10 +122,18 @@ enum Cmd {
         Command(L("Distribute Vertically"), #selector(W.distributeAction(_:)), symbol: "distribute.vertical.center", tag: 1),
     ]
     static let group = Command(L("Group"), #selector(W.groupAction(_:)), symbol: "square.on.square.dashed", shortcut: Shortcut("g", [.command, .option]))
+    static let convertToShapes = Command(L("Convert to Shapes"), #selector(W.convertToShapesAction(_:)), symbol: "square.on.square.squareshape.controlhandles")
     static let ungroup = Command(L("Ungroup"), #selector(W.ungroupAction(_:)), shortcut: Shortcut("g", [.command, .option, .shift]))
 
     // Slide
     static var layouts: [Command] { [] }
+    static let newLayout = Command(L("New Layout"), #selector(W.newLayoutAction(_:)), symbol: "rectangle.badge.plus")
+    static let duplicateLayout = Command(L("Duplicate Layout"), #selector(W.duplicateLayoutAction(_:)))
+    static let renameLayout = Command(L("Rename Layout…"), #selector(W.renameLayoutAction(_:)))
+    static let deleteLayout = Command(L("Delete Layout"), #selector(W.deleteLayoutAction(_:)))
+    static let placeholders: [Command] = [L("Content"), L("Text"), L("Picture"), L("Title")].enumerated().map {
+        Command($0.element, #selector(W.insertPlaceholderAction(_:)), tag: $0.offset)
+    }
     static let background = Command(L("Background…"), #selector(W.backgroundAction(_:)), symbol: "paintbrush")
     static let hideSlide = Command(L("Hide Slide"), #selector(W.hideSlideAction(_:)), symbol: "eye.slash")
     static let transitions: [Command] = TransitionKind.allCases.enumerated().map {
@@ -131,14 +151,16 @@ enum Cmd {
     static let play = Command(L("Play from Start"), #selector(W.playAction(_:)), symbol: "play.fill", shortcut: Shortcut("p", [.command, .option]),
                               toolTip: L("Play the slide show from the first slide"), label: L("Play"))
     static let playCurrent = Command(L("Play from Current Slide"), #selector(W.playCurrentAction(_:)), symbol: "play", shortcut: Shortcut("p", [.command, .shift]))
+    static let playInWindow = Command(L("Present in Window"), #selector(W.playInWindowAction(_:)), symbol: "macwindow")
     static let rehearse = Command(L("Rehearse with Presenter View"), #selector(W.rehearseAction(_:)), symbol: "person.wave.2", shortcut: Shortcut("r", [.command, .option]))
     static let showSettings = Command(L("Slide Show Settings…"), #selector(W.showSettingsAction(_:)), symbol: "gearshape")
 
+    static let newFromTemplate = Command(L("New from Template…"), #selector(A.newFromTemplateAction(_:)), symbol: "square.grid.2x2", shortcut: Shortcut("n", [.command, .option, .shift]))
     static let welcome = Command(L("Welcome Window"), #selector(A.showWelcomeAction(_:)), shortcut: Shortcut("0", [.command, .shift]))
 
     static func menuBar(layoutsMenu: NSMenuDelegate) -> MenuBarSpec {
         var spec = MenuBarSpec(appName: "PPT42")
-        spec.fileExtras = [.command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportOutline)]
+        spec.fileExtras = [.command(newFromTemplate), .separator, .command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportMovie), .command(exportOutline)]
         spec.editExtras = [.command(duplicate), .command(delete)]
         spec.find = [.command(find), .separator, .command(findNext), .command(findPrevious)]
         let layoutItem = NSMenuItem(title: L("Layout"), action: nil, keyEquivalent: "")
@@ -152,8 +174,8 @@ enum Cmd {
         spec.view = viewModes.menuElements + [.separator, .command(notesPane), .command(inspector), .command(formatBar), .separator,
                                               .command(zoomIn), .command(zoomOut), .command(zoomFit), .command(actualSize), .separator, .command(guides)]
         spec.insert = [.command(newSlide), .item(newSlideItem), .command(duplicateSlide), .command(deleteSlide), .separator,
-                       .command(textBox), .submenu(L("Shape"), shapes.menuElements), .command(image), .command(table), .command(stamps), .separator,
-                       .command(slideNumber), .command(date)]
+                       .command(textBox), .submenu(L("Shape"), shapeMenu), .command(image), .command(table), .command(chart), .command(media), .command(stamps), .separator,
+                       .command(slideNumber), .command(date), .separator, .command(comment)]
         spec.format = [
             .submenu(L("Font"), [.command(bold), .command(italic), .command(underline), .command(strike), .separator,
                                  .command(bigger), .command(smaller), .separator, .command(superscript), .command(subscriptCmd), .separator, .command(clearFormatting)]),
@@ -163,15 +185,17 @@ enum Cmd {
             .separator,
             .submenu(L("Arrange"), arrange.menuElements),
             .submenu(L("Align"), alignObjects.menuElements + [.separator] + distribute.menuElements),
-            .command(group), .command(ungroup),
+            .command(group), .command(ungroup), .command(convertToShapes),
             .separator,
             .submenu(L("Table"), tableRows.menuElements + [.separator] + tableColumns.menuElements),
         ]
         spec.custom = [
             (L("Slide"), [.command(newSlide), .command(duplicateSlide), .command(deleteSlide), .separator, .item(layoutItem), .command(background),
                           .submenu(L("Transition"), transitions.menuElements), .command(hideSlide), .separator,
-                          .submenu(L("Theme"), themes.menuElements), .submenu(L("Slide Size"), slideSizes.menuElements)]),
-            (L("Slide Show"), [.command(play), .command(playCurrent), .command(rehearse), .separator, .command(showSettings)]),
+                          .submenu(L("Theme"), themes.menuElements), .submenu(L("Slide Size"), slideSizes.menuElements), .separator,
+                          .submenu(L("Master Layouts"), [.command(newLayout), .command(duplicateLayout), .command(renameLayout), .command(deleteLayout), .separator,
+                                                         .submenu(L("Insert Placeholder"), placeholders.menuElements)])]),
+            (L("Slide Show"), [.command(play), .command(playCurrent), .command(playInWindow), .command(rehearse), .separator, .command(showSettings)]),
         ]
         spec.help = [.command(welcome)]
         return spec

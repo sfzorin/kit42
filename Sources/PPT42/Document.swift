@@ -36,6 +36,9 @@ final class PresentationDocument: NSDocument {
         addWindowController(DeckWindowController())
     }
 
+    /// Sets the deck of a new document (before its window opens).
+    func replaceDeck(_ d: Deck) { deck = d }
+
     // MARK: - Changes
 
     /// Records one undoable change of the deck.
@@ -92,6 +95,8 @@ final class PresentationDocument: NSDocument {
     override func read(from data: Data, ofType typeName: String) throws {
         let ext = Self.extensionFor(typeName)
         deck = try DeckIO.read(data, ext: ext)
+        // Opening a template starts a new, untitled presentation from it.
+        if ext == "potx" || ext == "otp" { DispatchQueue.main.async { [weak self] in self?.fileURL = nil; self?.fileType = ext == "otp" ? "org.oasis-open.opendocument.presentation" : "org.openxmlformats.presentationml.presentation"; self?.updateChangeCount(.changeDone) } }
     }
 
     override func data(ofType typeName: String) throws -> Data {
@@ -102,13 +107,16 @@ final class PresentationDocument: NSDocument {
 
     static func extensionFor(_ typeName: String) -> String {
         let t = typeName.lowercased()
+        if t.contains("presentation-template") || t.hasSuffix("otp") { return "otp" }
+        if t.contains("presentationml.template") || t.hasSuffix("potx") { return "potx" }
         if t.contains("opendocument") || t.hasSuffix("odp") { return "odp" }
         if t.contains("powerpoint.ppt") || t == "ppt" || t.hasSuffix(".ppt") { return "ppt" }
         return "pptx"
     }
 
     override class var writableTypes: [String] {
-        ["org.openxmlformats.presentationml.presentation", "org.oasis-open.opendocument.presentation"]
+        ["org.openxmlformats.presentationml.presentation", "org.oasis-open.opendocument.presentation",
+         "org.openxmlformats.presentationml.template", "org.oasis-open.opendocument.presentation-template"]
     }
 
     override class func isNativeType(_ type: String) -> Bool { type == "org.openxmlformats.presentationml.presentation" }
