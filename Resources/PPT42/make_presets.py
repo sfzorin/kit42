@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Generates Sources/PPT42/PresetData.swift: the OOXML preset shapes (equations, paths, text frames, handles)
+from LibreOffice's oox-drawingml-cs-presets (MPL 2.0; itself generated from ECMA-376 presetShapeDefinitions.xml).
+
+Usage: python3 Resources/PPT42/make_presets.py /Applications/LibreOffice.app/Contents/Resources/filter/oox-drawingml-cs-presets
+
+Line format (one preset per line, fields separated by |):
+  name | adj=value,… | equation;equation;… | path | text frames l,t,r,b;… | sub view sizes w,h;… | handles
+Parameters: plain numbers, ?N (equation N), $N (adjustment N).
+Path commands: M x,y  L x,y…  C c1 c2 p…  Q c p…  A wR,hR st,sw (degrees)  Z (close)  N (end of path)
+  F (no fill)  S (no stroke)  D d H h (darken, darken less, lighten, lighten less).
+Handles: x,y@refX,refY[minX,maxX,minY,maxY] or polar x,y@angle,radius[minR,maxR]; ~ = none.
+"""
+import re, sys, pathlib
+
+src = open(sys.argv[1]).read()
+TOK = re.compile(r'\s*(\{|\}|,|=|\((?:\[\])*[A-Za-z_.]+\)|"(?:[^"\\]|\\.)*"|-?[0-9][0-9.E+-]*|[A-Za-z_]+)')
+
+def tokens(s):
+    pos, out = 0, []
+    while pos < len(s):
+        m = TOK.match(s, pos)
+        if not m:
+            if s[pos:].strip() == "":
+                break
+            raise ValueError(s[pos:pos + 40])
+        out.append(m.group(1))
+        pos = m.end()
+    return out
+
+def parse(toks, i=0):
+    """value: [(type)] ( { items } | atom ). Returns (value, next index)."""
+    while toks[i].startswith("("):
+        i += 1
+    t = toks[i]
+    if t == "{":
+        i += 1
+        items, named = [], {}
+        while toks[i] != "}":
+            if re.match(r'[A-Za-z_]+$', toks[i]) and toks[i + 1] == "=":
+                key = toks[i]
+                v, i = parse(toks, i + 2)
+                named[key] = v
+            else:
+                v, i = parse(toks, i)
+                items.append(v)
+            if toks[i] == ",":
+                i += 1
+        i += 1
+        return (named if named else items), i
+    if t.startswith('"'):
+        return t[1:-1], i + 1
+    if re.match(r'-?[0-9]', t):
+        return (float(t) if ("." in t or "E" in t) else int(t)), i + 1
+    return t, i + 1
+
+def val(v):
+    if isinstance(v, dict) and "Value" in v:
+        v = v["Value"]
+    while isinstance(v, list) and len(v) == 1 and not isinstance(v[0], dict):
+        v = v[0]
+    return v
+
+def param(p):
+    v, t = val(p["Value"]), p["Type"]
+    if t == 0:
+        return str(v)
+    if t == 1:
+        return "?%d" % v
+    if t == 2:
+        return "$%d" % v
+    raise ValueError(p)
+
+def pair(p):
+    return param(p["First"]) + "," + param(p["Second"])
+
+def one(v):
+    while isinstance(v, list) and len(v) == 1:
+        v = v[0]
+    return v
+
+def props(lst):
+    return {d["Name"]: d["Value"] for d in lst}
+
+out = []
+for m in re.finditer(r'/\* (\w+) \*/\n(.*?)(?=\n/\* |\Z)', src, re.S):
+    name, body = m.group(1), m.group(2)
+    fields = dict(re.findall(r'^([A-Za-z]+)\n(.*)$', body, re.M))
+    adj = parse(tokens(fields["AdjustmentValues"]))[0] if fields["AdjustmentValues"].strip() else []
+    adjs = ",".join("%s=%s" % (a["Name"], val(a["Value"])) for a in adj)
+    eqs = parse(tokens(fields["Equations"]))[0]
+    eqs = ";".join(e.replace(" ", "") for e in eqs)
+    path = props(parse(tokens(fields["Path"]))[0])
+    coords = [pair(c) for c in val(path["Coordinates"])] if "Coordinates" in path else []
+    segs = val(path.get("Segments", [])) or []
+    cmds, k = [], 0
+    letters = {1: "M", 2: "L", 3: "C", 4: "Z", 5: "N", 6: "F", 7: "S", 16: "Q", 17: "A", 18: "D", 19: "d", 20: "H", 21: "h"}
+    per = {1: 1, 2: 1, 3: 3, 16: 2, 17: 2}
+    for s in segs:
+        c, n = s["Command"], s["Count"]
+        if c in per:
+            for _ in range(max(1, n)):
+                cmds.append(letters[c] + " " + " ".join(coords[k:k + per[c]]))
+                k += per[c]
+        else:
+            cmds.append(letters[c])
+    frames = ";".join(pair(f["TopLeft"]) + "," + pair(f["BottomRight"]) for f in val(path.get("TextFrames", [])) or [])
+    views = ";".join("%d,%d" % (s["Width"], s["Height"]) for s in val(path.get("SubViewSize", [])) or [])
+    handles = []
+    for h in parse(tokens(fields["Handles"]))[0] if fields["Handles"].strip() else []:
+        hp = props(h)
+        pos = pair(one(hp["Position"]))
+        def num(key):
+            if key not in hp:
+                return "~"
+            v = one(hp[key])
+            return param(v) if isinstance(v, dict) else str(v)
+        if "RefAngle" in hp or "RefR" in hp:
+            handles.append("%s@p%s,%s[%s,%s]" % (pos, num("RefAngle"), num("RefR"), num("RadiusRangeMinimum"), num("RadiusRangeMaximum")))
+        else:
+            handles.append("%s@%s,%s[%s,%s,%s,%s]" % (pos, num("RefX"), num("RefY"), num("RangeXMinimum"), num("RangeXMaximum"),
+                                                       num("RangeYMinimum"), num("RangeYMaximum")))
+    out.append("|".join([name, adjs, eqs, " ".join(cmds), frames, views, " ".join(handles)]))
+
+swift = ['// Generated by Resources/PPT42/make_presets.py from LibreOffice\'s oox-drawingml-cs-presets (MPL 2.0),',
+         '// which is derived from the ECMA-376 preset shape definitions. Do not edit.',
+         '', 'let presetShapeData = #"""'] + out + ['"""#', '']
+pathlib.Path(__file__).resolve().parent.parent.parent.joinpath("Sources/PPT42/PresetData.swift").write_text("\n".join(swift))
+print(len(out), "presets")
