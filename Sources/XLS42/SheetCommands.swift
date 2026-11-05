@@ -258,6 +258,50 @@ extension SheetWindowController {
         freezeOverlay.panesNeedDisplay()
         headersNeedDisplay()
         grid.needsDisplay = true
+        // The split is part of the document (saved in the view settings of .xlsx/.ods), not an undo step.
+        if let doc, sheetIndex < doc.workbook.sheets.count {
+            let before = doc.workbook.sheets[sheetIndex].split
+            storeSplit()
+            if doc.workbook.sheets[sheetIndex].split != before { doc.updateChangeCount(.changeDone) }
+        }
+    }
+
+    /// The window's split (position and pane scroll positions) → the sheet model, for saving and sheet switches.
+    func storeSplit() {
+        guard let doc, sheetIndex < doc.workbook.sheets.count else { return }
+        guard let p = grid.split else { doc.workbook.sheets[sheetIndex].split = nil; return }
+        let z = grid.zoom
+        let o = grid.scrollOrigin, po = grid.splitScroll
+        var s = SheetSplit(x: (p.x / z).rounded(), y: (p.y / z).rounded())
+        s.topLeft = grid.cell(at: NSPoint(x: po.x + 1, y: po.y + 1))
+        s.bottomRight = grid.cell(at: NSPoint(x: o.x + p.x + 1, y: o.y + p.y + 1))
+        let a = grid.active
+        let right = p.x == 0 || a.col >= s.bottomRight.col, bottom = p.y == 0 || a.row >= s.bottomRight.row
+        s.activePane = (bottom ? "bottom" : "top") + (right ? "Right" : "Left")
+        doc.workbook.sheets[sheetIndex].split = s
+    }
+
+    /// Shows the sheet's saved split (from the file or before a sheet switch); removes the split when it has none.
+    func restoreSplit() {
+        guard let s = sheet.split, sheet.frozenRows == 0, sheet.frozenCols == 0 else {
+            if grid.split != nil {
+                grid.split = nil
+                freezeOverlay.panesNeedDisplay(); headersNeedDisplay(); grid.needsDisplay = true
+            }
+            return
+        }
+        let z = grid.zoom
+        let p = NSPoint(x: s.x * z, y: s.y * z)
+        grid.split = p.x > 0 || p.y > 0 ? p : nil
+        grid.splitScroll = NSPoint(x: p.x > 0 ? grid.x(s.topLeft.col) : 0, y: p.y > 0 ? grid.y(s.topLeft.row) : 0)
+        let clip = scrollView.contentView
+        let target = NSPoint(x: max(0, min(grid.x(s.bottomRight.col) - p.x, grid.frame.width - clip.bounds.width)),
+                             y: max(0, min(grid.y(s.bottomRight.row) - p.y, grid.frame.height - clip.bounds.height)))
+        clip.scroll(to: target)
+        scrollView.reflectScrolledClipView(clip)
+        freezeOverlay.panesNeedDisplay()
+        headersNeedDisplay()
+        grid.needsDisplay = true
     }
 
     // MARK: - Status bar

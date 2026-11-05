@@ -3,7 +3,7 @@ import Kit42
 
 final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, NSTextFieldDelegate {
     let grid = GridView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-    private let scrollView = NSScrollView()
+    let scrollView = NSScrollView()
     private lazy var columnHeader = HeaderView(grid: grid, columns: true)
     private lazy var rowHeader = HeaderView(grid: grid, columns: false)
     lazy var freezeOverlay = FreezeOverlay(grid: grid)
@@ -100,6 +100,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             grid.rebuildLayout()
             updateOutlineGutters()
             grid.select(CellRef(row: 0, col: 0))
+            // A split saved in the file, once the scroll view has its size.
+            DispatchQueue.main.async { [weak self] in self?.restoreSplit() }
         }
     }
 
@@ -432,11 +434,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     func selectSheet(_ index: Int) {
         guard let doc, index < doc.workbook.sheets.count else { return }
         grid.commitEdit(move: nil)
+        storeSplit()
         sheetIndex = index
         reloadTabs()
         grid.rebuildLayout()
         updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
+        restoreSplit()
     }
 
     @objc private func tabClicked(_ sender: NSButton) {
@@ -445,11 +449,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             renameSheet(sender)
             return
         }
+        storeSplit()
         sheetIndex = sender.tag
         reloadTabs()
         grid.rebuildLayout()
         updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
+        restoreSplit()
     }
 
     @objc func addSheet(_ sender: Any?) {

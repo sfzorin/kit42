@@ -30,6 +30,7 @@ final class SheetDocument: NSDocument {
 
     override func data(ofType typeName: String) throws -> Data {
         editor?.grid.commitEdit(move: nil)
+        editor?.storeSplit()
         if Self.isCSV(typeName) {
             return XLSX.writeCSV(workbook.sheets[editor?.sheetIndex ?? 0])
         }

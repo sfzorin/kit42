@@ -276,6 +276,53 @@ struct SheetSplit: Equatable {
     var topLeft = CellRef(row: 0, col: 0)
     var bottomRight = CellRef(row: 0, col: 0)
     var activePane = "bottomRight"
+
+    /// Width of the row headers and height of the column headers at 100 % in Excel pixels: Excel and LibreOffice
+    /// measure split positions from the window's edge, headers included (XlsxWriter: 390 and 300 twips).
+    static let headerWidth: CGFloat = 26
+    static let headerHeight: CGFloat = 20
+
+    /// Excel's xSplit/ySplit (twips; 1 px = 15 twips at 96 dpi).
+    var twips: (x: Int, y: Int) {
+        (x > 0 ? Int(((x + Self.headerWidth) * 15).rounded()) : 0, y > 0 ? Int(((y + Self.headerHeight) * 15).rounded()) : 0)
+    }
+
+    /// LibreOffice's HorizontalSplitPosition/VerticalSplitPosition (pixels, headers included).
+    var pixels: (x: Int, y: Int) {
+        (x > 0 ? Int((x + Self.headerWidth).rounded()) : 0, y > 0 ? Int((y + Self.headerHeight).rounded()) : 0)
+    }
+
+    /// First cell of the pane below/right of the split lines (Excel's pane/@topLeftCell).
+    var paneTopLeft: CellRef {
+        CellRef(row: y > 0 ? bottomRight.row : topLeft.row, col: x > 0 ? bottomRight.col : topLeft.col)
+    }
+
+    /// Active pane name valid for the split's axes.
+    var normalizedPane: String {
+        let right = x > 0 && activePane.hasSuffix("Right"), bottom = y > 0 && activePane.hasPrefix("bottom")
+        return bottom && right ? "bottomRight" : bottom ? "bottomLeft" : right ? "topRight" : "topLeft"
+    }
+
+    static let odsPanes = ["topLeft", "topRight", "bottomLeft", "bottomRight"]
+
+    static func fromTwips(x tx: Double, y ty: Double, topLeft: CellRef?, paneTopLeft: CellRef?, activePane: String?) -> SheetSplit? {
+        guard tx > 0 || ty > 0 else { return nil }
+        return from(x: tx / 15, y: ty / 15, topLeft: topLeft, paneTopLeft: paneTopLeft, activePane: activePane)
+    }
+
+    /// From positions in pixels with the headers (Excel twips / 15, LibreOffice pixels).
+    static func from(x px: Double, y py: Double, topLeft: CellRef?, paneTopLeft: CellRef?, activePane: String?) -> SheetSplit? {
+        guard px > 0 || py > 0 else { return nil }
+        let x = px > 0 ? max(4, CGFloat(px) - headerWidth) : 0, y = py > 0 ? max(4, CGFloat(py) - headerHeight) : 0
+        let tl = topLeft ?? CellRef(row: 0, col: 0), pane = paneTopLeft ?? tl
+        var s = SheetSplit(x: x.rounded(), y: y.rounded(), topLeft: tl, bottomRight: pane)
+        // Without a split on an axis both panes scroll together there.
+        if x == 0 { s.topLeft.col = pane.col }
+        if y == 0 { s.topLeft.row = pane.row }
+        s.activePane = activePane ?? "bottomRight"
+        s.activePane = s.normalizedPane
+        return s
+    }
 }
 
 /// One condition of a standard filter or an AutoFilter custom filter.

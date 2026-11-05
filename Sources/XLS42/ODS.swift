@@ -226,6 +226,15 @@ enum ODS {
                     for item in entry.children("config-item") { if let k = item.attr("name") { items[k] = item.stringValue } }
                     if items["HorizontalSplitMode"] == "2" { wb.sheets[i].frozenCols = Int(items["HorizontalSplitPosition"] ?? "0") ?? 0 }
                     if items["VerticalSplitMode"] == "2" { wb.sheets[i].frozenRows = Int(items["VerticalSplitPosition"] ?? "0") ?? 0 }
+                    // Split window (mode 1): positions in pixels, panes' first column/row in Position….
+                    let hx = items["HorizontalSplitMode"] == "1" ? Double(items["HorizontalSplitPosition"] ?? "") ?? 0 : 0
+                    let vy = items["VerticalSplitMode"] == "1" ? Double(items["VerticalSplitPosition"] ?? "") ?? 0 : 0
+                    if wb.sheets[i].frozenRows == 0, wb.sheets[i].frozenCols == 0, hx > 0 || vy > 0 {
+                        func n(_ k: String) -> Int { max(0, Int(items[k] ?? "") ?? 0) }
+                        let pane = Int(items["ActiveSplitRange"] ?? "").flatMap { $0 >= 0 && $0 < 4 ? SheetSplit.odsPanes[$0] : nil }
+                        wb.sheets[i].split = SheetSplit.from(x: hx, y: vy, topLeft: CellRef(row: vy > 0 ? n("PositionTop") : n("PositionBottom"), col: n("PositionLeft")),
+                                                             paneTopLeft: CellRef(row: n("PositionBottom"), col: hx > 0 ? n("PositionRight") : n("PositionLeft")), activePane: pane)
+                    }
                     if items["ShowGrid"] == "false" { wb.sheets[i].showGridlines = false }
                     if let tab = items["TabColor"].flatMap(Int.init), tab >= 0, tab <= 0xFFFFFF {
                         let rgb = tab & 0xFFFFFF
@@ -655,7 +664,7 @@ enum ODS {
         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" \
         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" \
         xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xlink="http://www.w3.org/1999/xlink" \
-        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
+        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" xmlns:ooo="http://openoffice.org/2004/office" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
         let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
@@ -665,12 +674,21 @@ enum ODS {
             tables += "<config:config-item-map-entry config:name=\"\(xmlEscape(s.name))\">"
             if s.frozenCols > 0 { tables += "<config:config-item config:name=\"HorizontalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"HorizontalSplitPosition\" config:type=\"int\">\(s.frozenCols)</config:config-item><config:config-item config:name=\"PositionRight\" config:type=\"int\">\(s.frozenCols)</config:config-item>" }
             if s.frozenRows > 0 { tables += "<config:config-item config:name=\"VerticalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"VerticalSplitPosition\" config:type=\"int\">\(s.frozenRows)</config:config-item><config:config-item config:name=\"PositionBottom\" config:type=\"int\">\(s.frozenRows)</config:config-item>" }
+            if s.frozenRows == 0, s.frozenCols == 0, let sp = s.split, sp.x > 0 || sp.y > 0 {
+                func item(_ name: String, _ type: String, _ v: Int) -> String { "<config:config-item config:name=\"\(name)\" config:type=\"\(type)\">\(v)</config:config-item>" }
+                let px = sp.pixels, pane = sp.paneTopLeft
+                tables += item("HorizontalSplitMode", "short", px.x > 0 ? 1 : 0) + item("VerticalSplitMode", "short", px.y > 0 ? 1 : 0)
+                tables += item("HorizontalSplitPosition", "int", px.x) + item("VerticalSplitPosition", "int", px.y)
+                tables += item("ActiveSplitRange", "short", SheetSplit.odsPanes.firstIndex(of: sp.normalizedPane) ?? 2)
+                tables += item("PositionLeft", "int", sp.topLeft.col) + item("PositionRight", "int", px.x > 0 ? pane.col : 0)
+                tables += item("PositionTop", "int", px.y > 0 ? sp.topLeft.row : 0) + item("PositionBottom", "int", pane.row)
+            }
             if let tab = s.tabColor, let rgb = Int(XLSX.argb(tab).dropFirst(2), radix: 16) {
                 tables += "<config:config-item config:name=\"TabColor\" config:type=\"int\">\(rgb)</config:config-item>"
             }
             tables += "<config:config-item config:name=\"ShowGrid\" config:type=\"boolean\">\(s.showGridlines)</config:config-item></config:config-item-map-entry>"
         }
-        let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings \(ns)><office:settings><config:config-item-set config:name=\"ooo:view-settings\"><config:config-item-map-indexed config:name=\"Views\"><config:config-item-map-entry><config:config-item-map-named config:name=\"Tables\">\(tables)</config:config-item-map-named></config:config-item-map-entry></config:config-item-map-indexed></config:config-item-set></office:settings></office:document-settings>"
+        let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings \(ns)><office:settings><config:config-item-set config:name=\"ooo:view-settings\"><config:config-item-map-indexed config:name=\"Views\"><config:config-item-map-entry><config:config-item config:name=\"ViewId\" config:type=\"string\">view1</config:config-item><config:config-item-map-named config:name=\"Tables\">\(tables)</config:config-item-map-named><config:config-item config:name=\"ActiveTable\" config:type=\"string\">\(xmlEscape(wb.sheets.first { !$0.hidden }?.name ?? wb.sheets[0].name))</config:config-item></config:config-item-map-entry></config:config-item-map-indexed></config:config-item-set></office:settings></office:document-settings>"
         let manifest = """
         <?xml version="1.0" encoding="UTF-8"?>
         <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3">

@@ -83,9 +83,14 @@ enum XLSX {
         }
         if let view = root.child("sheetViews")?.child("sheetView") {
             sheet.showGridlines = view.attr("showGridLines") != "0"
-            if let pane = view.child("pane"), pane.attr("state") == "frozen" {
+            if let pane = view.child("pane"), pane.attr("state") == "frozen" || pane.attr("state") == "frozenSplit" {
                 sheet.frozenCols = Int(pane.attr("xSplit").flatMap(Double.init) ?? 0)
                 sheet.frozenRows = Int(pane.attr("ySplit").flatMap(Double.init) ?? 0)
+            } else if let pane = view.child("pane") {
+                // Split window (state="split", the default): positions in twips, measured with the headers.
+                sheet.split = SheetSplit.fromTwips(x: pane.attr("xSplit").flatMap(Double.init) ?? 0, y: pane.attr("ySplit").flatMap(Double.init) ?? 0,
+                                                   topLeft: view.attr("topLeftCell").flatMap(CellRef.init), paneTopLeft: pane.attr("topLeftCell").flatMap(CellRef.init),
+                                                   activePane: pane.attr("activePane"))
             }
         }
         for col in root.child("cols")?.children("col") ?? [] {
@@ -426,8 +431,14 @@ enum XLSX {
         """
         if let tab = sheet.tabColor { x += "<sheetPr><tabColor rgb=\"\(argb(tab))\"/></sheetPr>" }
         if let used = sheet.usedRange { x += "<dimension ref=\"A1:\(used.end.a1)\"/>" }
-        x += "<sheetViews><sheetView workbookViewId=\"0\"\(sheet.showGridlines ? "" : " showGridLines=\"0\"")\(selected ? " tabSelected=\"1\"" : "")>"
-        if sheet.frozenRows > 0 || sheet.frozenCols > 0 {
+        let split = sheet.frozenRows == 0 && sheet.frozenCols == 0 ? sheet.split.flatMap { $0.x > 0 || $0.y > 0 ? $0 : nil } : nil
+        let viewTopLeft = split.map { $0.topLeft != CellRef(row: 0, col: 0) ? " topLeftCell=\"\($0.topLeft.a1)\"" : "" } ?? ""
+        x += "<sheetViews><sheetView workbookViewId=\"0\"\(sheet.showGridlines ? "" : " showGridLines=\"0\"")\(selected ? " tabSelected=\"1\"" : "")\(viewTopLeft)>"
+        if let s = split {
+            let t = s.twips
+            x += "<pane\(t.x > 0 ? " xSplit=\"\(t.x)\"" : "")\(t.y > 0 ? " ySplit=\"\(t.y)\"" : "") topLeftCell=\"\(s.paneTopLeft.a1)\" activePane=\"\(s.normalizedPane)\" state=\"split\"/>"
+            x += "<selection pane=\"\(s.normalizedPane)\"/>"
+        } else if sheet.frozenRows > 0 || sheet.frozenCols > 0 {
             let top = CellRef(row: sheet.frozenRows, col: sheet.frozenCols).a1
             x += "<pane\(sheet.frozenCols > 0 ? " xSplit=\"\(sheet.frozenCols)\"" : "")\(sheet.frozenRows > 0 ? " ySplit=\"\(sheet.frozenRows)\"" : "") topLeftCell=\"\(top)\" activePane=\"bottomRight\" state=\"frozen\"/>"
         }
