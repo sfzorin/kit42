@@ -10,6 +10,7 @@ enum Cmd {
     static let exportPDF = Command(L("Export as PDF…"), #selector(W.exportPDFAction(_:)), symbol: "doc.richtext", shortcut: Shortcut("e", [.command, .option]))
     static let exportNotesPDF = Command(L("Export Notes Pages as PDF…"), #selector(W.exportNotesPDFAction(_:)))
     static let exportImages = Command(L("Export Images…"), #selector(W.exportImagesAction(_:)), symbol: "photo.on.rectangle")
+    static let exportMovie = Command(L("Export as Movie…"), #selector(W.exportMovieAction(_:)), symbol: "film")
     static let exportOutline = Command(L("Export Outline…"), #selector(W.exportOutlineAction(_:)))
 
     // Edit
@@ -158,7 +159,7 @@ enum Cmd {
 
     static func menuBar(layoutsMenu: NSMenuDelegate) -> MenuBarSpec {
         var spec = MenuBarSpec(appName: "PPT42")
-        spec.fileExtras = [.command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportOutline)]
+        spec.fileExtras = [.command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportMovie), .command(exportOutline)]
         spec.editExtras = [.command(duplicate), .command(delete)]
         spec.find = [.command(find), .separator, .command(findNext), .command(findPrevious)]
         let layoutItem = NSMenuItem(title: L("Layout"), action: nil, keyEquivalent: "")

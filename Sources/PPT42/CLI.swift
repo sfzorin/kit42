@@ -42,6 +42,12 @@ enum CLI {
                 if ext == "pdf" {
                     try Renderer.pdf(deck, notes: notes, includeHidden: rest.contains("--hidden")).write(to: URL(fileURLWithPath: out))
                     print("pdf: \(out)")
+                } else if ext == "mp4" || ext == "mov" {
+                    var o = VideoExport.Options()
+                    if let i = rest.firstIndex(of: "--seconds"), rest.indices.contains(i + 1), let v = Double(rest[i + 1]) { o.secondsPerSlide = v }
+                    if let i = rest.firstIndex(of: "--width"), rest.indices.contains(i + 1), let v = Int(rest[i + 1]) { o.width = v }
+                    try VideoExport.export(deck, to: URL(fileURLWithPath: out), options: o)
+                    print("movie: \(out)")
                 } else if ext == "rtf" || ext == "md" {
                     try Outline.export(deck, format: ext).write(to: URL(fileURLWithPath: out))
                     print("\(ext): \(out)")
@@ -64,7 +70,7 @@ enum CLI {
     static func usage() {
         print("""
         PPT42 --info file.pptx|odp …
-        PPT42 --export in.pptx out.pdf [--notes] [--hidden] | out-dir [--jpeg] [--width 1920] | out.rtf | out.md
+        PPT42 --export in.pptx out.pdf [--notes] [--hidden] | out-dir [--jpeg] [--width 1920] | out.rtf | out.md | out.mp4 [--seconds 5] [--width 1920]
         PPT42 --convert in.pptx out.odp (and back)
         PPT42 --demo out.pptx|odp
         """)

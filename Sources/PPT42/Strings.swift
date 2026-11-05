@@ -551,4 +551,7 @@ let ppt42Strings: [[String]] = [
     ["Format", "Формат", "Biçim"],
     ["Sidebar", "Панель", "Kenar Çubuğu"],
     ["Present in Window", "Показ в окне", "Pencerede Sun"],
+    ["Export as Movie…", "Экспорт в видео…", "Film Olarak Dışa Aktar…"],
+    ["Seconds per slide:", "Секунд на слайд:", "Slayt başına saniye:"],
+    ["Exporting the movie…", "Экспорт видео…", "Film dışa aktarılıyor…"],
 ]
