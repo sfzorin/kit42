@@ -124,6 +124,7 @@ enum Renderer {
             return
         case .picture:
             drawPicture(o, deck: deck, ctx: ctx)
+            if options.editing, let clip = o.clip { drawMediaBadge(o, audio: clip.audio, ctx: ctx) }
         case .table:
             ctx.saveGState()
             transform(for: o, ctx: ctx, flips: false)
@@ -356,6 +357,23 @@ enum Renderer {
             }
         }
         ctx.endTransparencyLayer()
+    }
+
+    /// Play badge on video and audio objects in the editing view.
+    static func drawMediaBadge(_ o: SlideObject, audio: Bool, ctx: CGContext) {
+        ctx.saveGState()
+        transform(for: o, ctx: ctx, flips: false)
+        let s = min(36, min(o.frame.width, o.frame.height) * 0.3)
+        let c = CGPoint(x: o.frame.width / 2, y: o.frame.height / 2)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.45).cgColor)
+        ctx.fillEllipse(in: CGRect(x: c.x - s, y: c.y - s, width: s * 2, height: s * 2))
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.move(to: CGPoint(x: c.x - s * 0.35, y: c.y - s * 0.5))
+        ctx.addLine(to: CGPoint(x: c.x + s * 0.55, y: c.y))
+        ctx.addLine(to: CGPoint(x: c.x - s * 0.35, y: c.y + s * 0.5))
+        ctx.closePath()
+        ctx.fillPath()
+        ctx.restoreGState()
     }
 
     static func drawPicture(_ o: SlideObject, deck: Deck, ctx: CGContext) {

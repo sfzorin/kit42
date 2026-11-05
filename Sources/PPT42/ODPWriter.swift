@@ -654,6 +654,14 @@ private struct ODPWriterImpl {
         if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
         let ext = (media as NSString).pathExtension.lowercased()
         let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
+        if let clip = o.clip, let data = deck.media[clip.media] {
+            let path = "Media/\(clip.media)"
+            shared.files[path] = data
+            shared.manifest.append((path, MediaClip.mime(clip.ext)))
+            x += "><draw:plugin xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"application/vnd.sun.star.media\">"
+            x += "<draw:param draw:name=\"Loop\" draw:value=\"\(clip.loop)\"/><draw:param draw:name=\"Mute\" draw:value=\"false\"/><draw:param draw:name=\"VolumeDB\" draw:value=\"0\"/><draw:param draw:name=\"Zoom\" draw:value=\"fit\"/>"
+            x += "<draw:param draw:name=\"ppt42-autoplay\" draw:value=\"\(clip.autoplay)\"/></draw:plugin"
+        }
         x += "><draw:image xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"\(mime)\"><text:p/></draw:image>"
         if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
         return x + "</draw:frame>"

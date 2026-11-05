@@ -500,6 +500,8 @@ struct SlideObject: Equatable {
     var placeholder: Placeholder?
     /// Picture: media name and crop (fractions of each side: left, top, right, bottom).
     var media: String?
+    /// Video or audio played in the slide show (the picture is its poster).
+    var clip: MediaClip?
     var crop = NSEdgeInsets()
     var table: TableModel?
     var chart: ChartModel?
@@ -515,7 +517,7 @@ struct SlideObject: Equatable {
     static func == (a: SlideObject, b: SlideObject) -> Bool {
         a.id == b.id && a.name == b.name && a.kind == b.kind && a.frame == b.frame && a.rotation == b.rotation && a.flipH == b.flipH
             && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.custom == b.custom && a.fill == b.fill && a.line == b.line
-            && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media
+            && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media && a.clip == b.clip
             && a.crop.left == b.crop.left && a.crop.top == b.crop.top && a.crop.right == b.crop.right && a.crop.bottom == b.crop.bottom
             && a.table == b.table && a.chart == b.chart && a.diagram == b.diagram && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported
     }
@@ -718,6 +720,7 @@ struct Deck: Equatable {
         func visit(_ list: [SlideObject]) {
             for o in list {
                 if let m = o.media { used.insert(m) }
+                if let m = o.clip?.media { used.insert(m) }
                 if case .picture(let m) = o.fill { used.insert(m) }
                 visit(o.children)
             }

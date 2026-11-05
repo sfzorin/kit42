@@ -36,6 +36,10 @@ final class InspectorController: NSViewController {
     private let corner = NSSlider(value: 16, minValue: 0, maxValue: 50, target: nil, action: nil)
     private let shadow = NSButton(checkboxWithTitle: L("Shadow"), target: nil, action: nil)
     private let buildPopup = NSPopUpButton()
+    private let mediaHeader = NSTextField(labelWithString: L("MEDIA"))
+    private let mediaAutoplay = NSButton(checkboxWithTitle: L("Play automatically"), target: nil, action: nil)
+    private let mediaLoop = NSButton(checkboxWithTitle: L("Loop"), target: nil, action: nil)
+    private var mediaGrid = NSGridView()
     // Chart
     private let chartHeader = NSTextField(labelWithString: L("CHART"))
     private var chartGrid = NSGridView()
@@ -241,8 +245,13 @@ final class InspectorController: NSViewController {
         chartGrid = grid([(L("Type:"), [chartType]), (L("Stacking:"), [chartStack]), (L("Title:"), [chartTitle]), (L("Legend:"), [chartLegend]),
                           (L("Data labels:"), [chartLabels]), (L("Category axis:"), [catTitle]), (L("Value axis:"), [valTitle]),
                           ("", [chartGridlines]), ("", [chartData])])
+        mediaHeader.font = .systemFont(ofSize: 11, weight: .semibold)
+        mediaHeader.textColor = .secondaryLabelColor
+        for b in [mediaAutoplay, mediaLoop] { b.target = self; b.action = #selector(mediaChanged) }
+        mediaGrid = grid([("", [mediaAutoplay]), ("", [mediaLoop])])
         shapePane.setViews([
             noSelection,
+            mediaHeader, mediaGrid,
             chartHeader, chartGrid,
             header(L("SIZE AND POSITION")),
             grid([(L("Position:"), [posX, posY, unit(L("cm"))]), (L("Size:"), [width, height, unit(L("cm"))]), (L("Rotation:"), [rotation, unit("°")])]),
@@ -367,6 +376,10 @@ final class InspectorController: NSViewController {
         for v in shapePane.arrangedSubviews where v !== noSelection { v.isHidden = o == nil }
         chartHeader.isHidden = o?.chart == nil
         chartGrid.isHidden = o?.chart == nil
+        mediaHeader.isHidden = o?.clip == nil
+        mediaGrid.isHidden = o?.clip == nil
+        mediaAutoplay.state = o?.clip?.autoplay == true ? .on : .off
+        mediaLoop.state = o?.clip?.loop == true ? .on : .off
         if let o {
             posX.stringValue = cm(o.frame.minX); posY.stringValue = cm(o.frame.minY)
             width.stringValue = cm(o.frame.width); height.stringValue = cm(o.frame.height)
@@ -586,6 +599,12 @@ final class InspectorController: NSViewController {
             m.valAxisTitle = vt.isEmpty ? nil : vt
             m.gridlines = grid
         }
+    }
+
+    @objc private func mediaChanged() {
+        guard !updating, let owner else { return }
+        let a = mediaAutoplay.state == .on, l = mediaLoop.state == .on
+        owner.changeSelected(L("Media")) { o in o.clip?.autoplay = a; o.clip?.loop = l }
     }
 
     @objc private func chartDataClicked() {

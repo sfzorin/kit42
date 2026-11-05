@@ -569,7 +569,7 @@ private struct ODPReaderImpl {
                     return [o]
                 }
             }
-            if let img = e.child("image") ?? e.child("object")?.child("image"), e.child("text-box") == nil, e.child("table") == nil {
+            if let img = e.child("image") ?? e.child("object")?.child("image"), e.child("text-box") == nil, e.child("table") == nil, e.child("plugin") == nil {
                 o.kind = .picture
                 if let href = img.a("href"), let data = zip[href] { o.media = deck.addMedia(data, ext: imageExtension(data)) }
                 // A replacement picture of an embedded object comes after it.
@@ -579,6 +579,23 @@ private struct ODPReaderImpl {
                 if let op = percent(g["image-opacity"]) { o.opacity = op }
                 if o.media == nil && o.placeholder == nil { return [] }
                 if e.child("object") != nil { o.unsupported = nil }
+                return [o]
+            }
+            if let plugin = e.child("plugin"), let href = plugin.a("href"), let data = zip[href.hasPrefix("./") ? String(href.dropFirst(2)) : href] {
+                o.kind = .picture
+                o.placeholder = nil
+                let ext = (href as NSString).pathExtension.lowercased()
+                var clip = MediaClip(media: deck.addClip(data, ext: ext.isEmpty ? "mp4" : ext))
+                clip.audio = MediaClip.isAudio(ext)
+                for p in plugin.children("param") {
+                    if p.a("name") == "Loop" { clip.loop = p.a("value") == "true" }
+                    if p.a("name") == "ppt42-autoplay" { clip.autoplay = p.a("value") == "true" }
+                }
+                o.clip = clip
+                if let img = e.child("image"), let ih = img.a("href"), let d = zip[ih] { o.media = deck.addMedia(d, ext: imageExtension(d)) }
+                if o.media == nil, let poster = MediaFiles.audioPoster() { o.media = deck.addMedia(poster, ext: "png") }
+                applyGraphics(g, to: &o)
+                o.fill = .none
                 return [o]
             }
             if e.child("object") != nil || e.child("plugin") != nil {

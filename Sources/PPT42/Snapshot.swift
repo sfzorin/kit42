@@ -116,6 +116,8 @@ extension DeckWindowController {
                 } }
             }
         case "toshapes": convertToShapesAction(nil)
+        case "media":
+            insertMedia(URL(fileURLWithPath: arg), autoplay: true)
         case "bold": boldAction(nil)
         case "italic": italicAction(nil)
         case "underline": underlineAction(nil)

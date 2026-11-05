@@ -43,7 +43,15 @@ final class ShowView: NSView {
         ctx.restoreGState()
     }
 
-    override func mouseDown(with event: NSEvent) { show?.next() }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let r = slideRect
+        if let show, r.width > 0 {
+            let q = CGPoint(x: (p.x - r.minX) / r.width * show.deck.size.width, y: (p.y - r.minY) / r.height * show.deck.size.height)
+            if show.clickMedia(at: q) { return }
+        }
+        show?.next()
+    }
     override func rightMouseDown(with event: NSEvent) { show?.previous() }
     override func scrollWheel(with event: NSEvent) {
         guard abs(event.scrollingDeltaY) > 2, event.phase == .began || event.phase == [] else { return }
@@ -72,6 +80,8 @@ final class SlideShowController: NSObject {
     private var savedOptions: NSApplication.PresentationOptions = []
     private var cache: [String: CGImage] = [:]
     private var pixelWidth = 1920
+    let media = ShowMedia()
+    private var mediaSlide: Int?
 
     init(owner: DeckWindowController, deck: Deck, start: Int, rehearse: Bool) {
         self.owner = owner
@@ -131,6 +141,8 @@ final class SlideShowController: NSObject {
 
     func end() {
         autoTimer?.invalidate()
+        media.clear()
+        MediaFiles.cleanUp()
         if let w = window {
             if !PresentationDocument.testMode { NSApp.presentationOptions = savedOptions }
             w.orderOut(nil)
@@ -177,6 +189,12 @@ final class SlideShowController: NSObject {
         }
         presenter?.update()
         scheduleAuto()
+        if mediaSlide != slideIndex, window != nil {
+            mediaSlide = slideIndex
+            media.load(slide, deck: deck)
+            media.attach(to: view, slideRect: view.slideRect, slideSize: deck.size)
+            media.startAutoplay()
+        }
         // Warm the next picture.
         if position + 1 < order.count { DispatchQueue.main.async { [weak self] in guard let self else { return }; _ = self.image(slide: self.order[min(self.position + 1, self.order.count - 1)], revealed: 0) } }
     }
@@ -329,6 +347,9 @@ final class SlideShowController: NSObject {
         let target = n - deck.firstSlideNumber
         if let p = order.firstIndex(where: { $0 >= target }) { go(to: p) }
     }
+
+    /// A click on a video or audio clip plays or pauses it.
+    func clickMedia(at p: CGPoint) -> Bool { media.toggle(at: p) }
 
     func toggleBlank(_ c: NSColor) {
         view.blank = view.blank == nil ? c : nil

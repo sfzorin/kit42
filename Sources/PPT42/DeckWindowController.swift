@@ -470,7 +470,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case #selector(deleteSlideAction(_:)): return mode != .master && deck.slides.count > 0
         case #selector(insertTextBoxAction(_:)), #selector(insertShapeAction(_:)), #selector(insertShapeMenuAction(_:)),
              #selector(insertImageAction(_:)), #selector(insertTableAction(_:)), #selector(showStampsAction(_:)),
-             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)), #selector(insertChartAction(_:)):
+             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)), #selector(insertChartAction(_:)), #selector(insertMediaAction(_:)):
             return normal && deck.slides.count > 0
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)):
             return normal && selectedObjects.count == 1 && selectedObjects.first?.kind == .table

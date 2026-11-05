@@ -745,6 +745,23 @@ struct PPTXReader {
         o.line = line
         o.shadow = spPr?.child("effectLst")?.child("outerShdw") != nil
         if let amt = e.path("blipFill", "blip", "alphaModFix")?.num("amt") { o.opacity = amt / 100000 }
+        // Video and audio (a:videoFile / a:audioFile, p14:media with the embedded file).
+        if let nvPr = e.path("nvPicPr", "nvPr") {
+            let srels = rels(part)
+            let media = nvPr.descendants("media").first?.a("embed").flatMap { srels[$0] }
+            let file = nvPr.child("videoFile") ?? nvPr.child("audioFile") ?? nvPr.child("quickTimeFile")
+            let linked = file?.a("link").flatMap { srels[$0] }
+            if let target = (media ?? linked), !target.external, let data = zip[target.target] {
+                let ext = (target.target as NSString).pathExtension.lowercased()
+                var clip = MediaClip(media: deck.addClip(data, ext: ext.isEmpty ? "mp4" : ext))
+                clip.audio = nvPr.child("audioFile") != nil || MediaClip.isAudio(ext)
+                if let mine = nvPr.descendants("clip").first(where: { $0.uri == "urn:sfzorin:ppt42" }) {
+                    clip.autoplay = mine.bool("autoplay") ?? false
+                    clip.loop = mine.bool("loop") ?? false
+                }
+                o.clip = clip
+            }
+        }
         if o.media == nil && o.placeholder == nil { return nil }
         return o
     }

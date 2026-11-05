@@ -418,7 +418,19 @@ struct PPTXWriter {
                 // Empty picture placeholder.
                 return "<p:sp>" + nv(o, kind: "Sp", extra: "<p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr>") + "<p:spPr>\(xfrm(o))</p:spPr></p:sp>"
             }
-            var x = "<p:pic>" + nv(o, kind: "Pic", extra: "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr>")
+            var x = "<p:pic>"
+            if let clip = o.clip {
+                let target = "../media/\(clip.media)"
+                let embed = rels.add("http://schemas.microsoft.com/office/2007/relationships/media", target)
+                let link = rels.add("\(Self.relBase)/\(clip.audio ? "audio" : "video")", target)
+                sink.defaults[clip.ext] = MediaClip.mime(clip.ext)
+                x += "<p:nvPicPr><p:cNvPr id=\"\(o.id)\" name=\"\(xmlEscape(o.name.isEmpty ? defaultName(o) : o.name))\"><a:hlinkClick r:id=\"\" action=\"ppaction://media\"/></p:cNvPr>"
+                x += "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr><a:\(clip.audio ? "audioFile" : "videoFile") r:link=\"\(link)\"/>"
+                x += "<p:extLst><p:ext uri=\"{DAA4B4D4-6D71-4841-9C94-3DE04A35F2DA}\"><p14:media xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\" r:embed=\"\(embed)\"/></p:ext>"
+                x += "<p:ext uri=\"{6C1E4F2B-7A3D-4B8E-9F42-0C11A5E0FF42}\"><ppt42:clip xmlns:ppt42=\"urn:sfzorin:ppt42\" autoplay=\"\(clip.autoplay ? 1 : 0)\" loop=\"\(clip.loop ? 1 : 0)\"/></p:ext></p:extLst></p:nvPr></p:nvPicPr>"
+            } else {
+                x += nv(o, kind: "Pic", extra: "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr>")
+            }
             x += "<p:blipFill><a:blip r:embed=\"\(rels.media(media))\">"
             if o.opacity < 1 { x += "<a:alphaModFix amt=\"\(Int(o.opacity * 100000))\"/>" }
             x += "</a:blip>"

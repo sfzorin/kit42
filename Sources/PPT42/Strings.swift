@@ -480,4 +480,13 @@ let ppt42Strings: [[String]] = [
     ["Scatter", "Точечная", "Dağılım"],
     ["Convert to Shapes", "Преобразовать в фигуры", "Şekillere Dönüştür"],
     ["Some objects (OLE objects, SmartArt without a drawing) are shown as placeholders and are not saved.", "Некоторые объекты (OLE, SmartArt без рисунка) показаны заглушками и не сохраняются.", "Bazı nesneler (OLE nesneleri, çizimi olmayan SmartArt) yer tutucu olarak gösterilir ve kaydedilmez."],
+    ["Video or Audio…", "Видео или аудио…", "Video veya Ses…"],
+    ["Insert a video or audio file", "Вставить видео- или аудиофайл", "Video veya ses dosyası ekle"],
+    ["Media", "Медиа", "Medya"],
+    ["MEDIA", "МЕДИА", "MEDYA"],
+    ["Play automatically", "Воспроизводить автоматически", "Otomatik oynat"],
+    ["Loop", "Повторять", "Döngü"],
+    ["Choose a video or audio file", "Выберите видео- или аудиофайл", "Bir video veya ses dosyası seçin"],
+    ["Insert Audio", "Вставка аудио", "Ses Ekle"],
+    ["Insert Video", "Вставка видео", "Video Ekle"],
 ]
