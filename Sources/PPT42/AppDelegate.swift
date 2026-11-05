@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.activate()
+        if !PresentationDocument.testMode { NSApp.activate() }
         let env = ProcessInfo.processInfo.environment
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
             guard NSDocumentController.shared.documents.isEmpty else { return }

@@ -66,8 +66,13 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         setupContent()
         window.toolbar = toolbarController.toolbar
         window.addTitlebarAccessoryViewController(formatBar.strip)
-        window.setFrameAutosaveName("PPT42.window")
-        if window.frame.width < 900 { window.setContentSize(NSSize(width: 1280, height: 820)); window.center() }
+        if PresentationDocument.testMode {
+            // Test runs leave the saved window frame alone (and do not activate the app).
+            window.center()
+        } else {
+            window.setFrameAutosaveName("PPT42.window")
+            if window.frame.width < 900 { window.setContentSize(NSSize(width: 1280, height: 820)); window.center() }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -100,12 +105,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             b.widthAnchor.constraint(equalToConstant: 48).isActive = true
         }
         style(shape, symbol: "square.on.circle", tip: L("Insert a shape"))
-        for (i, p) in Shapes.gallery.enumerated() {
-            let item = NSMenuItem(title: p.name, action: #selector(insertShapeAction(_:)), keyEquivalent: "")
-            item.tag = i
-            item.image = Shapes.icon(p.prst)
-            shape.menu?.addItem(item)
-        }
+        for item in Shapes.menuItems(action: #selector(insertShapeAction(_:)), target: nil) { shape.menu?.addItem(item) }
         style(newSlide, symbol: "plus.rectangle.on.rectangle", tip: L("Add a slide (choose a layout)"))
         newSlide.menu?.delegate = self
         newSlide.menu?.identifier = NSUserInterfaceItemIdentifier("toolbarNewSlide")

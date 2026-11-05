@@ -49,6 +49,13 @@ enum Cmd {
     static var shapes: [Command] {
         Shapes.gallery.enumerated().map { Command($0.element.name, #selector(W.insertShapeAction(_:)), tag: $0.offset) }
     }
+    /// Insert › Shape: one submenu per gallery section.
+    static var shapeMenu: [MenuElement] {
+        let all = shapes
+        return Shapes.sections.enumerated().map { k, name in
+            .submenu(name, Shapes.gallery.indices.filter { Shapes.gallery[$0].section == k }.map { .command(all[$0]) })
+        }
+    }
     static let image = Command(L("Image…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]),
                                toolTip: L("Insert an image"), label: L("Image"))
     static let table = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option, .shift]),
@@ -152,7 +159,7 @@ enum Cmd {
         spec.view = viewModes.menuElements + [.separator, .command(notesPane), .command(inspector), .command(formatBar), .separator,
                                               .command(zoomIn), .command(zoomOut), .command(zoomFit), .command(actualSize), .separator, .command(guides)]
         spec.insert = [.command(newSlide), .item(newSlideItem), .command(duplicateSlide), .command(deleteSlide), .separator,
-                       .command(textBox), .submenu(L("Shape"), shapes.menuElements), .command(image), .command(table), .command(stamps), .separator,
+                       .command(textBox), .submenu(L("Shape"), shapeMenu), .command(image), .command(table), .command(stamps), .separator,
                        .command(slideNumber), .command(date)]
         spec.format = [
             .submenu(L("Font"), [.command(bold), .command(italic), .command(underline), .command(strike), .separator,

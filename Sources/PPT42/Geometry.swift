@@ -6,38 +6,104 @@ enum Shapes {
     struct Preset {
         let prst: String
         let name: String
-        let symbol: String
+        let section: Int
     }
+
+    /// Gallery sections (Insert › Shape submenus).
+    static let sections: [String] = [L("Basic Shapes"), L("Arrows"), L("Flowchart"), L("Stars and Banners"), L("Callouts"), L("Brackets and Math"), L("Lines")]
 
     /// Insert › Shape gallery, in order.
     static let gallery: [Preset] = [
-        Preset(prst: "rect", name: L("Rectangle"), symbol: "rectangle"),
-        Preset(prst: "roundRect", name: L("Rounded Rectangle"), symbol: "rectangle.roundedtop"),
-        Preset(prst: "ellipse", name: L("Oval"), symbol: "oval"),
-        Preset(prst: "triangle", name: L("Triangle"), symbol: "triangle"),
-        Preset(prst: "rtTriangle", name: L("Right Triangle"), symbol: "triangle"),
-        Preset(prst: "diamond", name: L("Diamond"), symbol: "diamond"),
-        Preset(prst: "parallelogram", name: L("Parallelogram"), symbol: "rectangle"),
-        Preset(prst: "trapezoid", name: L("Trapezoid"), symbol: "rectangle"),
-        Preset(prst: "pentagon", name: L("Pentagon"), symbol: "pentagon"),
-        Preset(prst: "hexagon", name: L("Hexagon"), symbol: "hexagon"),
-        Preset(prst: "octagon", name: L("Octagon"), symbol: "octagon"),
-        Preset(prst: "star5", name: L("Star"), symbol: "star"),
-        Preset(prst: "plus", name: L("Cross"), symbol: "plus"),
-        Preset(prst: "heart", name: L("Heart"), symbol: "heart"),
-        Preset(prst: "donut", name: L("Donut"), symbol: "circle.circle"),
-        Preset(prst: "rightArrow", name: L("Right Arrow"), symbol: "arrow.right"),
-        Preset(prst: "leftArrow", name: L("Left Arrow"), symbol: "arrow.left"),
-        Preset(prst: "upArrow", name: L("Up Arrow"), symbol: "arrow.up"),
-        Preset(prst: "downArrow", name: L("Down Arrow"), symbol: "arrow.down"),
-        Preset(prst: "leftRightArrow", name: L("Left-Right Arrow"), symbol: "arrow.left.and.right"),
-        Preset(prst: "chevron", name: L("Chevron"), symbol: "chevron.right"),
-        Preset(prst: "homePlate", name: L("Pentagon Arrow"), symbol: "arrowshape.right"),
-        Preset(prst: "wedgeRectCallout", name: L("Rectangular Callout"), symbol: "text.bubble"),
-        Preset(prst: "wedgeEllipseCallout", name: L("Oval Callout"), symbol: "bubble.left"),
-        Preset(prst: "cloud", name: L("Cloud"), symbol: "cloud"),
-        Preset(prst: "line", name: L("Line"), symbol: "line.diagonal"),
-        Preset(prst: "arrow", name: L("Arrow"), symbol: "line.diagonal.arrow"),
+        Preset(prst: "rect", name: L("Rectangle"), section: 0),
+        Preset(prst: "roundRect", name: L("Rounded Rectangle"), section: 0),
+        Preset(prst: "ellipse", name: L("Oval"), section: 0),
+        Preset(prst: "triangle", name: L("Triangle"), section: 0),
+        Preset(prst: "rtTriangle", name: L("Right Triangle"), section: 0),
+        Preset(prst: "diamond", name: L("Diamond"), section: 0),
+        Preset(prst: "parallelogram", name: L("Parallelogram"), section: 0),
+        Preset(prst: "trapezoid", name: L("Trapezoid"), section: 0),
+        Preset(prst: "pentagon", name: L("Pentagon"), section: 0),
+        Preset(prst: "hexagon", name: L("Hexagon"), section: 0),
+        Preset(prst: "octagon", name: L("Octagon"), section: 0),
+        Preset(prst: "plus", name: L("Cross"), section: 0),
+        Preset(prst: "donut", name: L("Donut"), section: 0),
+        Preset(prst: "can", name: L("Can"), section: 0),
+        Preset(prst: "cube", name: L("Cube"), section: 0),
+        Preset(prst: "frame", name: L("Frame"), section: 0),
+        Preset(prst: "foldedCorner", name: L("Folded Corner"), section: 0),
+        Preset(prst: "bevel", name: L("Bevel"), section: 0),
+        Preset(prst: "plaque", name: L("Plaque"), section: 0),
+        Preset(prst: "pie", name: L("Pie"), section: 0),
+        Preset(prst: "blockArc", name: L("Block Arc"), section: 0),
+        Preset(prst: "teardrop", name: L("Teardrop"), section: 0),
+        Preset(prst: "heart", name: L("Heart"), section: 0),
+        Preset(prst: "smileyFace", name: L("Smiley Face"), section: 0),
+        Preset(prst: "sun", name: L("Sun"), section: 0),
+        Preset(prst: "moon", name: L("Moon"), section: 0),
+        Preset(prst: "lightningBolt", name: L("Lightning Bolt"), section: 0),
+        Preset(prst: "cloud", name: L("Cloud"), section: 0),
+        Preset(prst: "noSmoking", name: L("No Symbol"), section: 0),
+        Preset(prst: "rightArrow", name: L("Right Arrow"), section: 1),
+        Preset(prst: "leftArrow", name: L("Left Arrow"), section: 1),
+        Preset(prst: "upArrow", name: L("Up Arrow"), section: 1),
+        Preset(prst: "downArrow", name: L("Down Arrow"), section: 1),
+        Preset(prst: "leftRightArrow", name: L("Left-Right Arrow"), section: 1),
+        Preset(prst: "upDownArrow", name: L("Up-Down Arrow"), section: 1),
+        Preset(prst: "quadArrow", name: L("Quad Arrow"), section: 1),
+        Preset(prst: "chevron", name: L("Chevron"), section: 1),
+        Preset(prst: "homePlate", name: L("Pentagon Arrow"), section: 1),
+        Preset(prst: "notchedRightArrow", name: L("Notched Right Arrow"), section: 1),
+        Preset(prst: "stripedRightArrow", name: L("Striped Right Arrow"), section: 1),
+        Preset(prst: "bentArrow", name: L("Bent Arrow"), section: 1),
+        Preset(prst: "uturnArrow", name: L("U-Turn Arrow"), section: 1),
+        Preset(prst: "curvedRightArrow", name: L("Curved Right Arrow"), section: 1),
+        Preset(prst: "circularArrow", name: L("Circular Arrow"), section: 1),
+        Preset(prst: "rightArrowCallout", name: L("Right Arrow Callout"), section: 1),
+        Preset(prst: "flowChartProcess", name: L("Process"), section: 2),
+        Preset(prst: "flowChartAlternateProcess", name: L("Alternate Process"), section: 2),
+        Preset(prst: "flowChartDecision", name: L("Decision"), section: 2),
+        Preset(prst: "flowChartInputOutput", name: L("Data"), section: 2),
+        Preset(prst: "flowChartPredefinedProcess", name: L("Predefined Process"), section: 2),
+        Preset(prst: "flowChartDocument", name: L("Document"), section: 2),
+        Preset(prst: "flowChartMultidocument", name: L("Multidocument"), section: 2),
+        Preset(prst: "flowChartTerminator", name: L("Terminator"), section: 2),
+        Preset(prst: "flowChartPreparation", name: L("Preparation"), section: 2),
+        Preset(prst: "flowChartManualInput", name: L("Manual Input"), section: 2),
+        Preset(prst: "flowChartConnector", name: L("Connector"), section: 2),
+        Preset(prst: "flowChartOffpageConnector", name: L("Off-page Connector"), section: 2),
+        Preset(prst: "flowChartMagneticDisk", name: L("Magnetic Disk"), section: 2),
+        Preset(prst: "flowChartMerge", name: L("Merge"), section: 2),
+        Preset(prst: "star4", name: L("4-Point Star"), section: 3),
+        Preset(prst: "star5", name: L("Star"), section: 3),
+        Preset(prst: "star6", name: L("6-Point Star"), section: 3),
+        Preset(prst: "star8", name: L("8-Point Star"), section: 3),
+        Preset(prst: "star12", name: L("12-Point Star"), section: 3),
+        Preset(prst: "star24", name: L("24-Point Star"), section: 3),
+        Preset(prst: "irregularSeal1", name: L("Explosion"), section: 3),
+        Preset(prst: "ribbon2", name: L("Ribbon"), section: 3),
+        Preset(prst: "wave", name: L("Wave"), section: 3),
+        Preset(prst: "doubleWave", name: L("Double Wave"), section: 3),
+        Preset(prst: "verticalScroll", name: L("Vertical Scroll"), section: 3),
+        Preset(prst: "horizontalScroll", name: L("Horizontal Scroll"), section: 3),
+        Preset(prst: "wedgeRectCallout", name: L("Rectangular Callout"), section: 4),
+        Preset(prst: "wedgeRoundRectCallout", name: L("Rounded Rectangular Callout"), section: 4),
+        Preset(prst: "wedgeEllipseCallout", name: L("Oval Callout"), section: 4),
+        Preset(prst: "cloudCallout", name: L("Cloud Callout"), section: 4),
+        Preset(prst: "borderCallout1", name: L("Line Callout"), section: 4),
+        Preset(prst: "leftBracket", name: L("Left Bracket"), section: 5),
+        Preset(prst: "rightBracket", name: L("Right Bracket"), section: 5),
+        Preset(prst: "leftBrace", name: L("Left Brace"), section: 5),
+        Preset(prst: "rightBrace", name: L("Right Brace"), section: 5),
+        Preset(prst: "bracketPair", name: L("Double Bracket"), section: 5),
+        Preset(prst: "bracePair", name: L("Double Brace"), section: 5),
+        Preset(prst: "mathPlus", name: L("Plus Sign"), section: 5),
+        Preset(prst: "mathMinus", name: L("Minus Sign"), section: 5),
+        Preset(prst: "mathMultiply", name: L("Multiply Sign"), section: 5),
+        Preset(prst: "mathDivide", name: L("Division Sign"), section: 5),
+        Preset(prst: "mathEqual", name: L("Equal"), section: 5),
+        Preset(prst: "mathNotEqual", name: L("Not Equal"), section: 5),
+        Preset(prst: "line", name: L("Line"), section: 6),
+        Preset(prst: "arrow", name: L("Arrow"), section: 6),
     ]
 
     static let defaults: [String: [String: Int]] = [
@@ -247,6 +313,24 @@ enum Shapes {
             return box.insetBy(dx: size.width * 0.25, dy: size.height * 0.25)
         default:
             return box
+        }
+    }
+
+    /// Menu items of the gallery, in section submenus.
+    static func menuItems(action: Selector, target: AnyObject?) -> [NSMenuItem] {
+        sections.enumerated().map { k, name in
+            let sec = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: name)
+            for (i, p) in gallery.enumerated() where p.section == k {
+                let item = NSMenuItem(title: p.name, action: action, keyEquivalent: "")
+                item.tag = i
+                item.target = target
+                item.image = icon(p.prst)
+                sub.addItem(item)
+            }
+            sec.submenu = sub
+            sec.image = icon(gallery.first { $0.section == k }?.prst ?? "rect")
+            return sec
         }
     }
 

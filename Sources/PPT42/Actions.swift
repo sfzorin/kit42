@@ -167,12 +167,7 @@ extension DeckWindowController {
 
     @objc func insertShapeMenuAction(_ sender: Any?) {
         let menu = NSMenu()
-        for (i, p) in Shapes.gallery.enumerated() {
-            let item = NSMenuItem(title: p.name, action: #selector(insertShapeAction(_:)), keyEquivalent: "")
-            item.tag = i
-            item.image = Shapes.icon(p.prst)
-            menu.addItem(item)
-        }
+        for item in Shapes.menuItems(action: #selector(insertShapeAction(_:)), target: nil) { menu.addItem(item) }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
