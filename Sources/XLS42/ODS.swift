@@ -27,11 +27,19 @@ enum ODS {
         // Styles: common (styles.xml) then automatic (content.xml); number styles from both.
         var numberFormats: [String: String] = [:]
         var styles: [String: StyleInfo] = [:]
+        var commonCellStyles: [String] = []
         for container in [stylesRoot?.child("styles"), stylesRoot?.child("automatic-styles"), content.child("automatic-styles")] {
             guard let container else { continue }
             for e in (container.children ?? []).compactMap({ $0 as? XMLElement }) {
                 if let name = e.attr("name"), let code = numberFormat(e) { numberFormats[name] = code }
-                if e.localName == "style", let name = e.attr("name") { styles[name] = styleInfo(e) }
+                if e.localName == "style", let name = e.attr("name") {
+                    styles[name] = styleInfo(e)
+                    // Named (common) cell styles: their name stays on the cells (Format › Cell Styles).
+                    if container === stylesRoot?.child("styles"), e.attr("family") == "table-cell", name != "Default" {
+                        styles[name]?.style.styleName = CellStyles.internalName(e.attr("display-name") ?? name)
+                        commonCellStyles.append(name)
+                    }
+                }
                 if e.localName == "default-style", e.attr("family") == "table-cell" { styles["__default"] = styleInfo(e) }
             }
         }
@@ -65,6 +73,10 @@ enum ODS {
 
         var wb = Workbook()
         wb.sheets = []
+        for name in commonCellStyles {
+            let s = cellStyle(name)
+            if let n = s.styleName, wb.cellStyles[n] == nil { wb.cellStyles[n] = s }
+        }
         wb.structureProtected = spreadsheet.attr("structure-protected") == "true"
         let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
@@ -245,6 +257,16 @@ enum ODS {
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
         return wb
+    }
+
+    /// Style name as an NCName, encoded like LibreOffice ("Heading 1" → "Heading_20_1").
+    static func styleNCName(_ name: String) -> String {
+        var out = ""
+        for (i, ch) in CellStyles.odfName(name).unicodeScalars.enumerated() {
+            let ok = CharacterSet.letters.contains(ch) || ch == "_" || (i > 0 && (CharacterSet.decimalDigits.contains(ch) || ch == "-" || ch == "."))
+            out += ok ? String(ch) : String(format: "_%x_", ch.value)
+        }
+        return out
     }
 
     /// A solver_… name as Excel text: "Sheet1!$A$1:$B$2" for named ranges (several joined by ","), the expression otherwise.
@@ -527,14 +549,36 @@ enum ODS {
             auto += xml
             return name
         }
+        // Named cell styles: common styles in styles.xml (display name = the style's name, LibreOffice's for Accent 1…).
+        var commonStyles = "", commonDataStyles: [String: String] = [:]
+        var namedStyles = Set<String>()
+        for d in CellStyles.definitions(wb) {
+            namedStyles.insert(d.name)
+            var x = "<style:style style:name=\"\(xmlEscape(styleNCName(d.name)))\" style:display-name=\"\(xmlEscape(CellStyles.odfName(d.name)))\" style:family=\"table-cell\" style:parent-style-name=\"Default\""
+            if d.style.numberFormat != "General" {
+                let ds = commonDataStyles[d.style.numberFormat] ?? "N\(commonDataStyles.count + 900)"
+                if commonDataStyles[d.style.numberFormat] == nil, let xml = odfNumberStyle(d.style.numberFormat, name: ds) {
+                    commonDataStyles[d.style.numberFormat] = ds
+                    commonStyles = xml + commonStyles
+                }
+                if commonDataStyles[d.style.numberFormat] != nil { x += " style:data-style-name=\"\(ds)\"" }
+            }
+            commonStyles += x + ">" + cellProperties(d.style) + "</style:style>"
+        }
         func styleName(_ s: CellStyle) -> String? {
             guard s != .default else { return nil }
             if let n = cellStyles[s] { return n }
             let name = "ce\(cellStyles.count + 1)"
             cellStyles[s] = name
-            var x = "<style:style style:name=\"\(name)\" style:family=\"table-cell\" style:parent-style-name=\"Default\""
+            let parent = s.styleName.flatMap { namedStyles.contains($0) ? styleNCName($0) : nil } ?? "Default"
+            var x = "<style:style style:name=\"\(name)\" style:family=\"table-cell\" style:parent-style-name=\"\(xmlEscape(parent))\""
             if let ds = dataStyle(s.numberFormat) { x += " style:data-style-name=\"\(ds)\"" }
-            x += "><style:table-cell-properties"
+            x += ">" + cellProperties(s) + "</style:style>"
+            auto += x
+            return name
+        }
+        func cellProperties(_ s: CellStyle) -> String {
+            var x = "<style:table-cell-properties"
             if let f = s.fill { x += " fo:background-color=\"#\(hex(f))\"" }
             func b(_ side: BorderSide?) -> String { side.map { "\($0.width * 0.75)pt \($0.style == "double" ? "double" : "solid") #\(hex($0.color))" } ?? "none" }
             if s.left != nil || s.right != nil || s.top != nil || s.bottom != nil {
@@ -554,9 +598,7 @@ enum ODS {
             if s.doubleUnderline { x += " style:text-underline-type=\"double\"" }
             if s.strike { x += " style:text-line-through-style=\"solid\"" }
             if let c = s.textColor { x += " fo:color=\"#\(hex(c))\"" }
-            x += "/></style:style>"
-            auto += x
-            return name
+            return x + "/>"
         }
         func colStyle(_ w: CGFloat) -> String {
             if let n = columnStyles[w] { return n }
@@ -668,7 +710,7 @@ enum ODS {
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
         let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
-        let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
+        let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/>\(commonStyles)</office:styles></office:document-styles>"
         var tables = ""
         for s in wb.sheets {
             tables += "<config:config-item-map-entry config:name=\"\(xmlEscape(s.name))\">"

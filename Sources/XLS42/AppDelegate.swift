@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
         }
         NSApp.mainMenu = MenuBar.build(Cmd.menuBar)
+        CellStyleMenu.install(in: NSApp.mainMenu)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

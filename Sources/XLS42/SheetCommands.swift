@@ -219,9 +219,35 @@ extension SheetWindowController {
     }
 
     @objc func applyCellStyleAction(_ sender: Any?) {
+        if let name = (sender as? NSMenuItem)?.representedObject as? String { applyCellStyle(named: name); return }
         let i = commandTag(of: sender)
         guard i >= 0, i < CellStyles.presets.count else { return }
         applyCellStyle(CellStyles.presets[i])
+    }
+
+    /// Named styles of the document that aren't presets (from LibreOffice or Excel files), for the Cell Styles menu.
+    var documentStyleNames: [String] {
+        guard let wb = doc?.workbook else { return [] }
+        var names = Set(wb.cellStyles.keys)
+        for s in wb.sheets { for c in s.cells.values { if let n = c.style.styleName { names.insert(n) } } }
+        return names.filter { CellStyles.preset(named: $0) == nil && $0 != "Normal" }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Applies a preset, or a document style by name (its saved formatting).
+    func applyCellStyle(named name: String) {
+        if let p = CellStyles.preset(named: name) { applyCellStyle(p); return }
+        let range = clampedSelection
+        guard let doc, guardEditable(range) else { return }
+        let def = CellStyles.definition(name, in: doc.workbook)
+            ?? doc.workbook.sheets.lazy.flatMap { $0.cells.values }.first { $0.style.styleName == name }?.style
+        guard let def else { NSSound.beep(); return }
+        doc.change(L("Cell Style"), recalc: false) { wb in
+            for ref in range.cells {
+                var cell = wb.sheets[sheetIndex][ref]
+                cell.style = CellStyles.applied(document: def, name: name, to: cell.style)
+                wb.sheets[sheetIndex][ref] = cell
+            }
+        }
     }
 
     func applyCellStyle(_ preset: CellStyles.Preset) {

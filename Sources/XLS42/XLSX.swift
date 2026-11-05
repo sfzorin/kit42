@@ -27,7 +27,8 @@ enum XLSX {
         }
 
         let theme = themeColors(xml("xl/theme/theme1.xml"))
-        let styles = readStyles(xml("xl/styles.xml"), theme: theme)
+        let (styles, namedStyles) = readStyles(xml("xl/styles.xml"), theme: theme)
+        wb.cellStyles = namedStyles
         let dxfs = readDxfs(xml("xl/styles.xml"), theme: theme)
         let shared = (xml("xl/sharedStrings.xml")?.children("si") ?? []).map(\.allText)
 
@@ -200,8 +201,9 @@ enum XLSX {
 
     // MARK: Styles
 
-    private static func readStyles(_ root: XMLElement?, theme: [NSColor]) -> [CellStyle] {
-        guard let root else { return [] }
+    /// Cell formats (cellXfs) and the named cell styles (cellStyles over cellStyleXfs, Normal left out).
+    private static func readStyles(_ root: XMLElement?, theme: [NSColor]) -> ([CellStyle], [String: CellStyle]) {
+        guard let root else { return ([], [:]) }
         var formats = NumberFormat.builtin
         for f in root.child("numFmts")?.children("numFmt") ?? [] {
             if let id = f.attr("numFmtId").flatMap(Int.init), let code = f.attr("formatCode") { formats[id] = code }
@@ -232,9 +234,25 @@ enum XLSX {
         // Named cell styles: cellStyleXfs index → name.
         var styleNames: [Int: String] = [:]
         for cs in root.child("cellStyles")?.children("cellStyle") ?? [] {
-            if let id = cs.attr("xfId").flatMap(Int.init), let name = cs.attr("name"), id > 0 { styleNames[id] = name }
+            if let id = cs.attr("xfId").flatMap(Int.init), let name = cs.attr("name"), id > 0, cs.attr("builtinId") != "0", name != "Normal" {
+                styleNames[id] = CellStyles.internalName(name)
+            }
         }
-        return (root.child("cellXfs")?.children("xf") ?? []).map { xf in
+        let cellXfs = (root.child("cellXfs")?.children("xf") ?? []).map { xf -> CellStyle in
+            var s = format(xf)
+            s.styleName = xf.attr("xfId").flatMap(Int.init).flatMap { styleNames[$0] }
+            return s
+        }
+        var named: [String: CellStyle] = [:]
+        let styleXfs = root.child("cellStyleXfs")?.children("xf") ?? []
+        for (id, name) in styleNames where id < styleXfs.count && named[name] == nil {
+            var s = format(styleXfs[id])
+            s.styleName = name
+            named[name] = s
+        }
+        return (cellXfs, named)
+
+        func format(_ xf: XMLElement) -> CellStyle {
             var s = xf.attr("fontId").flatMap(Int.init).flatMap { $0 < fonts.count ? fonts[$0] : nil } ?? CellStyle()
             if let id = xf.attr("fillId").flatMap(Int.init), id < fills.count { s.fill = fills[id] }
             if let id = xf.attr("borderId").flatMap(Int.init), id < borders.count {
@@ -243,7 +261,6 @@ enum XLSX {
             if let id = xf.attr("numFmtId").flatMap(Int.init) { s.numberFormat = formats[id] ?? "General" }
             if let p = xf.child("protection"), p.attr("locked") == "0" || p.attr("locked") == "false" { s.locked = false }
             if let p = xf.child("protection"), p.attr("hidden") == "1" || p.attr("hidden") == "true" { s.hiddenFormula = true }
-            s.styleName = xf.attr("xfId").flatMap(Int.init).flatMap { styleNames[$0] }
             if let a = xf.child("alignment") {
                 s.hAlign = a.attr("horizontal")
                 if let v = a.attr("vertical") { s.vAlign = v }
@@ -408,7 +425,7 @@ enum XLSX {
         wbRels += "<Relationship Id=\"rId\(sheetCount + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>" + pivotRels + "</Relationships>"
         zip["xl/workbook.xml"] = Data(workbook.utf8)
         zip["xl/_rels/workbook.xml.rels"] = Data(wbRels.utf8)
-        zip["xl/styles.xml"] = Data(stylesXML(styleList, dxfs: dxfs).utf8)
+        zip["xl/styles.xml"] = Data(stylesXML(styleList, dxfs: dxfs, named: CellStyles.definitions(wb)).utf8)
         return zip.data()
     }
 
@@ -532,7 +549,7 @@ enum XLSX {
         return x
     }
 
-    private static func stylesXML(_ styles: [CellStyle], dxfs: [Dxf]) -> String {
+    private static func stylesXML(_ styles: [CellStyle], dxfs: [Dxf], named definitions: [(name: String, style: CellStyle)]) -> String {
         var fonts: [String] = [], fills: [String] = ["<fill><patternFill patternType=\"none\"/></fill>", "<fill><patternFill patternType=\"gray125\"/></fill>"]
         var borders: [String] = ["<border><left/><right/><top/><bottom/><diagonal/></border>"]
         var numFmts: [String: Int] = [:]
@@ -544,7 +561,7 @@ enum XLSX {
             return list.count - 1
         }
         let builtinByCode = Dictionary(NumberFormat.builtin.map { ($0.value, $0.key) }, uniquingKeysWith: min)
-        for s in styles {
+        func ids(_ s: CellStyle) -> (numFmt: Int, font: Int, fill: Int, border: Int) {
             var font = "<font>"
             if s.bold { font += "<b/>" }
             if s.italic { font += "<i/>" }
@@ -565,7 +582,15 @@ enum XLSX {
             if let id = builtinByCode[s.numberFormat] { numFmtId = id }
             else if let id = numFmts[s.numberFormat] { numFmtId = id }
             else { numFmtId = 164 + numFmts.count; numFmts[s.numberFormat] = numFmtId }
-
+            return (numFmtId, fontId, fillId, borderId)
+        }
+        // Named styles (cellStyleXfs): the document's definitions, then presets, then the first cell using the name.
+        for d in definitions {
+            let i = ids(d.style)
+            namedStyles.append((d.name, "<xf numFmtId=\"\(i.numFmt)\" fontId=\"\(i.font)\" fillId=\"\(i.fill)\" borderId=\"\(i.border)\"/>"))
+        }
+        for s in styles {
+            let (numFmtId, fontId, fillId, borderId) = ids(s)
             let xfId = s.styleName.map { name -> Int in
                 if let i = namedStyles.firstIndex(where: { $0.name == name }) { return i + 1 }
                 namedStyles.append((name, "<xf numFmtId=\"\(numFmtId)\" fontId=\"\(fontId)\" fillId=\"\(fillId)\" borderId=\"\(borderId)\"/>"))

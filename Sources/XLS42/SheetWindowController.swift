@@ -1203,6 +1203,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         case #selector(openHyperlinkAction(_:)): return hyperlinkTarget(at: grid.active) != nil
         case #selector(resetFilterAction(_:)): return !sheet.filterHidden.isEmpty || !sheet.filterValues.isEmpty || !sheet.customFilters.isEmpty
         case #selector(applyCellStyleAction(_:)):
+            if let name = item.representedObject as? String { item.state = name == style.styleName ? .on : .off; break }
             item.state = item.tag < CellStyles.presets.count && CellStyles.presets[item.tag].name == (style.styleName ?? "Normal") ? .on : .off
         case #selector(fillUpAction(_:)), #selector(fillDown(_:)): return grid.selection.rows.count > 1
         case #selector(fillLeftAction(_:)): return grid.selection.cols.count > 1
