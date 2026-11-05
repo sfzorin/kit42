@@ -86,7 +86,7 @@ enum Cmd {
 
     // Format: paragraph
     static let alignLeft = Command(L("Align Left"), #selector(W.alignTextAction(_:)), symbol: "text.alignleft", shortcut: Shortcut("{"), tag: 0)
-    static let alignCenter = Command(L("Align Center"), #selector(W.alignTextAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
+    static let alignCenter = Command(L("Align Centre"), #selector(W.alignTextAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
     static let alignRight = Command(L("Align Right"), #selector(W.alignTextAction(_:)), symbol: "text.alignright", shortcut: Shortcut("}"), tag: 2)
     static let justify = Command(L("Justify"), #selector(W.alignTextAction(_:)), symbol: "text.justify", tag: 3)
     static let anchors: [Command] = [

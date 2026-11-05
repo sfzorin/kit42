@@ -20,7 +20,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--roundtrip"), CommandLine.argu
         print("[\(s.name)] cells: \(s.cells.count), formulas: \(s.cells.values.filter(\.isFormula).count), merges: \(s.merges.count)")
         for ref in s.cells.keys.sorted().prefix(40) {
             let c = s.cells[ref]!
-            print("  \(ref.a1) \(c.input.prefix(50)) → \(NumberFormat.format(c.value, c.style.numberFormat).text)")
+            print("  \(ref.a1) \(c.input.prefix(50)) → \(NumberFormat.format(c.value, c.style.numberFormat, date1904: wb.date1904).text)")
         }
     }
     try XLSX.write(wb).write(to: URL(fileURLWithPath: args[i + 2]))
@@ -73,7 +73,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--convert"), CommandLine.argume
     let data: Data
     switch out.pathExtension.lowercased() {
     case "ods": data = ODS.write(wb)
-    case "csv": data = SheetExport.csv(wb.sheets[0], delimiter: ",", bom: true)
+    case "csv": data = try SheetExport.csv(wb.sheets[0], delimiter: ",", bom: true, date1904: wb.date1904)
     default: data = XLSX.write(wb)
     }
     try data.write(to: out)

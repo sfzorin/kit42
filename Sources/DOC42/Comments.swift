@@ -194,8 +194,12 @@ extension DocWindowController {
     }
 
     @objc func toggleCommentsAction(_ sender: Any?) {
-        comments.shown.toggle()
+        setComments(shown: !comments.shown)
         UserDefaults.standard.set(comments.shown, forKey: "doc.comments")
+    }
+
+    func setComments(shown: Bool) {
+        comments.shown = shown
         comments.highlightKey = ""
         layoutComments()
     }

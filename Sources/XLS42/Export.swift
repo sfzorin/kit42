@@ -54,7 +54,16 @@ enum SheetExport {
 
     // MARK: - CSV
 
-    static func csv(_ sheet: Sheet, delimiter: Character, bom: Bool) -> Data {
+    /// CSV is rectangular, including empty positions preceding the last used cell.
+    static func validateCSVSize(_ sheet: Sheet) throws {
+        guard let used = sheet.usedRange else { return }
+        guard used.end.row + 1 <= 2_000_000 / (used.end.col + 1) else {
+            throw NSError(domain: "XLS42", code: 2, userInfo: [NSLocalizedDescriptionKey: L("CSV export supports up to %d cells, including empty cells before the last used cell.", 2_000_000)])
+        }
+    }
+
+    static func csv(_ sheet: Sheet, delimiter: Character, bom: Bool, date1904: Bool = false) throws -> Data {
+        try validateCSVSize(sheet)
         guard let used = sheet.usedRange else { return Data() }
         var lines: [String] = []
         for r in 0...used.end.row {
@@ -63,12 +72,12 @@ enum SheetExport {
                 let cell = sheet[CellRef(row: r, col: c)]
                 var s: String
                 if case .number(let d) = cell.value, cell.style.numberFormat == "General" || !NumberFormat.isDateFormat(cell.style.numberFormat) {
-                    s = Value.formatGeneral(d)
+                    s = Value.numberLiteral(d)
                     if delimiter == ";" { s = s.replacingOccurrences(of: ".", with: ",") }
                 } else {
-                    s = NumberFormat.format(cell.value, cell.style.numberFormat).text
+                    s = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: date1904).text
                 }
-                if s.contains(where: { $0 == delimiter || $0 == "\"" || $0 == "\n" }) {
+                if s.contains(where: { $0 == delimiter || $0 == "\"" || $0 == "\n" || $0 == "\r" }) {
                     s = "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
                 }
                 fields.append(s)

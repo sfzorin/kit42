@@ -622,11 +622,14 @@ extension Calculator {
             let k = try x.n(0).rounded(.towardZero), n = try x.n(1).rounded(.towardZero), p = try x.n(2), cum = try x.b(3, false)
             guard k >= 0, k <= n, n >= 0 else { throw XLError.num }
             try prob(p)
-            if cum { return try r(min(1, (0...Int(k)).map { Distributions.binomPMF(Double($0), n, p) }.reduce(0, +))) }
+            if cum {
+                guard k <= 1_000_000 else { throw XLError.num }
+                return try r(min(1, (0...Int(k)).reduce(0.0) { $0 + Distributions.binomPMF(Double($1), n, p) }))
+            }
             return try r(Distributions.binomPMF(k, n, p))
         case "BINOM.INV", "CRITBINOM":
             let n = try x.n(0).rounded(.towardZero), p = try x.n(1), alpha = try x.n(2)
-            guard n >= 0 else { throw XLError.num }
+            guard n >= 0, n <= 1_000_000 else { throw XLError.num }
             try prob(p); try prob(alpha)
             var total = 0.0
             for k in 0...Int(n) {
@@ -638,7 +641,10 @@ extension Calculator {
             try x.need(3)
             let k = try x.n(0).rounded(.towardZero), m = try x.n(1), cum = try x.b(2, false)
             guard k >= 0, m >= 0 else { throw XLError.num }
-            if cum { return try r(min(1, (0...Int(k)).map { Distributions.poissonPMF(Double($0), m) }.reduce(0, +))) }
+            if cum {
+                guard k <= 1_000_000 else { throw XLError.num }
+                return try r(min(1, (0...Int(k)).reduce(0.0) { $0 + Distributions.poissonPMF(Double($1), m) }))
+            }
             return try r(Distributions.poissonPMF(k, m))
         case "FISHER":
             let v = try x.n(0)

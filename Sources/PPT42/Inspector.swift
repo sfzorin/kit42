@@ -4,7 +4,9 @@ import Kit42
 /// Right panel: Slide / Shape / Text tabs.
 final class InspectorController: NSViewController {
     weak var owner: DeckWindowController?
-    private let tabs = NSSegmentedControl(labels: [L("Slide"), L("Shape"), L("Text"), "", ""], trackingMode: .selectOne, target: nil, action: nil)
+    /// Five icon tabs with tooltips: text labels for all five do not fit the 290 pt inspector in Russian/Turkish,
+    /// and mixing text and icon tabs looked inconsistent.
+    private let tabs = NSSegmentedControl(labels: ["", "", "", "", ""], trackingMode: .selectOne, target: nil, action: nil)
     private let slidePane = NSStackView(), shapePane = NSStackView(), textPane = NSStackView()
     private(set) lazy var animationPane = AnimationPane(owner: owner!)
     var selectedTab: Int { tabs.selectedSegment }
@@ -78,9 +80,11 @@ final class InspectorController: NSViewController {
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
         tabs.segmentDistribution = .fillEqually
-        for (i, (sym, tip)) in [("sparkles", L("Animation")), ("text.bubble", L("Comments"))].enumerated() {
-            tabs.setImage(NSImage(systemSymbolName: sym, accessibilityDescription: tip), forSegment: 3 + i)
-            tabs.setToolTip(tip, forSegment: 3 + i)
+        let tabSymbols = [("rectangle.on.rectangle", L("Slide")), ("square.on.circle", L("Shape")), ("textformat", L("Text")),
+                          ("sparkles", L("Animation")), ("text.bubble", L("Comments"))]
+        for (i, (sym, tip)) in tabSymbols.enumerated() {
+            tabs.setImage(NSImage(systemSymbolName: sym, accessibilityDescription: tip), forSegment: i)
+            tabs.setToolTip(tip, forSegment: i)
         }
         for (pane, _) in [(slidePane, 0), (shapePane, 1), (textPane, 2)] {
             pane.orientation = .vertical
@@ -338,10 +342,23 @@ final class InspectorController: NSViewController {
     // MARK: - Reading the selection
 
     private func cm(_ v: CGFloat) -> String { String(format: "%.2f", v / pointsPerCm) }
-    private func number(_ f: NSTextField) -> CGFloat? { Double(f.stringValue.replacingOccurrences(of: ",", with: ".")).map { CGFloat($0) } }
+    private func number(_ f: NSTextField) -> CGFloat? {
+        guard let value = Double(f.stringValue.replacingOccurrences(of: ",", with: ".")), value.isFinite else { return nil }
+        return CGFloat(value)
+    }
+
+    private static func appearanceObject(_ object: SlideObject) -> SlideObject {
+        if object.kind == .group, let first = object.children.first { return appearanceObject(first) }
+        return object
+    }
+
+    private static func editLeaves(_ object: inout SlideObject, _ edit: (inout SlideObject) -> Void) {
+        if object.kind == .group { for i in object.children.indices { editLeaves(&object.children[i], edit) } }
+        else { edit(&object) }
+    }
 
     func reload() {
-        guard isViewLoaded, let owner, !view.isHidden || true else { return }
+        guard isViewLoaded, let owner else { return }
         updating = true
         defer { updating = false }
         let deck = owner.deck
@@ -363,7 +380,7 @@ final class InspectorController: NSViewController {
             bgKind.selectItem(at: 3)
             bgColor.color = g.stops.first?.color.resolved(deck.theme)
             bgColor2.color = g.stops.last?.color.resolved(deck.theme)
-            bgAngle.stringValue = "\(Int(g.angle))"
+            bgAngle.stringValue = String(format: "%.0f", g.angle)
         case .picture?: bgKind.selectItem(at: 4)
         }
         bgKind.item(at: 0)?.isEnabled = !master
@@ -376,8 +393,9 @@ final class InspectorController: NSViewController {
         transKind.selectItem(at: TransitionKind.allCases.firstIndex(of: t.kind) ?? 0)
         transDuration.stringValue = String(format: "%.1f", t.duration)
         transDirection.selectItem(at: ["l", "r", "u", "d"].firstIndex(of: t.direction) ?? 0)
-        transDirection.isEnabled = [.push, .wipe, .cover].contains(t.kind)
-        for c in [transKind, transDuration, transDirection] as [NSControl] where master { c.isEnabled = false }
+        transKind.isEnabled = !master && slide != nil
+        transDuration.isEnabled = !master && slide != nil
+        transDirection.isEnabled = !master && slide != nil && [.push, .wipe, .cover].contains(t.kind)
         hideSlide.state = slide?.hidden == true ? .on : .off
         hideSlide.isEnabled = !master && slide != nil
         themePopup.selectItem(at: Themes.all.firstIndex { $0.theme.name == deck.theme.name } ?? -1)
@@ -396,10 +414,11 @@ final class InspectorController: NSViewController {
         mediaAutoplay.state = o?.clip?.autoplay == true ? .on : .off
         mediaLoop.state = o?.clip?.loop == true ? .on : .off
         if let o {
+            let appearance = Self.appearanceObject(o)
             posX.stringValue = cm(o.frame.minX); posY.stringValue = cm(o.frame.minY)
             width.stringValue = cm(o.frame.width); height.stringValue = cm(o.frame.height)
-            rotation.stringValue = "\(Int(o.rotation.rounded()))"
-            switch o.fill {
+            rotation.stringValue = String(format: "%.0f", o.rotation)
+            switch appearance.table.map({ $0.cells.first?.first?.fill ?? $0.defaultFill(row: 0) }) ?? appearance.fill {
             case .none: fillKind.selectItem(at: 0)
             case .solid(let c): fillKind.selectItem(at: 1); fillColor.color = c.resolved(deck.theme)
             case .gradient(let g):
@@ -408,12 +427,13 @@ final class InspectorController: NSViewController {
                 fillColor2.color = g.stops.last?.color.resolved(deck.theme)
             case .picture: fillKind.selectItem(at: 0)
             }
-            fillKind.isEnabled = o.kind != .line && o.kind != .picture && o.kind != .table
+            fillKind.isEnabled = o.kind == .group || (appearance.kind != .line && appearance.kind != .picture)
             fillColor.isHidden = fillKind.indexOfSelectedItem == 0
             fillColor2.isHidden = fillKind.indexOfSelectedItem != 2
-            lineColor.color = o.line.color?.resolved(deck.theme)
-            lineWidth.stringValue = String(format: "%.1f", o.line.width)
-            lineDash.selectItem(at: [Dash.solid, .dash, .dot, .dashDot, .lgDash].firstIndex(of: o.line.dash) ?? 0)
+            lineColor.color = (appearance.table != nil ? appearance.table?.borderColor : appearance.line.color)?.resolved(deck.theme)
+            lineWidth.stringValue = String(format: "%.1f", appearance.table?.borderWidth ?? appearance.line.width)
+            lineDash.selectItem(at: [Dash.solid, .dash, .dot, .dashDot, .lgDash].firstIndex(of: appearance.line.dash) ?? 0)
+            lineDash.isEnabled = appearance.table == nil
             headPopup.selectItem(at: Arrowhead.allCases.firstIndex(of: o.line.head) ?? 0)
             tailPopup.selectItem(at: Arrowhead.allCases.firstIndex(of: o.line.tail) ?? 0)
             headPopup.isEnabled = o.isLine
@@ -421,7 +441,7 @@ final class InspectorController: NSViewController {
             opacity.doubleValue = Double(o.opacity * 100)
             corner.isEnabled = o.geometry == "roundRect"
             corner.doubleValue = Double(o.adjust["adj"] ?? 16667) / 1000
-            shadow.state = o.shadow ? .on : .off
+            shadow.state = appearance.shadow ? .on : .off
             if let m = o.chart {
                 chartType.selectItem(at: ChartKind.allCases.firstIndex(of: m.kind) ?? 0)
                 chartStack.selectItem(at: ChartGrouping.allCases.firstIndex(of: m.grouping) ?? 0)
@@ -439,7 +459,7 @@ final class InspectorController: NSViewController {
         }
 
         // Text
-        let hasText = owner.isEditingText || objs.contains { $0.text != nil || $0.table != nil }
+        let hasText = owner.isEditingText || objs.contains { $0.firstTextContainer != nil }
         noText.isHidden = hasText
         for v in textPane.arrangedSubviews where v !== noText { v.isHidden = !hasText }
         if hasText {
@@ -452,7 +472,7 @@ final class InspectorController: NSViewController {
             textColor.color = (r.color ?? PColor(scheme: "tx1")).resolved(deck.theme)
             for (i, on) in [r.bold, r.italic, r.underline, r.strike].enumerated() { styleButtons.setSelected(on == true, forSegment: i) }
             alignSeg.selectedSegment = TextAlign.allCases.firstIndex(of: l.align ?? .left) ?? 0
-            let a = o?.text?.anchor ?? .top
+            let a = owner.isEditingText ? owner.canvas.editor.currentAnchor : (o?.firstTextContainer?.body.anchor ?? .top)
             anchorSeg.selectedSegment = a == .top ? 0 : a == .middle ? 1 : 2
             let bk = l.bullet?.kind ?? Bullet.Kind.none
             bulletPopup.selectItem(at: bk == .none ? 0 : bk == .char ? 1 : 2)
@@ -508,6 +528,7 @@ final class InspectorController: NSViewController {
             }
             return
         }
+        owner.commitEditing()
         let i = owner.current
         if owner.mode == .master {
             owner.doc?.change(L("Background")) { d in d.master.background = fill ?? d.master.background }
@@ -520,6 +541,7 @@ final class InspectorController: NSViewController {
     @objc private func backgroundToAll() {
         guard let owner, let s = owner.currentSlide else { return }
         let bg = s.background
+        owner.commitEditing()
         owner.doc?.change(L("Background")) { d in for k in d.slides.indices { d.slides[k].background = bg } }
     }
 
@@ -528,6 +550,7 @@ final class InspectorController: NSViewController {
         let kind = TransitionKind.allCases[max(0, transKind.indexOfSelectedItem)]
         let dur = Double(number(transDuration) ?? 0.7)
         let dir = ["l", "r", "u", "d"][max(0, transDirection.indexOfSelectedItem)]
+        owner.commitEditing()
         let idx = owner.selectedSlideIndexes
         owner.doc?.change(L("Transition")) { d in
             for i in idx { d.slides[i].transition.kind = kind; d.slides[i].transition.duration = min(10, max(0.1, dur)); d.slides[i].transition.direction = dir }
@@ -542,9 +565,12 @@ final class InspectorController: NSViewController {
 
     @objc private func geometryChanged() {
         guard !updating, let owner, let o = owner.selectedObjects.first else { return }
-        let x = (number(posX) ?? 0) * pointsPerCm, y = (number(posY) ?? 0) * pointsPerCm
-        let w = max(0, (number(width) ?? 1) * pointsPerCm), h = max(0, (number(height) ?? 1) * pointsPerCm)
-        let rot = (number(rotation) ?? 0).truncatingRemainder(dividingBy: 360)
+        guard let px = number(posX), let py = number(posY), let pw = number(width), let ph = number(height), let angle = number(rotation),
+              [px, py, pw, ph].allSatisfy({ abs($0 * pointsPerCm) <= 1_000_000 }), pw >= 0, ph >= 0,
+              o.isLine || (pw > 0 && ph > 0) else { reload(); return }
+        let x = px * pointsPerCm, y = py * pointsPerCm, w = pw * pointsPerCm, h = ph * pointsPerCm
+        let rot = angle.truncatingRemainder(dividingBy: 360)
+        owner.commitEditing()
         owner.changeSelected(L("Size and Position")) { obj in
             guard obj.id == o.id else { return }
             if obj.isLine {
@@ -572,21 +598,29 @@ final class InspectorController: NSViewController {
         case 1: fill = .solid(c1)
         default: fill = .gradient(Gradient(stops: [GradientStop(position: 0, color: c1), GradientStop(position: 1, color: c2)], angle: 90))
         }
-        owner.changeSelected(L("Fill")) { o in if o.kind != .line && o.kind != .picture { o.fill = fill } }
+        owner.commitEditing()
+        owner.changeSelected(L("Fill")) { object in Self.editLeaves(&object) { o in
+            if o.table != nil {
+                for r in o.table!.cells.indices { for c in o.table!.cells[r].indices { o.table!.cells[r][c].fill = fill } }
+            } else if o.kind != .line && o.kind != .picture { o.fill = fill }
+        } }
     }
 
     @objc private func lineChanged() {
         guard !updating, let owner else { return }
         let color = lineColor.color.map { PColor($0) }
-        let w = min(100, max(0.25, number(lineWidth) ?? 1))
+        guard let enteredWidth = number(lineWidth), enteredWidth >= 0 else { reload(); return }
+        let w = min(100, max(0.25, enteredWidth))
         let dash = [Dash.solid, .dash, .dot, .dashDot, .lgDash][max(0, lineDash.indexOfSelectedItem)]
         let head = Arrowhead.allCases[max(0, headPopup.indexOfSelectedItem)], tail = Arrowhead.allCases[max(0, tailPopup.indexOfSelectedItem)]
-        owner.changeSelected(L("Line")) { o in
-            o.line.color = color
-            o.line.width = w
-            o.line.dash = dash
-            if o.isLine { o.line.head = head; o.line.tail = tail }
-        }
+        owner.commitEditing()
+        owner.changeSelected(L("Line")) { object in Self.editLeaves(&object) { o in
+            if o.table != nil { o.table?.borderColor = color; o.table?.borderWidth = w }
+            else {
+                o.line.color = color; o.line.width = w; o.line.dash = dash
+                if o.isLine { o.line.head = head; o.line.tail = tail }
+            }
+        } }
     }
 
     @objc private func chartChanged() {
@@ -640,7 +674,8 @@ final class InspectorController: NSViewController {
     @objc private func shadowChanged() {
         guard !updating, let owner else { return }
         let on = shadow.state == .on
-        owner.changeSelected(L("Shadow")) { $0.shadow = on }
+        owner.commitEditing()
+        owner.changeSelected(L("Shadow")) { object in Self.editLeaves(&object) { $0.shadow = on } }
     }
 
     // MARK: - Text actions

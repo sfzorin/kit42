@@ -489,7 +489,7 @@ final class AttachmentInfo: NSObject {
 
 final class AttachmentPromise: NSObject, NSFilePromiseProviderDelegate {
     func filePromiseProvider(_ provider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
-        (provider.userInfo as? AttachmentInfo)?.name ?? L("Attachment")
+        AttachmentExport.fileName((provider.userInfo as? AttachmentInfo)?.name ?? L("Attachment"))
     }
 
     func filePromiseProvider(_ provider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void) {

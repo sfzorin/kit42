@@ -1,16 +1,15 @@
 import AppKit
 import Kit42
 
-/// Decoded pictures by media name (data identity checked by size and a prefix hash).
+/// Decoded pictures by media name, with full data identity across documents.
 enum MediaCache {
-    private static var images: [String: (Int, NSImage)] = [:]
+    private static var images: [String: (Data, NSImage)] = [:]
 
     static func image(_ name: String, _ data: Data?) -> NSImage? {
         guard let data else { return nil }
-        let key = data.count ^ data.prefix(64).hashValue
-        if let (k, img) = images[name], k == key { return img }
+        if let (cached, img) = images[name], cached == data { return img }
         guard let img = NSImage(data: data) else { return nil }
-        images[name] = (key, img)
+        images[name] = (data, img)
         return img
     }
 }
@@ -113,9 +112,10 @@ enum Renderer {
 
         switch o.kind {
         case .group:
-            if o.rotation != 0 {
+            if o.rotation != 0 || o.flipH || o.flipV {
                 ctx.translateBy(x: o.frame.midX, y: o.frame.midY)
                 ctx.rotate(by: o.rotation * .pi / 180)
+                ctx.scaleBy(x: o.flipH ? -1 : 1, y: o.flipV ? -1 : 1)
                 ctx.translateBy(x: -o.frame.midX, y: -o.frame.midY)
             }
             for c in o.children { drawObject(c, slide: slide, deck: deck, ctx: ctx, options: options) }
@@ -440,9 +440,19 @@ enum Renderer {
     // MARK: - Images and PDF
 
     /// Bitmap of a slide at `pixelWidth`.
+    static func bitmapSize(deck: Deck, pixelWidth: Int) -> (width: Int, height: Int)? {
+        guard (1...16_384).contains(pixelWidth), deck.size.width.isFinite, deck.size.width > 0,
+              deck.size.height.isFinite, deck.size.height > 0 else { return nil }
+        let height = (deck.size.height * CGFloat(pixelWidth) / deck.size.width).rounded()
+        guard height.isFinite, height >= 1, height <= 16_384,
+              Double(pixelWidth) * Double(height) <= 64_000_000 else { return nil }
+        return (pixelWidth, Int(height))
+    }
+
     static func image(_ slide: Slide, deck: Deck, pixelWidth: Int, options: RenderOptions = RenderOptions(), opaque: Bool = true) -> CGImage? {
+        guard let size = bitmapSize(deck: deck, pixelWidth: pixelWidth) else { return nil }
         let scale = CGFloat(pixelWidth) / deck.size.width
-        let w = pixelWidth, h = max(1, Int(round(deck.size.height * scale)))
+        let w = size.width, h = size.height
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
@@ -491,35 +501,78 @@ enum Renderer {
             }
         } else {
             for (i, slide) in slides {
-                begin()
                 var o = RenderOptions()
                 o.number = number(of: i, deck: deck)
-                if notes { drawNotesPage(slide, index: i, deck: deck, page: pageSize, ctx: ctx) } else { draw(slide, deck: deck, in: ctx, options: o) }
-                end()
+                if notes {
+                    for (n, range) in notesPageRanges(slide, deck: deck, page: pageSize).enumerated() {
+                        begin()
+                        drawNotesPage(slide, index: i, deck: deck, page: pageSize, ctx: ctx, textRange: range, continued: n > 0)
+                        end()
+                    }
+                } else {
+                    begin()
+                    draw(slide, deck: deck, in: ctx, options: o)
+                    end()
+                }
             }
         }
         ctx.closePDF()
         return data as Data
     }
 
-    /// Notes page: the slide in the upper half, the notes text below.
-    static func drawNotesPage(_ slide: Slide, index: Int, deck: Deck, page: CGSize, ctx: CGContext) {
-        let margin: CGFloat = 54
-        let w = page.width - margin * 2
-        let h = w * deck.size.height / deck.size.width
-        let slideRect = CGRect(x: margin, y: margin, width: w, height: h)
-        drawSlide(slide, index: index, deck: deck, in: slideRect, ctx: ctx)
+    private static func notesText(_ text: String) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacing = 6
+        let font = NSFont(name: "Helvetica Neue", size: 12) ?? .systemFont(ofSize: 12)
+        return NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.black, .paragraphStyle: paragraph])
+    }
+
+    private static func notesRects(deck: Deck, page: CGSize, continued: Bool) -> (slide: CGRect, text: CGRect, margin: CGFloat) {
+        let margin = min(54, min(page.width, page.height) / 10)
+        let width = max(1, page.width - margin * 2)
+        let maximumHeight = max(1, page.height * 0.42)
+        let scale = min(width / deck.size.width, maximumHeight / deck.size.height)
+        let size = CGSize(width: deck.size.width * scale, height: deck.size.height * scale)
+        let slide = CGRect(x: (page.width - size.width) / 2, y: margin, width: size.width, height: size.height)
+        let top = continued ? margin : slide.maxY + 28
+        return (slide, CGRect(x: margin, y: top, width: width, height: max(24, page.height - top - margin)), margin)
+    }
+
+    /// The same text containers drive PDF and print pagination, including complete long notes.
+    static func notesPageRanges(_ slide: Slide, deck: Deck, page: CGSize) -> [NSRange] {
+        let storage = NSTextStorage(attributedString: notesText(slide.notes))
+        guard storage.length > 0 else { return [NSRange(location: 0, length: 0)] }
+        let manager = NSLayoutManager()
+        storage.addLayoutManager(manager)
+        var result: [NSRange] = [], end = 0
+        while end < storage.length {
+            let rect = notesRects(deck: deck, page: page, continued: !result.isEmpty).text
+            let container = NSTextContainer(size: rect.size)
+            container.lineFragmentPadding = 0
+            manager.addTextContainer(container)
+            let glyphs = manager.glyphRange(for: container)
+            let range = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            guard NSMaxRange(range) > end else { break }
+            result.append(range)
+            end = NSMaxRange(range)
+        }
+        return result.isEmpty ? [NSRange(location: 0, length: storage.length)] : result
+    }
+
+    /// First notes page includes a fitted slide; continuation pages contain the remaining notes.
+    static func drawNotesPage(_ slide: Slide, index: Int, deck: Deck, page: CGSize, ctx: CGContext,
+                              textRange: NSRange? = nil, continued: Bool = false) {
+        let rects = notesRects(deck: deck, page: page, continued: continued)
+        if !continued { drawSlide(slide, index: index, deck: deck, in: rects.slide, ctx: ctx) }
         let gc = NSGraphicsContext(cgContext: ctx, flipped: true)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = gc
-        let p = NSMutableParagraphStyle()
-        p.paragraphSpacing = 6
         let font = NSFont(name: "Helvetica Neue", size: 12) ?? .systemFont(ofSize: 12)
-        let text = NSAttributedString(string: slide.notes, attributes: [.font: font, .foregroundColor: NSColor.black, .paragraphStyle: p])
-        text.draw(with: CGRect(x: margin, y: slideRect.maxY + 28, width: w, height: page.height - slideRect.maxY - 28 - margin),
-                  options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        let text = notesText(slide.notes)
+        let shown = textRange.map { text.attributedSubstring(from: $0) } ?? text
+        shown.draw(with: rects.text, options: [.usesLineFragmentOrigin])
         let num = NSAttributedString(string: "\(number(of: index, deck: deck))", attributes: [.font: font, .foregroundColor: NSColor.gray])
-        num.draw(at: CGPoint(x: page.width - margin - num.size().width, y: page.height - margin + 12))
+        num.draw(at: CGPoint(x: page.width - rects.margin - num.size().width, y: page.height - rects.margin + 12))
         NSGraphicsContext.restoreGraphicsState()
     }
 

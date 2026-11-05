@@ -94,7 +94,7 @@ enum Cmd {
 
     // Insert
     static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature",
-                                shortcut: Shortcut("k", [.command, .shift]), toolTip: L("Insert a signature or stamp"), label: L("Signature"))
+                                shortcut: Shortcut("k", [.command, .shift]), toolTip: L("Insert a signature or stamp"), label: L("Stamp"))
     static let insertImage = Command(L("Image from File…"), #selector(W.insertImageAction(_:)), symbol: "photo.badge.plus",
                                      shortcut: Shortcut("i", [.command, .shift]))
     static let insertBlank = Command(L("Blank Page"), #selector(W.insertBlankPageAction(_:)), symbol: "doc.badge.plus",
@@ -122,7 +122,7 @@ enum Cmd {
 
     // Signature
     static let sign = Command(L("Sign Document…"), #selector(W.signDocumentAction(_:)), symbol: "checkmark.seal",
-                              shortcut: Shortcut("d", [.command, .option]), toolTip: L("Add a digital signature"), label: L("Sign"))
+                              shortcut: Shortcut("d", [.command, .option]), toolTip: L("Add a digital signature"), label: L("Sign Digitally"))
     static let verify = Command(L("Verify Signatures"), #selector(W.verifySignaturesAction(_:)), shortcut: Shortcut("v", [.command, .option]))
     static let importCertificate = Command(L("Import Certificate (.p12)…"), #selector(A.importCertificateAction(_:)))
     static let createCertificate = Command(L("Create Self-Signed Certificate…"), #selector(A.createCertificateAction(_:)))

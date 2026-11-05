@@ -4,6 +4,56 @@ import Kit42
 
 
 extension DocWindowController {
+    /// Clear presentation attributes without deleting embedded content or document structure.
+    /// A table cell and a list paragraph remain a table cell and a list paragraph.
+    func clearDirectFormatting() {
+        let tv = activeTextView
+        guard let storage = tv.textStorage else { return }
+        func cleared(_ original: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+            var result = original
+            for key in PainterState.keys + [.underlineColor, .strikethroughColor, .strokeWidth, .strokeColor,
+                                            .docCharStyle, .docAllCaps, .docSmallCaps, .docDropCap, Styles.styleKey] {
+                result[key] = nil
+            }
+            result.merge(Styles.normal.attributes) { _, normal in normal }
+            if let originalParagraph = original[.paragraphStyle] as? NSParagraphStyle,
+               let paragraph = (result[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+                paragraph.textBlocks = originalParagraph.textBlocks.filter { $0 is NSTextTableBlock }
+                paragraph.textLists = originalParagraph.textLists
+                if !paragraph.textLists.isEmpty {
+                    paragraph.headIndent = originalParagraph.headIndent
+                    paragraph.firstLineHeadIndent = originalParagraph.firstLineHeadIndent
+                    paragraph.tailIndent = originalParagraph.tailIndent
+                    paragraph.tabStops = originalParagraph.tabStops
+                }
+                result[.paragraphStyle] = paragraph
+            }
+            if original[.link] != nil {
+                result[.foregroundColor] = Self.linkColor
+                result[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            if original[.docNote] != nil { result[.superscript] = original[.superscript] }
+            return result
+        }
+        let ranges = tv.selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
+        if ranges.isEmpty {
+            tv.typingAttributes = cleared(tv.typingAttributes)
+            syncControls()
+            return
+        }
+        guard tv.shouldChangeText(inRanges: ranges as [NSValue], replacementStrings: nil) else { return }
+        storage.beginEditing()
+        for range in ranges {
+            storage.enumerateAttributes(in: range) { attributes, run, _ in
+                storage.setAttributes(cleared(attributes), range: run)
+            }
+        }
+        storage.endEditing()
+        tv.didChangeText()
+        tv.undoManager?.setActionName(L("Clear Formatting"))
+        syncControls()
+    }
+
     // MARK: - Character dialog
 
     static let underlineChoices: [(String, Int)] = [
@@ -196,6 +246,7 @@ extension DocWindowController {
     }
 
     func applyParagraphBorders(_ o: BorderOptions) {
+        let textView = activeTextView
         guard let storage = textView.textStorage, storage.length > 0 else { return }
         let ranges = paragraphRanges.filter { $0.length > 0 }
         guard !ranges.isEmpty, textView.shouldChangeText(inRanges: ranges as [NSValue], replacementStrings: nil) else { return }
@@ -217,7 +268,7 @@ extension DocWindowController {
     // MARK: - Drop caps
 
     @objc func dropCapAction(_ sender: Any?) {
-        guard let storage = textView.textStorage, storage.length > 0 else { return }
+        guard headerEditor == nil, let storage = textView.textStorage, storage.length > 0 else { return }
         let p = (storage.string as NSString).paragraphRange(for: NSRange(location: textView.selectedRange().location, length: 0))
         let current = p.location < storage.length ? storage.attribute(.docDropCap, at: p.location, effectiveRange: nil) as? Int : nil
         let lines = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -229,7 +280,7 @@ extension DocWindowController {
     }
 
     func setDropCap(_ lines: Int?) {
-        guard let storage = textView.textStorage, storage.length > 0 else { return }
+        guard headerEditor == nil, let storage = textView.textStorage, storage.length > 0 else { return }
         let ns = storage.string as NSString
         let p = ns.paragraphRange(for: NSRange(location: textView.selectedRange().location, length: 0))
         // The first letter (after a list marker).

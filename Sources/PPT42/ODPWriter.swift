@@ -42,10 +42,16 @@ func odfText(_ s: String) -> String {
         switch ch {
         case " ": spaces += 1
         case "\t": flush(); out += "<text:tab/>"; atStart = false
-        case "\u{0B}", "\n", "\u{2028}": flush(); out += "<text:line-break/>"; atStart = true
+        case "\u{0B}": flush(); out += "<text:line-break/>"; atStart = true
+        case "\r", "\n", "\r\n", "\u{2028}":
+            flush()
+            let kind = ch == "\r" ? "cr" : ch == "\n" ? "lf" : ch == "\r\n" ? "crlf" : "ls"
+            // Foreign attributes are ignored by other ODF readers, which still display a line break.
+            out += "<text:line-break ppt42:character=\"\(kind)\"/>"
+            atStart = true
         default:
             flush()
-            out += xmlEscape(String(ch))
+            out += presentationXMLEscape(String(ch))
             atStart = false
         }
     }
@@ -137,10 +143,10 @@ private struct ODPWriterImpl {
             zip[path] = data
             let ext = (media as NSString).pathExtension.lowercased()
             let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
-            manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(mime)\"/>"
+            manifest += "<manifest:file-entry manifest:full-path=\"\(presentationXMLEscape(path))\" manifest:media-type=\"\(mime)\"/>"
         }
         for (path, data) in shared.files { zip[path] = data }
-        for (path, type) in shared.manifest { manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(type)\"/>" }
+        for (path, type) in shared.manifest { manifest += "<manifest:file-entry manifest:full-path=\"\(presentationXMLEscape(path))\" manifest:media-type=\"\(type)\"/>" }
         manifest += "</manifest:manifest>"
         zip["META-INF/manifest.xml"] = Data(manifest.utf8)
         return zip.data()
@@ -159,7 +165,7 @@ private struct ODPWriterImpl {
     func metaXML() -> String {
         let now = ISO8601DateFormatter().string(from: Date())
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-meta \(Self.ns)><office:meta><meta:generator>PPT42</meta:generator>"
-            + "<dc:title>\(xmlEscape(deck.slides.first?.title.replacingOccurrences(of: "\u{0B}", with: " ") ?? ""))</dc:title><meta:creation-date>\(now)</meta:creation-date><dc:date>\(now)</dc:date></office:meta></office:document-meta>"
+            + "<dc:title>\(presentationXMLEscape(deck.slides.first?.title.replacingOccurrences(of: "\u{0B}", with: " ") ?? ""))</dc:title><meta:creation-date>\(now)</meta:creation-date><dc:date>\(now)</dc:date></office:meta></office:document-meta>"
     }
 
     func contentXML() -> String {
@@ -185,7 +191,7 @@ private struct ODPWriterImpl {
         // Presentation styles of the master: neutral, no automatic bullets (content lists carry their own).
         let noBullets = (1...9).map { "<text:list-level-style-number text:level=\"\($0)\" style:num-format=\"\"><style:list-level-properties/></text:list-level-style-number>" }.joined()
         let neutral = "<style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\" draw:auto-grow-height=\"false\" fo:min-height=\"0cm\"><text:list-style>\(noBullets)</text:list-style></style:graphic-properties>"
-        var common = "<style:default-style style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\" draw:shadow=\"hidden\"/><style:paragraph-properties fo:margin-top=\"0cm\" fo:margin-bottom=\"0cm\"/><style:text-properties fo:font-size=\"18pt\" fo:font-family=\"'\(xmlEscape(theme.minorFont))'\" fo:color=\"#000000\"/></style:default-style>"
+        var common = "<style:default-style style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\" draw:shadow=\"hidden\"/><style:paragraph-properties fo:margin-top=\"0cm\" fo:margin-bottom=\"0cm\"/><style:text-properties fo:font-size=\"18pt\" fo:font-family=\"'\(presentationXMLEscape(theme.minorFont))'\" fo:color=\"#000000\"/></style:default-style>"
         common += "<style:style style:name=\"standard\" style:family=\"graphic\">\(neutral)</style:style>"
         for name in ["title", "subtitle", "notes", "backgroundobjects", "background"] {
             common += "<style:style style:name=\"Default-\(name)\" style:family=\"presentation\">\(neutral)</style:style>"
@@ -214,7 +220,7 @@ private struct ODPWriterImpl {
         for (i, l) in deck.layouts.enumerated() {
             let bg = drawingPageProps(l.background ?? deck.master.background, slide: nil)
             let dp = auto.style("drawing-page", "dp", "<style:drawing-page-properties draw:background-size=\"full\"\(bg)/>")
-            x += "<style:master-page style:name=\"PPT42-L\(i + 1)\" style:display-name=\"\(xmlEscape(Themes.displayName(l)))\" style:page-layout-name=\"PM1\" draw:style-name=\"\(dp)\">"
+            x += "<style:master-page style:name=\"PPT42-L\(i + 1)\" style:display-name=\"\(presentationXMLEscape(Themes.displayName(l)))\" style:page-layout-name=\"PM1\" draw:style-name=\"\(dp)\">"
             if l.showMasterShapes {
                 for o in deck.master.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
             }
@@ -228,7 +234,7 @@ private struct ODPWriterImpl {
                 if cls == "outline" { outline += 1 }
                 let st = auto.style("presentation", "pr", "<style:graphic-properties draw:fill=\"none\" draw:stroke=\"none\" draw:auto-grow-height=\"false\"/>",
                                     attrs: " style:parent-style-name=\"\(parentStyle(cls))\"")
-                x += "<draw:frame presentation:style-name=\"\(st)\" draw:layer=\"backgroundobjects\"\(position(p.frame, rotation: p.rotation)) presentation:class=\"\(cls)\" presentation:placeholder=\"true\"\(p.name.isEmpty ? "" : " draw:name=\"\(xmlEscape(p.name))\"")>\(cls == "graphic" ? "<draw:image/>" : "<draw:text-box/>")</draw:frame>"
+                x += "<draw:frame presentation:style-name=\"\(st)\" draw:layer=\"backgroundobjects\"\(position(p.frame, rotation: p.rotation)) presentation:class=\"\(cls)\" presentation:placeholder=\"true\"\(p.name.isEmpty ? "" : " draw:name=\"\(presentationXMLEscape(p.name))\"")>\(cls == "graphic" ? "<draw:image/>" : "<draw:text-box/>")</draw:frame>"
             }
             x += notesMaster + "</style:master-page>"
         }
@@ -257,7 +263,7 @@ private struct ODPWriterImpl {
         let number = Renderer.number(of: index, deck: deck)
         let pid = "page\(index + 1)"
         let masterPage = deck.layouts.indices.contains(slide.layout) ? "PPT42-L\(slide.layout + 1)" : "Default"
-        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"\(masterPage)\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(xmlEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
+        var x = "<draw:page draw:name=\"\(pid)\" draw:style-name=\"\(dp)\" draw:master-page-name=\"\(masterPage)\" presentation:presentation-page-layout-name=\"\(layoutName(slide))\" ppt42:layout=\"\(presentationXMLEscape(deck.layout(of: slide)?.type ?? ""))\" xml:id=\"\(pid)\" draw:id=\"\(pid)\">"
 
         for o in slide.objects {
             var shape = object(o, slide: slide, number: number, styles: styles)
@@ -284,7 +290,7 @@ private struct ODPWriterImpl {
                 if date.hasSuffix("Z") { date.removeLast() }
                 x += "<officeooo:annotation svg:x=\"\(odfLength(c.position.x))\" svg:y=\"\(odfLength(c.position.y))\" svg:width=\"0.35cm\" svg:height=\"0.35cm\""
                 if k == 0 { x += " ppt42:resolved=\"\(c.resolved)\"" } else { x += " ppt42:reply=\"true\"" }
-                x += "><dc:creator>\(xmlEscape(item.author))</dc:creator><dc:date>\(date)</dc:date><meta:creator-initials>\(xmlEscape(item.initials))</meta:creator-initials>"
+                x += "><dc:creator>\(presentationXMLEscape(item.author))</dc:creator><dc:date>\(date)</dc:date><meta:creator-initials>\(presentationXMLEscape(item.initials))</meta:creator-initials>"
                 x += item.text.components(separatedBy: "\n").map { "<text:p>\(odfText($0))</text:p>" }.joined()
                 x += "</officeooo:annotation>"
             }
@@ -305,7 +311,8 @@ private struct ODPWriterImpl {
 
     func notes(_ s: Slide, index: Int, styles: ODFAutoStyles) -> String {
         let pageH = 29.7 * pointsPerCm
-        let thumbW = 17 * pointsPerCm, thumbH = thumbW * deck.size.height / deck.size.width
+        let scale = min(17 * pointsPerCm / deck.size.width, pageH * 0.42 / deck.size.height)
+        let thumbW = deck.size.width * scale, thumbH = deck.size.height * scale
         var x = "<presentation:notes draw:style-name=\"\(styles.style("drawing-page", "dp", "<style:drawing-page-properties presentation:display-header=\"true\" presentation:display-footer=\"true\" presentation:display-page-number=\"false\" presentation:display-date-time=\"true\"/>"))\">"
         x += "<draw:page-thumbnail presentation:class=\"page\" draw:page-number=\"\(index + 1)\" svg:width=\"\(odfLength(thumbW))\" svg:height=\"\(odfLength(thumbH))\" svg:x=\"2cm\" svg:y=\"2cm\"/>"
         let top = 2 * pointsPerCm + thumbH + 1 * pointsPerCm
@@ -384,7 +391,7 @@ private struct ODPWriterImpl {
     func fillImage(_ media: String) -> String {
         let path = shared.picture(media)
         return shared.named("img|\(media)") { name in
-            "<draw:fill-image draw:name=\"\(name)\" xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>"
+            "<draw:fill-image draw:name=\"\(name)\" xlink:href=\"\(presentationXMLEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>"
         }
     }
 
@@ -577,16 +584,16 @@ private struct ODPWriterImpl {
         } else {
             x += " draw:style-name=\"\(graphicStyle(o, styles: styles))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
         }
-        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        if !o.name.isEmpty { x += " draw:name=\"\(presentationXMLEscape(o.name))\"" }
         x += ">"
         x += "<draw:text-box>" + text(o.text ?? TextBody(), object: o, slide: slide, number: number, styles: styles) + "</draw:text-box>"
-        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        if !o.descr.isEmpty { x += "<svg:desc>\(presentationXMLEscape(o.descr))</svg:desc>" }
         return x + "</draw:frame>"
     }
 
     func customShape(_ o: SlideObject, slide: Slide?, number: Int, styles: ODFAutoStyles) -> String {
         var x = "<draw:custom-shape draw:style-name=\"\(graphicStyle(o, styles: styles))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
-        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        if !o.name.isEmpty { x += " draw:name=\"\(presentationXMLEscape(o.name))\"" }
         x += ">"
         if let t = o.text, !t.isEmpty { x += text(t, object: o, slide: slide, number: number, styles: styles) }
         let scale: CGFloat = 100
@@ -602,7 +609,7 @@ private struct ODPWriterImpl {
             if !sp.stroke { s += "S " }
             return s + "N"
         }.joined(separator: " ")
-        x += "<draw:enhanced-geometry svg:viewBox=\"\(vb)\" draw:type=\"\(type)\" ppt42:prst=\"\(xmlEscape(o.geometry))\" draw:enhanced-path=\"\(path)\""
+        x += "<draw:enhanced-geometry svg:viewBox=\"\(vb)\" draw:type=\"\(type)\" ppt42:prst=\"\(presentationXMLEscape(o.geometry))\" draw:enhanced-path=\"\(path)\""
         if o.flipH { x += " draw:mirror-horizontal=\"true\"" }
         if o.flipV { x += " draw:mirror-vertical=\"true\"" }
         if !o.adjust.isEmpty {
@@ -611,7 +618,7 @@ private struct ODPWriterImpl {
             x += " ppt42:adjust=\"\(keys.map { "\($0)=\(o.adjust[$0]!)" }.joined(separator: ";"))\""
         }
         x += "/>"
-        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        if !o.descr.isEmpty { x += "<svg:desc>\(presentationXMLEscape(o.descr))</svg:desc>" }
         return x + "</draw:custom-shape>"
     }
 
@@ -654,9 +661,9 @@ private struct ODPWriterImpl {
         var g = fillProps(o.fill) + strokeProps(o.line)
         g += " draw:shadow=\"hidden\""
         var x = "<draw:frame draw:style-name=\"\(styles.style("graphic", "gr", "<style:graphic-properties\(g)/>"))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
-        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        if !o.name.isEmpty { x += " draw:name=\"\(presentationXMLEscape(o.name))\"" }
         x += "><draw:object draw:notify-on-update-of-ranges=\"\" xlink:href=\"./\(dir)\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>\(replacement)"
-        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        if !o.descr.isEmpty { x += "<svg:desc>\(presentationXMLEscape(o.descr))</svg:desc>" }
         return x + "</draw:frame>"
     }
 
@@ -694,19 +701,19 @@ private struct ODPWriterImpl {
         } else {
             x += " draw:style-name=\"\(styles.style("graphic", "gr", "<style:graphic-properties\(g)/>"))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
         }
-        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        if !o.name.isEmpty { x += " draw:name=\"\(presentationXMLEscape(o.name))\"" }
         let ext = (media as NSString).pathExtension.lowercased()
         let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
         if let clip = o.clip, let data = deck.media[clip.media] {
             let path = "Media/\(clip.media)"
             shared.files[path] = data
             shared.manifest.append((path, MediaClip.mime(clip.ext)))
-            x += "><draw:plugin xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"application/vnd.sun.star.media\">"
+            x += "><draw:plugin xlink:href=\"\(presentationXMLEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"application/vnd.sun.star.media\">"
             x += "<draw:param draw:name=\"Loop\" draw:value=\"\(clip.loop)\"/><draw:param draw:name=\"Mute\" draw:value=\"false\"/><draw:param draw:name=\"VolumeDB\" draw:value=\"0\"/><draw:param draw:name=\"Zoom\" draw:value=\"fit\"/>"
             x += "<draw:param draw:name=\"ppt42-autoplay\" draw:value=\"\(clip.autoplay)\"/></draw:plugin"
         }
-        x += "><draw:image xlink:href=\"\(xmlEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"\(mime)\"><text:p/></draw:image>"
-        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        x += "><draw:image xlink:href=\"\(presentationXMLEscape(path))\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\" draw:mime-type=\"\(mime)\"><text:p/></draw:image>"
+        if !o.descr.isEmpty { x += "<svg:desc>\(presentationXMLEscape(o.descr))</svg:desc>" }
         return x + "</draw:frame>"
     }
 
@@ -714,7 +721,7 @@ private struct ODPWriterImpl {
         guard let t = o.table else { return "" }
         let frameStyle = styles.style("graphic", "gr", "<style:graphic-properties draw:fill=\"none\" draw:stroke=\"none\"/>")
         var x = "<draw:frame draw:style-name=\"\(frameStyle)\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
-        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        if !o.name.isEmpty { x += " draw:name=\"\(presentationXMLEscape(o.name))\"" }
         x += "><table:table>"
         for w in t.columns {
             let cs = styles.style("table-column", "co", "<style:table-column-properties style:column-width=\"\(odfLength(w))\" style:use-optimal-column-width=\"false\"/>")
@@ -722,7 +729,8 @@ private struct ODPWriterImpl {
         }
         let border: String = {
             guard let c = t.borderColor, t.borderWidth > 0 else { return "none" }
-            return "\(odfLength(t.borderWidth)) solid \(color(c))"
+            // Border controls use points; centimetre rounding needlessly changed exact widths on reopen.
+            return "\(Double(t.borderWidth))pt solid \(color(c))"
         }()
         for (ri, row) in t.cells.enumerated() {
             let rs = styles.style("table-row", "ro", "<style:table-row-properties style:row-height=\"\(odfLength(t.rows[ri]))\" style:use-optimal-row-height=\"false\"/>")
@@ -758,7 +766,7 @@ private struct ODPWriterImpl {
     func textProps(_ r: RunProps, link: Bool = false) -> String {
         var x = ""
         let family = theme.font(r.font) ?? theme.minorFont
-        x += " fo:font-family=\"'\(xmlEscape(family))'\" style:font-family-asian=\"'\(xmlEscape(family))'\" style:font-family-complex=\"'\(xmlEscape(family))'\""
+        x += " fo:font-family=\"'\(presentationXMLEscape(family))'\" style:font-family-asian=\"'\(presentationXMLEscape(family))'\" style:font-family-complex=\"'\(presentationXMLEscape(family))'\""
         let size = r.size ?? 18
         x += " fo:font-size=\"\(String(format: "%.1f", size))pt\" style:font-size-asian=\"\(String(format: "%.1f", size))pt\" style:font-size-complex=\"\(String(format: "%.1f", size))pt\""
         let bold = r.bold ?? false, italic = r.italic ?? false
@@ -864,14 +872,14 @@ private struct ODPWriterImpl {
                 var ch = b.char.isEmpty ? "•" : b.char
                 if let f = b.font, f.contains("Wingdings") || f.contains("Symbol") { ch = "•" }
                 let fam = (b.font.flatMap { $0.contains("Wingdings") || $0.contains("Symbol") || $0.hasPrefix("+") ? nil : $0 }) ?? (theme.font(run.font) ?? theme.minorFont)
-                tp += " fo:font-family=\"'\(xmlEscape(fam))'\""
-                x += "<text:list-level-style-bullet text:level=\"\(lvl + 1)\" text:bullet-char=\"\(xmlEscape(String(ch.prefix(1))))\">\(props)<style:text-properties\(tp)/></text:list-level-style-bullet>"
+                tp += " fo:font-family=\"'\(presentationXMLEscape(fam))'\""
+                x += "<text:list-level-style-bullet text:level=\"\(lvl + 1)\" text:bullet-char=\"\(presentationXMLEscape(String(ch.prefix(1))))\">\(props)<style:text-properties\(tp)/></text:list-level-style-bullet>"
             } else {
                 let sch = b.scheme
                 let format = sch.hasPrefix("alphaLc") ? "a" : sch.hasPrefix("alphaUc") ? "A" : sch.hasPrefix("romanLc") ? "i" : sch.hasPrefix("romanUc") ? "I" : "1"
                 let suffix = sch.hasSuffix("ParenR") || sch.hasSuffix("ParenBoth") ? ")" : sch.hasSuffix("Plain") ? "" : "."
                 let prefix = sch.hasSuffix("ParenBoth") ? " style:num-prefix=\"(\"" : ""
-                tp += " fo:font-family=\"'\(xmlEscape(theme.font(run.font) ?? theme.minorFont))'\""
+                tp += " fo:font-family=\"'\(presentationXMLEscape(theme.font(run.font) ?? theme.minorFont))'\""
                 x += "<text:list-level-style-number text:level=\"\(lvl + 1)\" style:num-format=\"\(format)\"\(prefix) style:num-suffix=\"\(suffix)\" text:start-value=\"\(b.startAt)\">\(props)<style:text-properties\(tp)/></text:list-level-style-number>"
             }
         }
@@ -891,7 +899,7 @@ private struct ODPWriterImpl {
             case let f? where f.hasPrefix("datetime"): inner = "<text:date>\(odfText(TextRender.fieldText(f, fallback: r.text, number: ctx.number)))</text:date>"
             default: inner = odfText(r.text)
             }
-            if let link = r.link { inner = "<text:a xlink:type=\"simple\" xlink:href=\"\(xmlEscape(link))\">\(inner)</text:a>" }
+            if let link = r.link { inner = "<text:a xlink:type=\"simple\" xlink:href=\"\(presentationXMLEscape(link))\">\(inner)</text:a>" }
             x += "<text:span text:style-name=\"\(ts)\">\(inner)</text:span>"
         }
         return x + "</text:p>"

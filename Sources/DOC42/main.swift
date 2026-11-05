@@ -1,6 +1,5 @@
 import AppKit
 import Kit42
-import UniformTypeIdentifiers
 
 Localization.register(rows: doc42Strings)
 
@@ -15,9 +14,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--flatten"), CommandLine.argume
 if let i = CommandLine.arguments.firstIndex(of: "--export"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments
     let input = URL(fileURLWithPath: args[i + 1]), output = URL(fileURLWithPath: args[i + 2])
-    let doc = TextDocument()
-    let inType = input.pathExtension.lowercased() == "md" ? "md" : (UTType(filenameExtension: input.pathExtension)?.identifier ?? input.pathExtension)
-    try doc.read(from: input, ofType: inType)
+    let doc = try CLI.open(input.path)
     let ext = output.pathExtension.lowercased()
     if ProcessInfo.processInfo.environment["K42_DEBUG"] != nil { doc.debugPages() }
     let data = ext == "pdf" ? doc.pdfData() : ext == "md" ? doc.markdownData() : try doc.exportData(TextDocument.documentType(for: ext == "doc" ? "com.microsoft.word.doc" : ext))

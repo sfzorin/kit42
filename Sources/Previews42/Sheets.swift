@@ -66,13 +66,18 @@ public enum SheetReader {
             }
             if sheet.truncatedRows { break }
         }
-        if !field.isEmpty || !row.isEmpty { endRow() }
+        if !field.isEmpty || !row.isEmpty || wasQuoted { endRow() }
         return sheet
     }
 
     static func guessSeparator(_ text: String) -> Character {
-        let head = text.prefix(4000)
-        let counts: [(Character, Int)] = ["\t", ";", ",", "|"].map { c in (c, head.filter { $0 == c }.count) }
+        // Separators inside quoted fields are content, including escaped quotes.
+        var counts: [(Character, Int)] = ["\t", ";", ",", "|"].map { ($0, 0) }
+        var quoted = false
+        for c in text.prefix(4000) {
+            if c == "\"" { quoted.toggle() }
+            else if !quoted, let i = counts.firstIndex(where: { $0.0 == c }) { counts[i].1 += 1 }
+        }
         return counts.max { $0.1 < $1.1 }.map { $0.1 > 0 ? $0.0 : "," } ?? ","
     }
 
@@ -140,23 +145,24 @@ public enum SheetReader {
             var col = 0
             var columnStyles: [Int: String] = [:]
             for c in descendants(table, "table-column") {
-                let n = min(Int(c.attr("number-columns-repeated") ?? "1") ?? 1, maxColumns)
+                let n = count(c.attr("number-columns-repeated"), limit: maxColumns - col)
                 for k in 0..<n where col + k < maxColumns {
                     if let w = c.attr("style-name").flatMap({ styles[$0]?.columnWidth }) { sheet.columnWidths[col + k] = w }
                     if c.attr("visibility") == "collapse" { sheet.columnWidths[col + k] = 0 }
                     if let d = c.attr("default-cell-style-name"), d != "Default" { columnStyles[col + k] = d }
                 }
                 col += n
+                if col >= maxColumns { break }
             }
             var rows: [[PreviewCell]] = []
             var lastContentRow = -1
             for r in descendants(table, "table-row") {
-                let repeatRows = Int(r.attr("number-rows-repeated") ?? "1") ?? 1
+                let repeatRows = count(r.attr("number-rows-repeated"), limit: maxRows + 1)
                 var cells: [PreviewCell] = []
                 var lastContentCol = -1
                 var c = 0
                 for case let x as XMLElement in r.children ?? [] where x.localName == "table-cell" || x.localName == "covered-table-cell" {
-                    let repeatCols = Int(x.attr("number-columns-repeated") ?? "1") ?? 1
+                    let repeatCols = count(x.attr("number-columns-repeated"), limit: maxColumns - c)
                     var cell = PreviewCell()
                     cell.covered = x.localName == "covered-table-cell"
                     cell.text = x.children("p").map(odfText).joined(separator: "\n")
@@ -169,8 +175,8 @@ public enum SheetReader {
                     cell.align = st.align
                     cell.background = st.background
                     cell.color = st.color
-                    cell.colSpan = Int(x.attr("number-columns-spanned") ?? "1") ?? 1
-                    cell.rowSpan = Int(x.attr("number-rows-spanned") ?? "1") ?? 1
+                    cell.colSpan = count(x.attr("number-columns-spanned"), limit: maxColumns - c)
+                    cell.rowSpan = count(x.attr("number-rows-spanned"), limit: maxRows)
                     let visible = !cell.text.isEmpty || cell.background != nil
                     for _ in 0..<min(repeatCols, max(0, maxColumns - c)) {
                         cells.append(cell)
@@ -184,13 +190,21 @@ public enum SheetReader {
                     if !cells.isEmpty { sheet.truncatedRows = true; break }
                     continue
                 }
-                for _ in 0..<min(repeatRows, maxRows - rows.count) { rows.append(cells) }
+                let available = maxRows - rows.count
+                for _ in 0..<min(repeatRows, available) { rows.append(cells) }
                 if !cells.isEmpty { lastContentRow = rows.count - 1 }
+                if !cells.isEmpty && repeatRows > available { sheet.truncatedRows = true; break }
             }
             sheet.rows = Array(rows.prefix(lastContentRow + 1))
             sheets.append(sheet)
         }
         return sheets
+    }
+
+    /// XML counts must be positive and bounded before constructing ranges or allocating strings.
+    static func count(_ value: String?, limit: Int) -> Int {
+        guard limit > 0 else { return 0 }
+        return min(max(1, Int(value ?? "1") ?? 1), limit)
     }
 
     /// Rows and columns may sit inside header/group wrappers.
@@ -210,7 +224,7 @@ public enum SheetReader {
             if node.kind == .text { out += node.stringValue ?? ""; continue }
             guard let x = node as? XMLElement else { continue }
             switch x.localName {
-            case "s": out += String(repeating: " ", count: Int(x.attr("c") ?? "1") ?? 1)
+            case "s": out += String(repeating: " ", count: count(x.attr("c"), limit: 10_000))
             case "tab": out += "\t"
             case "line-break": out += "\n"
             case "annotation", "note": break
@@ -229,7 +243,10 @@ public enum SheetReader {
     static func length(_ s: String?) -> CGFloat? {
         guard let s else { return nil }
         let units: [(String, CGFloat)] = [("cm", 72 / 2.54), ("mm", 72 / 25.4), ("in", 72), ("pt", 1), ("pc", 12), ("px", 0.75)]
-        for (u, f) in units where s.hasSuffix(u) { return Double(s.dropLast(u.count)).map { CGFloat($0) * f } }
+        for (u, f) in units where s.hasSuffix(u) {
+            guard let value = Double(s.dropLast(u.count)), value.isFinite, value > 0 else { return nil }
+            return min(CGFloat(value) * f, 10_000)
+        }
         return nil
     }
 }

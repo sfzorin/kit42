@@ -72,6 +72,7 @@ struct PDFLexer {
     static func isDelimiter(_ c: UInt8) -> Bool { "()<>[]{}/%".utf8.contains(c) }
 
     mutating func skipWhitespace() {
+        guard pos >= 0 else { return }
         while pos < bytes.count {
             if Self.isWhite(bytes[pos]) { pos += 1 }
             else if bytes[pos] == UInt8(ascii: "%") {
@@ -83,6 +84,7 @@ struct PDFLexer {
     /// Next regular token (keyword or number) without consuming delimiters.
     mutating func word() -> String {
         skipWhitespace()
+        guard pos >= 0, pos <= bytes.count else { return "" }
         let start = pos
         while pos < bytes.count, !Self.isWhite(bytes[pos]), !Self.isDelimiter(bytes[pos]) { pos += 1 }
         return String(decoding: bytes[start..<pos], as: UTF8.self)
@@ -95,12 +97,13 @@ struct PDFLexer {
 
     func peek(_ s: String) -> Bool {
         let u = Array(s.utf8)
-        return pos + u.count <= bytes.count && Array(bytes[pos..<pos + u.count]) == u
+        return pos >= 0 && pos <= bytes.count && u.count <= bytes.count - pos && Array(bytes[pos..<pos + u.count]) == u
     }
 
-    mutating func parse() throws -> PDFObject {
+    mutating func parse(depth: Int = 0) throws -> PDFObject {
+        guard depth < 128 else { throw PDFStructureError.malformed("object nesting is too deep") }
         skipWhitespace()
-        guard pos < bytes.count else { throw PDFStructureError.malformed("unexpected end") }
+        guard pos >= 0, pos < bytes.count else { throw PDFStructureError.malformed("unexpected end") }
         let c = bytes[pos]
         if peek("<<") {
             pos += 2
@@ -109,8 +112,8 @@ struct PDFLexer {
                 skipWhitespace()
                 if peek(">>") { pos += 2; break }
                 guard pos < bytes.count, bytes[pos] == UInt8(ascii: "/") else { throw PDFStructureError.malformed("dictionary key") }
-                guard case .name(let key) = try parse() else { throw PDFStructureError.malformed("key") }
-                pairs.append((key, try parse()))
+                guard case .name(let key) = try parse(depth: depth + 1) else { throw PDFStructureError.malformed("key") }
+                pairs.append((key, try parse(depth: depth + 1)))
             }
             return .dict(pairs)
         }
@@ -121,7 +124,7 @@ struct PDFLexer {
             while true {
                 skipWhitespace()
                 if pos < bytes.count, bytes[pos] == UInt8(ascii: "]") { pos += 1; break }
-                items.append(try parse())
+                items.append(try parse(depth: depth + 1))
             }
             return .array(items)
         case UInt8(ascii: "("):
@@ -129,15 +132,21 @@ struct PDFLexer {
             var depth = 0
             while pos < bytes.count {
                 let b = bytes[pos]
-                if b == UInt8(ascii: "\\") { pos += 2; continue }
+                if b == UInt8(ascii: "\\") {
+                    guard pos + 1 < bytes.count else { throw PDFStructureError.malformed("unterminated string escape") }
+                    pos += 2
+                    continue
+                }
                 if b == UInt8(ascii: "(") { depth += 1 }
                 if b == UInt8(ascii: ")") { depth -= 1; if depth == 0 { pos += 1; break } }
                 pos += 1
             }
+            guard depth == 0 else { throw PDFStructureError.malformed("unterminated string") }
             return .raw(String(decoding: bytes[start..<pos], as: UTF8.self))
         case UInt8(ascii: "<"):
             let start = pos
             while pos < bytes.count, bytes[pos] != UInt8(ascii: ">") { pos += 1 }
+            guard pos < bytes.count else { throw PDFStructureError.malformed("unterminated hex string") }
             pos += 1
             return .raw(String(decoding: bytes[start..<pos], as: UTF8.self))
         case UInt8(ascii: "/"):
@@ -174,14 +183,15 @@ struct PDFFileStructure {
         bytes = [UInt8](data)
         guard let sx = Self.lastIndex(of: "startxref", in: bytes) else { throw PDFStructureError.malformed("no startxref") }
         var lx = PDFLexer(bytes: bytes, pos: sx + 9)
-        guard let start = Int(lx.word()) else { throw PDFStructureError.malformed("startxref") }
+        guard let start = Int(lx.word()), start >= 0, start < bytes.count else { throw PDFStructureError.malformed("startxref") }
         startxref = start
 
         var next: Int? = start
         var firstTrailer: PDFObject?
         var visited = Set<Int>()
         var freed = Set<Int>()
-        while let off = next, !visited.contains(off) {
+        while let off = next {
+            guard off >= 0, off < bytes.count, !visited.contains(off) else { throw PDFStructureError.malformed("xref offset") }
             visited.insert(off)
             var lexer = PDFLexer(bytes: bytes, pos: off)
             guard lexer.word() == "xref" else {
@@ -190,10 +200,12 @@ struct PDFFileStructure {
             while true {
                 let w = lexer.word()
                 if w == "trailer" { break }
-                guard let first = Int(w), let count = Int(lexer.word()) else { throw PDFStructureError.malformed("xref") }
+                guard let first = Int(w), first >= 0, let count = Int(lexer.word()), count >= 0,
+                      count <= bytes.count / 6, first <= Int.max - count else { throw PDFStructureError.malformed("xref") }
                 for i in 0..<count {
-                    guard let o = Int(lexer.word()), let g = Int(lexer.word()) else { throw PDFStructureError.malformed("xref") }
+                    guard let o = Int(lexer.word()), o >= 0, let g = Int(lexer.word()), g >= 0 else { throw PDFStructureError.malformed("xref") }
                     let type = lexer.word()
+                    guard type == "n" || type == "f", type != "n" || o < bytes.count else { throw PDFStructureError.malformed("xref entry") }
                     let num = first + i
                     if offsets[num] != nil || freed.contains(num) { continue }
                     if type == "n" { offsets[num] = (o, g) } else { freed.insert(num) }

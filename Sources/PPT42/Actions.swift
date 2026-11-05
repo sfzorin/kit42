@@ -12,6 +12,24 @@ enum Clipboard {
     /// Objects and slides live in memory; the pasteboard carries a token (and a picture / text for other apps).
     static var objects: (token: String, items: [SlideObject], media: [String: Data])?
     static var slides: (token: String, items: [Slide], media: [String: Data])?
+
+    /// A different document can already use image1.png for different bytes.
+    static func importMedia(_ source: [String: Data], into deck: inout Deck) -> [String: String] {
+        var names: [String: String] = [:]
+        for (name, data) in source.sorted(by: { $0.key < $1.key }) {
+            names[name] = deck.addMedia(data, ext: (name as NSString).pathExtension)
+        }
+        return names
+    }
+
+    static func remap(_ object: SlideObject, media names: [String: String]) -> SlideObject {
+        var object = object
+        if let name = object.media { object.media = names[name] ?? name }
+        if let name = object.clip?.media { object.clip?.media = names[name] ?? name }
+        if case .picture(let name) = object.fill { object.fill = .picture(names[name] ?? name) }
+        object.children = object.children.map { remap($0, media: names) }
+        return object
+    }
 }
 
 extension DeckWindowController {
@@ -27,6 +45,9 @@ extension DeckWindowController {
                     deck.layouts[li].placeholders[i].rotation = o.rotation
                     deck.layouts[li].placeholders[i].fill = o.fill
                     deck.layouts[li].placeholders[i].line = o.line
+                    deck.layouts[li].placeholders[i].shadow = o.shadow
+                    deck.layouts[li].placeholders[i].opacity = o.opacity
+                    deck.layouts[li].placeholders[i].adjust = o.adjust
                     if let t = o.text, var lt = deck.layouts[li].placeholders[i].text {
                         lt.anchor = t.anchor; lt.insets = t.insets; lt.autofit = t.autofit; lt.listStyle = t.listStyle
                         deck.layouts[li].placeholders[i].text = lt
@@ -43,6 +64,9 @@ extension DeckWindowController {
                     deck.master.placeholders[i].rotation = o.rotation
                     deck.master.placeholders[i].fill = o.fill
                     deck.master.placeholders[i].line = o.line
+                    deck.master.placeholders[i].shadow = o.shadow
+                    deck.master.placeholders[i].opacity = o.opacity
+                    deck.master.placeholders[i].adjust = o.adjust
                     if let t = o.text, var mt = deck.master.placeholders[i].text {
                         mt.anchor = t.anchor; mt.insets = t.insets; mt.autofit = t.autofit; mt.listStyle = t.listStyle
                         deck.master.placeholders[i].text = mt
@@ -72,11 +96,15 @@ extension DeckWindowController {
 
     func nextID(_ s: Slide) -> Int { s.maxID + 1 }
 
-    func insert(_ objects: [SlideObject], name: String = L("Insert")) {
-        guard currentSlide != nil else { return }
+    func insert(_ objects: [SlideObject], media: [String: Data] = [:], name: String = L("Insert")) {
+        commitEditing()
+        guard currentSlide != nil, !objects.isEmpty else { return }
+        var merged = deck
+        let mediaNames = Clipboard.importMedia(media, into: &merged)
         var s = displayedSlide
         var ids: [Int] = []
-        for var o in objects {
+        for source in objects {
+            var o = Clipboard.remap(source, media: mediaNames)
             o.id = nextID(s)
             var next = o.id + 1
             func renumber(_ list: inout [SlideObject]) { for k in list.indices { list[k].id = next; next += 1; renumber(&list[k].children) } }
@@ -84,7 +112,11 @@ extension DeckWindowController {
             s.objects.append(o)
             ids.append(o.id)
         }
-        commit(slide: s, name: name)
+        if media.isEmpty { commit(slide: s, name: name) }
+        else {
+            let slide = current
+            doc?.change(name) { d in d.media = merged.media; d.slides[slide] = s }
+        }
         selection = ids
     }
 
@@ -124,6 +156,7 @@ extension DeckWindowController {
     }
 
     func insertImages(_ datas: [Data], at point: CGPoint?) {
+        commitEditing()
         guard currentSlide != nil else { return }
         var d = deck
         var objects: [SlideObject] = []
@@ -301,7 +334,7 @@ extension DeckWindowController {
 
     var selectedSlideIndexes: [Int] {
         let set = slideSelection.isEmpty ? IndexSet(integer: current) : slideSelection
-        return set.filter { $0 < deck.slides.count }.sorted()
+        return set.filter { deck.slides.indices.contains($0) }.sorted()
     }
 
     @objc func duplicateSlideAction(_ sender: Any?) {
@@ -330,7 +363,8 @@ extension DeckWindowController {
     }
 
     func moveSlides(_ indexes: [Int], to destination: Int) {
-        let idx = indexes.sorted()
+        commitEditing()
+        let idx = Set(indexes).filter { deck.slides.indices.contains($0) }.sorted()
         guard !idx.isEmpty else { return }
         var dest = destination
         doc?.change(L("Move Slide")) { d in
@@ -349,6 +383,7 @@ extension DeckWindowController {
     }
 
     @objc func hideSlideAction(_ sender: Any?) {
+        commitEditing()
         let idx = selectedSlideIndexes
         let hide = !(currentSlide?.hidden ?? false)
         doc?.change(hide ? L("Hide Slide") : L("Show Slide")) { d in for i in idx { d.slides[i].hidden = hide } }
@@ -356,6 +391,7 @@ extension DeckWindowController {
 
     /// Changes the layout: placeholders move to the new layout's places, text is kept.
     @objc func layoutAction(_ sender: Any?) {
+        commitEditing()
         let li = commandTag(of: sender)
         let idx = selectedSlideIndexes
         guard deck.layouts.indices.contains(li) else { return }
@@ -403,6 +439,7 @@ extension DeckWindowController {
     @objc func backgroundAction(_ sender: Any?) { showInspector(true, tab: 0) }
 
     @objc func transitionAction(_ sender: Any?) {
+        commitEditing()
         let kind = TransitionKind.allCases[min(max(0, commandTag(of: sender)), TransitionKind.allCases.count - 1)]
         let idx = selectedSlideIndexes
         doc?.change(L("Transition")) { d in for i in idx { d.slides[i].transition.kind = kind } }
@@ -418,6 +455,7 @@ extension DeckWindowController {
     }
 
     @objc func themeAction(_ sender: Any?) {
+        commitEditing()
         let i = commandTag(of: sender)
         doc?.change(L("Apply Theme")) { $0.apply(theme: i) }
         thumbnails.reload()
@@ -426,6 +464,7 @@ extension DeckWindowController {
     // MARK: - Edit
 
     @objc func deleteAction(_ sender: Any?) {
+        commitEditing()
         if let li = editedLayout {
             if window?.firstResponder === thumbnails.table { deleteLayoutAction(sender); return }
             let ids = Set(selection)
@@ -446,17 +485,19 @@ extension DeckWindowController {
     }
 
     @objc func duplicateAction(_ sender: Any?) {
+        commitEditing()
         if mode == .sorter || window?.firstResponder === thumbnails.table { duplicateSlideAction(sender); return }
         let objs = selectedObjects.map { o -> SlideObject in var c = o; c.offset(by: CGSize(width: 18, height: 18)); return c }
         insert(objs, name: L("Duplicate"))
     }
 
     func copyObjects(cut: Bool) {
+        commitEditing()
         let objs = selectedObjects
         guard !objs.isEmpty else { return }
         let token = UUID().uuidString
         var media: [String: Data] = [:]
-        func collect(_ list: [SlideObject]) { for o in list { if let m = o.media { media[m] = deck.media[m] }; if case .picture(let m) = o.fill { media[m] = deck.media[m] }; collect(o.children) } }
+        func collect(_ list: [SlideObject]) { for o in list { if let m = o.media { media[m] = deck.media[m] }; if let m = o.clip?.media { media[m] = deck.media[m] }; if case .picture(let m) = o.fill { media[m] = deck.media[m] }; collect(o.children) } }
         collect(objs)
         Clipboard.objects = (token, objs, media)
         let pb = Clipboard.board
@@ -480,7 +521,8 @@ extension DeckWindowController {
         d.master.background = Fill.none
         d.master.objects = []
         d.layouts = d.layouts.map { var l = $0; l.objects = []; l.background = nil; return l }
-        let scale: CGFloat = 2
+        guard union.width.isFinite, union.height.isFinite else { return nil }
+        let scale: CGFloat = min(2, 4096 / max(union.width, union.height))
         guard let ctx = CGContext(data: nil, width: Int(union.width * scale), height: Int(union.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.translateBy(x: 0, y: union.height * scale)
@@ -492,6 +534,7 @@ extension DeckWindowController {
     }
 
     func pasteObjects() {
+        commitEditing()
         let pb = Clipboard.board
         if let token = pb.string(forType: Clipboard.slidesType), let c = Clipboard.slides, c.token == token {
             pasteSlides(c.items, media: c.media)
@@ -504,8 +547,7 @@ extension DeckWindowController {
             if objs.contains(where: { o in displayedSlide.objects.contains { $0.frame == o.frame } }) {
                 objs = objs.map { var o = $0; o.offset(by: CGSize(width: 18, height: 18)); return o }
             }
-            doc?.change(L("Paste")) { d in for (k, v) in media where d.media[k] == nil { d.media[k] = v } }
-            insert(objs.map { var o = $0; if o.placeholder != nil, displayedSlide.objects.contains(where: { $0.placeholder == o.placeholder }) { o.placeholder = nil }; return o }, name: L("Paste"))
+            insert(objs.map { var o = $0; if o.placeholder != nil, displayedSlide.objects.contains(where: { $0.placeholder == o.placeholder }) { o.placeholder = nil }; return o }, media: media, name: L("Paste"))
             return
         }
         let images = canvas.images(from: pb)
@@ -523,11 +565,12 @@ extension DeckWindowController {
     }
 
     func copySlides() {
+        commitEditing()
         let idx = selectedSlideIndexes
         guard !idx.isEmpty else { return }
         let slides = idx.map { deck.slides[$0] }
         var media: [String: Data] = [:]
-        func collect(_ list: [SlideObject]) { for o in list { if let m = o.media { media[m] = deck.media[m] }; if case .picture(let m) = o.fill { media[m] = deck.media[m] }; collect(o.children) } }
+        func collect(_ list: [SlideObject]) { for o in list { if let m = o.media { media[m] = deck.media[m] }; if let m = o.clip?.media { media[m] = deck.media[m] }; if case .picture(let m) = o.fill { media[m] = deck.media[m] }; collect(o.children) } }
         for s in slides { collect(s.objects); if case .picture(let m)? = s.background { media[m] = deck.media[m] } }
         let token = UUID().uuidString
         Clipboard.slides = (token, slides, media)
@@ -538,10 +581,16 @@ extension DeckWindowController {
     }
 
     func pasteSlides(_ slides: [Slide], media: [String: Data]) {
+        commitEditing()
         let at = deck.slides.isEmpty ? 0 : current + 1
         doc?.change(L("Paste Slides")) { d in
-            for (k, v) in media where d.media[k] == nil { d.media[k] = v }
-            let copies = slides.map { s -> Slide in var c = s; c.uid = UUID(); c.layout = min(c.layout, max(0, d.layouts.count - 1)); return c }
+            let names = Clipboard.importMedia(media, into: &d)
+            let copies = slides.map { s -> Slide in
+                var c = s; c.uid = UUID(); c.layout = max(0, min(c.layout, max(0, d.layouts.count - 1)))
+                c.objects = c.objects.map { Clipboard.remap($0, media: names) }
+                if case .picture(let name)? = c.background { c.background = .picture(names[name] ?? name) }
+                return c
+            }
             d.slides.insert(contentsOf: copies, at: min(at, d.slides.count))
         }
         select(slide: at)
@@ -550,6 +599,7 @@ extension DeckWindowController {
     // MARK: - Arrange, align, group
 
     @objc func arrangeAction(_ sender: Any?) {
+        commitEditing()
         let tag = commandTag(of: sender)
         let ids = Set(selection)
         changeSlide(L("Arrange")) { s in
@@ -568,6 +618,7 @@ extension DeckWindowController {
     }
 
     @objc func alignObjectsAction(_ sender: Any?) {
+        commitEditing()
         let tag = commandTag(of: sender)
         let objs = selectedObjects
         guard !objs.isEmpty else { return }
@@ -591,6 +642,7 @@ extension DeckWindowController {
     }
 
     @objc func distributeAction(_ sender: Any?) {
+        commitEditing()
         let horizontal = commandTag(of: sender) == 0
         let objs = selectedObjects.sorted { horizontal ? canvas.bounds(of: $0).midX < canvas.bounds(of: $1).midX : canvas.bounds(of: $0).midY < canvas.bounds(of: $1).midY }
         guard objs.count > 2 else { return }
@@ -609,6 +661,7 @@ extension DeckWindowController {
     }
 
     @objc func groupAction(_ sender: Any?) {
+        commitEditing()
         let ids = selection
         guard ids.count > 1 else { return }
         var newID = 0
@@ -627,6 +680,7 @@ extension DeckWindowController {
     }
 
     @objc func ungroupAction(_ sender: Any?) {
+        commitEditing()
         let ids = selection
         var out: [Int] = []
         changeSlide(L("Ungroup")) { s in
@@ -635,12 +689,13 @@ extension DeckWindowController {
                 if ids.contains(o.id), o.kind == .group {
                     // Group rotation is applied to the members.
                     for var c in o.children {
-                        if o.rotation != 0 {
-                            let gc = CGPoint(x: o.frame.midX, y: o.frame.midY), cc = CGPoint(x: c.frame.midX, y: c.frame.midY)
-                            let p = canvas.rotate(cc, around: gc, by: o.rotation * .pi / 180)
-                            c.offset(by: CGSize(width: p.x - cc.x, height: p.y - cc.y))
-                            c.rotation = (c.rotation + o.rotation).truncatingRemainder(dividingBy: 360)
-                        }
+                        let gc = CGPoint(x: o.frame.midX, y: o.frame.midY), cc = CGPoint(x: c.frame.midX, y: c.frame.midY)
+                        let mirrored = CGPoint(x: o.flipH ? 2 * gc.x - cc.x : cc.x, y: o.flipV ? 2 * gc.y - cc.y : cc.y)
+                        let p = canvas.rotate(mirrored, around: gc, by: o.rotation * .pi / 180)
+                        c.offset(by: CGSize(width: p.x - cc.x, height: p.y - cc.y))
+                        let reflected = o.flipH != o.flipV
+                        c.rotation = (o.rotation + (reflected ? -c.rotation : c.rotation)).truncatingRemainder(dividingBy: 360)
+                        c.flipH = c.flipH != o.flipH; c.flipV = c.flipV != o.flipV
                         objs.append(c)
                         out.append(c.id)
                     }
@@ -657,46 +712,27 @@ extension DeckWindowController {
 
     @objc func tableRowAction(_ sender: Any?) {
         let tag = commandTag(of: sender)
-        let row = TableEditing.current?.1 ?? (tag == 0 ? 0 : (selectedObjects.first?.table?.rows.count ?? 1) - 1)
+        let row = canvas.editor.cell?.0 ?? (tag == 0 ? 0 : (selectedObjects.first?.table?.rows.count ?? 1) - 1)
         commitEditing()
-        changeSelected(L("Table Rows")) { o in
-            guard var t = o.table else { return }
-            let r = min(max(0, row), t.rows.count - 1)
-            switch tag {
-            case 0, 1:
-                let at = tag == 0 ? r : r + 1
-                t.rows.insert(t.rows[r], at: at)
-                t.cells.insert(t.cells[r].map { c in var n = TableCell(); n.text.anchor = c.text.anchor; n.gridSpan = c.gridSpan; n.merged = c.merged; return n }, at: at)
-                o.frame.size.height += t.rows[r]
-            default:
-                guard t.rows.count > 1 else { return }
-                o.frame.size.height -= t.rows[r]
-                t.rows.remove(at: r)
-                t.cells.remove(at: r)
-            }
-            o.table = t
+        changeSelected(L("Table Rows")) { object in
+            guard var table = object.table, !table.rows.isEmpty else { return }
+            let row = min(max(0, row), table.rows.count - 1)
+            table.shift(axisRows: true, at: tag == 1 ? row + 1 : row, insert: tag == 0 || tag == 1)
+            object.frame.size.height = table.rows.reduce(0, +)
+            object.table = table
         }
     }
 
     @objc func tableColumnAction(_ sender: Any?) {
         let tag = commandTag(of: sender)
-        let col = TableEditing.current?.2 ?? (tag == 0 ? 0 : (selectedObjects.first?.table?.columns.count ?? 1) - 1)
+        let column = canvas.editor.cell?.1 ?? (tag == 0 ? 0 : (selectedObjects.first?.table?.columns.count ?? 1) - 1)
         commitEditing()
-        changeSelected(L("Table Columns")) { o in
-            guard var t = o.table else { return }
-            let c = min(max(0, col), t.columns.count - 1)
-            switch tag {
-            case 0, 1:
-                let at = tag == 0 ? c : c + 1
-                t.columns.insert(t.columns[c], at: at)
-                for r in t.cells.indices { var n = TableCell(); n.text.anchor = t.cells[r][c].text.anchor; t.cells[r].insert(n, at: at) }
-            default:
-                guard t.columns.count > 1 else { return }
-                t.columns.remove(at: c)
-                for r in t.cells.indices { t.cells[r].remove(at: c) }
-            }
-            t.fit(to: o.frame.size)
-            o.table = t
+        changeSelected(L("Table Columns")) { object in
+            guard var table = object.table, !table.columns.isEmpty else { return }
+            let column = min(max(0, column), table.columns.count - 1)
+            table.shift(axisRows: false, at: tag == 1 ? column + 1 : column, insert: tag == 0 || tag == 1)
+            table.fit(to: object.frame.size)
+            object.table = table
         }
     }
 
@@ -705,20 +741,21 @@ extension DeckWindowController {
     /// Effective character formatting of the selection (format bar, menus).
     var currentRunProps: RunProps {
         if isEditingText { return canvas.editor.currentRunProps }
-        guard let o = selectedObjects.first(where: { $0.text != nil || $0.table != nil }) else { return RunProps() }
-        let body = o.text ?? o.table?.cells.first?.first?.text ?? TextBody()
+        guard let first = selectedObjects.lazy.compactMap(\.firstTextContainer).first else { return RunProps() }
+        let o = first.object, body = first.body
         let p = body.paragraphs.first ?? Paragraph()
         var c = TextContext(deck: deck, slide: mode == .master ? nil : displayedSlide, object: o)
-        if let t = o.table { c.cellDefaults = Renderer.cellDefaults(t, row: 0) }
+        if let t = o.table, let row = first.row { c.cellDefaults = Renderer.cellDefaults(t, row: row) }
         let style = p.props.over(TextRender.levelStyle(c, level: p.level))
         return (p.runs.first?.props ?? p.endProps).over(style.run)
     }
 
     var currentLevelStyle: LevelStyle {
         if isEditingText { return canvas.editor.currentLevelStyle }
-        guard let o = selectedObjects.first(where: { $0.text != nil }), let body = o.text else { return LevelStyle() }
-        let p = body.paragraphs.first ?? Paragraph()
-        let c = TextContext(deck: deck, slide: mode == .master ? nil : displayedSlide, object: o)
+        guard let first = selectedObjects.lazy.compactMap(\.firstTextContainer).first else { return LevelStyle() }
+        let p = first.body.paragraphs.first ?? Paragraph()
+        var c = TextContext(deck: deck, slide: mode == .master ? nil : displayedSlide, object: first.object)
+        if let table = first.object.table, let row = first.row { c.cellDefaults = Renderer.cellDefaults(table, row: row) }
         return p.props.over(TextRender.levelStyle(c, level: p.level))
     }
 
@@ -771,12 +808,7 @@ extension DeckWindowController {
                     f(&body.paragraphs[p].endProps)
                 }
             }
-            if var t = o.text { apply(&t); o.text = t }
-            if var tb = o.table {
-                for r in tb.cells.indices { for c in tb.cells[r].indices { apply(&tb.cells[r][c].text) } }
-                o.table = tb
-            }
-            for i in o.children.indices where o.children[i].text != nil { var t = o.children[i].text!; apply(&t); o.children[i].text = t }
+            o.editTextBodies(apply)
         }
     }
 
@@ -826,11 +858,7 @@ extension DeckWindowController {
                     body.paragraphs[p].level = max(0, min(8, level))
                 }
             }
-            if var t = o.text { apply(&t); o.text = t }
-            if var tb = o.table {
-                for r in tb.cells.indices { for c in tb.cells[r].indices { apply(&tb.cells[r][c].text) } }
-                o.table = tb
-            }
+            o.editTextBodies(apply)
         }
     }
 
@@ -849,7 +877,7 @@ extension DeckWindowController {
         applyRun(L("Font Size")) { $0.size = v }
     }
 
-    func setFontSize(_ v: CGFloat) { applyRun(L("Font Size")) { $0.size = v } }
+    func setFontSize(_ v: CGFloat) { guard v.isFinite, v >= 1, v <= 4000 else { return }; applyRun(L("Font Size")) { $0.size = v } }
     func setFont(_ family: String) { applyRun(L("Font")) { $0.font = family } }
     func setTextColor(_ c: PColor) { applyRun(L("Text Colour")) { $0.color = c } }
 
@@ -869,8 +897,14 @@ extension DeckWindowController {
 
     @objc func anchorAction(_ sender: Any?) {
         let a: Anchor = [.top, .middle, .bottom][min(2, max(0, commandTag(of: sender)))]
+        let editedCell = canvas.editor.cell, editedObject = canvas.editor.objectID
         commitEditing()
-        changeSelected(L("Vertical Alignment")) { o in o.text?.anchor = a }
+        changeSelected(L("Vertical Alignment")) { o in
+            if o.id == editedObject, let cell = editedCell, var table = o.table,
+               table.cells.indices.contains(cell.0), table.cells[cell.0].indices.contains(cell.1) {
+                table.cells[cell.0][cell.1].text.anchor = a; o.table = table
+            } else { o.editTextBodies { $0.anchor = a } }
+        }
     }
 
     @objc func bulletsAction(_ sender: Any?) {

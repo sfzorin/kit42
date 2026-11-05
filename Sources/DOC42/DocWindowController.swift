@@ -34,8 +34,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
     private let scrollView = NSScrollView()
     let ruler = DocRuler()
+    let verticalRuler = DocRuler(orientation: .vertical)
     private var rulerHeight: NSLayoutConstraint?
-    private let toolbarController = ToolbarController(identifier: "DOC42.toolbar", elements: Cmd.toolbar)
+    private var rulerWidth: NSLayoutConstraint?
+    private let toolbarController = ToolbarController(identifier: "DOC42.toolbar", elements: Cmd.toolbar,
+                                                                   optional: Cmd.toolbarOptional)
     private lazy var stylePopup = stripPopUp(Styles.all.map(\.name), width: 128, toolTip: L("Paragraph style"),
                                              target: self, action: #selector(styleChanged(_:)))
     /// Paragraph styles in the style popup, in its order.
@@ -155,8 +158,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             syncRulerSetup()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.ruler.needsDisplay = true
-                self.window?.invalidateCursorRects(for: self.ruler)
+                self.refreshRulers()
             }
         }
     }
@@ -195,6 +197,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         ruler.translatesAutoresizingMaskIntoConstraints = false
         ruler.paged = paged
         root.addSubview(ruler)
+        verticalRuler.translatesAutoresizingMaskIntoConstraints = false
+        verticalRuler.paged = paged
+        root.addSubview(verticalRuler)
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         statusBar.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(sidebar)
@@ -209,18 +214,31 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         statusBar.onLayout = { [weak self] m in self?.setViewMode(m) }
         let rulerShown = UserDefaults.standard.object(forKey: "doc.ruler") as? Bool ?? true
         rulerHeight = ruler.heightAnchor.constraint(equalToConstant: rulerShown ? DocRuler.height : 0)
+        rulerWidth = verticalRuler.widthAnchor.constraint(equalToConstant: rulerShown ? DocRuler.height : 0)
         ruler.isHidden = !rulerShown
-        ruler.onMargins = { [weak self] left, right in self?.setMargins(left: left, right: right) }
+        verticalRuler.isHidden = !rulerShown
+        ruler.onMargins = { [weak self] left, right, at in self?.setMargins(left: left, right: right, at: at) }
+        verticalRuler.onVerticalMargins = { [weak self] top, bottom, at in self?.setVerticalMargins(top: top, bottom: bottom, at: at) }
         ruler.onIndents = { [weak self] first, head, tail in self?.setIndents(firstLine: first, head: head, tail: tail) }
-        paged.onLayout = { [weak self] in self?.layoutComments(); self?.updateImageHandles() }
+        paged.onLayout = { [weak self] in
+            self?.layoutComments()
+            self?.updateImageHandles()
+            self?.headerEditor?.layout()
+            self?.refreshRulers()
+            self?.scheduleStatusBar()
+        }
         paged.onNoteClick = { [weak self] in self?.editNote($0) }
         NSLayoutConstraint.activate([
             ruler.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
-            ruler.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            ruler.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            ruler.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            ruler.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
             rulerHeight!,
+            verticalRuler.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            verticalRuler.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            verticalRuler.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            rulerWidth!,
             scrollView.topAnchor.constraint(equalTo: ruler.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: verticalRuler.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
             sidebar.topAnchor.constraint(equalTo: ruler.bottomAnchor),
@@ -239,8 +257,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         // Re-centre pages on resize and zoom (magnification changes the clip view's bounds).
         for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: scrollView.contentView, queue: .main) { [weak self] _ in
-                self?.ruler.needsDisplay = true
-                if let self { self.window?.invalidateCursorRects(for: self.ruler); self.statusBar.setZoom(self.scrollView.magnification) }
+                self?.refreshRulers()
+                if let self { self.statusBar.setZoom(self.scrollView.magnification) }
                 guard let self, abs(self.paged.frame.width - max(self.scrollView.contentView.bounds.width, self.paged.minimumWidth)) > 1 else { return }
                 self.paged.relayout()
             }
@@ -316,22 +334,43 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     func syncRulerSetup() {
         let at = textView.selectedRange().location
         let s = paged.setup(at: at)
-        if ruler.setup != s { ruler.setup = s }
-        if ruler.location != at { ruler.location = at; ruler.needsDisplay = true }
+        for view in [ruler, verticalRuler] {
+            view.headerTextView = headerEditor?.textView
+            if view.setup != s { view.setup = s }
+            if view.location != at { view.location = at }
+        }
+        refreshRulers()
+    }
+
+    func refreshRulers() {
+        for view in [ruler, verticalRuler] {
+            view.needsDisplay = true
+            window?.invalidateCursorRects(for: view)
+        }
     }
 
     func syncRuler() {
-        guard storage.length > 0 else { ruler.paragraph = .default; return }
-        let at = min(textView.selectedRange().location, storage.length - 1)
-        ruler.paragraph = (storage.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle)
-            ?? (textView.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
+        let tv = activeTextView
+        guard let source = tv.textStorage, source.length > 0 else {
+            ruler.paragraph = (tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
+            refreshRulers()
+            return
+        }
+        let at = min(tv.selectedRange().location, source.length - 1)
+        ruler.paragraph = (source.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle)
+            ?? (tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
+        refreshRulers()
     }
 
+    /// Window subtitle: the position ("Page 3 of 12"), plus review state. Word counts are in the status bar.
     func updateStatus() {
-        let text = textView.string
-        var words = 0
-        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
-        window?.subtitle = L("%d words · %d characters", words, text.count) + (isTrackingChanges ? " · " + L("Tracking changes") : "")
+        var parts: [String] = []
+        if paged.viewMode != .web, !paged.cards.isEmpty {
+            parts.append(L("Page %d of %d", paged.pageNumber(at: textView.selectedRange().location), paged.cards.count))
+        }
+        if isTrackingChanges { parts.append(L("Tracking changes")) }
+        let subtitle = parts.joined(separator: " · ")
+        if window?.subtitle != subtitle { window?.subtitle = subtitle }
     }
 
     var currentAttributes: [NSAttributedString.Key: Any] {
@@ -499,6 +538,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     private func applyStyle(_ style: Styles) {
+        let textView = activeTextView
         guard let storage = textView.textStorage else { return }
         let ranges = paragraphRanges.filter { $0.length > 0 }
         if ranges.isEmpty || storage.length == 0 {
@@ -536,13 +576,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     @objc func removeHighlightAction(_ sender: Any?) { applyAttribute(.backgroundColor, nil) }
 
     @objc func clearFormattingAction(_ sender: Any?) {
-        guard let storage = textView.textStorage else { return }
-        let ranges = textView.selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
-        guard !ranges.isEmpty, textView.shouldChangeText(inRanges: ranges as [NSValue], replacementStrings: nil) else { return }
-        storage.beginEditing()
-        for r in ranges { storage.setAttributes(Styles.normal.attributes, range: r) }
-        storage.endEditing()
-        textView.didChangeText()
+        clearDirectFormatting()
     }
 
     // MARK: - Lists
@@ -552,6 +586,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
 
     /// Adds or removes list markers ("\t•\t") on the selected paragraphs, like TextEdit.
     private func toggleList(_ list: NSTextList) {
+        let textView = activeTextView
         guard let storage = textView.textStorage else { return }
         let ns = storage.string as NSString
         let selection = textView.selectedRange()
@@ -667,9 +702,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     func setZoom(_ z: CGFloat) { scrollView.magnification = z }
     @objc func toggleFormatBarAction(_ sender: Any?) { formatStrip.isShown.toggle() }
     @objc func toggleRulerAction(_ sender: Any?) {
-        ruler.isHidden.toggle()
-        rulerHeight?.constant = ruler.isHidden ? 0 : DocRuler.height
+        setRuler(shown: ruler.isHidden)
         UserDefaults.standard.set(!ruler.isHidden, forKey: "doc.ruler")
+    }
+
+    func setRuler(shown: Bool) {
+        ruler.isHidden = !shown
+        verticalRuler.isHidden = !shown
+        rulerHeight?.constant = shown ? DocRuler.height : 0
+        rulerWidth?.constant = shown ? DocRuler.height : 0
+        refreshRulers()
     }
 
     @objc func findAction(_ sender: Any?) {
@@ -726,14 +768,18 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
             do {
                 let f = formats[i]
                 let data = f.ext == "md" ? doc.markdownData() : try f.type.map { try doc.exportData($0) } ?? doc.pdfData()
-                try data.write(to: url)
+                try data.write(to: url, options: .atomic)
             } catch { NSApp.presentError(error) }
         }
     }
 
     // MARK: - Validation
 
-    func validateToolbarItem(_ item: NSToolbarItem) -> Bool { true }
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+        menuItem.tag = item.tag
+        return validateMenuItem(menuItem)
+    }
 
     /// Ruler, comments, side panel and status bar shown before "Hide All Panels", brought back after.
     private var panelsBefore: (ruler: Bool, comments: Bool, sidebar: DocSidebar.Page?, status: Bool)? {
@@ -745,14 +791,14 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         Panels.toggleAll(in: window) { [self] hide in
             if hide {
                 panelsBefore = (!ruler.isHidden, comments.shown, sidebar.isHidden ? nil : sidebar.page, !statusBar.isHidden)
-                if !ruler.isHidden { toggleRulerAction(nil) }
-                if comments.shown { toggleCommentsAction(nil) }
+                setRuler(shown: false)
+                setComments(shown: false)
                 // Temporary: not remembered for the next window.
                 setSidebar(nil)
                 setStatusBar(shown: false)
             } else if let before = panelsBefore {
-                if before.ruler, ruler.isHidden { toggleRulerAction(nil) }
-                if before.comments, !comments.shown { toggleCommentsAction(nil) }
+                setRuler(shown: before.ruler)
+                setComments(shown: before.comments)
                 setSidebar(before.sidebar)
                 setStatusBar(shown: before.status)
                 panelsBefore = nil
@@ -765,6 +811,25 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // These commands operate on body structures; do not silently edit the body while the
+        // user is selecting text in a header/footer. Ordinary text formatting remains available.
+        if headerEditor != nil {
+            switch item.action {
+            case #selector(insertTableAction(_:)), #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)),
+                 #selector(deleteTableAction(_:)), #selector(mergeCellsAction(_:)), #selector(splitCellsAction(_:)),
+                 #selector(sortTableAction(_:)), #selector(tableFormulaAction(_:)), #selector(textToTableAction(_:)),
+                 #selector(tableToTextAction(_:)), #selector(tablePropertiesAction(_:)), #selector(tableAutoFormatAction(_:)),
+                 #selector(newCommentAction(_:)), #selector(deleteCommentAction(_:)), #selector(resolveCommentAction(_:)),
+                 #selector(insertFootnoteAction(_:)), #selector(editFootnoteAction(_:)), #selector(deleteFootnoteAction(_:)),
+                 #selector(insertTOCAction(_:)), #selector(updateTOCAction(_:)), #selector(insertSectionBreakAction(_:)),
+                 #selector(insertPageBreakAction(_:)), #selector(imagePropertiesAction(_:)), #selector(imageWrapAction(_:)),
+                 #selector(insertCaptionAction(_:)), #selector(formatPainterAction(_:)), #selector(dropCapAction(_:)),
+                 #selector(bulletsAndNumberingAction(_:)), #selector(outlineNumberingAction(_:)),
+                 #selector(demoteListAction(_:)), #selector(promoteListAction(_:)):
+                return false
+            default: break
+            }
+        }
         if item.action == #selector(toggleAllPanelsAction(_:)) {
             item.title = Panels.allHidden(in: window) ? L("Show All Panels") : L("Hide All Panels")
             return true
@@ -793,12 +858,13 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         case #selector(mergeCellsAction(_:)), #selector(splitCellsAction(_:)), #selector(sortTableAction(_:)), #selector(tableFormulaAction(_:)),
              #selector(tableToTextAction(_:)), #selector(tablePropertiesAction(_:)), #selector(tableAutoFormatAction(_:)): return isInTable
         case #selector(textToTableAction(_:)): return !isInTable
+        case #selector(dropCapAction(_:)): return headerEditor == nil
         case #selector(toggleHyphenationAction(_:)): item.state = doc?.hyphenate == true ? .on : .off
         case #selector(applyCharacterStyleAction(_:)):
             let ids = [nil] + styleSheet.characterStyles.map(\.id)
             item.state = ids.indices.contains(item.tag) && ids[item.tag] == currentAttributes[.docCharStyle] as? String ? .on : .off
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)), #selector(deleteTableAction(_:)): return isInTable
-        case #selector(columnsAction(_:)): item.state = paged.setup(at: textView.selectedRange().location).columns == item.tag + 1 ? .on : .off
+        case #selector(columnsAction(_:)): item.state = currentSetup.columns == item.tag + 1 ? .on : .off
         case #selector(editFootnoteAction(_:)), #selector(deleteFootnoteAction(_:)): return noteAtCursor != nil
         case #selector(deleteCommentAction(_:)): return commentAtCursor != nil
         case #selector(resolveCommentAction(_:)):

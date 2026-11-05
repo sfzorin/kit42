@@ -22,6 +22,7 @@ struct CellRef: Hashable, Comparable {
         var n = 0
         for ch in letters.uppercased().unicodeScalars {
             guard ch.value >= 65, ch.value <= 90 else { return nil }
+            guard n <= (RefPart.maxCol + 1 - Int(ch.value - 64)) / 26 else { return nil }
             n = n * 26 + Int(ch.value - 64)
         }
         return n > 0 ? n - 1 : nil
@@ -32,7 +33,8 @@ struct CellRef: Hashable, Comparable {
     /// Parses "B12" (no $, no sheet).
     init?(_ s: String) {
         let t = s.replacingOccurrences(of: "$", with: "")
-        guard let i = t.firstIndex(where: \.isNumber), let col = Self.columnIndex(t[..<i]), let row = Int(t[i...]), row > 0 else { return nil }
+        guard let i = t.firstIndex(where: \.isNumber), let col = Self.columnIndex(t[..<i]),
+              let row = Int(t[i...]), row > 0, row <= RefPart.maxRow + 1 else { return nil }
         self.init(row: row - 1, col: col)
     }
 
@@ -52,7 +54,7 @@ struct CellRange: Hashable {
     }
 
     init?(_ s: String) {
-        let parts = s.split(separator: ":")
+        let parts = s.split(separator: ":", omittingEmptySubsequences: false)
         guard !parts.isEmpty, parts.count <= 2, let a = CellRef(String(parts[0])) else { return nil }
         let b = parts.count > 1 ? CellRef(String(parts[1])) : a
         guard let b else { return nil }
@@ -94,6 +96,13 @@ enum Value: Equatable {
         if d == d.rounded(), abs(d) < 1e15 { return String(Int64(d)) }
         let s = String(format: "%.10g", d)
         return s.contains("e") ? String(format: "%.5E", d) : s
+    }
+
+    /// Numeric text for editing and persistence must retain the value's full precision.
+    static func numberLiteral(_ d: Double) -> String {
+        guard d.isFinite else { return "#NUM!" }
+        let text = String(d)
+        return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
     }
 }
 

@@ -8,20 +8,25 @@ struct EditState {
     var marks: [Mark]
     var adjustments: Adjustments
     var imageDescription: String?
+    var dpi: CGFloat
 }
 
 extension ImageWindowController {
     var isDirty: Bool {
         guard base != nil else { return false }
-        return base !== originalBase || !canvas.markup.marks.isEmpty || !adjustments.isIdentity || imageDescription != originalDescription
+        return base !== originalBase || canvas.markup.isEditingText || !canvas.markup.marks.isEmpty || !adjustments.isIdentity
+            || imageDescription != originalDescription || imageDPI != originalDPI
     }
 
-    /// Only the description changed: it can be written without re-encoding.
-    var onlyDescriptionChanged: Bool {
-        base === originalBase && canvas.markup.marks.isEmpty && adjustments.isIdentity && imageDescription != originalDescription
+    /// Metadata-only edits can be written without re-encoding pixels.
+    var onlyMetadataChanged: Bool {
+        base === originalBase && canvas.markup.marks.isEmpty && adjustments.isIdentity
+            && (imageDescription != originalDescription || imageDPI != originalDPI)
     }
 
     func resetEditing(base image: CGImage?) {
+        // Commit the field before clearing marks; committing afterwards can reinsert discarded text.
+        canvas.markup.endTextEditing()
         originalBase = image
         base = image
         adjustments = Adjustments()
@@ -30,9 +35,11 @@ extension ImageWindowController {
         canvas.markup.marks = []
         canvas.markup.selectedID = nil
         canvas.markup.pixelSelection = nil
-        canvas.markup.endTextEditing()
         originalDescription = url.flatMap { Self.description(of: $0) }
         imageDescription = originalDescription
+        let savedDPI = url.flatMap { ImageLoader.properties($0)[kCGImagePropertyDPIWidth] as? CGFloat } ?? 72
+        originalDPI = savedDPI.isFinite && savedDPI > 0 ? savedDPI : 72
+        imageDPI = originalDPI
         confirmedOverwrite = false
         // Edits belong to this image; file operations (trash, lossless rotation) stay undoable.
         undo.removeAllActions(withTarget: self)
@@ -49,7 +56,7 @@ extension ImageWindowController {
 
     // MARK: - Undo
 
-    var state: EditState { EditState(base: base, marks: canvas.markup.marks, adjustments: adjustments, imageDescription: imageDescription) }
+    var state: EditState { EditState(base: base, marks: canvas.markup.marks, adjustments: adjustments, imageDescription: imageDescription, dpi: imageDPI) }
 
     func restore(_ s: EditState) {
         let sizeChanged = s.base?.width != base?.width || s.base?.height != base?.height
@@ -59,6 +66,7 @@ extension ImageWindowController {
         canvas.markup.pixelSelection = nil
         adjustments = s.adjustments
         imageDescription = s.imageDescription
+        imageDPI = s.dpi
         autoFilters = nil
         if inspectorShows === adjustPanel { adjustPanel.set(adjustments) }
         refreshDisplay(resize: sizeChanged)
@@ -335,26 +343,32 @@ extension ImageWindowController {
         dialog.alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self, let base = self.base else { return }
             let target = dialog.pixelSize
-            guard target.width >= 1, target.height >= 1, target != CGSize(width: base.width, height: base.height) else { return }
-            self.resizeImage(to: target)
+            let resolution = dialog.resolutionDPI
+            guard target.width >= 1, target.height >= 1 else { return }
+            if target != CGSize(width: base.width, height: base.height) {
+                guard self.resizeImage(to: target) else { return }
+            } else {
+                guard resolution != self.imageDPI else { return }
+                self.registerUndo(self.state, L("Adjust Size"))
+            }
+            self.imageDPI = resolution
+            self.updateSubtitle()
         }
     }
 
-    var dpi: CGFloat {
-        guard let url else { return 72 }
-        return ImageLoader.properties(url)[kCGImagePropertyDPIWidth] as? CGFloat ?? 72
-    }
+    var dpi: CGFloat { imageDPI }
 
-    func resizeImage(to target: CGSize) {
-        guard let base else { return }
+    @discardableResult func resizeImage(to target: CGSize) -> Bool {
+        guard let base else { return false }
         let cs = base.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
         guard let resized = ImageLoader.render(size: target, colorSpace: cs, { ctx in
             ctx.interpolationQuality = .high
             ctx.draw(base, in: CGRect(origin: .zero, size: target))
-        }) else { return }
+        }) else { return false }
         let t = CGAffineTransform(scaleX: target.width / CGFloat(base.width), y: target.height / CGFloat(base.height))
         replaceBase(resized, transform: t, name: L("Adjust Size"))
         canvas.zoomToFit()
+        return true
     }
 
     // MARK: - Description
@@ -429,11 +443,15 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
     enum Unit: Int, CaseIterable { case pixels, percent, cm, inches
         var title: String { [L("pixels"), L("percent"), L("cm"), L("inches")][rawValue] }
     }
+    /// The unit of the values currently displayed; a popup action sees the newly selected unit.
+    private var fieldUnit: Unit = .pixels
+    private var exactPixelSize: CGSize?
 
     init(size: CGSize, dpi: CGFloat) {
         original = size
-        self.dpi = dpi
-        originalDPI = dpi
+        let validDPI = dpi.isFinite && dpi > 0 ? dpi : 72
+        self.dpi = validDPI
+        originalDPI = validDPI
         super.init()
         alert.messageText = L("Adjust Size")
         alert.addButton(withTitle: L("OK"))
@@ -447,7 +465,7 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
             f.translatesAutoresizingMaskIntoConstraints = false
             f.widthAnchor.constraint(equalToConstant: 90).isActive = true
         }
-        resolution.stringValue = Self.format(dpi)
+        resolution.stringValue = Self.format(validDPI)
         keep.state = .on
         resample.state = .on
         resample.target = self
@@ -475,12 +493,16 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
     }
 
     private var unit: Unit { Unit(rawValue: units.indexOfSelectedItem) ?? .pixels }
+    var resolutionDPI: CGFloat { dpi }
 
     static func format(_ v: CGFloat) -> String {
-        v == v.rounded() ? String(Int(v)) : String(format: "%.2f", v)
+        guard v.isFinite, abs(v) < CGFloat(Int.max) else { return String(format: "%.4g", v) }
+        return v == v.rounded() ? String(Int(v)) : String(format: "%.2f", v)
     }
 
     private func fill(_ px: CGSize) {
+        fieldUnit = unit
+        exactPixelSize = px
         width.stringValue = Self.format(toUnit(px.width, original.width))
         height.stringValue = Self.format(toUnit(px.height, original.height))
         updateResult()
@@ -496,7 +518,7 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
     }
 
     private func toPixels(_ v: CGFloat, _ full: CGFloat) -> CGFloat {
-        switch unit {
+        switch fieldUnit {
         case .pixels: return v
         case .percent: return full * v / 100
         case .cm: return v / 2.54 * dpi
@@ -506,6 +528,7 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
 
     var pixelSize: CGSize {
         guard resample.state == .on else { return original }
+        if let exactPixelSize { return exactPixelSize }
         return CGSize(width: max(1, toPixels(CGFloat(width.doubleValue), original.width).rounded()),
                       height: max(1, toPixels(CGFloat(height.doubleValue), original.height).rounded()))
     }
@@ -516,14 +539,18 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
         guard let field = obj.object as? NSTextField else { return }
         if field === resolution {
             let new = CGFloat(resolution.doubleValue)
-            if new > 0 {
+            if new.isFinite, new > 0 {
                 // Without resampling, a new resolution changes only the print size.
                 let px = pixelSize
                 dpi = new
-                if resample.state == .on, unit == .cm || unit == .inches { updateResult() } else { fill(px) }
-            }
+                if resample.state == .on, unit == .cm || unit == .inches {
+                    exactPixelSize = nil
+                    updateResult()
+                } else { fill(px) }
+            } else { updateResult() }
             return
         }
+        exactPixelSize = nil
         if keep.state == .on {
             let ratio = original.width / original.height
             if field === width {
@@ -539,7 +566,16 @@ final class ResizeDialog: NSObject, NSTextFieldDelegate {
 
     private func updateResult() {
         let px = pixelSize
-        let bytes = Int64(px.width * px.height * 4)
+        let estimatedBytes = px.width * px.height * 4
+        let validDimensions = exactPixelSize != nil || [width.doubleValue, height.doubleValue].allSatisfy { $0.isFinite && $0 > 0 }
+        let valid = validDimensions && resolution.doubleValue.isFinite && resolution.doubleValue > 0
+            && estimatedBytes.isFinite && estimatedBytes < CGFloat(Int64.max)
+        alert.buttons.first?.isEnabled = valid
+        guard valid else {
+            result.stringValue = L("The image size or resolution is invalid.")
+            return
+        }
+        let bytes = Int64(estimatedBytes)
         result.stringValue = L("Result: %@ × %@ px, about %@", Self.format(px.width), Self.format(px.height),
                                ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory))
         _ = originalDPI

@@ -86,9 +86,11 @@ extension Calculator {
             let rate = try x.n(0), nper = try x.n(1).rounded(.towardZero), pv = try x.n(2)
             let start = try x.n(3).rounded(.towardZero), end = try x.n(4).rounded(.towardZero), type = try x.n(5)
             guard rate > 0, nper > 0, pv > 0, start >= 1, end >= start, end <= nper, type == 0 || type == 1 else { throw XLError.num }
+            guard end - start < 1_000_000 else { throw XLError.num }
+            let first = try Self.integer(start), last = try Self.integer(end)
             var total = 0.0
             let p = Finance.pmt(rate, nper, pv, 0, type)
-            for per in Int(start)...Int(end) {
+            for per in first...last {
                 let i = Finance.ipmt(rate, Double(per), nper, pv, 0, type)
                 total += name == "CUMIPMT" ? i : p - i
             }
@@ -151,7 +153,7 @@ extension Calculator {
             return try r((cost - salvage) * (life - per + 1) * 2 / (life * (life + 1)))
         case "DDB":
             let cost = try x.n(0), salvage = try x.n(1), life = try x.n(2), period = try x.n(3), factor = try x.n(4, 2)
-            guard cost >= 0, salvage >= 0, life > 0, period > 0, period <= life, factor > 0 else { throw XLError.num }
+            guard cost >= 0, salvage >= 0, life > 0, period > 0, period <= life, period <= 1_000_000, factor > 0 else { throw XLError.num }
             var value = cost, dep = 0.0
             var p = 1.0
             while p <= period.rounded(.up) {
@@ -162,7 +164,7 @@ extension Calculator {
             return try r(dep)
         case "DB":
             let cost = try x.n(0), salvage = try x.n(1), life = try x.n(2), period = try x.n(3).rounded(.towardZero), month = try x.n(4, 12).rounded(.towardZero)
-            guard cost >= 0, salvage >= 0, life > 0, period >= 1, month >= 1, month <= 12, period <= life + (month < 12 ? 1 : 0) else { throw XLError.num }
+            guard cost >= 0, salvage >= 0, life > 0, period >= 1, month >= 1, month <= 12, period <= life + (month < 12 ? 1 : 0), period <= 1_000_000 else { throw XLError.num }
             if cost == 0 { return .value(.number(0)) }
             let rate = ((1 - pow(salvage / cost, 1 / life)) * 1000).rounded() / 1000
             var total = cost * rate * month / 12

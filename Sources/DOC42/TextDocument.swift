@@ -32,6 +32,15 @@ final class TextDocument: NSDocument {
 
     override class var autosavesInPlace: Bool { false }
 
+    override var isDocumentEdited: Bool {
+        super.isDocumentEdited || editor?.headerEditor?.hasChanges == true
+    }
+
+    override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+        commitPendingEdits()
+        super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+    }
+
     var editor: DocWindowController? { windowControllers.first as? DocWindowController }
 
     override func makeWindowControllers() {
@@ -67,13 +76,16 @@ final class TextDocument: NSDocument {
     override func read(from data: Data, ofType typeName: String) throws {
         if Self.isMarkdown(typeName) {
             let (md, encoding) = TextDecoding.decode(data)
+            let text = MarkdownReader.read(md, baseURL: readingFrom ?? fileURL?.deletingLastPathComponent())
+            applyImportedSettings(DocxStyles.Extras())
             textEncoding = encoding
-            storage.setAttributedString(MarkdownReader.read(md, baseURL: readingFrom ?? fileURL?.deletingLastPathComponent()))
+            storage.setAttributedString(text)
             return
         }
         let type = Self.documentType(for: typeName)
         if type == .plain {
             let (text, encoding) = TextDecoding.decode(data)
+            applyImportedSettings(DocxStyles.Extras())
             textEncoding = encoding
             storage.setAttributedString(NSAttributedString(string: text, attributes: Styles.normal.attributes))
             return
@@ -81,13 +93,7 @@ final class TextDocument: NSDocument {
         let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: type]
         if type == .officeOpenXML {
             let (text, extras) = try DocxStyles.read(data)
-            if extras.hasSetup { setup = extras.setup }
-            styles.merge(extras.styles)
-            trackChanges = extras.trackRevisions
-            docInfo = extras.info
-            background = extras.background
-            watermark = extras.watermark
-            hyphenate = extras.hyphenate
+            applyImportedSettings(extras)
             storage.setAttributedString(text)
             return
         }
@@ -104,7 +110,7 @@ final class TextDocument: NSDocument {
         DocxStyles.restoreStyles(text)
         DocxStyles.restoreLists(text, extras.lists)
         DocxStyles.restoreMarks(text, extras)
-        if type == .rtf, let a = attributes as? [NSAttributedString.DocumentAttributeKey: Any], data.range(of: Data("\\paperw".utf8)) != nil,
+        if type == .rtf, let a = attributes as? [NSAttributedString.DocumentAttributeKey: Any],
            let paper = a[.paperSize] as? NSSize, paper.width > 0, paper.height > 0 {
             extras.hasSetup = true
             extras.setup.size = paper
@@ -112,15 +118,33 @@ final class TextDocument: NSDocument {
             let d = extras.setup.margins
             extras.setup.margins = NSEdgeInsets(top: m(.topMargin, d.top), left: m(.leftMargin, d.left), bottom: m(.bottomMargin, d.bottom), right: m(.rightMargin, d.right))
         }
-        if extras.hasSetup { setup = extras.setup }
-        styles.merge(extras.styles)
-        trackChanges = extras.trackRevisions
+        applyImportedSettings(extras)
         if type == .officeOpenXML || type == .docFormat || type == .openDocument || type == .rtf { ListMarkers.insert(into: text) }
         storage.setAttributedString(text)
     }
 
+    /// Reading also implements Revert: replace document-level state only after parsing succeeded.
+    private func applyImportedSettings(_ extras: DocxStyles.Extras) {
+        if let editor, let pending = editor.headerEditor {
+            editor.headerEditor = nil
+            pending.card.editing = nil
+            pending.onCommit = nil
+            pending.commit()
+        }
+        setup = extras.hasSetup ? extras.setup : PageSetup()
+        styles.setAll(StyleSheet.builtins)
+        styles.merge(extras.styles)
+        trackChanges = extras.trackRevisions
+        docInfo = extras.info
+        background = extras.background
+        watermark = extras.watermark
+        hyphenate = extras.hyphenate
+        textEncoding = .utf8
+        editor?.rebuildStylePopup()
+    }
+
     override func data(ofType typeName: String) throws -> Data {
-        editor?.textView.breakUndoCoalescing()
+        commitPendingEdits()
         if Self.isMarkdown(typeName) { return markdownData() }
         return try exportData(Self.documentType(for: typeName))
     }
@@ -135,7 +159,16 @@ final class TextDocument: NSDocument {
         return Data(s.utf8)
     }
 
-    func markdownData() -> Data { encode(MarkdownWriter.write(Fields.flatten(Revisions.accepted(storage), info: fieldInfo))) }   // footnotes as [^n]
+    /// Save/export/print must include text still being edited in a header or footer.
+    func commitPendingEdits() {
+        editor?.headerEditor?.commit()
+        editor?.textView.breakUndoCoalescing()
+    }
+
+    func markdownData() -> Data {
+        commitPendingEdits()
+        return encode(MarkdownWriter.write(Fields.flatten(Revisions.accepted(storage), info: fieldInfo)))
+    }   // footnotes as [^n]
 
     /// Header and footer as plain text and page numbers, for formats without rich headers (ODT, RTF).
     var plainSetup: PageSetup {
@@ -149,6 +182,7 @@ final class TextDocument: NSDocument {
     }
 
     func exportData(_ type: NSAttributedString.DocumentType) throws -> Data {
+        commitPendingEdits()
         if type == .plain { return encode(Notes.flatten(Fields.flatten(Revisions.accepted(storage), info: fieldInfo)).string) }
         if type == .officeOpenXML {
             var o = DocxWriter.Options()
@@ -220,7 +254,7 @@ final class TextDocument: NSDocument {
 
     /// Paginated PDF of the document: exactly the pages shown on screen.
     /// (Sections in another size or orientation: each page as its own sheet; see pdfData(_:).)
-    func pdfData() -> Data { pdfData(PDFOptions()) }
+    func pdfData() -> Data { (try? pdfData(PDFOptions())) ?? Data() }
 
     /// Paper = page size, no extra margins: each page card is one sheet.
     func pageInfo() -> NSPrintInfo {
@@ -255,7 +289,18 @@ final class TextDocument: NSDocument {
 
     /// Pages of the document laid out offscreen; `accepted`: with every tracked change accepted (PDF, printing).
     func offscreenPages(accepted: Bool = false) -> PagedView {
-        let text = accepted && Revisions.has(storage) ? NSTextStorage(attributedString: Revisions.accepted(storage)) : storage
+        commitPendingEdits()
+        // An export layout must not attach another manager to the live editor's storage.
+        // Attributed-string copying is shallow: fields also need independent result caches
+        // and attachment cells, otherwise pagination during export invalidates the editor.
+        let source: NSAttributedString = accepted && Revisions.has(storage) ? Revisions.accepted(storage) : storage
+        let text = NSTextStorage(attributedString: source)
+        source.enumerateAttribute(.docField, in: NSRange(location: 0, length: source.length)) { value, range, _ in
+            guard let field = value as? DocField else { return }
+            let attachment = NSTextAttachment()
+            attachment.attachmentCell = FieldCell()
+            text.addAttributes([.docField: field.copy(result: field.result), .attachment: attachment], range: range)
+        }
         let view = PagedView(storage: text, setup: setup) { tv in
             tv.backgroundColor = .white
             tv.drawsBackground = false

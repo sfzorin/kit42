@@ -147,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showStampLibraryAction(_ sender: Any?) {
         let popover = NSPopover()
         let vc = StampLibraryViewController { _ in }
+        vc.canInsert = false
         vc.popover = popover
         popover.contentViewController = vc
         popover.behavior = .transient

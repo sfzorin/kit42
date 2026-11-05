@@ -33,7 +33,9 @@ public final class StampLibrary {
     }
 
     public func remove(_ url: URL) {
+        if let source = Self.mark(at: url)?.source { try? FileManager.default.removeItem(at: sourcesFolder.appendingPathComponent(source)) }
         try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: Self.recipeURL(for: url))
     }
 
     public static func image(at url: URL) -> CGImage? {
@@ -108,6 +110,8 @@ public final class StampLibraryViewController: NSViewController {
     private let grid = NSStackView()
     private let columns = 3
     public weak var popover: NSPopover?
+    /// False when the library is opened only for management (no document to insert into).
+    public var canInsert = true
 
     public init(onPick: @escaping (CGImage) -> Void) {
         self.onPick = onPick
@@ -132,8 +136,14 @@ public final class StampLibraryViewController: NSViewController {
         let buttons = NSStackView(views: [once, add])
         buttons.spacing = 10
         buttons.distribution = .fillEqually
+        let makeSignature = NSButton(title: L("Create Signature…"), target: self, action: #selector(createSignature))
+        let makeStamp = NSButton(title: L("Create Stamp…"), target: self, action: #selector(createStamp))
+        for b in [makeSignature, makeStamp] { b.bezelStyle = .push }
+        let generate = NSStackView(views: [makeSignature, makeStamp])
+        generate.spacing = 10
+        generate.distribution = .fillEqually
 
-        let stack = NSStackView(views: [title, grid, buttons])
+        let stack = NSStackView(views: [title, grid, generate, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -148,6 +158,7 @@ public final class StampLibraryViewController: NSViewController {
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.inset),
             root.widthAnchor.constraint(equalToConstant: Self.width),
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            generate.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         view = root
         reload()
@@ -219,7 +230,8 @@ public final class StampLibraryViewController: NSViewController {
     }
 
     @objc private func picked(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue, let image = StampLibrary.image(at: URL(fileURLWithPath: path)) else { return }
+        // Generated signatures and stamps give a new impression every time.
+        guard let path = sender.identifier?.rawValue, let image = StampLibrary.impression(at: URL(fileURLWithPath: path)) else { return }
         popover?.performClose(nil)
         onPick(image)
     }
@@ -230,11 +242,54 @@ public final class StampLibraryViewController: NSViewController {
         reload()
     }
 
+    /// Adds a file: as a stamp (a new impression every time, from SVG, PDF or an image) or as a fixed picture.
     @objc private func addToLibrary() {
-        guard let image = StampLibrary.pickImage(window: view.window) else { return }
-        do { try StampLibrary.shared.add(image) } catch { NSApp.presentError(error) }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image, .svg, .pdf]
+        panel.message = L("Choose an image of a signature or stamp (SVG, PDF, PNG, JPEG…)")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let alert = NSAlert()
+        alert.messageText = L("How should this image be inserted?")
+        alert.informativeText = L("As a stamp, every insertion is a new impression: pad pressure, grain, gaps and angle vary, as on paper. As a picture, it is inserted exactly as it is.")
+        alert.addButton(withTitle: L("As a Stamp"))
+        alert.addButton(withTitle: L("As a Picture"))
+        alert.addButton(withTitle: L("Cancel"))
+        let choice = alert.runModal()
+        do {
+            switch choice {
+            case .alertFirstButtonReturn:
+                try StampLibrary.shared.importStamp(url)
+            case .alertSecondButtonReturn:
+                guard var image = StampLibrary.rasterize(url) ?? StampLibrary.image(at: url) else { NSSound.beep(); return }
+                if !["svg", "pdf"].contains(url.pathExtension.lowercased()) {
+                    let clean = NSAlert()
+                    clean.messageText = L("Remove white background?")
+                    clean.informativeText = L("For scanned signatures and stamps: white becomes transparent and empty margins are cropped.")
+                    clean.addButton(withTitle: L("Remove Background"))
+                    clean.addButton(withTitle: L("Keep As Is"))
+                    if clean.runModal() != .alertFirstButtonReturn, let original = StampLibrary.image(at: url) { image = original }
+                }
+                try StampLibrary.shared.add(image)
+            default:
+                return
+            }
+        } catch {
+            NSApp.presentError(error)
+        }
         reload()
     }
+
+    private func openGenerator(_ mode: MarkGeneratorController.Mode) {
+        let parent = NSApp.mainWindow
+        let onPick = self.onPick
+        popover?.performClose(nil)
+        MarkGeneratorController.show(mode, over: parent, onInsert: canInsert ? { onPick($0) } : nil,
+                                     onLibraryChange: { [weak self] in self?.reload() })
+    }
+
+    @objc private func createSignature() { openGenerator(.signature) }
+
+    @objc private func createStamp() { openGenerator(.seal) }
 
     @objc private func insertOnce() {
         guard let image = StampLibrary.pickImage(window: view.window) else { return }

@@ -98,7 +98,17 @@ final class FindController: NSObject, NSWindowDelegate {
     private let caseBox = NSButton(checkboxWithTitle: L("Match case"), target: nil, action: nil)
     private let notesBox = NSButton(checkboxWithTitle: L("Search notes"), target: nil, action: nil)
     private let status = NSTextField(labelWithString: "")
-    private var lastHit: (slide: Int, object: Int)?
+    private struct Hit: Equatable {
+        var slide: Int
+        var object: Int
+        var row: Int? = nil
+        var column: Int? = nil
+        var range: NSRange
+    }
+    private var lastHit: Hit?
+    private var lastQuery = ""
+    var statusText: String { status.stringValue }
+    func closeForAudit() { panel?.orderOut(nil) }
     var query: String { findField.stringValue }
     var findFieldValue: String { get { findField.stringValue } set { findField.stringValue = newValue } }
     var replaceFieldValue: String { get { replaceField.stringValue } set { replaceField.stringValue = newValue } }
@@ -162,19 +172,31 @@ final class FindController: NSObject, NSWindowDelegate {
 
     private var options: String.CompareOptions { caseBox.state == .on ? [] : [.caseInsensitive] }
 
-    /// Text containers of a slide in order: objects (and table cells) then notes (index -1).
-    private func hits(in s: Slide) -> [Int] {
-        var out: [Int] = []
-        func visit(_ list: [SlideObject]) {
-            for o in list {
-                let text = (o.text?.plainText ?? "") + (o.table?.cells.flatMap { $0.map { $0.text.plainText } }.joined(separator: "\n") ?? "")
-                if text.range(of: query, options: options) != nil { out.append(o.id) }
-                visit(o.children)
+    /// Every occurrence is a separate destination, including individual table cells and notes.
+    private func hits(in slide: Slide, at index: Int) -> [Hit] {
+        var result: [Hit] = []
+        func visit(_ objects: [SlideObject]) {
+            for object in objects {
+                if let text = object.text {
+                    result += TextSearch.ranges(in: text, query: query, options: options).map { Hit(slide: index, object: object.id, range: $0) }
+                }
+                if let table = object.table {
+                    for row in table.cells.indices {
+                        for column in table.cells[row].indices where !table.cells[row][column].merged {
+                            result += TextSearch.ranges(in: table.cells[row][column].text, query: query, options: options).map {
+                                Hit(slide: index, object: object.id, row: row, column: column, range: $0)
+                            }
+                        }
+                    }
+                }
+                visit(object.children)
             }
         }
-        visit(s.objects)
-        if notesBox.state == .on, s.notes.range(of: query, options: options) != nil { out.append(-1) }
-        return out
+        visit(slide.objects)
+        if notesBox.state == .on {
+            result += TextSearch.ranges(in: slide.notes, query: query, options: options).map { Hit(slide: index, object: -1, range: $0) }
+        }
+        return result
     }
 
     @objc func findNext() { find(forward: true) }
@@ -183,36 +205,41 @@ final class FindController: NSObject, NSWindowDelegate {
     func find(forward: Bool) {
         guard let owner, !query.isEmpty else { return }
         owner.commitEditing()
-        let slides = owner.deck.slides
-        guard !slides.isEmpty else { return }
-        var list: [(Int, Int)] = []
-        for (i, s) in slides.enumerated() { for h in hits(in: s) { list.append((i, h)) } }
-        guard !list.isEmpty else { status.stringValue = L("Not found"); NSSound.beep(); return }
-        let cur = lastHit.flatMap { h in list.firstIndex { $0.0 == h.slide && $0.1 == h.object } }
-        var k: Int
-        if let cur { k = (cur + (forward ? 1 : -1) + list.count) % list.count }
-        else { k = forward ? (list.firstIndex { $0.0 >= owner.current } ?? 0) : (list.lastIndex { $0.0 <= owner.current } ?? list.count - 1) }
-        let (slide, obj) = list[k]
-        lastHit = (slide, obj)
+        if lastQuery != query { lastHit = nil; lastQuery = query }
+        let list = owner.deck.slides.enumerated().flatMap { hits(in: $0.element, at: $0.offset) }
+        guard !list.isEmpty else { lastHit = nil; status.stringValue = L("Not found"); NSSound.beep(); return }
+        let k: Int
+        if let lastHit, let current = list.firstIndex(of: lastHit) { k = (current + (forward ? 1 : -1) + list.count) % list.count }
+        else { k = forward ? (list.firstIndex { $0.slide >= owner.current } ?? 0) : (list.lastIndex { $0.slide <= owner.current } ?? list.count - 1) }
+        let hit = list[k]
+        lastHit = hit
         if owner.mode != .normal { owner.setMode(.normal) }
-        owner.select(slide: slide)
+        owner.select(slide: hit.slide)
         status.stringValue = L("%d of %d", k + 1, list.count)
-        if obj == -1 {
+        if hit.object == -1 {
             owner.selection = []
             if !owner.notesShown { owner.setNotesShown(true) }
-            let range = (owner.notesView.string as NSString).range(of: query, options: options)
-            owner.notesView.setSelectedRange(range)
-            owner.notesView.scrollRangeToVisible(range)
-            owner.notesView.showFindIndicator(for: range)
+            owner.notesView.setSelectedRange(hit.range)
+            owner.notesView.scrollRangeToVisible(hit.range)
+            owner.notesView.showFindIndicator(for: hit.range)
             return
         }
-        owner.selection = [obj]
-        // Show the match in the text: edit the object with the match selected.
-        if let o = owner.displayedSlide.object(obj), o.kind != .table, o.text != nil {
-            owner.canvas.editor.begin(o, at: nil)
-            let tv = owner.canvas.editor.textView!
-            let r = (tv.string as NSString).range(of: query, options: options)
-            if r.location != NSNotFound { tv.setSelectedRange(r); tv.showFindIndicator(for: r) }
+        owner.selection = [hit.object]
+        if let object = owner.displayedSlide.object(hit.object) {
+            let cell = hit.row.flatMap { row in hit.column.map { (row, $0) } }
+            owner.canvas.editor.begin(object, cell: cell, at: nil)
+            let editor = owner.canvas.editor
+            guard editor.isActive, let view = editor.textView else { return }
+            let originalBody = cell.flatMap { object.table?.cells[$0.0][$0.1].text } ?? object.text ?? TextBody()
+            let ordinal = TextSearch.ranges(in: originalBody, query: query, options: options).firstIndex(of: hit.range) ?? 0
+            let renderedBody = TextBody(paragraphs: TextRender.paragraphs(from: view.textStorage ?? NSAttributedString()))
+            let renderedMatches = TextSearch.ranges(in: renderedBody, query: query, options: options)
+            guard renderedMatches.indices.contains(ordinal) else { return }
+            let rendered = renderedMatches[ordinal]
+            let start = editor.index(forContent: rendered.location)
+            let stop = editor.index(forContent: NSMaxRange(rendered))
+            let range = NSRange(location: start, length: max(0, stop - start))
+            view.setSelectedRange(range); view.scrollRangeToVisible(range); view.showFindIndicator(for: range)
             owner.window?.makeKeyAndOrderFront(nil)
         }
     }
@@ -220,7 +247,21 @@ final class FindController: NSObject, NSWindowDelegate {
     @objc func replaceOne() {
         guard let owner, !query.isEmpty else { return }
         let editor = owner.canvas.editor
-        if editor.isActive, let tv = editor.textView {
+        if lastHit?.slide == owner.current, lastHit?.object == -1, let notes = owner.currentSlide?.notes {
+            let sel = owner.notesView.selectedRange()
+            let text = notes as NSString
+            if sel.location <= text.length, sel.length <= text.length - sel.location,
+               text.substring(with: sel).compare(query, options: options) == .orderedSame {
+                // Notes have their own text-view UndoManager. Use the text editing path so Undo
+                // still reaches this replacement when the notes view is the first responder.
+                owner.doc?.endSilentEdit(L("Edit Notes"))
+                owner.notesView.breakUndoCoalescing()
+                owner.notesView.insertText(replaceField.stringValue, replacementRange: sel)
+                owner.notesView.breakUndoCoalescing()
+                owner.notesView.undoManager?.setActionName(L("Replace"))
+                owner.doc?.endSilentEdit(L("Replace"))
+            }
+        } else if editor.isActive, let tv = editor.textView {
             let sel = tv.selectedRange()
             if (tv.string as NSString).substring(with: sel).compare(query, options: options) == .orderedSame {
                 tv.insertText(replaceField.stringValue, replacementRange: sel)
@@ -234,21 +275,12 @@ final class FindController: NSObject, NSWindowDelegate {
         owner.commitEditing()
         let q = query, rep = replaceField.stringValue, opts = options, notes = notesBox.state == .on
         var count = 0
-        func fix(_ body: inout TextBody) {
-            for p in body.paragraphs.indices {
-                for r in body.paragraphs[p].runs.indices where body.paragraphs[p].runs[r].field == nil {
-                    let t = body.paragraphs[p].runs[r].text
-                    let n = t.components(separatedBy: q).count - 1
-                    let replaced = t.replacingOccurrences(of: q, with: rep, options: opts)
-                    if replaced != t { count += max(1, n); body.paragraphs[p].runs[r].text = replaced }
-                }
-            }
-        }
+        func fix(_ body: inout TextBody) { count += TextSearch.replace(in: &body, query: q, replacement: rep, options: opts) }
         func visit(_ list: inout [SlideObject]) {
             for i in list.indices {
                 if var t = list[i].text { fix(&t); list[i].text = t }
                 if var tb = list[i].table {
-                    for r in tb.cells.indices { for c in tb.cells[r].indices { fix(&tb.cells[r][c].text) } }
+                    for r in tb.cells.indices { for c in tb.cells[r].indices where !tb.cells[r][c].merged { fix(&tb.cells[r][c].text) } }
                     list[i].table = tb
                 }
                 visit(&list[i].children)
@@ -260,10 +292,11 @@ final class FindController: NSObject, NSWindowDelegate {
                 if notes {
                     let n = d.slides[s].notes
                     let r = n.replacingOccurrences(of: q, with: rep, options: opts)
-                    if r != n { count += 1; d.slides[s].notes = r }
+                    if r != n { count += TextSearch.ranges(in: n, query: q, options: opts).count; d.slides[s].notes = r }
                 }
             }
         }
+        lastHit = nil
         status.stringValue = L("%d replaced", count)
     }
 }
@@ -282,7 +315,7 @@ enum Exporter {
         guard let window = owner.window else { return }
         panel.beginSheetModal(for: window) { r in
             guard r == .OK, let url = panel.url else { return }
-            do { try Renderer.pdf(owner.deck, notes: notes).write(to: url) } catch { NSApp.presentError(error) }
+            do { try Renderer.pdf(owner.deck, notes: notes).write(to: url, options: .atomic) } catch { NSApp.presentError(error) }
         }
     }
 
@@ -334,7 +367,7 @@ enum Exporter {
         panel.beginSheetModal(for: window) { r in
             guard r == .OK, let url = panel.url else { return }
             let md = url.pathExtension.lowercased() == "md"
-            do { try Outline.export(owner.deck, format: md ? "md" : "rtf").write(to: url) } catch { NSApp.presentError(error) }
+            do { try Outline.export(owner.deck, format: md ? "md" : "rtf").write(to: url, options: .atomic) } catch { NSApp.presentError(error) }
         }
     }
 

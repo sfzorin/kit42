@@ -8,6 +8,14 @@ import PDFKit
 Localization.register(rows: pdf42Strings)
 
 let args = CommandLine.arguments
+if args.count >= 2, args[1] == "--selftest" { exit(PDFSelfTest.run()) }
+// PDF42 --mark-samples DIR: generated signatures and stamps for visual review.
+if args.count >= 3, args[1] == "--mark-samples" {
+    try MarkSamples.write(to: URL(fileURLWithPath: args[2]))
+    let count = (try? FileManager.default.contentsOfDirectory(atPath: args[2]).filter { $0.hasSuffix(".png") }.count) ?? 0
+    print("Mark samples: \(count) files")
+    exit(0)
+}
 // PDF42 --compress in.pdf out.pdf [smallest|balanced|high]
 if args.count >= 4, args[1] == "--compress" {
     let input = URL(fileURLWithPath: args[2])

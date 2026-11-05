@@ -12,8 +12,8 @@ final class MarkupBar: NSObject, NSMenuDelegate {
     let shapesButton = StripButton(symbol: "square.on.circle", toolTip: L("Shapes"))
     let styleButton = StripButton(symbol: "line.3.horizontal", toolTip: L("Shape Style"))
     let textButton = StripButton(symbol: "textformat", toolTip: L("Text Style"))
-    let borderButton = ColorButton(symbol: "square", toolTip: L("Border Colour"), color: .systemRed, allowsNone: true)
-    let fillButton = ColorButton(symbol: "square.fill", toolTip: L("Fill Colour"), color: nil, allowsNone: true)
+    let borderButton = ColorButton(symbol: "square", toolTip: L("Border colour"), color: .systemRed, allowsNone: true)
+    let fillButton = ColorButton(symbol: "square.fill", toolTip: L("Fill colour"), color: nil, allowsNone: true)
     private var lastSelectionTool: MarkTool = .selectRect
     private var lastShapeTool: MarkTool = .rectangle
 
@@ -174,7 +174,7 @@ final class MarkupBar: NSObject, NSMenuDelegate {
             m.addItem(item(L("Italic"), #selector(traitChosen(_:)), tag: 1, symbol: "italic", on: s.italic))
             m.addItem(item(L("Underline"), #selector(traitChosen(_:)), tag: 2, symbol: "underline", on: s.underline))
             m.addItem(.separator())
-            let aligns: [(String, String, NSTextAlignment)] = [(L("Align Left"), "text.alignleft", .left), (L("Align Center"), "text.aligncenter", .center),
+            let aligns: [(String, String, NSTextAlignment)] = [(L("Align Left"), "text.alignleft", .left), (L("Align Centre"), "text.aligncenter", .center),
                                                                (L("Align Right"), "text.alignright", .right)]
             for (i, a) in aligns.enumerated() { m.addItem(item(a.0, #selector(alignChosen(_:)), tag: i, symbol: a.1, on: s.alignment == a.2)) }
         }

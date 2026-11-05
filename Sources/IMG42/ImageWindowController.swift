@@ -46,6 +46,8 @@ final class ImageWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     var adjustments = Adjustments()
     var imageDescription: String?
     var originalDescription: String?
+    var imageDPI: CGFloat = 72
+    var originalDPI: CGFloat = 72
     var autoFilters: [CIFilter]?
     var displayed: CGImage?
     var confirmedOverwrite = false

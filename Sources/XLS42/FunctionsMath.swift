@@ -8,10 +8,10 @@ extension Calculator {
         case .ref(let s, let p):
             guard let si = try? sheetIndex(s, sheet) else { return nil }
             return (si, [CellRef(row: p.row, col: p.col)])
-        case .range(let s, let a, let b):
-            guard let si = try? sheetIndex(s, sheet) else { return nil }
-            let (m, o) = rangeMatrix(sheet: si, a, b)
-            return (si, (0..<m.rows).flatMap { r in (0..<m.cols).map { CellRef(row: o.row + r, col: o.col + $0) } })
+        case .range, .name:
+            guard let (si, range) = try? referencedRange(e, sheet: sheet) else { return nil }
+            // Blank cells do not affect aggregates. Keep the first address for CELL/ISFORMULA.
+            return (si, Set(storedReferenceCells(sheet: si, range: range)).union([range.start]).sorted())
         default: return nil
         }
     }
@@ -76,7 +76,7 @@ extension Calculator {
         case 14, 15:
             guard let k else { throw XLError.value }
             let s = nums.sorted(by: fn == 14 ? (>) : (<))
-            let i = Int(k)
+            let i = try Self.integer(k)
             guard i >= 1, i <= s.count else { throw XLError.num }
             return s[i - 1]
         case 16, 17, 18, 19:
@@ -146,7 +146,7 @@ extension Calculator {
             case "COMBIN": guard k <= n else { throw XLError.num }; return try r(Self.combin(n, k))
             case "COMBINA": guard n > 0 || k == 0 else { throw XLError.num }; return try r(k == 0 ? 1 : Self.combin(n + k - 1, k))
             case "PERMUT":
-                guard k <= n else { throw XLError.num }
+                guard k <= n, k <= 170 else { throw XLError.num }
                 var p = 1.0
                 if k >= 1 { for i in 0..<Int(k) { p *= n - Double(i) } }
                 return try r(p)
@@ -228,7 +228,7 @@ extension Calculator {
             else { rounded = v < 0 && mode != 0 ? q.rounded(.up) : q.rounded(.down) }
             return try r(rounded * s)
         case "ROMAN":
-            let v = Int(try one().rounded(.towardZero))
+            let v = try Self.integer(one())
             guard v >= 0, v <= 3999 else { throw XLError.value }
             let table: [(Int, String)] = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
                                           (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
@@ -248,7 +248,7 @@ extension Calculator {
             return .value(.number(Double(neg ? -total : total)))
         case "BASE":
             let v = try one().rounded(.towardZero), radix = try x.int(1), minLen = try x.int(2, 0)
-            guard v >= 0, v < 9.007e15, (2...36).contains(radix), minLen >= 0 else { throw XLError.num }
+            guard v >= 0, v < 9.007e15, (2...36).contains(radix), minLen >= 0, minLen <= 255 else { throw XLError.num }
             var s = String(Int64(v), radix: radix).uppercased()
             if s.count < minLen { s = String(repeating: "0", count: minLen - s.count) + s }
             return .value(.string(s))
@@ -314,6 +314,7 @@ extension Calculator {
             let limit: Double = 281_474_976_710_656
             guard a >= 0, a < limit, a == a.rounded(), abs(s) <= 53 else { throw XLError.num }
             let shift = name == "BITLSHIFT" ? s : -s
+            guard shift <= 0 || a < limit / pow(2, Double(shift)) else { throw XLError.num }
             let v = UInt64(a)
             let out = shift >= 0 ? v << UInt64(shift) : v >> UInt64(-shift)
             guard Double(out) < limit else { throw XLError.num }

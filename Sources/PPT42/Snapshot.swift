@@ -213,9 +213,79 @@ extension DeckWindowController {
             outline.apply()
             doc?.endSilentEdit()
         case "notes": let i = current; doc?.change(L("Edit Notes")) { $0.slides[i].notes = arg }
+        case "auditnotes": if !auditNotesReplacement() { exit(1) }
+        case "auditediting": if !auditEditing() { exit(1) }
+        case "audittext": if !auditTextAndTables() { exit(1) }
+        case "auditfiles": if PPTFilesAudit.runUI(self) != 0 { exit(1) }
+        case "auditinspector": if !auditInspector() { exit(1) }
         case "mode": setMode(ViewMode(rawValue: Int(arg) ?? 0) ?? .normal)
         default: print("unknown command: \(cmd)")
         }
+    }
+
+    /// K42_DO=auditnotes: use the real Find/Replace actions, notes view, and document Undo/Redo.
+    private func auditNotesReplacement() -> Bool {
+        guard let doc, currentSlide != nil, let window, let textUndo = notesView.undoManager else {
+            print("FAIL PPT notes: open a presentation with a slide"); return false
+        }
+        commitEditing()
+        doc.endSilentEdit()
+        let originalDeck = deck, originalSlide = current, originalSelection = selection
+        let originalUndo = doc.undoManager
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        doc.undoManager = undo
+        let textGroupsByEvent = textUndo.groupsByEvent
+        textUndo.groupsByEvent = false
+        defer {
+            undo.beginUndoGrouping()
+            doc.endSilentEdit()
+            undo.endUndoGrouping()
+            textUndo.groupsByEvent = textGroupsByEvent
+            let testDeck = deck
+            doc.replaceDeck(originalDeck)
+            doc.undoManager = originalUndo
+            doc.onChange?(testDeck)
+            select(slide: originalSlide)
+            selection = originalSelection
+        }
+        var failures = 0
+        func check(_ condition: Bool, _ name: String) {
+            print("\(condition ? "PASS" : "FAIL") PPT notes: \(name)")
+            if !condition { failures += 1 }
+        }
+        let needle = "suite42-note-needle", replacement = "replaced-note"
+        let source = "Before \(needle) after", expected = "Before \(replacement) after"
+        let slide = current
+        undo.beginUndoGrouping()
+        doc.change("Test notes") { $0.slides[slide].notes = source }
+        undo.endUndoGrouping()
+        undo.removeAllActions()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(notesView)
+        finder.setQuery(needle, replace: replacement)
+        finder.find(forward: true)
+        let found = notesView.selectedRange()
+        check(found == (source as NSString).range(of: needle), "Find selects the notes match")
+        undo.beginUndoGrouping()
+        textUndo.beginUndoGrouping()
+        finder.replaceOne()
+        textUndo.endUndoGrouping()
+        undo.endUndoGrouping()
+        check(doc.deck.slides[slide].notes == expected, "Replace updates the document")
+        check(notesView.string == expected, "Replace updates the visible notes")
+        check(textUndo.canUndo && textUndo.undoActionName == L("Replace"), "Replace is undoable in the focused notes view")
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(notesView)
+        // A directly launched audit bundle can be denied foreground activation. Start at the
+        // window's actual first responder; do not bypass the text view by calling an UndoManager.
+        let undoSent = window.firstResponder?.tryToPerform(Selector(("undo:")), with: nil) == true
+        check(window.firstResponder === notesView && undoSent && doc.deck.slides[slide].notes == source && notesView.string == source,
+              "Undo through the first responder restores notes and their view")
+        let redoSent = window.firstResponder?.tryToPerform(Selector(("redo:")), with: nil) == true
+        check(redoSent && doc.deck.slides[slide].notes == expected && notesView.string == expected, "Redo through the first responder reapplies replacement")
+        print("PPT notes UI regressions: \(6 - failures)/6 passed")
+        return failures == 0
     }
 }
 

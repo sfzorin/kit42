@@ -15,6 +15,7 @@ final class ImageDocumentController: NSDocumentController {
     override func newDocument(_ sender: Any?) {}
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(openDocument(_:)) { return true }
         if item.action == #selector(newDocument(_:)) { return false }
         return super.validateUserInterfaceItem(item)
     }
@@ -47,6 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--uitest") {
+            Task { @MainActor in await UITest.run() }
+            return
+        }
         NSApp.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
             if windows.isEmpty {

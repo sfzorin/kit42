@@ -149,18 +149,20 @@ enum Exporter {
     // MARK: - Writing
 
     /// Writes the pages; returns the files made (one, or one per page for single-page formats).
-    static func write(_ pages: [ExportPage], folder: URL, baseName: String, options: SaveOptions) throws -> [URL] {
+    static func write(_ pages: [ExportPage], folder: URL, baseName: String, options: SaveOptions,
+                      replaceExisting: Bool = false) throws -> [URL] {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let f = options.format
         if f.isMultiPage || pages.count == 1 {
-            let url = uniqueURL(folder, baseName, f.ext)
-            try data(pages, options).write(to: url)
+            let url = replaceExisting ? folder.appendingPathComponent(baseName).appendingPathExtension(f.ext)
+                : uniqueURL(folder, baseName, f.ext)
+            try data(pages, options).write(to: url, options: .atomic)
             return [url]
         }
         var urls: [URL] = []
         for (i, page) in pages.enumerated() {
             let url = uniqueURL(folder, "\(baseName) \(String(format: "%03d", i + 1))", f.ext)
-            try data([page], options).write(to: url)
+            try data([page], options).write(to: url, options: .atomic)
             urls.append(url)
         }
         return urls

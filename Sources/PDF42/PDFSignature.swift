@@ -265,9 +265,12 @@ enum PDFSignatureVerifier {
         while let br = PDFSigner.find("/ByteRange", in: bytes, from: pos) {
             pos = br + 10
             var lexer = PDFLexer(bytes: bytes, pos: pos)
-            guard let range = (try? lexer.parse())?.items?.compactMap(\.int), range.count == 4 else { continue }
+            guard let items = (try? lexer.parse())?.items, items.count == 4 else { continue }
+            let range = items.compactMap(\.int)
+            guard range.count == 4 else { continue }
             let (a, b, c, d) = (range[0], range[1], range[2], range[3])
-            guard a == 0, b > 0, c > b, c + d <= bytes.count, bytes[b] == UInt8(ascii: "<"), bytes[c - 1] == UInt8(ascii: ">") else { continue }
+            guard a == 0, b > 0, c > b, c <= bytes.count, d >= 0, d <= bytes.count - c,
+                  c - b >= 2, bytes[b] == UInt8(ascii: "<"), bytes[c - 1] == UInt8(ascii: ">") else { continue }
             var info = SignatureInfo()
             info.coversWholeFile = c + d == bytes.count
             readDictionary(bytes, around: br, contents: b..<c, into: &info)
@@ -281,6 +284,10 @@ enum PDFSignatureVerifier {
 
     private static func check(cms: Data, signed: Data, into info: inout SignatureInfo) {
         let message = derTrimmed(cms)
+        guard !message.isEmpty else {
+            info.problem = L("The signature is damaged (CMS cannot be read)")
+            return
+        }
         func decoder(detached: Data?) -> CMSDecoder? {
             var d: CMSDecoder?
             guard CMSDecoderCreate(&d) == errSecSuccess, let d else { return nil }
@@ -342,7 +349,7 @@ enum PDFSignatureVerifier {
 
     /// Reads /Reason, /Location, /M, /Name from the signature dictionary that holds this /ByteRange.
     private static func readDictionary(_ bytes: [UInt8], around pos: Int, contents: Range<Int>, into info: inout SignatureInfo) {
-        let start = max(0, pos - 4096)
+        let start = min(contents.lowerBound, max(0, pos - 4096))
         let before = Array(bytes[start..<contents.lowerBound])
         let after = Array(bytes[contents.upperBound..<min(bytes.count, contents.upperBound + 4096)])
         var region = before + after

@@ -33,7 +33,10 @@ struct FArgs {
     }
     func m(_ i: Int) -> Matrix { c.matrix(op(i)) }
     /// Numbers of argument i (from references only numbers; direct values coerced).
-    func nums(_ i: Int) throws -> [Double] { try c.numbers([args[i]], sheet: sheet, at: at) }
+    func nums(_ i: Int) throws -> [Double] {
+        guard has(i) else { throw XLError.value }
+        return try c.numbers([args[i]], sheet: sheet, at: at)
+    }
     func allNums(countText: Bool = false) throws -> [Double] { try c.numbers(args, sheet: sheet, at: at, countText: countText) }
     func need(_ k: Int) throws { if args.count < k { throw XLError.value } }
     func matrixOp(_ m: Matrix) -> Operand { .matrix(m, origin: nil) }
@@ -186,15 +189,27 @@ extension Calculator {
             let rows = try x.int(0, 1), cols = try x.int(1, 1)
             let start = try x.n(2, 1), step = try x.n(3, 1)
             guard rows >= 1, cols >= 1 else { throw XLError.calc }
-            guard rows * cols <= 2_000_000 else { throw XLError.num }
-            return x.matrixOp(Matrix(rows: rows, cols: cols, values: (0..<(rows * cols)).map { .number(start + Double($0) * step) }))
+            guard rows <= Self.maximumMatrixCells / cols else { throw XLError.num }
+            return x.matrixOp(Matrix(rows: rows, cols: cols, values: (0..<(rows * cols)).map { i in
+                let value = start + Double(i) * step
+                return value.isFinite ? .number(value) : .error("#NUM!")
+            }))
         case "RANDARRAY":
             let rows = try x.int(0, 1), cols = try x.int(1, 1)
             let lo = try x.n(2, 0), hi = try x.n(3, 1), integer = try x.b(4, false)
             guard rows >= 1, cols >= 1 else { throw XLError.calc }
-            guard lo <= hi, rows * cols <= 2_000_000 else { throw XLError.value }
+            guard lo <= hi else { throw XLError.value }
+            guard rows <= Self.maximumMatrixCells / cols else { throw XLError.num }
+            var integerBounds: ClosedRange<Int>?
+            if integer {
+                let lower = try Self.integer(lo.rounded(.up)), upper = try Self.integer(hi.rounded(.down))
+                guard lower <= upper else { throw XLError.num }
+                integerBounds = lower...upper
+            } else {
+                guard (hi - lo).isFinite else { throw XLError.num }
+            }
             return x.matrixOp(Matrix(rows: rows, cols: cols, values: (0..<(rows * cols)).map { _ in
-                if integer { return .number(Double(Int.random(in: Int(lo.rounded(.up))...Int(hi.rounded(.down))))) }
+                if let bounds = integerBounds { return .number(Double(Int.random(in: bounds))) }
                 return .number(lo == hi ? lo : Double.random(in: lo..<hi))
             }))
         case "TRANSPOSE":
@@ -213,6 +228,7 @@ extension Calculator {
             guard !parts.isEmpty else { throw XLError.value }
             if name == "HSTACK" { parts = parts.map(\.transposed) }
             let w = parts.map(\.cols).max()!
+            guard w > 0, parts.reduce(0, { $0 + $1.rows }) <= Self.maximumMatrixCells / w else { throw XLError.num }
             var rows: [[Value]] = []
             for p in parts { for r in 0..<p.rows { rows.append(p.row(r) + Array(repeating: .error("#N/A"), count: w - p.cols)) } }
             let out = Matrix(rows)
@@ -225,9 +241,10 @@ extension Calculator {
             var picked: [[Value]] = []
             for i in 1..<x.count {
                 for v in x.m(i).values {
-                    var k = Int(try num(v))
+                    var k = try Self.integer(num(v))
                     if k < 0 { k = ls.count + k + 1 }
                     guard k >= 1, k <= ls.count else { throw XLError.value }
+                    guard ls[k - 1].isEmpty || picked.count < Self.maximumMatrixCells / ls[k - 1].count else { throw XLError.num }
                     picked.append(ls[k - 1])
                 }
             }
@@ -249,6 +266,7 @@ extension Calculator {
             let m = x.m(0)
             let rows = x.has(1) ? try x.int(1) : m.rows, cols = x.has(2) ? try x.int(2) : m.cols
             guard rows >= m.rows, cols >= m.cols else { throw XLError.value }
+            guard cols > 0, rows <= Self.maximumMatrixCells / cols else { throw XLError.num }
             let pad = x.has(3) ? x.a(3) : .error("#N/A")
             return x.matrixOp(Matrix((0..<rows).map { r in (0..<cols).map { c in r < m.rows && c < m.cols ? m[r, c] : pad } }))
         case "WRAPROWS", "WRAPCOLS":
@@ -256,7 +274,7 @@ extension Calculator {
             let v = x.m(0)
             guard v.rows == 1 || v.cols == 1 else { throw XLError.value }
             let k = try x.int(1)
-            guard k >= 1 else { throw XLError.num }
+            guard k >= 1, k <= Self.maximumMatrixCells, (v.count + k - 1) / k <= Self.maximumMatrixCells / k else { throw XLError.num }
             let pad = x.has(2) ? x.a(2) : .error("#N/A")
             var ls: [[Value]] = []
             var i = 0
@@ -363,12 +381,13 @@ extension Calculator {
             try x.need(2)
             let a = try numericMatrix(x.m(0)), b = try numericMatrix(x.m(1))
             guard a.cols == b.rows else { throw XLError.value }
+            guard b.cols > 0, a.rows <= Self.maximumMatrixCells / b.cols else { throw XLError.num }
             var out = [Value]()
             for i in 0..<a.rows {
                 for j in 0..<b.cols {
                     var s = 0.0
                     for k in 0..<a.cols { s += a.v[i * a.cols + k] * b.v[k * b.cols + j] }
-                    out.append(.number(s))
+                    out.append(s.isFinite ? .number(s) : .error("#NUM!"))
                 }
             }
             return x.matrixOp(Matrix(rows: a.rows, cols: b.cols, values: out))
@@ -383,7 +402,8 @@ extension Calculator {
             return x.matrixOp(Matrix(rows: a.rows, cols: a.rows, values: inv.map { .number($0) }))
         case "MUNIT":
             let n = try x.int(0)
-            guard n >= 1, n <= 2000 else { throw XLError.value }
+            guard n >= 1 else { throw XLError.value }
+            guard n <= Self.maximumMatrixCells / n else { throw XLError.num }
             return x.matrixOp(Matrix(rows: n, cols: n, values: (0..<(n * n)).map { .number($0 / n == $0 % n ? 1 : 0) }))
         case "FREQUENCY":
             try x.need(2)

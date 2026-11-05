@@ -54,8 +54,26 @@ final class TextEditController: NSObject, NSTextViewDelegate {
     private let undo = UndoManager()
     /// Height grown by typing (auto-sizing text boxes, table rows).
     private var grownHeight: CGFloat?
+    private var initialEditorParagraphs: [Paragraph] = []
 
     var isActive: Bool { objectID != nil }
+    var currentAnchor: Anchor { body.anchor }
+
+    /// A visible draft participates in Save/Close without committing it as a side effect.
+    var hasPendingChanges: Bool {
+        guard isActive, textView.textStorage != nil else { return false }
+        return editedParagraphs != initialEditorParagraphs || grownHeight != nil
+    }
+
+    /// Discard a draft after a successful Revert; do not create an Undo step against the new deck.
+    func cancel() {
+        guard isActive else { return }
+        objectID = nil; cell = nil; object = nil; context = nil; grownHeight = nil
+        initialEditorParagraphs = []; TableEditing.current = nil
+        container.removeFromSuperview(); undo.removeAllActions()
+        if canvas?.window?.firstResponder === textView { canvas?.window?.makeFirstResponder(canvas) }
+        canvas?.needsDisplay = true
+    }
 
     override init() {
         super.init()
@@ -97,6 +115,9 @@ final class TextEditController: NSObject, NSTextViewDelegate {
     /// Starts editing an object's text (or a table cell) at a point (slide coordinates).
     func begin(_ o: SlideObject, cell: (Int, Int)? = nil, at point: CGPoint?, selectAll: Bool = false) {
         guard let canvas, let owner = canvas.owner else { return }
+        if let cell {
+            guard let table = o.table, table.cells.indices.contains(cell.0), table.cells[cell.0].indices.contains(cell.1), !table.cells[cell.0][cell.1].merged else { return }
+        }
         if o.kind == .table, cell == nil, o.table != nil { begin(o, cell: (0, 0), at: point, selectAll: selectAll); return }
         end()
         objectID = o.id
@@ -117,6 +138,7 @@ final class TextEditController: NSObject, NSTextViewDelegate {
         let attributed = TextRender.attributed(body, c, forEditing: true)
         textView.textStorage?.setAttributedString(attributed)
         textView.typingAttributes = attributed.length > 0 ? attributed.attributes(at: max(0, attributed.length - 1), effectiveRange: nil) : TextRender.typingAttributes(body, c)
+        initialEditorParagraphs = editedParagraphs
         let color = (textView.typingAttributes[.foregroundColor] as? NSColor) ?? .black
         textView.insertionPointColor = color
         textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor.withAlphaComponent(0.6)]
@@ -216,12 +238,25 @@ final class TextEditController: NSObject, NSTextViewDelegate {
         return textView.layoutManager?.defaultLineHeight(for: f) ?? f.pointSize * 1.2
     }
 
+    private var editedParagraphs: [Paragraph] {
+        guard let storage = textView.textStorage else { return body.paragraphs }
+        var paragraphs = TextRender.paragraphs(from: storage)
+        if storage.length == 0, let attributes = textView.typingAttributes[.pptPara] as? ParaBox {
+            var paragraph = Paragraph()
+            paragraph.level = attributes.level; paragraph.props = attributes.props; paragraph.endProps = attributes.endProps
+            if let run = textView.typingAttributes[.pptRun] as? RunBox { paragraph.endProps = run.props }
+            paragraphs = [paragraph]
+        }
+        return paragraphs
+    }
+
     /// Ends editing and writes the text back (one undo step).
     func end() {
         guard isActive, let canvas, let owner = canvas.owner, let o = object else { return }
         if textView.hasMarkedText() { textView.unmarkText() }
+        if !hasPendingChanges { cancel(); return }
         var newBody = body
-        newBody.paragraphs = TextRender.paragraphs(from: textView.textStorage ?? NSAttributedString())
+        newBody.paragraphs = editedParagraphs
         let id = o.id, cell = self.cell, grown = grownHeight
         objectID = nil
         self.cell = nil

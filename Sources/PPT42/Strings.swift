@@ -1,5 +1,7 @@
 // PPT42 UI strings: [English, Русский, Türkçe].
 let ppt42Strings: [[String]] = [
+    ["The image size is invalid", "Недопустимый размер изображения", "Görüntü boyutu geçersiz"],
+    ["Could not render the slide", "Не удалось отрисовать слайд", "Slayt oluşturulamadı"],
     // App, welcome
     ["Presentations: PowerPoint and OpenDocument", "Презентации: PowerPoint и OpenDocument", "Sunumlar: PowerPoint ve OpenDocument"],
     ["New Presentation", "Новая презентация", "Yeni Sunum"],
@@ -178,7 +180,7 @@ let ppt42Strings: [[String]] = [
     ["Text colour", "Цвет текста", "Metin rengi"],
     ["Paragraph", "Абзац", "Paragraf"],
     ["Align Left", "По левому краю", "Sola Hizala"],
-    ["Align Center", "По центру", "Ortala"],
+    ["Align Centre", "По центру", "Ortala"],
     ["Align Right", "По правому краю", "Sağa Hizala"],
     ["Justify", "По ширине", "İki Yana Yasla"],
     ["Alignment", "Выравнивание", "Hizalama"],

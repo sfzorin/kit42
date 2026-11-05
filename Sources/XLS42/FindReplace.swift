@@ -17,25 +17,25 @@ struct FindOptions {
         return entireCell ? s.compare(text, options: compare) == .orderedSame : s.range(of: text, options: compare) != nil
     }
 
-    func matches(_ cell: Cell) -> Bool { matches(searchedText(cell)) }
+    func matches(_ cell: Cell, date1904: Bool = false) -> Bool { matches(searchedText(cell, date1904: date1904)) }
 
-    func searchedText(_ cell: Cell) -> String {
-        inFormulas ? cell.input : NumberFormat.format(cell.value, cell.style.numberFormat).text
+    func searchedText(_ cell: Cell, date1904: Bool = false) -> String {
+        inFormulas ? cell.input : NumberFormat.format(cell.value, cell.style.numberFormat, date1904: date1904).text
     }
 
     /// New input of a matching cell; nil when the cell can't be replaced (a formula when looking in values).
-    func replaced(_ cell: Cell) -> String? {
-        guard matches(cell) else { return nil }
+    func replaced(_ cell: Cell, date1904: Bool = false) -> String? {
+        guard matches(cell, date1904: date1904) else { return nil }
         if !inFormulas && cell.isFormula { return nil }
         if entireCell { return replacement }
-        return (inFormulas ? cell.input : searchedText(cell)).replacingOccurrences(of: text, with: replacement, options: compare)
+        return (inFormulas ? cell.input : searchedText(cell, date1904: date1904)).replacingOccurrences(of: text, with: replacement, options: compare)
     }
 }
 
 extension SheetWindowController {
     /// Edit › Find › Find and Replace… (non-modal panel).
     @objc func findReplaceAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         if findPanel == nil { findPanel = FindReplacePanel(controller: self) }
         findPanel?.show(relativeTo: window)
     }
@@ -44,12 +44,13 @@ extension SheetWindowController {
     func findMatches(_ o: FindOptions) -> [(sheet: Int, ref: CellRef)] {
         guard let doc else { return [] }
         let sheets = o.workbook ? Array(doc.workbook.sheets.indices) : [sheetIndex]
-        return sheets.flatMap { si in doc.workbook.sheets[si].cells.filter { o.matches($0.value) }.keys.sorted().map { (si, $0) } }
+        return sheets.flatMap { si in doc.workbook.sheets[si].cells.filter { o.matches($0.value, date1904: doc.workbook.date1904) }.keys.sorted().map { (si, $0) } }
     }
 
     /// Selects the next match after the active cell (wrapping). Returns false when nothing matches.
     @discardableResult
     func findNext(_ o: FindOptions) -> Bool {
+        guard grid.commitEdit(move: nil) else { return false }
         let all = findMatches(o)
         guard !all.isEmpty else { NSSound.beep(); return false }
         let here = (sheetIndex, grid.active)
@@ -61,14 +62,15 @@ extension SheetWindowController {
 
     /// Replaces the active cell if it matches, then moves to the next match.
     func replaceCurrent(_ o: FindOptions) {
-        guard let doc else { return }
+        guard grid.commitEdit(move: nil), let doc else { return }
         let ref = grid.active
-        if let input = o.replaced(sheet[ref]) {
-            guard guardEditable(CellRange(ref, ref)) else { return }
+        if let input = o.replaced(sheet[ref], date1904: doc.workbook.date1904) {
+            guard guardEditable(CellRange(ref, ref)), guardArrays(CellRange(ref, ref)) else { return }
             doc.change(L("Replace")) { wb in
+                dropArrays(in: CellRange(ref, ref), of: &wb)
                 var c = wb.sheets[sheetIndex][ref]
                 c.input = input
-                c.value = c.isFormula ? .empty : XLSX.constant(input)
+                c.value = c.isFormula ? .empty : XLSX.constant(input, date1904: wb.date1904)
                 wb.sheets[sheetIndex][ref] = c
             }
         }
@@ -78,14 +80,15 @@ extension SheetWindowController {
     /// Replaces every match in the scope as one undo step; returns the number of cells changed.
     @discardableResult
     func replaceAll(_ o: FindOptions) -> Int {
-        guard let doc else { return 0 }
+        guard grid.commitEdit(move: nil), let doc else { return 0 }
         let sheets = o.workbook ? Array(doc.workbook.sheets.indices) : [sheetIndex]
         var edits: [(Int, CellRef, String)] = []
         for si in sheets {
             let s = doc.workbook.sheets[si]
             for (ref, cell) in s.cells {
-                guard let input = o.replaced(cell) else { continue }
+                guard let input = o.replaced(cell, date1904: doc.workbook.date1904) else { continue }
                 if s.isProtected && cell.style.locked { continue }
+                if let array = s.array(containing: ref), array.range.count > 1 { continue }
                 edits.append((si, ref, input))
             }
         }
@@ -93,8 +96,9 @@ extension SheetWindowController {
         doc.change(L("Replace All")) { wb in
             for (si, ref, input) in edits {
                 var c = wb.sheets[si][ref]
+                if wb.sheets[si].arrays[ref] != nil { wb.sheets[si].arrays[ref] = nil; c.array = false }
                 c.input = input
-                c.value = c.isFormula ? .empty : XLSX.constant(input)
+                c.value = c.isFormula ? .empty : XLSX.constant(input, date1904: wb.date1904)
                 wb.sheets[si][ref] = c
             }
         }

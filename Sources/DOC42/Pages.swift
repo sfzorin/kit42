@@ -27,6 +27,13 @@ struct PageSetup: Equatable {
     }
 
     var textSize: NSSize { NSSize(width: size.width - margins.left - margins.right, height: size.height - margins.top - margins.bottom) }
+    /// Keep at least the layout engine's minimum line width in every column.
+    var minimumBodyWidth: CGFloat { CGFloat(max(1, columns)) * 36 + CGFloat(max(0, columns - 1)) * columnSpacing }
+    var hasValidGeometry: Bool {
+        let values = [size.width, size.height, margins.top, margins.left, margins.bottom, margins.right, columnSpacing]
+        return values.allSatisfy { $0.isFinite && $0 >= 0 } && columns >= 1 && columns <= 64 &&
+            textSize.width >= minimumBodyWidth && textSize.height >= 36
+    }
     var columnWidth: CGFloat { max(36, (textSize.width - CGFloat(columns - 1) * columnSpacing) / CGFloat(max(1, columns))) }
     var isLandscape: Bool { size.width > size.height }
 
@@ -106,21 +113,29 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         return Fields.value(f, at: index, fieldContext(page: page))
     }
 
-    /// Fields whose value changed since they were laid out (page numbers after repagination) are laid out again.
+    /// Repaint changed fields; only a changed attachment width requires another layout pass.
     @discardableResult
     func refreshFields(force: Bool = false, schedule: Bool = true) -> Bool {
         guard let storage = layoutManager.textStorage else { return false }
-        var stale: [NSRange] = []
+        var changedGeometry: [NSRange] = []
         storage.enumerateAttribute(.docField, in: NSRange(location: 0, length: storage.length)) { v, r, _ in
             guard let f = v as? DocField, !f.fixed else { return }
-            if force || self.fieldValue(f, at: r.location) != f.result { stale.append(r) }
+            let value = self.fieldValue(f, at: r.location)
+            let attributes = storage.attributes(at: r.location, effectiveRange: nil)
+            let cell = (attributes[.attachment] as? NSTextAttachment)?.attachmentCell as? FieldCell
+            let width = FieldCell.renderedWidth(value: value, attributes: attributes)
+            let resized = cell?.laidOutWidth.map { abs($0 - width) > 0.01 } ?? true
+            guard force || value != f.result || resized else { return }
+            f.result = value
+            self.layoutManager.invalidateDisplay(forCharacterRange: r)
+            if resized { changedGeometry.append(r) }
         }
-        for r in stale {
-            layoutManager.invalidateLayout(forCharacterRange: r, actualCharacterRange: nil)
-            layoutManager.invalidateDisplay(forCharacterRange: r)
+        for r in changedGeometry {
+            let dirty = TableGrid(storage, at: r.location)?.range ?? (storage.string as NSString).paragraphRange(for: r)
+            layoutManager.invalidateLayout(forCharacterRange: dirty, actualCharacterRange: nil)
         }
-        if !stale.isEmpty, schedule { scheduleReconcile() }
-        return !stale.isEmpty
+        if !changedGeometry.isEmpty, schedule { scheduleReconcile() }
+        return !changedGeometry.isEmpty
     }
 
     private var fieldPasses = 0
@@ -148,6 +163,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
     func detach() {
         NotificationCenter.default.removeObserver(self)
+        layoutManager.delegate = nil
         layoutManager.textStorage?.removeLayoutManager(layoutManager)
     }
 
@@ -204,6 +220,26 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     // Adding a container re-enters layout (and this delegate); defer nested requests to keep page order.
     private var changingPages = false
     private var pendingAdd: Int?
+    private var containerEnds: [ObjectIdentifier: Int] = [:]
+
+    fileprivate func forgetContainer(_ container: NSTextContainer) {
+        containerEnds[ObjectIdentifier(container)] = nil
+    }
+
+    /// TextKit can call its delegate while a column is inserted or removed. Keep
+    /// page ownership stable until both the container and text-view lists agree.
+    fileprivate func updateColumns(_ update: () -> Void) {
+        let wasChanging = changingPages
+        changingPages = true
+        defer {
+            changingPages = wasChanging
+            if !wasChanging, let next = pendingAdd {
+                pendingAdd = nil
+                addPage(startingAt: next)
+            }
+        }
+        update()
+    }
 
     private func addPage(startingAt index: Int) {
         if changingPages { pendingAdd = index; return }
@@ -217,6 +253,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             }
         }
         let card = PageCard(setup: setup(at: index))
+        card.characterStart = index
         card.paged = self
         card.web = viewMode == .web
         card.onNoteClick = { [weak self] in self?.onNoteClick?($0) }
@@ -230,6 +267,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     /// New text view for a column (configured like every other).
     fileprivate func makeColumn(size: NSSize, at index: Int) -> NSTextView {
         let container = NSTextContainer(size: size)
+        forgetContainer(container) // ObjectIdentifier addresses can be reused after a column is removed.
         container.lineFragmentPadding = 0
         // The layout manager owns containers (text views don't retain theirs).
         layoutManager.insertTextContainer(container, at: index)
@@ -249,7 +287,10 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         if let responder = window?.firstResponder as? NSTextView, card.textViews.contains(where: { $0 === responder }) {
             window?.makeFirstResponder(cards.last?.textViews.first)
         }
-        for _ in card.textViews { layoutManager.removeTextContainer(at: layoutManager.textContainers.count - 1) }
+        for _ in card.textViews {
+            if let container = layoutManager.textContainers.last { forgetContainer(container) }
+            layoutManager.removeTextContainer(at: layoutManager.textContainers.count - 1)
+        }
         card.removeFromSuperview()
         relayout()
     }
@@ -275,13 +316,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         for (i, card) in cards.enumerated() {
             card.number = i + 1
             card.total = cards.count
-            if !changingPages, let c = card.textViews.first?.textContainer, c.layoutManager === layoutManager, layoutManager.textContainers.contains(where: { $0 === c }) {
-                let g = layoutManager.glyphRange(for: c)
-                if g.length > 0 {
-                    let start = layoutManager.characterRange(forGlyphRange: g, actualGlyphRange: nil).location
-                    card.sectionIndex = breaks.firstIndex { $0.index >= start } ?? breaks.count
-                }
-            }
+            card.sectionIndex = breaks.firstIndex { $0.index >= card.characterStart } ?? breaks.count
             card.firstOfSection = i == 0 || cards[i - 1].sectionIndex != card.sectionIndex
         }
         switch viewMode {
@@ -318,7 +353,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             }
             setFrameSize(NSSize(width: width, height: y))
         }
-        onLayout?()
+        if !changingPages { onLayout?() }
     }
 
     /// Table rows joined by a merged cell (row span) can't be split over two pages (TextKit stretches the rows):
@@ -374,11 +409,14 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     }
 
     private func ensureFullLayout() {
-        let full = NSRange(location: 0, length: layoutManager.textStorage?.length ?? 0)
         var count = -1
         while count != cards.count {
             count = cards.count
-            layoutManager.ensureLayout(forCharacterRange: full)
+            // A balanced column or exclusion path can invalidate container layout
+            // even when TextKit reports the full character range as laid out.
+            for container in layoutManager.textContainers where container.layoutManager === layoutManager {
+                layoutManager.ensureLayout(for: container)
+            }
         }
     }
 
@@ -438,6 +476,11 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
         guard !reconciling, let storage = layoutManager.textStorage else { return }
         reconciling = true
         defer { reconciling = false }
+        // A cleared document can have many obsolete sections with different geometries.
+        // Trim them before the bounded geometry passes rather than spending a pass per page.
+        if storage.length == 0 {
+            while !changingPages, cards.count > 1 { removeLastPage() }
+        }
         for _ in 0..<12 {
             if full { ensureFullLayout() }
             guard churn < 40 else { break }
@@ -452,6 +495,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                 guard let firstContainer = card.textViews.first?.textContainer else { i += 1; continue }
                 let glyphs = layoutManager.glyphRange(for: firstContainer)
                 let start = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil).location
+                card.characterStart = start
                 if start > laidOut { break }
                 // 1. Section geometry.
                 let wanted = setup(at: start)
@@ -529,7 +573,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             }
             // Empty pages left at the end (a removal asked for while pages were being added).
             if !changed, layoutManager.firstUnlaidCharacterIndex() >= storage.length {
-                while cards.count > 1, let c = cards.last?.textViews.first?.textContainer, layoutManager.glyphRange(for: c).length == 0 {
+                while !changingPages, cards.count > 1, let c = cards.last?.textViews.first?.textContainer, layoutManager.glyphRange(for: c).length == 0 {
                     removeLastPage()
                     changed = true
                 }
@@ -538,6 +582,9 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
             if !changed { break }
             churn += 1
         }
+        // The last geometry pass can resize a container. Flush that layout before
+        // exposing pages to printing, export or callers inspecting their ranges.
+        if full { ensureFullLayout() }
         relayout()
         if full {
             // Offscreen pages (PDF, printing) are drawn right after: settle page numbers now.
@@ -606,6 +653,7 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     // MARK: NSLayoutManagerDelegate
 
     func layoutManager(_ lm: NSLayoutManager, didCompleteLayoutFor textContainer: NSTextContainer?, atEnd layoutFinished: Bool) {
+        guard let storage = lm.textStorage, storage.length > 0 else { return }
         let containers = lm.textContainers
         if !layoutFinished || textContainer == nil {
             // Text left over: add a page after the last one.
@@ -613,19 +661,13 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
                 // (A page that took nothing would be followed by endless empty ones.)
                 // (Containers rather than cards: this runs while a card is still adding its columns.)
                 let recent = containers.suffix(6)
-                if let filled = recent.last(where: { lm.glyphRange(for: $0).length > 0 }) {
-                    addPage(startingAt: NSMaxRange(lm.characterRange(forGlyphRange: lm.glyphRange(for: filled), actualGlyphRange: nil)))
+                if let end = recent.reversed().compactMap({ containerEnds[ObjectIdentifier($0)] }).first {
+                    addPage(startingAt: end)
                 }
             }
-        } else if let tc = textContainer, let used = containers.firstIndex(where: { $0 === tc }) {
-            // Everything fits: drop empty trailing pages.
-            var lastNeeded = 0, index = 0
-            for (k, card) in cards.enumerated() {
-                if index <= used { lastNeeded = k }
-                index += card.textViews.count
-            }
-            while cards.count - 1 > lastNeeded { removeLastPage() }
         }
+        // Remove unused pages in reconcile, after TextKit leaves its layout callback.
+        // Removing containers here invalidates the layout being completed (notably tables).
         if !reconciling { scheduleReconcile() }
     }
 
@@ -633,6 +675,11 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
     func layoutManager(_ lm: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
                        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
+        // Cache progress while TextKit supplies a laid-out line. Querying a container's
+        // glyph range from its completion callback can recursively request that same layout.
+        if glyphRange.length > 0 {
+            containerEnds[ObjectIdentifier(textContainer)] = NSMaxRange(lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil))
+        }
         guard let storage = lm.textStorage, glyphRange.length == 1 else { return false }
         let c = lm.characterIndexForGlyph(at: glyphRange.location)
         let ns = storage.string as NSString
@@ -726,6 +773,8 @@ final class PagedView: NSView, NSLayoutManagerDelegate {
 
 /// White sheet with column text views inside the margins, header, footer and footnotes.
 final class PageCard: NSView {
+    /// Updated during reconciliation; drawing and frame layout never request text layout.
+    var characterStart = 0
     private(set) var textViews: [NSTextView] = []
     var setup: PageSetup { didSet { if !setup.sameGeometry(oldValue) { positionColumns() }; needsDisplay = true } }
     var number = 1 { didSet { if number != oldValue { needsDisplay = true } } }
@@ -774,19 +823,22 @@ final class PageCard: NSView {
 
     /// Adds or removes column text views (and their containers, from `containerIndex` in the layout manager).
     func setColumns(_ n: Int, containerIndex: Int, in paged: PagedView) {
-        let lm = paged.layoutManager
-        while textViews.count > n {
-            let tv = textViews.removeLast()
-            if let responder = window?.firstResponder as? NSTextView, responder === tv { window?.makeFirstResponder(textViews.first) }
-            lm.removeTextContainer(at: containerIndex + textViews.count)
-            tv.removeFromSuperview()
+        paged.updateColumns {
+            let lm = paged.layoutManager
+            while textViews.count > n {
+                let tv = textViews.removeLast()
+                if let responder = window?.firstResponder as? NSTextView, responder === tv { window?.makeFirstResponder(textViews.first) }
+                if let container = tv.textContainer { paged.forgetContainer(container) }
+                lm.removeTextContainer(at: containerIndex + textViews.count)
+                tv.removeFromSuperview()
+            }
+            while textViews.count < n {
+                let tv = paged.makeColumn(size: NSSize(width: setup.columnWidth, height: setup.textSize.height), at: containerIndex + textViews.count)
+                textViews.append(tv)
+                addSubview(tv)
+            }
+            positionColumns()
         }
-        while textViews.count < n {
-            let tv = paged.makeColumn(size: NSSize(width: setup.columnWidth, height: setup.textSize.height), at: containerIndex + textViews.count)
-            textViews.append(tv)
-            addSubview(tv)
-        }
-        positionColumns()
     }
 
     /// Column height on the last page of a multi-column section (columns balanced), nil: full height.
@@ -802,7 +854,9 @@ final class PageCard: NSView {
             // Balanced: the last column has room below for the (zero-height) section break line.
             let h = min(fullColumnHeight, balancedHeight.map { $0 + (j == textViews.count - 1 ? 40 : 0) } ?? .greatestFiniteMagnitude)
             let size = NSSize(width: w, height: h)
-            if tv.textContainer?.size != size { tv.textContainer?.size = size }
+            if let container = tv.textContainer, container.size != size {
+                container.size = size
+            }
             tv.frame = NSRect(x: setup.margins.left + CGFloat(j) * (w + setup.columnSpacing), y: setup.margins.top, width: w, height: h)
         }
     }
@@ -865,9 +919,7 @@ final class PageCard: NSView {
         let hf = setup.effectiveHeaderFooter
         var context = paged?.fieldContext(page: number) ?? FieldContext(page: number, pages: total, info: DocInfo(), storage: nil)
         context.page = number
-        if let tv = textViews.first, let lm = paged?.layoutManager, let c = tv.textContainer {
-            context.pageStart = lm.characterRange(forGlyphRange: lm.glyphRange(for: c), actualGlyphRange: nil).location
-        }
+        context.pageStart = characterStart
         for header in [true, false] {
             if editing == (header ? .header : .footer) {
                 // Word's look while editing: a dashed line between header and text, the part named.

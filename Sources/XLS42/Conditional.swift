@@ -18,7 +18,10 @@ final class ConditionalEngine {
     private func numbers(_ rule: Int) -> (min: Double, max: Double) {
         if let s = stats[rule] { return s }
         let range = sheet.conditionalFormats[rule].range
-        let values = range.cells.compactMap { r -> Double? in if case .number(let d) = sheet[r].value { return d }; return nil }
+        let values = sheet.cells.compactMap { ref, cell -> Double? in
+            guard range.contains(ref), case .number(let d) = cell.value else { return nil }
+            return d
+        }
         let s = (values.min() ?? 0, values.max() ?? 0)
         stats[rule] = s
         return s
@@ -27,8 +30,8 @@ final class ConditionalEngine {
     private func duplicateSet(_ rule: Int) -> Set<String> {
         if let d = duplicates[rule] { return d }
         var counts: [String: Int] = [:]
-        for r in sheet.conditionalFormats[rule].range.cells where !sheet[r].value.isEmpty {
-            counts[sheet[r].value.plain.lowercased(), default: 0] += 1
+        for (ref, cell) in sheet.cells where sheet.conditionalFormats[rule].range.contains(ref) && !cell.value.isEmpty {
+            counts[cell.value.plain.lowercased(), default: 0] += 1
         }
         let d = Set(counts.filter { $0.value > 1 }.keys)
         duplicates[rule] = d

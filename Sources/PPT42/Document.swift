@@ -28,7 +28,10 @@ final class PresentationDocument: NSDocument {
     override class var autosavesInPlace: Bool { false }
 
     // Debug runs never ask to save (they quit on their own).
-    override var isDocumentEdited: Bool { Self.testMode ? false : super.isDocumentEdited }
+    var hasUnsavedChanges: Bool {
+        super.isDocumentEdited || controller?.canvas.editor.hasPendingChanges == true || controller?.outline.hasPendingChanges == true
+    }
+    override var isDocumentEdited: Bool { Self.testMode ? false : hasUnsavedChanges }
 
     var controller: DeckWindowController? { windowControllers.first as? DeckWindowController }
 
@@ -54,9 +57,9 @@ final class PresentationDocument: NSDocument {
     }
 
     private func set(_ new: Deck, undo old: Deck, state: EditState, name: String) {
-        let after = currentState?() ?? EditState()
         undoManager?.registerUndo(withTarget: self) { doc in
-            doc.set(old, undo: new, state: after, name: name)
+            let inverseState = doc.currentState?() ?? EditState()
+            doc.set(old, undo: new, state: inverseState, name: name)
             doc.restoreState?(state)
         }
         undoManager?.setActionName(name)
@@ -80,9 +83,9 @@ final class PresentationDocument: NSDocument {
         silentStart = nil
         guard start != deck else { updateChangeCount(.changeUndone); return }
         let new = deck
-        let after = currentState?() ?? EditState()
         undoManager?.registerUndo(withTarget: self) { doc in
-            doc.set(start, undo: new, state: after, name: name)
+            let inverseState = doc.currentState?() ?? EditState()
+            doc.set(start, undo: new, state: inverseState, name: name)
             doc.restoreState?(state)
         }
         undoManager?.setActionName(name)
@@ -94,7 +97,22 @@ final class PresentationDocument: NSDocument {
 
     override func read(from data: Data, ofType typeName: String) throws {
         let ext = Self.extensionFor(typeName)
-        deck = try DeckIO.read(data, ext: ext)
+        let restored = try DeckIO.read(data, ext: ext)
+        let old = deck
+        // Parse first: failed Revert must preserve both the model and the visible draft.
+        silentStart = nil
+        controller?.canvas.editor.cancel()
+        controller?.outline.discardPendingEdits()
+        if let controller { controller.window?.makeFirstResponder(controller.canvas) }
+        silentStart = nil
+        deck = restored
+        undoManager?.removeAllActions()
+        updateChangeCount(.changeCleared)
+        onChange?(old)
+        restoreState?(EditState())
+        controller?.notesView.resetUndoHistory()
+        controller?.notesPage.resetUndoHistory()
+        controller?.outline.resetUndoHistory()
         // Opening a template starts a new, untitled presentation from it.
         if ext == "potx" || ext == "otp" { DispatchQueue.main.async { [weak self] in self?.fileURL = nil; self?.fileType = ext == "otp" ? "org.oasis-open.opendocument.presentation" : "org.openxmlformats.presentationml.presentation"; self?.updateChangeCount(.changeDone) } }
     }
@@ -154,7 +172,7 @@ final class PrintView: NSView {
     enum Mode: Int { case slides, handouts, notes }
     let deck: Deck
     var mode: Mode = .slides { didSet { needsDisplay = true } }
-    var perPage = 6
+    var perPage = 6 { didSet { if perPage < 1 { perPage = 1 }; needsDisplay = true } }
     var includeHidden = false
     private let info: NSPrintInfo
 
@@ -177,8 +195,15 @@ final class PrintView: NSView {
 
     private var pageCount: Int {
         switch mode {
-        case .slides, .notes: return max(1, slides.count)
+        case .slides: return max(1, slides.count)
+        case .notes: return max(1, notesPages.count)
         case .handouts: return max(1, Int(ceil(Double(slides.count) / Double(perPage))))
+        }
+    }
+
+    private var notesPages: [(index: Int, slide: Slide, range: NSRange, continued: Bool)] {
+        slides.flatMap { index, slide in
+            Renderer.notesPageRanges(slide, deck: deck, page: pageSize).enumerated().map { (index, slide, $0.element, $0.offset > 0) }
         }
     }
 
@@ -211,7 +236,10 @@ final class PrintView: NSView {
                     Renderer.drawSlide(slide, index: i, deck: deck, in: CGRect(x: (s.width - w) / 2, y: (s.height - h) / 2, width: w, height: h), ctx: ctx)
                 }
             case .notes:
-                if slides.indices.contains(page) { Renderer.drawNotesPage(slides[page].1, index: slides[page].0, deck: deck, page: s, ctx: ctx) }
+                if notesPages.indices.contains(page) {
+                    let item = notesPages[page]
+                    Renderer.drawNotesPage(item.slide, index: item.index, deck: deck, page: s, ctx: ctx, textRange: item.range, continued: item.continued)
+                }
             case .handouts:
                 let chunk = Array(slides.dropFirst(page * perPage).prefix(perPage)).map { (offset: $0.0, element: $0.1) }
                 Renderer.drawHandout(chunk, perPage: perPage, deck: deck, page: s, ctx: ctx)

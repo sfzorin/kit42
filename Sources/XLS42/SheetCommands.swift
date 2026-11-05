@@ -24,22 +24,22 @@ extension SheetWindowController {
 
     /// Moves (or copies) sheet `i` in front of sheet `before` (count = at the end). Copies get a unique name.
     func moveSheet(_ i: Int, before: Int, copy: Bool, name: String? = nil) {
-        guard let doc, i < doc.workbook.sheets.count, guardStructure() else { return }
+        guard let doc, doc.workbook.sheets.indices.contains(i), guardStructure(), grid.commitEdit(move: nil) else { return }
+        let before = max(0, min(before, doc.workbook.sheets.count))
         var s = doc.workbook.sheets[i]
         var newName = (name?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 } ?? s.name
+        guard Self.validSheetName(newName) else { NSSound.beep(); return }
         if copy {
-            if doc.workbook.sheetIndex(named: newName) != nil {
-                var n = 2
-                while doc.workbook.sheetIndex(named: "\(s.name) (\(n))") != nil { n += 1 }
-                newName = "\(s.name) (\(n))"
-            }
+            newName = Self.uniqueSheetName(newName, in: doc.workbook)
+            Self.renameReferences(&s, from: s.name, to: newName)
             s.name = newName
             s.pivot = nil
             doc.change(L("Copy Sheet")) { $0.sheets.insert(s, at: min(before, $0.sheets.count)) }
             sheetIndex = min(before, doc.workbook.sheets.count - 1)
         } else {
             let old = s.name
-            if newName != old, doc.workbook.sheetIndex(named: newName) == nil { s.name = newName } else { newName = old }
+            guard doc.workbook.sheetIndex(named: newName).map({ $0 == i }) ?? true else { NSSound.beep(); return }
+            s.name = newName
             doc.change(L("Move Sheet")) { wb in
                 wb.sheets.remove(at: i)
                 let to = before > i ? before - 1 : before
@@ -51,13 +51,70 @@ extension SheetWindowController {
         workbookDidChange()
     }
 
-    static func renameReferences(_ wb: inout Workbook, from old: String, to name: String) {
-        for si in wb.sheets.indices {
-            if wb.sheets[si].pivot?.sourceSheet.caseInsensitiveCompare(old) == .orderedSame { wb.sheets[si].pivot?.sourceSheet = name }
-            for (ref, cell) in wb.sheets[si].cells where cell.isFormula && cell.input.localizedCaseInsensitiveContains(old) {
-                guard let e = try? Formula.parse(cell.input) else { continue }
-                wb.sheets[si].cells[ref]?.input = "=" + Formula.serialize(renameSheetRefs(e, from: old, to: name))
+    static func validSheetName(_ name: String) -> Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 31
+            && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && !name.contains(where: { "[]:*?/\\".contains($0) }) && !name.hasPrefix("'") && !name.hasSuffix("'")
+    }
+
+    /// Names are limited in UTF-16 units; test the actual truncated candidate for collisions.
+    static func uniqueSheetName(_ proposed: String, in workbook: Workbook) -> String {
+        if workbook.sheetIndex(named: proposed) == nil { return proposed }
+        var number = 2
+        while true {
+            let suffix = " (\(number))"
+            let budget = max(0, 31 - suffix.utf16.count)
+            var prefix = "", length = 0
+            for character in proposed {
+                let size = String(character).utf16.count
+                guard length + size <= budget else { break }
+                prefix.append(character); length += size
             }
+            let candidate = prefix + suffix
+            if workbook.sheetIndex(named: candidate) == nil { return candidate }
+            number += 1
+        }
+    }
+
+    static func renameReferences(_ wb: inout Workbook, from old: String, to name: String) {
+        for key in wb.names.keys { wb.names[key] = renamedReference(wb.names[key]!, from: old, to: name) }
+        for si in wb.sheets.indices { renameReferences(&wb.sheets[si], from: old, to: name) }
+    }
+
+    private static func renamedReference(_ text: String, from old: String, to name: String) -> String {
+        guard let expression = try? Formula.parse(text.hasPrefix("=") ? text : "=" + text) else { return text }
+        let renamed = Formula.serialize(renameSheetRefs(expression, from: old, to: name))
+        guard renamed != Formula.serialize(expression) else { return text }
+        return (text.hasPrefix("=") ? "=" : "") + renamed
+    }
+
+    static func renameReferences(_ sheet: inout Sheet, from old: String, to name: String) {
+        if sheet.pivot?.sourceSheet.caseInsensitiveCompare(old) == .orderedSame { sheet.pivot?.sourceSheet = name }
+        for (ref, cell) in sheet.cells where cell.isFormula {
+            sheet.cells[ref]?.input = renamedReference(cell.input, from: old, to: name)
+        }
+        for i in sheet.validations.indices {
+            sheet.validations[i].formula1 = renamedReference(sheet.validations[i].formula1, from: old, to: name)
+            sheet.validations[i].formula2 = renamedReference(sheet.validations[i].formula2, from: old, to: name)
+        }
+        for i in sheet.conditionalFormats.indices {
+            switch sheet.conditionalFormats[i].kind {
+            case .expression(let f): sheet.conditionalFormats[i].kind = .expression(renamedReference(f, from: old, to: name))
+            case .cellIs(let op, let values): sheet.conditionalFormats[i].kind = .cellIs(op: op, values: values.map { renamedReference($0, from: old, to: name) })
+            default: break
+            }
+        }
+        for i in sheet.charts.indices {
+            for j in sheet.charts[i].series.indices {
+                if sheet.charts[i].series[j].name.hasPrefix("=") {
+                    sheet.charts[i].series[j].name = renamedReference(sheet.charts[i].series[j].name, from: old, to: name)
+                }
+                sheet.charts[i].series[j].values = renamedReference(sheet.charts[i].series[j].values, from: old, to: name)
+                sheet.charts[i].series[j].categories = sheet.charts[i].series[j].categories.map { renamedReference($0, from: old, to: name) }
+            }
+        }
+        for (ref, target) in sheet.hyperlinks where target.hasPrefix("#") {
+            sheet.hyperlinks[ref] = "#" + renamedReference(String(target.dropFirst()), from: old, to: name)
         }
     }
 
@@ -78,7 +135,8 @@ extension SheetWindowController {
     }
 
     func setTabColor(_ color: NSColor?, sheet i: Int) {
-        doc?.change(L("Tab Colour"), recalc: false) { $0.sheets[i].tabColor = color }
+        guard let doc, doc.workbook.sheets.indices.contains(i), grid.commitEdit(move: nil) else { return }
+        doc.change(L("Tab Colour"), recalc: false) { $0.sheets[i].tabColor = color }
     }
 
     @objc func hideSheetAction(_ sender: Any?) {
@@ -87,7 +145,7 @@ extension SheetWindowController {
     }
 
     func hideSheet(_ i: Int) {
-        guard let doc, guardStructure(), visibleSheets.count > 1, i < doc.workbook.sheets.count else { NSSound.beep(); return }
+        guard let doc, guardStructure(), visibleSheets.count > 1, doc.workbook.sheets.indices.contains(i), grid.commitEdit(move: nil) else { NSSound.beep(); return }
         doc.change(L("Hide Sheet"), recalc: false) { $0.sheets[i].hidden = true }
         if i == sheetIndex, let next = visibleSheets.first(where: { $0 > i }) ?? visibleSheets.last { selectSheet(next) } else { workbookDidChange() }
     }
@@ -102,7 +160,7 @@ extension SheetWindowController {
     }
 
     func showSheet(_ i: Int) {
-        guard let doc, guardStructure() else { return }
+        guard let doc, doc.workbook.sheets.indices.contains(i), guardStructure(), grid.commitEdit(move: nil) else { return }
         doc.change(L("Show Sheet"), recalc: false) { $0.sheets[i].hidden = false }
         selectSheet(i)
     }
@@ -122,7 +180,7 @@ extension SheetWindowController {
     // MARK: - Hyperlinks
 
     @objc func insertHyperlinkAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let ref = grid.active
         let existing = sheet.hyperlinks[ref] ?? ""
         let text = field(sheet[ref].value.isEmpty ? "" : NumberFormat.format(sheet[ref].value, "General").text, width: 260)
@@ -139,7 +197,7 @@ extension SheetWindowController {
 
     /// Adds (or removes, target nil) a hyperlink; the cell gets the text (or the address) and the Hyperlink style.
     func setHyperlink(_ target: String?, text: String?, at ref: CellRef) {
-        guard let doc, guardEditable(CellRange(ref, ref)) else { return }
+        guard grid.commitEdit(move: nil), let doc, guardEditable(CellRange(ref, ref)) else { return }
         var link = target?.trimmingCharacters(in: .whitespaces)
         if let l = link, !l.hasPrefix("#"), !l.contains(":"), !l.hasPrefix("/"), l.contains(".") { link = "https://" + l }
         doc.change(link == nil ? L("Remove Hyperlink") : L("Hyperlink")) { wb in
@@ -181,11 +239,12 @@ extension SheetWindowController {
     func openHyperlink(_ target: String) {
         lastOpenedLink = target
         if target.hasPrefix("#") {
+            guard grid.commitEdit(move: nil) else { return }
             var place = String(target.dropFirst())
             var si = sheetIndex
             if let bang = place.lastIndex(of: "!") {
                 var name = String(place[..<bang])
-                if name.hasPrefix("'"), name.hasSuffix("'"), name.count > 1 { name = String(name.dropFirst().dropLast()) }
+                if name.hasPrefix("'"), name.hasSuffix("'"), name.count > 1 { name = String(name.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'") }
                 if let i = doc?.workbook.sheetIndex(named: name) { si = i }
                 place = String(place[place.index(after: bang)...])
             } else if let i = doc?.workbook.names.first(where: { $0.key.caseInsensitiveCompare(place) == .orderedSame })?.value, let r = parseRange(i) {
@@ -235,9 +294,10 @@ extension SheetWindowController {
 
     /// Applies a preset, or a document style by name (its saved formatting).
     func applyCellStyle(named name: String) {
+        guard grid.commitEdit(move: nil) else { return }
         if let p = CellStyles.preset(named: name) { applyCellStyle(p); return }
         let range = clampedSelection
-        guard let doc, guardEditable(range) else { return }
+        guard let doc, guardCellOperation(range), guardEditable(range) else { return }
         let def = CellStyles.definition(name, in: doc.workbook)
             ?? doc.workbook.sheets.lazy.flatMap { $0.cells.values }.first { $0.style.styleName == name }?.style
         guard let def else { NSSound.beep(); return }
@@ -251,8 +311,9 @@ extension SheetWindowController {
     }
 
     func applyCellStyle(_ preset: CellStyles.Preset) {
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
-        guard let doc, guardEditable(range) else { return }
+        guard let doc, guardCellOperation(range), guardEditable(range) else { return }
         doc.change(L("Cell Style"), recalc: false) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]
@@ -414,8 +475,25 @@ final class ColorSwatchButton: NSButton {
 final class SheetTabButton: NSButton {
     var tabColor: NSColor?
 
+    /// Neutral tabs: the current sheet is a raised light tab (not an accent-filled button), others are plain text.
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 2), xRadius: 6, yRadius: 6)
+        if state == .on {
+            NSColor.controlBackgroundColor.setFill()
+            path.fill()
+            NSColor.labelColor.withAlphaComponent(0.15).setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        } else if isHighlighted {
+            NSColor.labelColor.withAlphaComponent(0.08).setFill()
+            path.fill()
+        }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? .systemFont(ofSize: 12),
+            .foregroundColor: state == .on ? NSColor.labelColor : NSColor.secondaryLabelColor,
+        ]
+        let text = title as NSString, size = text.size(withAttributes: attributes)
+        text.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2), withAttributes: attributes)
         guard let c = tabColor else { return }
         c.setFill()
         NSBezierPath(roundedRect: NSRect(x: 4, y: bounds.height - 4, width: bounds.width - 8, height: 3), xRadius: 1.5, yRadius: 1.5).fill()

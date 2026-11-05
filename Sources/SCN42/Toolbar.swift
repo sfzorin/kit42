@@ -39,16 +39,16 @@ final class ScanToolbar: NSObject, NSSharingServicePickerDelegate {
 
         controller = ToolbarController(identifier: "SCN42.toolbar", elements: [
             .view(id: "scanner", label: L("Scanner"), scanners),
-            .command(Cmd.overview),
             .command(Cmd.scan),
             .view(id: "iphone", label: L("iPhone"), phoneButton),
             .flexibleSpace,
             .group(id: "rotate", label: L("Rotate"), [Cmd.rotateLeft, Cmd.rotateRight]),
-            .command(Cmd.deletePage),
-            .command(Cmd.enhance),
             .command(Cmd.recognize),
             .command(Cmd.save),
             .view(id: "share", label: L("Share"), share),
+        ], optional: [
+            // Overview is the inspector's secondary button; page deletion and enhancement are in the Page menu.
+            .command(Cmd.overview), .command(Cmd.deletePage), .command(Cmd.enhance),
         ])
     }
 

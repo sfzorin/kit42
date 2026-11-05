@@ -1,5 +1,6 @@
 // SCN42 UI strings: [English, Русский, Türkçe].
 let scn42Strings: [[String]] = [
+    ["Wait for scanning and processing to finish before closing.", "Дождитесь окончания сканирования и обработки перед закрытием.", "Kapatmadan önce tarama ve işlemenin bitmesini bekleyin."],
     // App, welcome, window
     ["Scan documents, photos and receipts", "Сканирование документов, фото и чеков", "Belge, fotoğraf ve fiş tarama"],
     ["Scan with iPhone…", "Сканировать с iPhone…", "iPhone ile Tara…"],
@@ -51,7 +52,7 @@ let scn42Strings: [[String]] = [
     ["Shared", "Общий", "Paylaşılan"],
     ["Virtual", "Виртуальный", "Sanal"],
     ["Virtual Scanner", "Виртуальный сканер", "Sanal Tarayıcı"],
-    ["Gray", "Серый", "Gri"],
+    ["Grey", "Серый", "Gri"],
     ["B&W", "Ч/Б", "S/B"],
 
     // Scanner errors
@@ -201,8 +202,8 @@ let scn42Strings: [[String]] = [
     ["Feeder", "Податчик", "Besleyici"],
     ["Film", "Плёнка", "Film"],
     ["Both sides (duplex)", "Обе стороны (дуплекс)", "İki taraf (dupleks)"],
-    ["Color", "Цвет", "Renkli"],
-    ["Grayscale", "Оттенки серого", "Gri tonlamalı"],
+    ["In colour", "Цветной", "Renkli"],
+    ["Greyscale", "Оттенки серого", "Gri tonlamalı"],
     ["Black & White", "Чёрно-белый", "Siyah Beyaz"],
     ["Resolution", "Разрешение", "Çözünürlük"],
     ["%d dpi", "%d dpi", "%d dpi"],

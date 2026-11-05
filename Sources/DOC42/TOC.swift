@@ -163,6 +163,7 @@ extension DocWindowController {
 
     /// Link at the cursor with its whole range.
     var linkAtCursor: (Any, NSRange)? {
+        let textView = activeTextView
         guard let storage = textView.textStorage, storage.length > 0 else { return nil }
         let sel = textView.selectedRange()
         for i in [sel.location, sel.location - 1] where i >= 0 && i < storage.length {
@@ -175,6 +176,7 @@ extension DocWindowController {
     static let linkColor = NSColor(srgbRed: 0.02, green: 0.39, blue: 0.76, alpha: 1)
 
     @objc func insertLinkAction(_ sender: Any?) {
+        let textView = activeTextView
         guard let storage = textView.textStorage else { return }
         let existing = linkAtCursor
         var range = existing?.1 ?? textView.selectedRange()
@@ -213,6 +215,7 @@ extension DocWindowController {
     }
 
     @objc func removeLinkAction(_ sender: Any?) {
+        let textView = activeTextView
         guard let (_, r) = linkAtCursor, let storage = textView.textStorage, textView.shouldChangeText(in: r, replacementString: nil) else { return }
         storage.beginEditing()
         storage.removeAttribute(.link, range: r)

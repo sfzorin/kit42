@@ -111,7 +111,34 @@ final class InfoPanelController: NSViewController {
             }
         }
         flatten(p, prefix: "")
-        section(L("All Metadata"), all, small: true)
+        // The raw ImageIO dictionary repeats the File section, so it starts collapsed; the choice is remembered.
+        if let grid = section(L("All Metadata"), all, small: true), let header = stack.arrangedSubviews.dropLast().last as? NSTextField {
+            let expanded = UserDefaults.standard.bool(forKey: Self.allMetadataKey)
+            let toggle = NSButton(title: header.stringValue, target: self, action: #selector(toggleAllMetadata(_:)))
+            toggle.setButtonType(.pushOnPushOff)
+            toggle.bezelStyle = .disclosure
+            toggle.title = ""
+            toggle.state = expanded ? .on : .off
+            let row = NSStackView(views: [toggle, header])
+            row.spacing = 2
+            if let i = stack.arrangedSubviews.firstIndex(of: header) {
+                let spacing = stack.customSpacing(after: header)
+                header.removeFromSuperview()
+                stack.insertArrangedSubview(row, at: i)
+                stack.setCustomSpacing(spacing, after: row)
+                if i > 0 { stack.setCustomSpacing(16, after: stack.arrangedSubviews[i - 1]) }
+            }
+            grid.isHidden = !expanded
+            allMetadataGrid = grid
+        }
+    }
+
+    private static let allMetadataKey = "img.allMetadataExpanded"
+    private weak var allMetadataGrid: NSView?
+
+    @objc private func toggleAllMetadata(_ sender: NSButton) {
+        allMetadataGrid?.isHidden = sender.state != .on
+        UserDefaults.standard.set(sender.state == .on, forKey: Self.allMetadataKey)
     }
 
     static func describe(_ v: Any) -> String {
@@ -125,8 +152,9 @@ final class InfoPanelController: NSViewController {
         stack.addArrangedSubview(v)
     }
 
-    private func section(_ title: String, _ rows: [(String, String)], small: Bool = false) {
-        guard !rows.isEmpty else { return }
+    @discardableResult
+    private func section(_ title: String, _ rows: [(String, String)], small: Bool = false) -> NSView? {
+        guard !rows.isEmpty else { return nil }
         let header = NSTextField(labelWithString: title.uppercased())
         header.font = .systemFont(ofSize: 10, weight: .semibold)
         header.textColor = .secondaryLabelColor
@@ -153,6 +181,7 @@ final class InfoPanelController: NSViewController {
         grid.rowAlignment = .firstBaseline
         stack.addArrangedSubview(grid)
         grid.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return grid
     }
 
     @objc private func openMaps() {

@@ -112,7 +112,19 @@ final class ThumbnailGrid: NSScrollView, NSCollectionViewDataSource, NSCollectio
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout,
                         sizeForItemAt indexPath: IndexPath) -> NSSize {
         let picture = pdfView?.document?.page(at: indexPath.item).map(Self.pictureSize) ?? NSSize(width: 110, height: 136)
-        return NSSize(width: 130, height: picture.height + 32)
+        // One centred column at any sidebar width: a two-column flow staggered pages of different heights.
+        let inset = (collectionViewLayout as? NSCollectionViewFlowLayout).map { $0.sectionInset.left + $0.sectionInset.right } ?? 12
+        return NSSize(width: max(130, collectionView.bounds.width - inset), height: picture.height + 32)
+    }
+
+    private var laidOutWidth: CGFloat = 0
+    override func tile() {
+        super.tile()
+        let width = contentView.bounds.width
+        if abs(width - laidOutWidth) > 0.5 {
+            laidOutWidth = width
+            collection.collectionViewLayout?.invalidateLayout()
+        }
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
@@ -155,6 +167,8 @@ final class ThumbnailItem: NSCollectionViewItem {
     static let id = NSUserInterfaceItemIdentifier("ThumbnailItem")
     private let picture = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    /// Accent ring around the page itself (selection), instead of a filled cell.
+    private let ring = SelectionRing()
     private var pictureWidth: NSLayoutConstraint?
     private var pictureHeight: NSLayoutConstraint?
 
@@ -168,7 +182,8 @@ final class ThumbnailItem: NSCollectionViewItem {
         picture.layer?.shadowOffset = CGSize(width: 0, height: -1)
         label.alignment = .center
         label.font = .systemFont(ofSize: 11, weight: .medium)
-        for s in [picture, label] as [NSView] {
+        ring.isHidden = true
+        for s in [ring, picture, label] as [NSView] {
             s.translatesAutoresizingMaskIntoConstraints = false
             v.addSubview(s)
         }
@@ -177,6 +192,10 @@ final class ThumbnailItem: NSCollectionViewItem {
             picture.centerXAnchor.constraint(equalTo: v.centerXAnchor),
             label.topAnchor.constraint(equalTo: picture.bottomAnchor, constant: 4),
             label.centerXAnchor.constraint(equalTo: v.centerXAnchor),
+            ring.leadingAnchor.constraint(equalTo: picture.leadingAnchor, constant: -4),
+            ring.trailingAnchor.constraint(equalTo: picture.trailingAnchor, constant: 4),
+            ring.topAnchor.constraint(equalTo: picture.topAnchor, constant: -4),
+            ring.bottomAnchor.constraint(equalTo: picture.bottomAnchor, constant: 4),
         ])
         pictureWidth = picture.widthAnchor.constraint(equalToConstant: 110)
         pictureHeight = picture.heightAnchor.constraint(equalToConstant: 136)
@@ -194,9 +213,27 @@ final class ThumbnailItem: NSCollectionViewItem {
 
     override var isSelected: Bool {
         didSet {
-            view.layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor : nil
-            view.layer?.cornerRadius = 8
+            ring.isHidden = !isSelected
             label.textColor = isSelected ? .controlAccentColor : .secondaryLabelColor
         }
+    }
+}
+
+/// Accent outline drawn around a selected page thumbnail; the colour is resolved in updateLayer,
+/// so it follows appearance and accent-colour changes.
+final class SelectionRing: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.cornerRadius = 4
+        layer?.borderWidth = 3
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
     }
 }

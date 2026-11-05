@@ -133,7 +133,6 @@ extension ScanWindowController {
             banner.show(.warning, text)
             copierCopies = nil
         }
-        rescanTarget = nil
         updateStatus()
         processingMaybeDone()
     }
@@ -141,6 +140,8 @@ extension ScanWindowController {
     /// When the scanner and the clean-up are both done: summary, and the copier prints.
     private func processingMaybeDone() {
         guard !isScanning, pendingProcessing == 0 else { return }
+        // The scanner may finish before its last image has been processed and replaced the target.
+        rescanTarget = nil
         let added = scannedThisRun.count
         if added > 0 || blanksThisRun > 0 {
             var text = L("Added %@.", pagesText(added))
@@ -296,7 +297,8 @@ extension ScanWindowController {
     func importFiles(_ urls: [URL], at row: Int?) {
         let items = ContinuityImport.load(urls)
         guard !items.isEmpty else { banner.show(.warning, L("No images found in these files.")); return }
-        if let row { insertionIndex = row - 1 >= 0 ? row - 1 : nil }
+        // -1 means before the first page; nil is reserved for appending at the end.
+        if let row { insertionIndex = min(max(0, row), pages.count) - 1 }
         scannedThisRun = []
         blanksThisRun = 0
         for (raw, isPDF) in items { process(raw, settings.processing, removeBlank: false, documentScan: isPDF) }
@@ -365,7 +367,7 @@ extension ScanWindowController {
     }
 
     @objc func rescanPageAction(_ sender: Any?) {
-        guard let page = targetPages.first else { return }
+        guard canScan, pendingProcessing == 0, let page = targetPages.first else { return }
         rescanTarget = page
         updateStatus()
         scanAction(nil)
@@ -545,11 +547,15 @@ extension ScanWindowController {
     }
 
     @IBAction func saveDocument(_ sender: Any?) {
+        presentSaveSheet()
+    }
+
+    func presentSaveSheet(completion: ((URL?) -> Void)? = nil) {
         guard let window, !pages.isEmpty else { return }
         var options = Store.saveOptions
         if Store.testDirectory != nil { options.folder = nil; options.openAfter = .none }
         let sheet = SaveSheetController(pages: pages.map(\.exportPage), title: pages.first?.text.flatMap(OCR.title), options: options)
-        sheet.onSave = { [weak self] o in self?.save(o) }
+        sheet.onSave = { [weak self] o in self?.save(o, completion: completion) }
         saveSheet = sheet
         guard let w = sheet.window else { return }
         window.beginSheet(w) { [weak self] _ in self?.saveSheet = nil }
@@ -564,6 +570,7 @@ extension ScanWindowController {
     }
 
     private func writeFiles(_ options: SaveOptions, _ completion: ((URL?) -> Void)?) {
+        let revision = doc.revision
         let exportPages: [ExportPage] = pages.map(\.exportPage)
         let base = baseName(options)
         busyText = L("Saving…")
@@ -584,17 +591,17 @@ extension ScanWindowController {
                 var next = options
                 next.counter += 1
                 Store.saveOptions = next
-                self.didSave(urls, options)
+                self.didSave(urls, options, revision: revision)
                 completion?(urls.first)
             }
         }
     }
 
-    private func didSave(_ urls: [URL], _ o: SaveOptions) {
+    private func didSave(_ urls: [URL], _ o: SaveOptions, revision: Int) {
         guard let first = urls.first else { return }
         savedURL = first
-        doc.isDirty = false
-        window?.isDocumentEdited = false
+        doc.markSaved(revision: revision)
+        window?.isDocumentEdited = doc.isDirty
         window?.title = urls.count == 1 ? first.lastPathComponent : L("%d files", urls.count)
         let bytes = urls.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
         for url in urls { History.shared.add(url, pages: urls.count == 1 ? pages.count : 1, thumbnail: pages.first?.image) }
@@ -645,12 +652,12 @@ extension ScanWindowController {
             o.openAfter = .none
             // The chosen name is final: write it directly.
             let target = url.deletingPathExtension().appendingPathExtension(o.format.ext)
-            if FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.removeItem(at: target) }
             let run = {
                 do {
+                    let revision = self.doc.revision
                     let urls = try Exporter.write(self.pages.map(\.exportPage), folder: target.deletingLastPathComponent(),
-                                                  baseName: target.deletingPathExtension().lastPathComponent, options: o)
-                    self.didSave(urls, o)
+                                                  baseName: target.deletingPathExtension().lastPathComponent, options: o, replaceExisting: true)
+                    self.didSave(urls, o, revision: revision)
                 } catch { self.showError(error) }
             }
             if o.ocr && o.format.isPDF { self.ensureText(self.pages, then: run) } else { run() }

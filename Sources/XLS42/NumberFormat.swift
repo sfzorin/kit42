@@ -26,8 +26,11 @@ enum NumberFormat {
     ]
 
     static func isDateFormat(_ code: String) -> Bool {
-        let s = strip(code.split(separator: ";").first.map(String.init) ?? code).lowercased()
-        return s.contains(where: { "ymdhs".contains($0) }) && !s.contains("0") && !s.contains("#")
+        let section = splitSections(code).first ?? code
+        let s = strip(section).lowercased()
+        let elapsed = section.range(of: #"\[[hms]+\]"#, options: [.regularExpression, .caseInsensitive]) != nil
+        let withoutFractions = s.replacingOccurrences(of: #"s[.,]0+"#, with: "s", options: .regularExpression)
+        return (elapsed || s.contains(where: { "ymdhs".contains($0) })) && !withoutFractions.contains("0") && !s.contains("#")
     }
 
     static func format(_ value: Value, _ code: String, date1904: Bool = false) -> Result {
@@ -40,8 +43,9 @@ enum NumberFormat {
             if sections.count >= 4 { return Result(text: sections[3].replacingOccurrences(of: "@", with: s).filter { $0 != "\"" }) }
             return Result(text: s)
         case .number(let d):
+            guard d.isFinite else { return Result(text: errorText("#NUM!")) }
             if code == "General" || code.isEmpty { return Result(text: general(d)) }
-            return formatNumber(d, code)
+            return formatNumber(d, code, date1904: date1904)
         }
     }
 
@@ -115,29 +119,33 @@ enum NumberFormat {
         "white": .white, "yellow": .systemYellow, "magenta": .systemPink, "cyan": .systemTeal,
     ]
 
-    private static func formatNumber(_ d: Double, _ code: String) -> Result {
+    private static func formatNumber(_ d: Double, _ code: String, date1904: Bool) -> Result {
         let sections = splitSections(code)
         var section = sections[0]
         var value = d
-        var condition: (String, Double)?
-        // Conditional sections like [>=100]
+        // Conditions may follow color/locale tags and either of the first two
+        // sections may have one. A third section is their fallback.
         func parseCondition(_ s: String) -> (String, Double)? {
-            guard let open = s.firstIndex(of: "["), let close = s[open...].firstIndex(of: "]") else { return nil }
-            let inner = String(s[s.index(after: open)..<close])
-            for op in [">=", "<=", "<>", ">", "<", "="] where inner.hasPrefix(op) {
-                if let v = Double(inner.dropFirst(op.count)) { return (op, v) }
+            var rest = s[...]
+            while let open = rest.firstIndex(of: "["), let close = rest[open...].firstIndex(of: "]") {
+                let inner = String(rest[rest.index(after: open)..<close])
+                for op in [">=", "<=", "<>", ">", "<", "="] where inner.hasPrefix(op) {
+                    if let value = Double(inner.dropFirst(op.count)) { return (op, value) }
+                }
+                rest = rest[rest.index(after: close)...]
             }
             return nil
         }
-        condition = parseCondition(sections[0])
-        if let (op, limit) = condition {
-            let match: Bool
-            switch op { case ">=": match = d >= limit; case "<=": match = d <= limit; case "<>": match = d != limit
-            case ">": match = d > limit; case "<": match = d < limit; default: match = d == limit }
-            if !match, sections.count > 1 { section = sections[1] }
+        func matches(_ condition: (String, Double)) -> Bool {
+            let (op, limit) = condition
+            switch op { case ">=": return d >= limit; case "<=": return d <= limit; case "<>": return d != limit
+            case ">": return d > limit; case "<": return d < limit; default: return d == limit }
+        }
+        if sections.prefix(2).contains(where: { parseCondition($0) != nil }) {
+            section = sections.prefix(3).first { parseCondition($0).map(matches) ?? true } ?? ""
         } else if d < 0, sections.count > 1 {
             section = sections[1]
-            if !sections[1].isEmpty { value = -d }   // the section supplies its own sign
+            if !section.isEmpty { value = -d }
         } else if d == 0, sections.count > 2 {
             section = sections[2]
         }
@@ -165,8 +173,8 @@ enum NumberFormat {
         }
 
         if cleaned.lowercased() == "general" { return Result(text: general(value), color: color) }
-        if isDateFormat(cleaned) { return Result(text: formatDate(value, cleaned), color: color) }
-        return Result(text: formatPlain(value, cleaned, negativeSign: d < 0 && sections.count == 1), color: color)
+        if isDateFormat(cleaned) { return Result(text: formatDate(value, cleaned, date1904: date1904), color: color) }
+        return Result(text: formatPlain(value, cleaned, negativeSign: value < 0), color: color)
     }
 
     // MARK: - Numbers
@@ -224,15 +232,18 @@ enum NumberFormat {
 
         var v = abs(value)
         if (prefix + suffix).contains("%") { v *= 100 }
+        guard v.isFinite else { return errorText("#NUM!") }
 
         // Scientific
         if let e = pattern.firstIndex(where: { $0 == "E" || $0 == "e" }) {
             let mantissa = String(pattern[..<e])
             let decimals = mantissa.split(separator: ".").dropFirst().first?.filter { "0#?".contains($0) }.count ?? 0
-            let exp = v == 0 ? 0 : Int(floor(log10(v)))
-            let m = v / pow(10, Double(exp))
-            var ms = String(format: "%.\(decimals)f", m).replacingOccurrences(of: ".", with: decimal)
-            if ms.hasPrefix("10") && m >= 9.9999 { ms = String(format: "%.\(decimals)f", 1.0).replacingOccurrences(of: ".", with: decimal) }
+            guard v.isFinite else { return errorText("#NUM!") }
+            // Let the formatter round the mantissa and carry into the exponent.
+            let scientific = String(format: "%.*E", decimals, v).split(separator: "E")
+            guard scientific.count == 2, let exp = Int(scientific[1]) else { return errorText("#NUM!") }
+            let ms = String(scientific[0]).replacingOccurrences(of: ".", with: decimal)
+
             let expDigits = pattern[pattern.index(after: e)...].filter { $0 == "0" }.count
             let es = String(format: "%0\(max(1, expDigits))d", abs(exp))
             return (negativeSign ? "-" : "") + prefix + ms + "E" + (exp < 0 ? "-" : "+") + es + suffix
@@ -248,7 +259,7 @@ enum NumberFormat {
                 let e = abs(frac - Double(num) / Double(den))
                 if e < err - 1e-12 { err = e; best = (num, den) }
             }
-            let w = whole > 0 || best.0 == 0 ? "\(Int(whole))" : ""
+            let w = whole > 0 || best.0 == 0 ? String(format: "%.0f", whole) : ""
             let f = best.0 == 0 ? "" : "\(best.0)/\(best.1)"
             return (negativeSign ? "-" : "") + prefix + [w, f].filter { !$0.isEmpty }.joined(separator: " ") + suffix
         }
@@ -307,12 +318,16 @@ enum NumberFormat {
         return f.shortWeekdaySymbols
     }()
 
-    private static func formatDate(_ serial: Double, _ code: String) -> String {
+    private static func formatDate(_ serial: Double, _ code: String, date1904: Bool) -> String {
         guard serial >= 0, serial < 3_000_000 else { return String(repeating: "#", count: 6) }
-        let totalSeconds = (serial * 86400).rounded()
+        let fractionRange = code.range(of: #"[sS][.,]0+"#, options: .regularExpression)
+        let fractionDigits = fractionRange.map { min(9, code[$0].count - 2) } ?? 0
+        let scale = pow(10, Double(fractionDigits))
+        let totalSeconds = (serial * 86400 * scale).rounded() / scale
         let day = floor(totalSeconds / 86400)
-        let secs = Int(totalSeconds - day * 86400)
-        let c = DateMath.calendar.dateComponents([.year, .month, .day, .weekday], from: DateMath.date(day + 0.000001))
+        let secs = Int(floor(totalSeconds - day * 86400))
+        let fraction = Int(((totalSeconds - floor(totalSeconds)) * scale).rounded())
+        guard let c = DateMath.components(day + (date1904 ? 1462 : 0)) else { return String(repeating: "#", count: 6) }
         let hour = secs / 3600, minute = secs / 60 % 60, second = secs % 60
         let ampm = code.uppercased().contains("AM/PM")
 
@@ -397,6 +412,13 @@ enum NumberFormat {
                 if rest.hasPrefix("A/P") { out += hour < 12 ? "A" : "P"; i += 3; continue }
             case "_":
                 out += " "; i += 2; continue
+            case let punctuation where (punctuation == "." || punctuation == ",") && i > 0 && lower[i - 1].lowercased() == "s":
+                var end = i + 1
+                while end < lower.count, lower[end] == "0" { end += 1 }
+                if end > i + 1 {
+                    out += decimal + String(format: "%0*d", end - i - 1, fraction)
+                    i = end; continue
+                }
             case "@":
                 i += 1; continue
             default:

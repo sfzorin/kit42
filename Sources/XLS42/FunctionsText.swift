@@ -15,7 +15,7 @@ extension Calculator {
             guard s.count == 7, s.allSatisfy({ $0 == "0" || $0 == "1" }), s != "1111111" else { throw XLError.value }
             for (i, ch) in s.enumerated() { mask[i] = ch == "1" }
         default:
-            let k = Int(try num(v))
+            let k = try Self.integer(num(v))
             switch k {
             case 1...7: mask[(k + 4) % 7] = true; mask[(k + 5) % 7] = true
             case 11...17: mask[(k - 12 + 7) % 7] = true
@@ -27,7 +27,10 @@ extension Calculator {
 
     func holidays(_ x: FArgs, _ i: Int) throws -> Set<Double> {
         guard x.has(i) else { return [] }
-        return Set(try x.nums(i).map { floor($0) })
+        return Set(try x.nums(i).map { value in
+            guard value >= 0, value + dateOffset <= 2_958_465 else { throw XLError.num }
+            return floor(value) + dateOffset
+        })
     }
 
     /// Positions of `delimiters` in `text` from the left, non-overlapping (TEXTBEFORE/TEXTAFTER/TEXTSPLIT).
@@ -203,16 +206,16 @@ extension Calculator {
         case "DATEVALUE":
             let v = x.a(0)
             if case .number(let d) = v { return try r(floor(d)) }
-            guard let d = DateMath.parse(try x.t(0)) else { throw XLError.value }
+            guard let d = DateMath.parse(try x.t(0), date1904: workbook.date1904) else { throw XLError.value }
             return try r(floor(d))
         case "TIMEVALUE":
             let t = try x.t(0)
             guard let d = DateMath.parse(t) ?? DateMath.parseTime(t) else { throw XLError.value }
             return try r(d - floor(d))
         case "WEEKNUM":
-            let serial = floor(try x.n(0))
+            let serial = floor(try x.n(0)) + dateOffset
             let type = try x.int(1, 1)
-            guard serial >= 0, let c = DateMath.components(serial), let jan1 = DateMath.serial(year: c.year!, month: 1, day: 1) else { throw XLError.num }
+            guard serial >= dateOffset, let c = DateMath.components(serial), let jan1 = DateMath.serial(year: c.year!, month: 1, day: 1) else { throw XLError.num }
             if type == 21 { return try r(Double(Self.isoWeek(serial))) }
             let start: Int   // first day of the week, 0 = Monday
             switch type {
@@ -224,29 +227,30 @@ extension Calculator {
             let offset = (Self.isoWeekday(jan1) - start + 7) % 7
             return try r(floor((serial - jan1 + Double(offset)) / 7) + 1)
         case "ISOWEEKNUM":
-            let serial = floor(try x.n(0))
-            guard serial >= 0 else { throw XLError.num }
+            let serial = floor(try x.n(0)) + dateOffset
+            guard serial >= dateOffset, serial <= 2_958_465 else { throw XLError.num }
             return try r(Double(Self.isoWeek(serial)))
         case "YEARFRAC":
             try x.need(2)
-            var a = floor(try x.n(0)), b = floor(try x.n(1))
+            var a = floor(try x.n(0)) + dateOffset, b = floor(try x.n(1)) + dateOffset
             let basis = try x.int(2, 0)
-            guard a >= 0, b >= 0, (0...4).contains(basis) else { throw XLError.num }
+            guard a >= dateOffset, b >= dateOffset, a <= 2_958_465, b <= 2_958_465, (0...4).contains(basis) else { throw XLError.num }
             if a > b { swap(&a, &b) }
             return try r(Self.yearFrac(a, b, basis: basis))
         case "DAYS360":
             try x.need(2)
-            let a = floor(try x.n(0)), b = floor(try x.n(1))
+            let a = floor(try x.n(0)) + dateOffset, b = floor(try x.n(1)) + dateOffset
+            guard a >= dateOffset, b >= dateOffset, a <= 2_958_465, b <= 2_958_465 else { throw XLError.num }
             return try r(Self.days360(a, b, european: try x.b(2, false)))
         case "NETWORKDAYS", "NETWORKDAYS.INTL":
             try x.need(2)
-            var s1 = floor(try x.n(0)), s2 = floor(try x.n(1))
+            var s1 = floor(try x.n(0)) + dateOffset, s2 = floor(try x.n(1)) + dateOffset
             let intl = name.hasSuffix("INTL")
             let mask = try weekendMask(intl && x.has(2) ? x.a(2) : .empty)
             let hol = try holidays(x, intl ? 3 : 2)
             let sign: Double = s2 < s1 ? -1 : 1
             if s2 < s1 { swap(&s1, &s2) }
-            guard s1 >= 0, s2 - s1 < 1e7 else { throw XLError.num }
+            guard s1 >= dateOffset, s2 <= 2_958_465 else { throw XLError.num }
             var count = 0.0, d = s1
             while d <= s2 {
                 if !mask[Self.isoWeekday(d)] && !hol.contains(d) { count += 1 }
@@ -255,19 +259,19 @@ extension Calculator {
             return .value(.number(count * sign))
         case "WORKDAY", "WORKDAY.INTL":
             try x.need(2)
-            var d = floor(try x.n(0))
+            var d = floor(try x.n(0)) + dateOffset
             var left = try x.int(1)
             let intl = name.hasSuffix("INTL")
             let mask = try weekendMask(intl && x.has(2) ? x.a(2) : .empty)
             let hol = try holidays(x, intl ? 3 : 2)
-            guard abs(left) < 10_000_000 else { throw XLError.num }
+            guard d >= dateOffset, d <= 2_958_465, abs(left) < 3_000_000 else { throw XLError.num }
             let step: Double = left < 0 ? -1 : 1
             while left != 0 {
                 d += step
+                guard d >= dateOffset, d <= 2_958_465 else { throw XLError.num }
                 if !mask[Self.isoWeekday(d)] && !hol.contains(d) { left -= Int(step) }
             }
-            guard d >= 0 else { throw XLError.num }
-            return .value(.number(d))
+            return .value(.number(d - dateOffset))
         default:
             return nil
         }

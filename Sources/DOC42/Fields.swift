@@ -183,15 +183,26 @@ enum Fields {
 
 /// Draws a field's current value; the layout manager knows the page and the document.
 final class FieldCell: NSTextAttachmentCell {
+    /// Width last supplied to TextKit; drawing may evaluate a newer field value.
+    private(set) var laidOutWidth: CGFloat?
+
+    private static func renderedLabel(value: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        var selected = attributes.filter { [.font, .foregroundColor, .underlineStyle, .kern].contains($0.key) }
+        if selected[.foregroundColor] == nil { selected[.foregroundColor] = NSColor.black }
+        return NSAttributedString(string: value.isEmpty ? " " : value, attributes: selected)
+    }
+
+    static func renderedWidth(value: String, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
+        ceil(renderedLabel(value: value, attributes: attributes).size().width)
+    }
+
     private func label(_ lm: NSLayoutManager?, _ index: Int) -> NSAttributedString {
         guard let storage = lm?.textStorage, index < storage.length, let f = storage.attribute(.docField, at: index, effectiveRange: nil) as? DocField else {
             return NSAttributedString(string: "?")
         }
         let v = (lm as? DocLayoutManager)?.fieldValue?(f, index) ?? Fields.value(f, at: index, FieldContext(page: 1, pages: 1, info: DocInfo(), storage: storage))
         if !f.fixed { f.result = v }
-        var a = storage.attributes(at: index, effectiveRange: nil).filter { [.font, .foregroundColor, .underlineStyle, .kern].contains($0.key) }
-        if a[.foregroundColor] == nil { a[.foregroundColor] = NSColor.black }
-        return NSAttributedString(string: v.isEmpty ? " " : v, attributes: a)
+        return Self.renderedLabel(value: v, attributes: storage.attributes(at: index, effectiveRange: nil))
     }
 
     override func cellFrame(for textContainer: NSTextContainer, proposedLineFragment lineFrag: NSRect, glyphPosition position: NSPoint,
@@ -199,7 +210,9 @@ final class FieldCell: NSTextAttachmentCell {
         let lm = textContainer.layoutManager
         let s = label(lm, charIndex)
         let font = (lm?.textStorage?.attribute(.font, at: charIndex, effectiveRange: nil) as? NSFont) ?? Styles.normal.font
-        return NSRect(x: 0, y: font.descender, width: ceil(s.size().width), height: ceil(font.ascender - font.descender))
+        let width = ceil(s.size().width)
+        laidOutWidth = width
+        return NSRect(x: 0, y: font.descender, width: width, height: ceil(font.ascender - font.descender))
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?, characterIndex charIndex: Int, layoutManager: NSLayoutManager) {

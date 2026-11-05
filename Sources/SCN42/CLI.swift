@@ -21,6 +21,7 @@ enum CLI {
         let rest = Array(args.dropFirst(2))
         setlinebuf(stdout)
         switch args[1] {
+        case "--selftest": selfTest()
         case "--make-test-inputs":
             guard let dir = rest.first else { print("usage: --make-test-inputs dir"); status = 2; return true }
             do { print(try TestImages.write(to: URL(fileURLWithPath: dir)).joined(separator: "\n")) } catch { print("error: \(error)"); status = 1 }
@@ -34,6 +35,61 @@ enum CLI {
         default: return false
         }
         return true
+    }
+
+    /// Regression checks for save state and preservation of files when export fails.
+    static func selfTest() {
+        var failures = 0
+        func check(_ condition: Bool, _ name: String) {
+            print("\(condition ? "PASS" : "FAIL") \(name)")
+            if !condition { failures += 1 }
+        }
+        guard let image = Bitmap(width: 8, height: 8, channels: 1, fill: 255).cgImage() else {
+            print("FAIL create fixture image"); status = 1; return
+        }
+        func page() -> ScanPage {
+            ScanPage(base: image, image: image, dpi: 300, options: ProcessOptions(), report: ProcessReport())
+        }
+        let doc = ScanDocument(), first = page()
+        doc.append([first])
+        doc.markSaved(revision: doc.revision)
+        check(!doc.isDirty, "saved current snapshot is clean")
+        let savedRevision = doc.revision
+        doc.append([page()])
+        doc.markSaved(revision: savedRevision)
+        check(doc.isDirty, "page added during save remains dirty")
+        doc.markSaved(revision: doc.revision)
+        doc.setText(first, [TextLine(text: "Searchable text", box: .zero)])
+        check(doc.isDirty, "OCR makes saved document dirty")
+        let beforeRemoval = doc.revision
+        doc.remove(ids: [first.id])
+        doc.markSaved(revision: doc.revision)
+        doc.setText(first, [])
+        check(!doc.isDirty && doc.revision == beforeRemoval + 1, "late OCR for removed page is ignored")
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SCN42-selftest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let target = folder.appendingPathComponent("existing.tiff")
+            let original = Data("existing document".utf8)
+            try original.write(to: target)
+            var options = SaveOptions()
+            options.format = .tiff
+            do {
+                _ = try Exporter.write([], folder: folder, baseName: "existing", options: options, replaceExisting: true)
+                check(false, "empty TIFF export throws")
+            } catch { check(true, "empty TIFF export throws") }
+            check(try Data(contentsOf: target) == original, "failed export preserves existing file")
+            let outputs = try Exporter.write([first.exportPage], folder: folder, baseName: "existing", options: options, replaceExisting: true)
+            let replacement = try Data(contentsOf: target)
+            check(outputs == [target] && replacement != original, "successful export replaces selected file")
+        } catch {
+            print("FAIL export regression: \(error)")
+            failures += 1
+        }
+        status = failures == 0 ? 0 : 1
+        print("SCN42 selftest: \(failures) failures")
     }
 
     static func load(_ path: String) -> RawScan? {
