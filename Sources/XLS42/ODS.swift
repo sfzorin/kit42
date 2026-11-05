@@ -189,16 +189,31 @@ enum ODS {
                 v.ranges = ranges(refs)
                 sheet.validations.append(v)
             }
+            // Sheet-local names: the Solver model (LibreOffice keeps Excel's hidden solver_… names here).
+            var solverNames: [String: String] = [:]
+            for case let e as XMLElement in table.child("named-expressions")?.children ?? [] {
+                guard let name = e.attr("name"), SolverFiles.isSolverName(name), let text = solverText(e) else { continue }
+                solverNames[name] = text
+            }
+            if !solverNames.isEmpty { sheet.solver = SolverFiles.model(solverNames, sheet: sheet.name) }
             if let ranges = table.attr("print-ranges") {
                 sheet.printArea = rangeFromODF(String(ranges.split(separator: " ").first ?? "")).flatMap { CellRange($0.range.replacingOccurrences(of: "$", with: "")) }
             }
             wb.sheets.append(sheet)
         }
         // Named ranges
-        for n in spreadsheet.child("named-expressions")?.children("named-range") ?? [] {
+        var globalSolver: [String: String] = [:]
+        for case let n as XMLElement in spreadsheet.child("named-expressions")?.children ?? [] {
+            if let name = n.attr("name"), SolverFiles.isSolverName(name) { if let t = solverText(n) { globalSolver[name] = t }; continue }
+            guard n.localName == "named-range" else { continue }
             if let name = n.attr("name"), let addr = n.attr("cell-range-address"), let r = rangeFromODF(addr) {
                 wb.names[name] = (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
             }
+        }
+        if let opt = globalSolver["solver_opt"], let bang = opt.lastIndex(of: "!") {
+            var name = String(opt[..<bang])
+            if name.hasPrefix("'") { name = String(name.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'") }
+            if let si = wb.sheetIndex(named: name), wb.sheets[si].solver == nil { wb.sheets[si].solver = SolverFiles.model(globalSolver, sheet: name) }
         }
         readDatabaseRanges(spreadsheet, &wb)
         PivotFiles.readODS(spreadsheet, &wb)
@@ -221,6 +236,20 @@ enum ODS {
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
         return wb
+    }
+
+    /// A solver_… name as Excel text: "Sheet1!$A$1:$B$2" for named ranges (several joined by ","), the expression otherwise.
+    static func solverText(_ e: XMLElement) -> String? {
+        if e.localName == "named-range", let addr = e.attr("cell-range-address") {
+            let parts = addr.split(separator: " ").compactMap { rangeFromODF(String($0)) }.map { r in
+                (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: ",")
+        }
+        guard var t = e.attr("expression") else { return nil }
+        for prefix in ["of:", "oooc:"] where t.hasPrefix(prefix) { t.removeFirst(prefix.count) }
+        if t.hasPrefix("=") { t.removeFirst() }
+        return t
     }
 
     private static func descendantsNamed(_ e: XMLElement, _ name: String) -> [XMLElement] {
@@ -602,6 +631,7 @@ enum ODS {
                 t += "</table:table-row>"
             }
             t += String(repeating: "</table:table-row-group>", count: openRows)
+            if let m = sheet.solver { t += SolverFiles.odsNames(m, sheet: sheet.name) }
             t += "</table:table>"
             body += t
         }
@@ -722,6 +752,10 @@ enum ODS {
         var s = prefix + "." + a.text
         if let b { s += ":" + (sheet.map { _ in prefix } ?? "") + "." + b.text }
         return s
+    }
+
+    static func odfCell(_ sheet: String, _ r: CellRef) -> String {
+        "\(odfSheet(sheet, absolute: true)).$\(CellRef.columnName(r.col))$\(r.row + 1)"
     }
 
     static func odfRange(_ sheet: String, _ r: CellRange) -> String {

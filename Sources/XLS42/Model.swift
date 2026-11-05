@@ -227,8 +227,20 @@ struct Sheet {
     var customFilters: [Int: ColumnFilter] = [:]
     /// Manual page breaks before these rows (Subtotals › page break between groups).
     var rowBreaks: Set<Int> = []
+    /// Legacy array formulas (Excel Ctrl+Shift+Enter, ODF matrices): anchor → the fixed range the result fills.
+    var arrays: [CellRef: CellRange] = [:]
+    /// Tools › Solver model kept with the sheet (Excel/LibreOffice hidden solver_… names).
+    var solver: SolverModel?
+    /// View › Split Window position and the first cells of the panes (saved in the file's view settings).
+    var split: SheetSplit?
 
     init(name: String) { self.name = name }
+
+    /// The legacy array formula whose range contains `ref`.
+    func array(containing ref: CellRef) -> (anchor: CellRef, range: CellRange)? {
+        if let r = arrays[ref] { return (ref, r) }
+        return arrays.first { $0.value.contains(ref) }.map { ($0.key, $0.value) }
+    }
 
     subscript(ref: CellRef) -> Cell {
         get { cells[ref] ?? Cell() }
@@ -254,6 +266,16 @@ struct Sheet {
     var isProtected: Bool { protection != nil }
     var maxRowLevel: Int { rowLevels.values.max() ?? 0 }
     var maxColLevel: Int { colLevels.values.max() ?? 0 }
+}
+
+/// Split window: pane sizes in grid pixels at 100 % (Excel pixels, 0 = no split on that axis)
+/// and the first cell shown in the top-left and in the bottom-right pane.
+struct SheetSplit: Equatable {
+    var x: CGFloat
+    var y: CGFloat
+    var topLeft = CellRef(row: 0, col: 0)
+    var bottomRight = CellRef(row: 0, col: 0)
+    var activePane = "bottomRight"
 }
 
 /// One condition of a standard filter or an AutoFilter custom filter.
@@ -361,6 +383,8 @@ struct Workbook {
     var date1904 = false
     /// Workbook structure protection: sheets can't be added, deleted, moved, renamed or hidden.
     var structureProtected = false
+    /// Named cell styles defined in the file (besides Normal/Default): name → the style's formatting.
+    var cellStyles: [String: CellStyle] = [:]
 
     func sheetIndex(named name: String) -> Int? {
         sheets.firstIndex { $0.name.caseInsensitiveCompare(name) == .orderedSame }

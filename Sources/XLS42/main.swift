@@ -42,11 +42,23 @@ if let i = CommandLine.arguments.firstIndex(of: "--info"), CommandLine.arguments
         if let p = s.pivot {
             print("  pivot \(p.name) source \(p.sourceSheet)!\(p.source.a1) row \(p.rowField) col \(p.colField.map(String.init) ?? "-") value \(p.valueField) \(p.aggregate) at \(p.anchor.a1) location \(p.location?.a1 ?? "-") fields \(p.fieldNames)")
         }
+        if let m = s.solver { print("  " + SolverFiles.describe(m)) }
+        if let sp = s.split {
+            print("  split x \(Value.formatGeneral(Double(sp.x)))px y \(Value.formatGeneral(Double(sp.y)))px top-left \(sp.topLeft.a1) bottom-right \(sp.bottomRight.a1) active \(sp.activePane)")
+        }
+        let styled = Dictionary(grouping: s.cells.filter { $0.value.style.styleName != nil }, by: { $0.value.style.styleName! })
+        if !styled.isEmpty {
+            print("  styles " + styled.keys.sorted().map { "\($0): \(ODS.ranges(styled[$0]!.map(\.key)).map(\.a1).joined(separator: ","))" }.joined(separator: "; "))
+        }
+        if !s.arrays.isEmpty {
+            print("  arrays " + s.arrays.sorted { $0.key < $1.key }.map { "{\(s.cells[$0.key]?.input ?? "")} \($0.value.a1)" }.joined(separator: "; "))
+        }
         if let p = s.protection {
             print("  protected hash \(p.passwordHash ?? "-") sha512 \(p.sha512Hash != nil) ods \(p.odsKey != nil); unlocked \(s.cells.filter { !$0.value.style.locked }.keys.sorted().map(\.a1))")
         }
     }
     print("names", wb.names)
+    if !wb.cellStyles.isEmpty { print("cell styles", wb.cellStyles.keys.sorted()) }
     exit(0)
 }
 

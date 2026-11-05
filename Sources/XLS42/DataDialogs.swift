@@ -490,8 +490,9 @@ extension SheetWindowController {
         return x
     }
 
-    func setVariables(_ refs: [CellRef], _ values: [Double], name: String) {
+    func setVariables(_ refs: [CellRef], _ values: [Double], name: String, solver: SolverModel? = nil) {
         doc?.change(name) { wb in
+            if let solver { wb.sheets[sheetIndex].solver = solver }
             for (ref, x) in zip(refs, values) {
                 var c = wb.sheets[sheetIndex][ref]
                 let v = abs(x - x.rounded()) < 1e-9 * max(1, abs(x)) ? x.rounded() : x
@@ -504,22 +505,41 @@ extension SheetWindowController {
 
     @objc func solverAction(_ sender: Any?) {
         grid.commitEdit(move: nil)
-        let objective = field(sheet[grid.active].isFormula ? grid.active.a1 : "", width: 120)
-        let goal = popup([L("Maximum"), L("Minimum"), L("Value of")])
-        let goalValue = field("", width: 80)
-        let variables = field("", width: 160, placeholder: "$B$1:$B$3")
+        // The sheet's saved model (from the file or the last run) fills the dialog, as in Excel and Calc.
+        let saved = sheet.solver
+        func absolute(_ r: CellRange) -> String {
+            let a = "$\(CellRef.columnName(r.start.col))$\(r.start.row + 1)"
+            return r.count == 1 ? a : a + ":$\(CellRef.columnName(r.end.col))$\(r.end.row + 1)"
+        }
+        let objective = field(saved.map { absolute(CellRange($0.objective, $0.objective)) } ?? (sheet[grid.active].isFormula ? grid.active.a1 : ""), width: 120)
+        var goalIndex = 0, goalText = ""
+        switch saved?.goal {
+        case .min?: goalIndex = 1
+        case .value(let v)?: goalIndex = 2; goalText = NumberFormat.general(v)
+        default: break
+        }
+        let goal = popup([L("Maximum"), L("Minimum"), L("Value of")], selected: goalIndex)
+        let goalValue = field(goalText, width: 80)
+        let variables = field(saved.map { ODS.ranges($0.variables).map(absolute).joined(separator: ";") } ?? "", width: 160, placeholder: "$B$1:$B$3")
         let ops = SolverModel.Op.allCases
-        let constraints = (0..<5).map { _ in (field("", width: 110, placeholder: L("Cell")), popup(ops.map { $0 == .int ? L("Integer") : $0 == .bin ? L("Binary") : $0.rawValue }),
-                                              field("", width: 110, placeholder: L("Value"))) }
-        let nonNegative = checkbox(L("Assume non-negative variables"), true)
-        let engine = popup([L("Linear (simplex)"), L("Nonlinear (Nelder–Mead)")])
+        let savedConstraints = saved?.constraints ?? []
+        let constraints = (0..<max(5, min(30, savedConstraints.count + 1))).map { k -> (NSTextField, NSPopUpButton, NSTextField) in
+            let c = k < savedConstraints.count ? savedConstraints[k] : nil
+            return (field(c.map { absolute($0.lhs) } ?? "", width: 110, placeholder: L("Cell")),
+                    popup(ops.map { $0 == .int ? L("Integer") : $0 == .bin ? L("Binary") : $0.rawValue }, selected: c.flatMap { ops.firstIndex(of: $0.op) } ?? 0),
+                    field(c?.rhs ?? "", width: 110, placeholder: L("Value")))
+        }
+        let nonNegative = checkbox(L("Assume non-negative variables"), saved?.nonNegative ?? true)
+        let engine = popup([L("Linear (simplex)"), L("Nonlinear (Nelder–Mead)")], selected: saved?.linear == false ? 1 : 0)
         var rows: [[NSView]] = [[label(L("Target cell:")), objective], [label(L("Optimize result to:")), hstack([goal, goalValue])],
                                 [label(L("By changing cells:")), variables]]
         for (k, c) in constraints.enumerated() { rows.append([label(k == 0 ? L("Limiting conditions:") : ""), hstack([c.0, c.1, c.2])]) }
         rows += [[NSGridCell.emptyContentView, nonNegative], [label(L("Solving method:")), engine]]
         guard runDialog(L("Solver"), ok: L("Solve"), rows: rows) == .alertFirstButtonReturn else { return }
-        guard let obj = CellRef(objective.stringValue), let vars = parseRange(variables.stringValue)?.range else { NSSound.beep(); return }
-        var model = SolverModel(objective: obj, variables: vars.cells)
+        let varRanges = ODS.splitArguments(variables.stringValue).map { parseRange($0)?.range }
+        guard let obj = CellRef(objective.stringValue), !varRanges.isEmpty, !varRanges.contains(where: { $0 == nil }) else { NSSound.beep(); return }
+        var model = SolverModel(objective: obj, variables: varRanges.compactMap { $0 }.flatMap(\.cells))
+        model.extra = saved?.extra ?? [:]
         switch goal.indexOfSelectedItem {
         case 1: model.goal = .min
         case 2: model.goal = .value(Double(goalValue.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0)
@@ -549,10 +569,15 @@ extension SheetWindowController {
     }
 
     /// Solves the model and writes the variable values (one undo step); nil when the model is invalid.
+    /// The model is kept with the sheet (and saved in the file) either way.
     func solve(_ model: SolverModel) -> SolverResult? {
         guard let doc, guardEditable(nil) else { return nil }
-        guard let result = Solver.solve(doc.workbook, sheet: sheetIndex, model: model) else { return nil }
-        if result.status == .optimal || result.status == .approximate { setVariables(model.variables, result.values, name: L("Solver")) }
+        let result = Solver.solve(doc.workbook, sheet: sheetIndex, model: model)
+        if let result, result.status == .optimal || result.status == .approximate {
+            setVariables(model.variables, result.values, name: L("Solver"), solver: model)
+        } else if sheet.solver != model {
+            doc.change(L("Solver"), recalc: false) { $0.sheets[sheetIndex].solver = model }
+        }
         return result
     }
 

@@ -56,6 +56,25 @@ enum DataTools {
         }
         if let f = s.autoFilter { s.autoFilter = movedRange(f) }
         if let p = s.printArea { s.printArea = movedRange(p) }
+        s.arrays = Dictionary(uniqueKeysWithValues: s.arrays.compactMap { k, v in movedRef(k).flatMap { a in movedRange(v).map { (a, $0) } } })
+        if let m = s.solver {
+            // The Solver model follows its cells (dropped with its objective cell).
+            if let objective = movedRef(m.objective) {
+                var n = m
+                n.objective = objective
+                n.variables = m.variables.compactMap(movedRef)
+                n.constraints = m.constraints.compactMap { c in
+                    guard let lhs = movedRange(c.lhs) else { return nil }
+                    var c = c
+                    c.lhs = lhs
+                    if CellRange(c.rhs.replacingOccurrences(of: "$", with: "")) != nil {
+                        c.rhs = String(Formula.adjusted("=" + c.rhs, sheet: sheetName, formulaSheet: sheetName, rows: rows, at: index, count: count).dropFirst())
+                    }
+                    return c
+                }
+                s.solver = n
+            } else { s.solver = nil }
+        }
         wb.sheets[sheetIndex] = s
         for si in wb.sheets.indices {
             let formulaSheet = wb.sheets[si].name

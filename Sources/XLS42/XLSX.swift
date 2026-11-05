@@ -43,8 +43,14 @@ enum XLSX {
             sheetPaths.append(path)
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
+        var solverNames: [Int: [String: String]] = [:]
         for d in workbookXML.child("definedNames")?.children("definedName") ?? [] {
             guard let name = d.attr("name"), let text = d.stringValue, !text.isEmpty else { continue }
+            if SolverFiles.isSolverName(name) {
+                // Sheet-scoped (Excel, LibreOffice); a workbook-level model belongs to the sheet of its objective.
+                solverNames[d.attr("localSheetId").flatMap(Int.init) ?? -1, default: [:]][name] = text
+                continue
+            }
             if name == "_xlnm.Print_Area", let i = d.attr("localSheetId").flatMap(Int.init), i < wb.sheets.count {
                 let first = String(text.split(separator: ",").first ?? "")
                 let refPart = first.split(separator: "!").last.map(String.init) ?? first
@@ -52,6 +58,17 @@ enum XLSX {
             } else if !name.hasPrefix("_xlnm.") {
                 wb.names[name] = text
             }
+        }
+        for (i, names) in solverNames.sorted(by: { $0.key < $1.key }) {
+            var si = i
+            if si < 0, let opt = names.first(where: { $0.key.lowercased() == "solver_opt" })?.value, let bang = opt.lastIndex(of: "!") {
+                var sheet = String(opt[..<bang])
+                if sheet.hasPrefix("=") { sheet.removeFirst() }
+                if sheet.hasPrefix("'") { sheet = String(sheet.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'") }
+                si = wb.sheetIndex(named: sheet) ?? -1
+            }
+            guard si >= 0, si < wb.sheets.count, wb.sheets[si].solver == nil else { continue }
+            wb.sheets[si].solver = SolverFiles.model(names, sheet: wb.sheets[si].name)
         }
         PivotFiles.readXLSX(&wb, zip: zip, workbookXML: workbookXML, workbookRels: rels, sheetPaths: sheetPaths)
         return wb
@@ -377,6 +394,7 @@ enum XLSX {
             if let f = sheet.autoFilter {
                 defined.append("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"\(i)\" hidden=\"1\">\(xmlEscape(absolute(f)))</definedName>")
             }
+            if let m = sheet.solver { defined += SolverFiles.xlsxNames(m, sheet: sheet.name, index: i) }
         }
         if !defined.isEmpty { workbook += "<definedNames>" + defined.joined() + "</definedNames>" }
         workbook += "<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/>"
