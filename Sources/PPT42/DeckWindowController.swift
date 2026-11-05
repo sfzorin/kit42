@@ -33,6 +33,8 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private(set) lazy var notesPage = NotesPageView(owner: self)
     private let notesPageScroll = NSScrollView()
     let banner = BannerView()
+    /// The open chart data sheet.
+    var chartEditor: ChartDataEditor?
     private var sidebarItem: NSSplitViewItem!
     private var inspectorItem: NSSplitViewItem!
     private var notesCollapsedBeforeHide = false
@@ -467,7 +469,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case #selector(deleteSlideAction(_:)): return mode != .master && deck.slides.count > 0
         case #selector(insertTextBoxAction(_:)), #selector(insertShapeAction(_:)), #selector(insertShapeMenuAction(_:)),
              #selector(insertImageAction(_:)), #selector(insertTableAction(_:)), #selector(showStampsAction(_:)),
-             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)):
+             #selector(insertSlideNumberAction(_:)), #selector(insertDateAction(_:)), #selector(insertChartAction(_:)):
             return normal && deck.slides.count > 0
         case #selector(tableRowAction(_:)), #selector(tableColumnAction(_:)):
             return normal && selectedObjects.count == 1 && selectedObjects.first?.kind == .table

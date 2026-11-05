@@ -5,6 +5,61 @@ import Kit42
 struct PPTXWriter {
     let deck: Deck
     private var zip = ZipArchive()
+    /// Extra parts written while writing slides (charts, workbooks, diagrams, media), with their content types.
+    let sink = PartSink()
+
+    final class PartSink {
+        var files: [String: Data] = [:]
+        var overrides: [String: String] = [:]
+        var defaults: [String: String] = [:]
+        var counters: [String: Int] = [:]
+
+        /// A free path "folder/stemN.ext" (or the preferred name when free).
+        func path(folder: String, stem: String, ext: String, preferred: String? = nil) -> String {
+            if let p = preferred, files["\(folder)/\(p)"] == nil { return "\(folder)/\(p)" }
+            var n = counters[folder + stem, default: 0]
+            var p: String
+            repeat { n += 1; p = "\(folder)/\(stem)\(n).\(ext)" } while files[p] != nil
+            counters[folder + stem] = n
+            return p
+        }
+
+        func add(_ path: String, _ data: Data, type: String?) {
+            files[path] = data
+            let ext = (path as NSString).pathExtension.lowercased()
+            guard let type, type != "application/octet-stream" || ext != "xml" else { return }
+            if ext == "xml" { overrides["/" + path] = type } else if defaults[ext] == nil { defaults[ext] = type }
+        }
+
+        /// Writes a kept part and the parts it refers to; returns its path.
+        func write(_ p: PackagePart, at path: String) -> String {
+            var rels: [(String, String, String, Bool)] = []
+            for r in p.rels {
+                if let ext = r.external { rels.append((r.id, r.type, ext, true)); continue }
+                guard let child = r.part else { continue }
+                let folder = (child.name as NSString).deletingLastPathComponent
+                let name = (child.name as NSString).lastPathComponent
+                let ext = (name as NSString).pathExtension
+                let childPath = self.path(folder: folder, stem: (name as NSString).deletingPathExtension, ext: ext, preferred: files["\(folder)/\(name)"] == nil ? name : nil)
+                _ = write(child, at: childPath)
+                rels.append((r.id, r.type, relative(from: path, to: childPath), false))
+            }
+            add(path, p.data, type: p.contentType)
+            if !rels.isEmpty {
+                var x = PPTXWriter.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                for r in rels { x += "<Relationship Id=\"\(r.0)\" Type=\"\(r.1)\" Target=\"\(xmlEscape(r.2))\"\(r.3 ? " TargetMode=\"External\"" : "")/>" }
+                files[relsPath(path)] = Data((x + "</Relationships>").utf8)
+            }
+            return path
+        }
+
+        func relative(from a: String, to b: String) -> String {
+            let fa = a.split(separator: "/").dropLast().map(String.init), fb = b.split(separator: "/").map(String.init)
+            var i = 0
+            while i < fa.count, i < fb.count - 1, fa[i] == fb[i] { i += 1 }
+            return (Array(repeating: "..", count: fa.count - i) + fb[i...]).joined(separator: "/")
+        }
+    }
 
     static let nsA = "http://schemas.openxmlformats.org/drawingml/2006/main"
     static let nsR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -53,6 +108,12 @@ struct PPTXWriter {
     mutating func write() -> Data {
         let n = deck.slides.count
         let hasNotes = deck.slides.contains { !$0.notes.isEmpty }
+        writeMaster()
+        for i in deck.layouts.indices { writeLayout(i) }
+        for i in 0..<n { writeSlide(i) }
+        if hasNotes { writeNotesMaster() }
+        for (name, data) in deck.media { zip["ppt/media/\(name)"] = data }
+        for (path, data) in sink.files { zip[path] = data }
         var types = Self.head + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
         types += "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
         types += "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
@@ -60,6 +121,10 @@ struct PPTXWriter {
                             ("tiff", "image/tiff"), ("svg", "image/svg+xml")] {
             types += "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>"
         }
+        for (ext, mime) in sink.defaults.sorted(by: { $0.key < $1.key }) where !["png", "jpeg", "jpg", "gif", "bmp", "tiff", "svg", "xml", "rels"].contains(ext) {
+            types += "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>"
+        }
+        for (part, mime) in sink.overrides.sorted(by: { $0.key < $1.key }) { types += "<Override PartName=\"\(xmlEscape(part))\" ContentType=\"\(mime)\"/>" }
         let pml = "application/vnd.openxmlformats-officedocument.presentationml"
         types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).presentation.main+xml\"/>"
         types += "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"\(pml).slideMaster+xml\"/>"
@@ -119,12 +184,6 @@ struct PPTXWriter {
         put("ppt/viewProps.xml", Self.head + "<p:viewPr \(Self.ns)><p:normalViewPr><p:restoredLeft sz=\"15620\"/><p:restoredTop sz=\"94660\"/></p:normalViewPr><p:gridSpacing cx=\"76200\" cy=\"76200\"/></p:viewPr>")
         put("ppt/tableStyles.xml", Self.head + "<a:tblStyleLst xmlns:a=\"\(Self.nsA)\" def=\"{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}\"/>")
         put("ppt/theme/theme1.xml", themeXML(deck.theme))
-
-        writeMaster()
-        for i in deck.layouts.indices { writeLayout(i) }
-        for i in 0..<n { writeSlide(i) }
-        if hasNotes { writeNotesMaster() }
-        for (name, data) in deck.media { zip["ppt/media/\(name)"] = data }
         return zip.data()
     }
 
@@ -303,6 +362,7 @@ struct PPTXWriter {
         case .textBox: return "TextBox \(o.id)"
         case .picture: return "Picture \(o.id)"
         case .table: return "Table \(o.id)"
+        case .chart: return "Chart \(o.id)"
         case .group: return "Group \(o.id)"
         case .line: return "Connector \(o.id)"
         case .shape: return "Shape \(o.id)"
@@ -340,6 +400,23 @@ struct PPTXWriter {
             x += xfrm(o, prefix: "p") + "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\">"
             x += table(t, rels: rels, slide: slide, object: o)
             return x + "</a:graphicData></a:graphic></p:graphicFrame>"
+        case .chart:
+            guard let m = o.chart else { return "" }
+            let path: String
+            if let part = m.untouchedPart {
+                path = sink.write(part, at: sink.path(folder: "ppt/charts", stem: "chart", ext: "xml"))
+            } else {
+                path = sink.path(folder: "ppt/charts", stem: "chart", ext: "xml")
+                let wb = sink.path(folder: "ppt/embeddings", stem: "Microsoft_Excel_Worksheet", ext: "xlsx")
+                sink.add(wb, ChartXML.workbook(m), type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                let relXML = Self.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"\(Self.relBase)/package\" Target=\"\(sink.relative(from: path, to: wb))\"/></Relationships>"
+                sink.files[relsPath(path)] = Data(relXML.utf8)
+                sink.add(path, Data(ChartXML.write(m, color: { color($0) }, workbookRel: "rId1").utf8), type: "application/vnd.openxmlformats-officedocument.drawingml.chart+xml")
+            }
+            let rid = rels.add("\(Self.relBase)/chart", sink.relative(from: "ppt/slides/slide1.xml", to: path))
+            var x = "<p:graphicFrame>" + nv(o, kind: "GraphicFrame", extra: "<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr>", ph: false)
+            x += xfrm(o, prefix: "p") + "<a:graphic><a:graphicData uri=\"\(ChartXML.nsC)\"><c:chart xmlns:c=\"\(ChartXML.nsC)\" r:id=\"\(rid)\"/></a:graphicData></a:graphic>"
+            return x + "</p:graphicFrame>"
         case .line:
             var x = "<p:cxnSp>" + nv(o, kind: "CxnSp", extra: "<p:cNvCxnSpPr/>", ph: false)
             x += "<p:spPr>\(xfrm(o))\(geometry(o))<a:noFill/>\(line(o.line, rels: rels))\(o.shadow ? shadow : "")</p:spPr></p:cxnSp>"

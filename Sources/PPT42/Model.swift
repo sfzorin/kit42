@@ -469,7 +469,7 @@ struct Placeholder: Equatable {
 enum TextRole { case title, body, other }
 
 enum ObjectKind: String {
-    case shape, textBox, picture, table, group, line
+    case shape, textBox, picture, table, group, line, chart
 }
 
 /// Entrance animation played on click in the slide show (p:timing).
@@ -502,6 +502,7 @@ struct SlideObject: Equatable {
     var media: String?
     var crop = NSEdgeInsets()
     var table: TableModel?
+    var chart: ChartModel?
     var children: [SlideObject] = []
     var build: BuildEffect?
     /// Description / alt text.
@@ -514,7 +515,7 @@ struct SlideObject: Equatable {
             && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.custom == b.custom && a.fill == b.fill && a.line == b.line
             && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media
             && a.crop.left == b.crop.left && a.crop.top == b.crop.top && a.crop.right == b.crop.right && a.crop.bottom == b.crop.bottom
-            && a.table == b.table && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported
+            && a.table == b.table && a.chart == b.chart && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported
     }
 
     init(id: Int, kind: ObjectKind, frame: CGRect) {

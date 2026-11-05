@@ -60,6 +60,8 @@ enum Cmd {
                                toolTip: L("Insert an image"), label: L("Image"))
     static let table = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option, .shift]),
                                toolTip: L("Insert a table"), label: L("Table"))
+    static let chart = Command(L("Chart…"), #selector(W.insertChartAction(_:)), symbol: "chart.bar", shortcut: Shortcut("c", [.command, .option, .shift]),
+                               toolTip: L("Insert a chart"), label: L("Chart"))
     static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature", shortcut: Shortcut("k", [.command, .shift]))
     static let slideNumber = Command(L("Slide Number"), #selector(W.insertSlideNumberAction(_:)), symbol: "number")
     static let date = Command(L("Date"), #selector(W.insertDateAction(_:)), symbol: "calendar")
@@ -159,7 +161,7 @@ enum Cmd {
         spec.view = viewModes.menuElements + [.separator, .command(notesPane), .command(inspector), .command(formatBar), .separator,
                                               .command(zoomIn), .command(zoomOut), .command(zoomFit), .command(actualSize), .separator, .command(guides)]
         spec.insert = [.command(newSlide), .item(newSlideItem), .command(duplicateSlide), .command(deleteSlide), .separator,
-                       .command(textBox), .submenu(L("Shape"), shapeMenu), .command(image), .command(table), .command(stamps), .separator,
+                       .command(textBox), .submenu(L("Shape"), shapeMenu), .command(image), .command(table), .command(chart), .command(stamps), .separator,
                        .command(slideNumber), .command(date)]
         spec.format = [
             .submenu(L("Font"), [.command(bold), .command(italic), .command(underline), .command(strike), .separator,

@@ -476,6 +476,10 @@ final class SlideCanvas: NSView {
             } }
             return
         }
+        if o.kind == .chart {
+            owner.editChart(o)
+            return
+        }
         if o.placeholder?.type == "pic" || (o.kind == .picture && o.media == nil) {
             owner.insertImageAction(nil)
             return

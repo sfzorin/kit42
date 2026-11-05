@@ -86,6 +86,22 @@ extension DeckWindowController {
             var o = SlideObject(id: 0, kind: .table, frame: CGRect(x: 180, y: 170, width: 600, height: t.size.height))
             o.table = t
             insert([o], name: L("Insert Table"))
+        case "chart":
+            // chart:<kind> inserts a sample chart; chart:edit opens the data sheet.
+            if arg == "edit" { editChart(selectedObjects.first { $0.kind == .chart }); break }
+            insertChart(ChartModel.sample(ChartKind(rawValue: arg) ?? .column))
+        case "chartkind": let k = ChartKind(rawValue: arg) ?? .column; changeChart(L("Chart Type")) { $0.kind = k }
+        case "charttitle": changeChart(L("Chart Title")) { $0.title = arg.isEmpty ? nil : arg }
+        case "chartstack": let g = ChartGrouping(rawValue: arg) ?? .stacked; changeChart(L("Chart Type")) { $0.grouping = g }
+        case "chartlabels": changeChart(L("Data Labels")) { $0.dataLabels = arg != "0" }
+        case "chartlegend": changeChart(L("Legend")) { $0.legend = arg.isEmpty || arg == "none" ? nil : arg }
+        case "chartvalue":
+            // chartvalue:<series>,<row>,<value>
+            let v = arg.split(separator: ",").compactMap { Double($0) }
+            if v.count == 3 { changeChart(L("Chart Data")) { m in
+                let s = Int(v[0]), r = Int(v[1])
+                if m.series.indices.contains(s), m.series[s].values.indices.contains(r) { m.series[s].values[r] = v[2] }
+            } }
         case "bold": boldAction(nil)
         case "italic": italicAction(nil)
         case "underline": underlineAction(nil)

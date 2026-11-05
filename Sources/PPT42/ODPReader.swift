@@ -555,6 +555,20 @@ private struct ODPReaderImpl {
         switch e.localName {
         case "frame":
             o.placeholder = placeholder(cls)
+            if let obj = e.child("object"), let href = obj.a("href") {
+                let dir = href.hasPrefix("./") ? String(href.dropFirst(2)) : href
+                if let root = xmlRoot(zip["\(dir)/content.xml"]), var m = ChartODF.read(root) {
+                    var files: [String: Data] = [:]
+                    for (name, data) in zip.entries where name.hasPrefix(dir + "/") { files[String(name.dropFirst(dir.count + 1))] = data }
+                    m.original = ChartOriginal(model: m, part: nil, odf: files)
+                    o.kind = .chart
+                    o.chart = m
+                    o.placeholder = nil
+                    applyGraphics(g, to: &o)
+                    o.shadow = false
+                    return [o]
+                }
+            }
             if let img = e.child("image") ?? e.child("object")?.child("image"), e.child("text-box") == nil, e.child("table") == nil {
                 o.kind = .picture
                 if let href = img.a("href"), let data = zip[href] { o.media = deck.addMedia(data, ext: imageExtension(data)) }

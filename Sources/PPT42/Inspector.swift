@@ -36,6 +36,13 @@ final class InspectorController: NSViewController {
     private let corner = NSSlider(value: 16, minValue: 0, maxValue: 50, target: nil, action: nil)
     private let shadow = NSButton(checkboxWithTitle: L("Shadow"), target: nil, action: nil)
     private let buildPopup = NSPopUpButton()
+    // Chart
+    private let chartHeader = NSTextField(labelWithString: L("CHART"))
+    private var chartGrid = NSGridView()
+    private let chartType = NSPopUpButton(), chartStack = NSPopUpButton(), chartLegend = NSPopUpButton(), chartLabels = NSPopUpButton()
+    private let chartTitle = NSTextField(), catTitle = NSTextField(), valTitle = NSTextField()
+    private let chartGridlines = NSButton(checkboxWithTitle: L("Gridlines"), target: nil, action: nil)
+    private let chartData = NSButton(title: L("Edit Data…"), target: nil, action: nil)
     private let noSelection = NSTextField(wrappingLabelWithString: L("Select an object on the slide to change its size, fill and line."))
 
     // Text
@@ -213,8 +220,30 @@ final class InspectorController: NSViewController {
         popup(buildPopup, [L("None"), L("Appear"), L("Fade In"), L("Fly In"), L("Zoom")], #selector(buildChanged), width: 110)
         noSelection.textColor = .secondaryLabelColor
         noSelection.preferredMaxLayoutWidth = 220
+        popup(chartType, ChartKind.allCases.map(\.name), #selector(chartChanged), width: 150)
+        popup(chartStack, [L("Clustered"), L("Stacked"), L("100% Stacked")], #selector(chartChanged), width: 150)
+        popup(chartLegend, [L("None"), L("Right"), L("Bottom"), L("Top"), L("Left")], #selector(chartChanged), width: 110)
+        popup(chartLabels, [L("None"), L("Values"), L("Percentages")], #selector(chartChanged), width: 130)
+        for f in [chartTitle, catTitle, valTitle] {
+            f.target = self; f.action = #selector(chartChanged)
+            f.translatesAutoresizingMaskIntoConstraints = false
+            f.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        }
+        chartTitle.placeholderString = L("No title")
+        catTitle.placeholderString = L("None")
+        valTitle.placeholderString = L("None")
+        chartGridlines.target = self; chartGridlines.action = #selector(chartChanged)
+        chartData.target = self; chartData.action = #selector(chartDataClicked)
+        chartData.bezelStyle = .rounded
+        chartData.controlSize = .small
+        chartHeader.font = .systemFont(ofSize: 11, weight: .semibold)
+        chartHeader.textColor = .secondaryLabelColor
+        chartGrid = grid([(L("Type:"), [chartType]), (L("Stacking:"), [chartStack]), (L("Title:"), [chartTitle]), (L("Legend:"), [chartLegend]),
+                          (L("Data labels:"), [chartLabels]), (L("Category axis:"), [catTitle]), (L("Value axis:"), [valTitle]),
+                          ("", [chartGridlines]), ("", [chartData])])
         shapePane.setViews([
             noSelection,
+            chartHeader, chartGrid,
             header(L("SIZE AND POSITION")),
             grid([(L("Position:"), [posX, posY, unit(L("cm"))]), (L("Size:"), [width, height, unit(L("cm"))]), (L("Rotation:"), [rotation, unit("°")])]),
             header(L("FILL")), grid([(L("Fill:"), [fillKind, fillColor, fillColor2])]),
@@ -336,6 +365,8 @@ final class InspectorController: NSViewController {
         let o = objs.first
         noSelection.isHidden = o != nil
         for v in shapePane.arrangedSubviews where v !== noSelection { v.isHidden = o == nil }
+        chartHeader.isHidden = o?.chart == nil
+        chartGrid.isHidden = o?.chart == nil
         if let o {
             posX.stringValue = cm(o.frame.minX); posY.stringValue = cm(o.frame.minY)
             width.stringValue = cm(o.frame.width); height.stringValue = cm(o.frame.height)
@@ -363,6 +394,19 @@ final class InspectorController: NSViewController {
             corner.isEnabled = o.geometry == "roundRect"
             corner.doubleValue = Double(o.adjust["adj"] ?? 16667) / 1000
             shadow.state = o.shadow ? .on : .off
+            if let m = o.chart {
+                chartType.selectItem(at: ChartKind.allCases.firstIndex(of: m.kind) ?? 0)
+                chartStack.selectItem(at: ChartGrouping.allCases.firstIndex(of: m.grouping) ?? 0)
+                chartStack.isEnabled = m.kind != .pie && m.kind != .doughnut && m.kind != .scatter
+                chartTitle.stringValue = m.title ?? ""
+                chartLegend.selectItem(at: m.legend.map { ["r": 1, "b": 2, "t": 3, "l": 4][$0] ?? 1 } ?? 0)
+                chartLabels.selectItem(at: m.percentLabels ? 2 : m.dataLabels ? 1 : 0)
+                catTitle.stringValue = m.catAxisTitle ?? ""
+                valTitle.stringValue = m.valAxisTitle ?? ""
+                for f in [catTitle, valTitle] { f.isEnabled = m.kind.hasAxes }
+                chartGridlines.state = m.gridlines ? .on : .off
+                chartGridlines.isEnabled = m.kind.hasAxes
+            }
             buildPopup.selectItem(at: o.build.map { (BuildEffect.allCases.firstIndex(of: $0) ?? 0) + 1 } ?? 0)
             buildPopup.isEnabled = !master
             for f in [posX, posY, width, height, rotation] { f.isEnabled = true }
@@ -517,6 +561,36 @@ final class InspectorController: NSViewController {
             o.line.dash = dash
             if o.isLine { o.line.head = head; o.line.tail = tail }
         }
+    }
+
+    @objc private func chartChanged() {
+        guard !updating, let owner else { return }
+        let kind = ChartKind.allCases[max(0, chartType.indexOfSelectedItem)]
+        let grouping = ChartGrouping.allCases[max(0, chartStack.indexOfSelectedItem)]
+        let title = chartTitle.stringValue, legend = [nil, "r", "b", "t", "l"][max(0, chartLegend.indexOfSelectedItem)]
+        let labels = chartLabels.indexOfSelectedItem, ct = catTitle.stringValue, vt = valTitle.stringValue, grid = chartGridlines.state == .on
+        owner.changeChart(L("Chart")) { m in
+            if m.kind != kind {
+                if (kind == .pie || kind == .doughnut) != (m.kind == .pie || m.kind == .doughnut) { m.varyColors = kind == .pie || kind == .doughnut }
+                if kind == .scatter, m.series.allSatisfy({ $0.xValues.isEmpty }) {
+                    for i in m.series.indices { m.series[i].xValues = m.series[i].values.indices.map { Double($0 + 1) } }
+                }
+                m.kind = kind
+            }
+            m.grouping = grouping
+            m.title = title.isEmpty ? nil : title
+            m.legend = legend
+            m.dataLabels = labels == 1
+            m.percentLabels = labels == 2
+            m.catAxisTitle = ct.isEmpty ? nil : ct
+            m.valAxisTitle = vt.isEmpty ? nil : vt
+            m.gridlines = grid
+        }
+    }
+
+    @objc private func chartDataClicked() {
+        guard let owner, let o = owner.selectedObjects.first(where: { $0.kind == .chart }) else { return }
+        owner.editChart(o)
     }
 
     @objc private func opacityChanged() {

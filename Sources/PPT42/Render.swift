@@ -130,6 +130,15 @@ enum Renderer {
             if let t = o.table { drawTable(t, object: o, slide: slide, deck: deck, ctx: ctx, options: options) }
             ctx.restoreGState()
             return
+        case .chart:
+            ctx.saveGState()
+            transform(for: o, ctx: ctx, flips: false)
+            let box = CGRect(origin: .zero, size: o.frame.size)
+            if !o.fill.isNone { drawFill(o.fill, in: CGPath(rect: box, transform: nil), bounds: box, deck: deck, ctx: ctx) }
+            if let m = o.chart { ChartRenderer.draw(m, deck: deck, in: box, ctx: ctx) }
+            if o.line.color != nil { stroke(CGPath(rect: box, transform: nil), o.line, deck: deck, ctx: ctx) }
+            ctx.restoreGState()
+            return
         case .shape, .textBox:
             ctx.saveGState()
             transform(for: o, ctx: ctx, flips: true)

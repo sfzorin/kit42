@@ -87,6 +87,10 @@ private final class ODFShared {
     var xml = ""
     private var names: [String: String] = [:]
     var pictures: [String: String] = [:]   // media name → zip path
+    /// Embedded sub-documents (charts): directory → files, plus manifest entries (path, media type).
+    var files: [String: Data] = [:]
+    var manifest: [(String, String)] = []
+    var objectCount = 0
 
     func named(_ kind: String, _ make: (String) -> String) -> String {
         if let n = names[kind] { return n }
@@ -132,6 +136,8 @@ private struct ODPWriterImpl {
             let mime = ext == "jpg" || ext == "jpeg" ? "image/jpeg" : ext == "svg" ? "image/svg+xml" : "image/\(ext)"
             manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(mime)\"/>"
         }
+        for (path, data) in shared.files { zip[path] = data }
+        for (path, type) in shared.manifest { manifest += "<manifest:file-entry manifest:full-path=\"\(xmlEscape(path))\" manifest:media-type=\"\(type)\"/>" }
         manifest += "</manifest:manifest>"
         zip["META-INF/manifest.xml"] = Data(manifest.utf8)
         return zip.data()
@@ -462,6 +468,8 @@ private struct ODPWriterImpl {
             return picture(o, styles: styles)
         case .table:
             return table(o, slide: slide, number: number, styles: styles)
+        case .chart:
+            return chartFrame(o, styles: styles)
         case .shape, .textBox:
             if o.placeholder != nil || (o.kind == .textBox && o.geometry == "rect") { return frame(o, slide: slide, number: number, styles: styles) }
             return customShape(o, slide: slide, number: number, styles: styles)
@@ -577,6 +585,52 @@ private struct ODPWriterImpl {
         g += o.shadow ? shadowProps : " draw:shadow=\"hidden\""
         let st = styles.style("graphic", "gr", "<style:graphic-properties draw:fill=\"none\"\(g)/>")
         return "<draw:line draw:style-name=\"\(st)\" draw:layer=\"layout\" svg:x1=\"\(odfLength(a.x))\" svg:y1=\"\(odfLength(a.y))\" svg:x2=\"\(odfLength(b.x))\" svg:y2=\"\(odfLength(b.y))\"><text:p/></draw:line>"
+    }
+
+    /// A chart as an embedded chart sub-document with a replacement picture.
+    func chartFrame(_ o: SlideObject, styles: ODFAutoStyles) -> String {
+        guard let m = o.chart else { return "" }
+        shared.objectCount += 1
+        let dir = "Object \(shared.objectCount)"
+        if let files = m.untouchedODF {
+            for (name, data) in files { shared.files["\(dir)/\(name)"] = data }
+            for name in files.keys.sorted() where name.hasSuffix(".xml") { shared.manifest.append(("\(dir)/\(name)", "text/xml")) }
+        } else {
+            let content = ChartODF.content(m, size: o.frame.size, font: theme.minorFont) { color($0) }
+            shared.files["\(dir)/content.xml"] = Data(content.utf8)
+            shared.files["\(dir)/styles.xml"] = Data(ChartODF.styles().utf8)
+            shared.manifest += [("\(dir)/content.xml", "text/xml"), ("\(dir)/styles.xml", "text/xml")]
+        }
+        shared.manifest.append(("\(dir)/", "application/vnd.oasis.opendocument.chart"))
+        var replacement = ""
+        if let png = chartPNG(o) {
+            shared.files["ObjectReplacements/\(dir)"] = png
+            shared.manifest.append(("ObjectReplacements/\(dir)", "image/png"))
+            replacement = "<draw:image xlink:href=\"./ObjectReplacements/\(dir)\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>"
+        }
+        var g = fillProps(o.fill) + strokeProps(o.line)
+        g += " draw:shadow=\"hidden\""
+        var x = "<draw:frame draw:style-name=\"\(styles.style("graphic", "gr", "<style:graphic-properties\(g)/>"))\" draw:layer=\"layout\"" + position(o.frame, rotation: o.rotation)
+        if !o.name.isEmpty { x += " draw:name=\"\(xmlEscape(o.name))\"" }
+        x += "><draw:object draw:notify-on-update-of-ranges=\"\" xlink:href=\"./\(dir)\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>\(replacement)"
+        if !o.descr.isEmpty { x += "<svg:desc>\(xmlEscape(o.descr))</svg:desc>" }
+        return x + "</draw:frame>"
+    }
+
+    func chartPNG(_ o: SlideObject) -> Data? {
+        guard let m = o.chart else { return nil }
+        let scale: CGFloat = 2
+        let w = max(1, Int(o.frame.width * scale)), h = max(1, Int(o.frame.height * scale))
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: scale, y: -scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        ChartRenderer.draw(m, deck: deck, in: CGRect(origin: .zero, size: o.frame.size), ctx: ctx)
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
     }
 
     func picture(_ o: SlideObject, styles: ODFAutoStyles) -> String {

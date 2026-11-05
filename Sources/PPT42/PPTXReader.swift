@@ -93,6 +93,7 @@ struct PPTXReader {
     var themeLines: [LineStyle] = []
     var themeShadows: [Bool] = []
     var mediaByPart: [String: String] = [:]
+    var contentTypes: (overrides: [String: String], defaults: [String: String]) = ([:], [:])
 
     static func read(_ data: Data) throws -> Deck {
         if data.starts(with: [0xD0, 0xCF, 0x11, 0xE0]) { throw DeckError.legacyPPT }
@@ -114,6 +115,10 @@ struct PPTXReader {
     }
 
     mutating func read() throws -> Deck {
+        if let ct = xmlRoot(zip["[Content_Types].xml"]) {
+            for o in ct.children("Override") { if let p = o.a("PartName"), let t = o.a("ContentType") { contentTypes.overrides[String(p.drop { $0 == "/" })] = t } }
+            for d in ct.children("Default") { if let e = d.a("Extension"), let t = d.a("ContentType") { contentTypes.defaults[e.lowercased()] = t } }
+        }
         let presPath = "ppt/presentation.xml"
         guard let pres = xmlRoot(zip[presPath]) else { throw DeckError.invalid(L("The file is not a PowerPoint presentation")) }
         if let sz = pres.child("sldSz"), let cx = sz.num("cx"), let cy = sz.num("cy"), cx > 0, cy > 0 {
@@ -198,6 +203,23 @@ struct PPTXReader {
     }
 
     // MARK: - Theme
+
+    func contentType(_ path: String) -> String {
+        contentTypes.overrides[path] ?? contentTypes.defaults[(path as NSString).pathExtension.lowercased()] ?? "application/octet-stream"
+    }
+
+    /// A part with the parts it refers to (kept verbatim for writing back).
+    func package(_ path: String, depth: Int = 0) -> PackagePart? {
+        guard let data = zip[path] else { return nil }
+        var list: [PackageRel] = []
+        if depth < 4 {
+            for (id, r) in rels(path).sorted(by: { $0.key < $1.key }) {
+                if r.external { list.append(PackageRel(id: id, type: r.type, external: r.target, part: nil)) }
+                else if let p = package(r.target, depth: depth + 1) { list.append(PackageRel(id: id, type: r.type, external: nil, part: p)) }
+            }
+        }
+        return PackagePart(name: path, data: data, contentType: contentType(path), rels: list)
+    }
 
     mutating func readTheme(_ root: XMLElement) {
         guard let elements = root.child("themeElements") else { return }
@@ -730,9 +752,18 @@ struct PPTXReader {
             o.placeholder = nil
             return o
         }
-        // Charts, SmartArt, OLE: a box saying what was there (a fallback picture when the file has one).
-        o.kind = .shape
         let uri = data.a("uri") ?? ""
+        if uri.hasSuffix("/chart"), let id = data.child("chart")?.rid, let target = rels(part)[id]?.target,
+           let pkg = package(target), let root = xmlRoot(pkg.data) {
+            var m = ChartXML.read(root) { readColor($0) }
+            m.original = ChartOriginal(model: m, part: pkg)
+            o.kind = .chart
+            o.chart = m
+            o.placeholder = nil
+            return o
+        }
+        // SmartArt, OLE: a box saying what was there (a fallback picture when the file has one).
+        o.kind = .shape
         o.unsupported = uri.contains("chart") ? L("Chart (not supported)") : uri.contains("diagram") ? L("SmartArt (not supported)") : L("Object (not supported)")
         if let pic = data.descendants("pic").first, let blip = pic.child("blipFill") {
             o.kind = .picture
