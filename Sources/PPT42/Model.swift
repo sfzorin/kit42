@@ -205,8 +205,21 @@ struct LineStyle: Equatable {
     var dash: Dash = .solid
     var head: Arrowhead = .none
     var tail: Arrowhead = .none
+    /// Arrowhead width and length: 0 small, 1 medium, 2 large (a:headEnd w/len).
+    var headSize = ArrowSize()
+    var tailSize = ArrowSize()
 
     static let none = LineStyle(color: nil)
+}
+
+struct ArrowSize: Equatable {
+    var w = 1
+    var len = 1
+
+    static let names = ["sm", "med", "lg"]
+
+    /// Multiples of the line width (as PowerPoint and LibreOffice draw them).
+    static func factor(_ v: Int) -> CGFloat { [2, 3, 5][min(2, max(0, v))] }
 }
 
 // MARK: - Text
@@ -412,6 +425,8 @@ struct TableModel: Equatable {
     var accent = "accent1"
     var borderColor: PColor? = PColor(rgb: 0xFFFFFF)
     var borderWidth: CGFloat = 1
+    /// Header row text in bold (from the table style; LibreOffice's built-in styles are not bold).
+    var headerBold = true
 
     init(rows: Int, columns: Int, width: CGFloat, rowHeight: CGFloat = 28) {
         self.columns = Array(repeating: width / CGFloat(max(1, columns)), count: max(1, columns))

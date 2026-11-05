@@ -366,16 +366,23 @@ enum Shapes {
     }
 
     /// Arrowhead at `tip`, pointing away from `from`.
-    static func arrowhead(_ kind: Arrowhead, tip: CGPoint, from: CGPoint, width: CGFloat) -> CGPath? {
+    /// Length and half width of an arrowhead on a line of `width`.
+    static func arrowMetrics(_ size: ArrowSize, width: CGFloat) -> (CGFloat, CGFloat) {
+        let w = max(1, width)
+        return (max(3, w * ArrowSize.factor(size.len)), max(1.5, w * ArrowSize.factor(size.w) / 2))
+    }
+
+    static func arrowhead(_ kind: Arrowhead, tip: CGPoint, from: CGPoint, width: CGFloat, size: ArrowSize = ArrowSize()) -> CGPath? {
         guard kind != .none else { return nil }
-        let len = max(6, width * 3.5), half = max(3, width * 2)
+        let (len, half) = arrowMetrics(size, width: width)
         let ang = atan2(tip.y - from.y, tip.x - from.x)
         let back = CGPoint(x: tip.x - cos(ang) * len, y: tip.y - sin(ang) * len)
         let nx = -sin(ang), ny = cos(ang)
         let p = CGMutablePath()
         switch kind {
         case .oval:
-            p.addEllipse(in: CGRect(x: tip.x - half, y: tip.y - half, width: half * 2, height: half * 2))
+            // An ellipse of width × length, along the line.
+            p.addEllipse(in: CGRect(x: -len / 2, y: -half, width: len, height: half * 2), transform: CGAffineTransform(translationX: tip.x, y: tip.y).rotated(by: ang))
         case .diamond:
             let mid = CGPoint(x: tip.x - cos(ang) * len / 2, y: tip.y - sin(ang) * len / 2)
             p.addLines(between: [CGPoint(x: tip.x + cos(ang) * len / 2, y: tip.y + sin(ang) * len / 2),

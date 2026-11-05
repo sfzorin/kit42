@@ -566,8 +566,9 @@ struct PPTXWriter {
         guard let c = l.color else { return "<a:ln><a:noFill/></a:ln>" }
         var x = "<a:ln w=\"\(emu(l.width))\"><a:solidFill>\(color(c, alpha: alpha))</a:solidFill>"
         if l.dash != .solid { x += "<a:prstDash val=\"\(l.dash == .dot ? "sysDot" : l.dash.rawValue)\"/>" }
-        if l.head != .none { x += "<a:headEnd type=\"\(l.head.rawValue)\"/>" }
-        if l.tail != .none { x += "<a:tailEnd type=\"\(l.tail.rawValue)\"/>" }
+        func sz(_ s: ArrowSize) -> String { s == ArrowSize() ? "" : " w=\"\(ArrowSize.names[s.w])\" len=\"\(ArrowSize.names[s.len])\"" }
+        if l.head != .none { x += "<a:headEnd type=\"\(l.head.rawValue)\"\(sz(l.headSize))/>" }
+        if l.tail != .none { x += "<a:tailEnd type=\"\(l.tail.rawValue)\"\(sz(l.tailSize))/>" }
         return x + "</a:ln>"
     }
 
@@ -604,8 +605,9 @@ struct PPTXWriter {
         if let ls = s.lineSpacing {
             kids += ls < 0 ? "<a:lnSpc><a:spcPts val=\"\(Int(-ls * 100))\"/></a:lnSpc>" : "<a:lnSpc><a:spcPct val=\"\(Int((ls * 100000).rounded()))\"/></a:lnSpc>"
         }
-        if let b = s.spaceBefore { kids += "<a:spcBef><a:spcPts val=\"\(Int(b * 100))\"/></a:spcBef>" }
-        if let a = s.spaceAfter { kids += "<a:spcAft><a:spcPts val=\"\(Int(a * 100))\"/></a:spcAft>" }
+        func spc(_ v: CGFloat) -> String { v < 0 ? "<a:spcPct val=\"\(Int((-v * 100000).rounded()))\"/>" : "<a:spcPts val=\"\(Int(v * 100))\"/>" }
+        if let b = s.spaceBefore { kids += "<a:spcBef>\(spc(b))</a:spcBef>" }
+        if let a = s.spaceAfter { kids += "<a:spcAft>\(spc(a))</a:spcAft>" }
         if let b = s.bullet {
             switch b.kind {
             case .none: kids += "<a:buNone/>"

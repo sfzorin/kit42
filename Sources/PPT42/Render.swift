@@ -333,18 +333,18 @@ enum Renderer {
         ctx.beginTransparencyLayer(auxiliaryInfo: nil)
         // Shorten the line under filled heads so the tip stays sharp.
         let len = hypot(b.x - a.x, b.y - a.y)
-        func inset(_ p: CGPoint, toward q: CGPoint, _ head: Arrowhead) -> CGPoint {
-            guard head != .none, head != .arrow, len > 0 else { return p }
-            let d = min(len / 2, max(6, w * 3.5) * 0.8)
+        func inset(_ p: CGPoint, toward q: CGPoint, _ head: Arrowhead, _ size: ArrowSize) -> CGPoint {
+            guard head != .none, head != .arrow, head != .oval, head != .diamond, len > 0 else { return p }
+            let d = min(len / 2, Shapes.arrowMetrics(size, width: w).0 * 0.8)
             return CGPoint(x: p.x + (q.x - p.x) / len * d, y: p.y + (q.y - p.y) / len * d)
         }
         let path = CGMutablePath()
-        path.move(to: inset(a, toward: b, o.line.head))
-        path.addLine(to: inset(b, toward: a, o.line.tail))
+        path.move(to: inset(a, toward: b, o.line.head, o.line.headSize))
+        path.addLine(to: inset(b, toward: a, o.line.tail, o.line.tailSize))
         stroke(path, o.line, deck: deck, ctx: ctx)
         let cg = color.resolved(deck.theme).cgColor
-        for (kind, tip, from) in [(o.line.head, a, b), (o.line.tail, b, a)] {
-            guard let head = Shapes.arrowhead(kind, tip: tip, from: from, width: w) else { continue }
+        for (kind, tip, from, size) in [(o.line.head, a, b, o.line.headSize), (o.line.tail, b, a, o.line.tailSize)] {
+            guard let head = Shapes.arrowhead(kind, tip: tip, from: from, width: w, size: size) else { continue }
             ctx.addPath(head)
             if kind == .arrow {
                 ctx.setStrokeColor(cg)
@@ -408,7 +408,7 @@ enum Renderer {
 
     static func cellDefaults(_ t: TableModel, row: Int) -> RunProps? {
         guard t.firstRow, row == 0 else { return RunProps(size: 18) }
-        return RunProps(size: 18, bold: true, color: PColor(scheme: "bg1"))
+        return RunProps(size: 18, bold: t.headerBold, color: PColor(scheme: "bg1"))
     }
 
     static func drawTable(_ t: TableModel, object o: SlideObject, slide: Slide?, deck: Deck, ctx: CGContext, options: RenderOptions) {

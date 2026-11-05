@@ -411,8 +411,11 @@ struct PPTXReader {
             default: return .triangle
             }
         }
-        if let h = head(ln.child("headEnd")) { line.head = h }
-        if let t = head(ln.child("tailEnd")) { line.tail = t }
+        func size(_ e: XMLElement?) -> ArrowSize {
+            ArrowSize(w: ArrowSize.names.firstIndex(of: e?.a("w") ?? "med") ?? 1, len: ArrowSize.names.firstIndex(of: e?.a("len") ?? "med") ?? 1)
+        }
+        if let h = head(ln.child("headEnd")) { line.head = h; line.headSize = size(ln.child("headEnd")) }
+        if let t = head(ln.child("tailEnd")) { line.tail = t; line.tailSize = size(ln.child("tailEnd")) }
     }
 
     // MARK: - Text
@@ -447,7 +450,8 @@ struct PPTXReader {
         if let i = e.num("indent") { s.indent = i / emuPerPoint }
         func spacing(_ el: XMLElement?, lineSpacing: Bool) -> CGFloat? {
             guard let el else { return nil }
-            if let pct = el.child("spcPct")?.num("val") { return lineSpacing ? pct / 100000 : pct / 100000 * 12 }
+            // Paragraph spacing in percent of the line is kept negative (a fraction of the font's line height).
+            if let pct = el.child("spcPct")?.num("val") { return lineSpacing ? pct / 100000 : -pct / 100000 }
             if let pts = el.child("spcPts")?.num("val") { return lineSpacing ? -pts / 100 : pts / 100 }
             return nil
         }
@@ -882,6 +886,10 @@ struct PPTXReader {
         if let pr = tbl.child("tblPr") {
             t.firstRow = pr.bool("firstRow") ?? false
             t.bandRows = pr.bool("bandRow") ?? false
+            // Header text weight from the style's first row (a:tcTxStyle b="on"); not bold otherwise, as LibreOffice shows it.
+            let id = pr.child("tableStyleId")?.stringValue ?? ""
+            let style = xmlRoot(zip["ppt/tableStyles.xml"])?.children("tblStyle").first { $0.a("styleId") == id }
+            t.headerBold = style?.path("firstRow", "tcTxStyle")?.a("b") == "on"
         }
         for (ri, tr) in rows.enumerated() {
             t.rows[ri] = (tr.num("h") ?? 370840) / emuPerPoint

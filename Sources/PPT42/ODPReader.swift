@@ -486,6 +486,15 @@ private struct ODPReaderImpl {
         }
         l.head = arrowhead(g["marker-start"])
         l.tail = arrowhead(g["marker-end"])
+        // Marker width in line widths → small, medium, large.
+        func size(_ key: String) -> ArrowSize {
+            guard let mw = odfPoints(g[key]) else { return ArrowSize() }
+            let f = mw / max(1, l.width)
+            let v = f < 2.5 ? 0 : f < 4 ? 1 : 2
+            return ArrowSize(w: v, len: v)
+        }
+        l.headSize = size("marker-start-width")
+        l.tailSize = size("marker-end-width")
         return l
     }
 

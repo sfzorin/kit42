@@ -425,9 +425,10 @@ private struct ODPWriterImpl {
         x += " svg:stroke-color=\"\(color(c))\" svg:stroke-width=\"\(odfLength(l.width))\" draw:stroke-linejoin=\"round\""
         let a = c.alpha * opacity
         if a < 0.999 { x += " svg:stroke-opacity=\"\(pct(a))\"" }
-        let mw = odfLength(max(6, l.width * 3.5) * 1.15)
-        if let m = markerName(l.head) { x += " draw:marker-start=\"\(m)\" draw:marker-start-width=\"\(mw)\" draw:marker-start-center=\"\(l.head == .oval || l.head == .diamond)\"" }
-        if let m = markerName(l.tail) { x += " draw:marker-end=\"\(m)\" draw:marker-end-width=\"\(mw)\" draw:marker-end-center=\"\(l.tail == .oval || l.tail == .diamond)\"" }
+        // LibreOffice markers keep their aspect: the width follows the arrowhead's width.
+        func mw(_ s: ArrowSize) -> String { odfLength(Shapes.arrowMetrics(s, width: l.width).1 * 2) }
+        if let m = markerName(l.head) { x += " draw:marker-start=\"\(m)\" draw:marker-start-width=\"\(mw(l.headSize))\" draw:marker-start-center=\"\(l.head == .oval || l.head == .diamond)\"" }
+        if let m = markerName(l.tail) { x += " draw:marker-end=\"\(m)\" draw:marker-end-width=\"\(mw(l.tailSize))\" draw:marker-end-center=\"\(l.tail == .oval || l.tail == .diamond)\"" }
         return x
     }
 
@@ -773,7 +774,8 @@ private struct ODPWriterImpl {
         let marL = s.marL ?? 0, indent = s.indent ?? 0
         // Bulleted paragraphs keep their indents in the list level (text:space-before / min-label-width), as LibreOffice does.
         x += " fo:margin-left=\"\(odfLength(bulleted ? 0 : max(0, marL)))\" fo:margin-right=\"0cm\" fo:text-indent=\"\(odfLength(bulleted ? 0 : (marL + indent < 0 ? -marL : indent)))\""
-        x += " fo:margin-top=\"\(odfLength(s.spaceBefore ?? 0))\" fo:margin-bottom=\"\(odfLength(s.spaceAfter ?? 0))\""
+        func spc(_ v: CGFloat?) -> CGFloat { guard let v else { return 0 }; return v < 0 ? -v * (s.run.size ?? 18) * 1.2 : v }
+        x += " fo:margin-top=\"\(odfLength(spc(s.spaceBefore)))\" fo:margin-bottom=\"\(odfLength(spc(s.spaceAfter)))\""
         if let ls = s.lineSpacing {
             x += ls < 0 ? " fo:line-height=\"\(odfLength(-ls))\"" : " fo:line-height=\"\(pct(ls))\""
         } else {
