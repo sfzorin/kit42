@@ -161,9 +161,7 @@ public enum MarkSamples {
         for (n, name) in names.enumerated() {
             for (f, form) in SignatureForm.allCases.dropFirst().enumerated() {
                 // A fixed style per name and form, so the sheet is stable between runs.
-                let archetypes = [0, 2, 4, 6, 7]
-                let style = UInt64((archetypes[f] * 24 + (n * 5 + f * 3) % 8 * 3 + (n + f) % 3))
-                let design = (UInt64(31 + n * 7 + f) << 16) | style
+                let design = SignatureGenerator.design(form: form, variant: n * 3 + f, seed: UInt64(31 + n * 7 + f))
                 for c in 0..<4 {
                     try save(SignatureGenerator.render(name, design: design, impression: UInt64(c + 1) &* 7919, ink: InkColor.blue.pen),
                              "signature-\(n)-form\(f)-copy\(c)")

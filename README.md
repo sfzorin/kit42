@@ -609,8 +609,8 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 
 - Signature and stamp generator (in the Signatures and Stamps popover of PDF42, DOC42, IMG42, PPT42 and XLS42).
   **Create Signature…**: one or more names (one per line), a form — full name, initial and surname, surname,
-  initials and a scribble, capital and a scribble, or any — and three styles out of 240 (plan × flourish × how the
-  initial joins), New Variants (⌘R) for three more. Signatures are written by a kinematic model of a fast hand with
+  initials and a scribble, capital and a scribble, or any — and three styles out of 1320 (plan × flourish × capital variant × how
+  the initial joins), New Variants (⌘R) for three more. Signatures are written by a kinematic model of a fast hand with
   a ballpoint pen: hand-drawn centre lines for Latin, Cyrillic and Turkish letters, a smooth spline without stops,
   speed from curvature (two-thirds power law) setting line width and ink, flying starts and finishes.
   **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,

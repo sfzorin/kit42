@@ -353,7 +353,8 @@ struct Mark {
             (text as NSString).draw(with: r.insetBy(dx: textPadding, dy: textPadding), options: [.usesLineFragmentOrigin], attributes: textAttributes)
         case .image:
             guard let image else { return }
-            NSImage(cgImage: image, size: .zero).draw(in: rect.standardized, from: .zero, operation: .sourceOver, fraction: 1,
+            // Signatures and stamps are ink: multiply with the picture under them.
+            NSImage(cgImage: image, size: .zero).draw(in: rect.standardized, from: .zero, operation: .multiply, fraction: 1,
                                                       respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
         case .pixelate:
             let r = rect.standardized.integral

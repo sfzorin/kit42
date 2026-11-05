@@ -195,3 +195,28 @@ fails 2 of 20 lifecycle checks ("Revert discards pending notes undo transaction"
 local Undo stack") in another agent's new, uncommitted PPT42 notes-undo work, not in code touched here.
 Not exercised in the live app: inserting a generated or imported mark into a document, the Add to Library
 round trip with a real SVG/PDF file chosen in the open panel, the custom colour panel, release-build timing.
+
+## Ink layering — 2026-11-05
+
+Signatures and stamps now blend like ink (multiply): text under them stays dark, overlapping inks darken each other,
+and the order of layers hardly matters. PDF42 `ImageStampAnnotation` draws with multiply (the saved appearance
+stream carries `/BM /Multiply`, checked in a reopened file; this also applies to images from Image from File…);
+IMG42 image marks multiply; DOC42 inserts a stamp or signature as one undoable step, floating in front of the text
+at the caret (`DocImage.ink`), multiplied on screen (layer compositing filter) and in export (drawn after the text).
+`PDF42 --mark-overlay DIR` writes before/after renders of a saved and reopened page.
+
+Verified: `audit-ui.py` DOC42 10/10, PDF42 6/6, IMG42 3/3; `audit-documents-cli.py` 4/4; `--mark-overlay` renders
+inspected. Not verified: the DOC42 floating stamp on screen and in its PDF export with a real insertion (no audit
+scenario inserts one); DOCX keeps the stamp in front of the text but not the multiply flag.
+
+## Signature variation and smoothness — 2026-11-05
+
+- Line flicker removed: speed (and so width and ink) is estimated from curvature over about 4 % of the capital height
+  and smoothed over twice that, instead of neighbouring 1-px samples; the path low-pass grew to ~3 % of the capital.
+- Copies differ more, smoothly: size ±7 %, slant ±4.5°, angle ±3.5°, width ±6 %, a low-frequency drift of the whole
+  hand, each letter shifted (±0.04 cap) and scaled (±7 %) as a whole, garland heights ±18 %, exit and flourish
+  control points moved; per-point noise reduced to ±0.8 %.
+- Styles: 1320 (10 plans × 11 flourishes × 4 capital variants — as drawn, lead-in loop, simplified, tall — × 3 joins).
+
+Verified: PDF42 debug build, `--mark-samples` sheets inspected (smooth at 100 %, four copies per style visibly
+different). `audit-ui.py --app PDF42` 6/6 (samples, generator windows).

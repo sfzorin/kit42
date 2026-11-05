@@ -194,11 +194,14 @@ public final class DocImage: NSObject {
     public var borderColor: NSColor = .black
     /// Cropped part of each side, as fractions of the picture (left, top, right, bottom).
     public var crop = NSEdgeInsets()
+    /// Ink (signature, stamp): drawn with multiply, like ink on paper — text under it stays dark, overlapping inks
+    /// darken each other, and the order of layers hardly matters.
+    public var ink = false
     public override init() {}
     public func duplicate() -> DocImage {
         let d = DocImage()
         d.wrap = wrap; d.offset = offset; d.fromParagraph = fromParagraph
-        d.borderWidth = borderWidth; d.borderColor = borderColor; d.crop = crop
+        d.borderWidth = borderWidth; d.borderColor = borderColor; d.crop = crop; d.ink = ink
         return d
     }
     public var isFloating: Bool { wrap != .inline }

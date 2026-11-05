@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import Kit42
 
 extension NSTextAttachment {
@@ -45,7 +46,9 @@ final class ImageCell: NSTextAttachmentCell {
             from = NSRect(x: image.size.width * c.left, y: image.size.height * c.bottom,
                           width: image.size.width * max(0.01, 1 - c.left - c.right), height: image.size.height * max(0.01, 1 - c.top - c.bottom))
         }
-        image.draw(in: rect, from: from, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        // Ink multiplies with what is under it (page export draws floats after the text, so this applies there too).
+        image.draw(in: rect, from: from, operation: props?.ink == true ? .multiply : .sourceOver, fraction: 1, respectFlipped: true,
+                   hints: [.interpolation: NSImageInterpolation.high.rawValue])
         if let p = props, p.borderWidth > 0 {
             p.borderColor.setStroke()
             let path = NSBezierPath(rect: rect.insetBy(dx: p.borderWidth / 2, dy: p.borderWidth / 2))
@@ -83,7 +86,12 @@ final class FloatImageView: NSView {
     var index = 0
     var onMouseDown: ((FloatImageView, NSEvent) -> Void)?
     override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) { ImageCell.drawPicture(image, in: bounds, props: props, flipped: true) }
+    override func draw(_ dirtyRect: NSRect) {
+        // On screen the view has its own layer: multiply it with the text views underneath.
+        wantsLayer = true
+        layer?.compositingFilter = props.ink && props.wrap == .inFront ? CIFilter(name: "CIMultiplyBlendMode") : nil
+        ImageCell.drawPicture(image, in: bounds, props: props, flipped: true)
+    }
     override func mouseDown(with event: NSEvent) { onMouseDown?(self, event) }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
 }

@@ -105,6 +105,8 @@ extension PDFPage {
 /// into the annotation's appearance stream on save, so other viewers show it too.
 final class ImageStampAnnotation: PDFAnnotation {
     let image: CGImage
+    /// Multiply (ink); `.normal` only for the before/after demo.
+    var blendMode: CGBlendMode = .multiply
 
     init(image: CGImage, bounds: CGRect) {
         self.image = image
@@ -116,6 +118,9 @@ final class ImageStampAnnotation: PDFAnnotation {
     override func draw(with box: PDFDisplayBox, in context: CGContext) {
         context.saveGState()
         context.interpolationQuality = .high
+        // Ink on paper multiplies with what is under it: text stays dark, overlapping inks darken each other.
+        // Quartz writes this as /BM /Multiply in the saved appearance stream.
+        context.setBlendMode(blendMode)
         context.draw(image, in: bounds)
         context.restoreGState()
     }

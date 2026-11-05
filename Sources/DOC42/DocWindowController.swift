@@ -673,8 +673,17 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSTextVie
         let popover = NSPopover()
         let vc = StampLibraryViewController { [weak self] cg in
             guard let self else { return }
+            // A stamp or signature is put over the text at the caret (in front of the text, multiplied like ink),
+            // as one undoable step.
             let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-            self.insert(self.imageAttachment(image, width: 170))
+            let at = self.activeTextView.selectedRange().location
+            let undo = self.window?.undoManager
+            undo?.beginUndoGrouping()
+            self.insert(self.imageAttachment(image, width: cg.width > cg.height * 2 ? 170 : 120))
+            self.setImageWrap(at, .inFront)
+            self.changeImage(at, name: L("Signature or Stamp")) { _, p in p.ink = true }
+            undo?.endUndoGrouping()
+            undo?.setActionName(L("Signature or Stamp"))
         }
         vc.popover = popover
         popover.contentViewController = vc
