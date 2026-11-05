@@ -162,6 +162,10 @@ enum PDFSelfTest {
             ("testEmptySignatureIsReportedAsInvalid", testEmptySignatureIsReportedAsInvalid),
             ("testUntrustedNamesBecomeSingleFileNames", testUntrustedNamesBecomeSingleFileNames),
             ("testExtractionStaysInsideDirectoryAndPreservesExistingFiles", testExtractionStaysInsideDirectoryAndPreservesExistingFiles),
+            ("testDERObjectIdentifiers", testDERObjectIdentifiers),
+            ("testPAdESBaselineSignature", testPAdESBaselineSignature),
+            ("testIncrementalStreamsRoundTrip", testIncrementalStreamsRoundTrip),
+            ("testRevocationCoverageByCRL", testRevocationCoverageByCRL),
         ]
         for (name, run) in checks {
             let before = failures

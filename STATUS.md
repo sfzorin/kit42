@@ -220,3 +220,46 @@ scenario inserts one); DOCX keeps the stamp in front of the text but not the mul
 
 Verified: PDF42 debug build, `--mark-samples` sheets inspected (smooth at 100 %, four copies per style visibly
 different). `audit-ui.py --app PDF42` 6/6 (samples, generator windows).
+
+## PDF42 PAdES baseline levels and CSC remote signing — 2026-11-06
+
+What changed: PDF42 signs as PAdES B-B / B-T / B-LT / B-LTA (ETSI.CAdES.detached; CMS built in `CAdES.swift` with
+content-type, message-digest and signing-certificate-v2, no signing-time) or the legacy adbe.pkcs7.detached. B-LT adds
+a DSS (/Certs, /OCSPs, /CRLs, /VRI) with validation data fetched from AIA/CRL URLs for the signer and TSA paths;
+B-LTA adds an ETSI.RFC3161 document timestamp and then extends the DSS for the timestamp's TSA. New commands: Signature ›
+Enable Long-Term Validation, Signature › Add Document Timestamp; Sign dialog Format menu (default B-LTA) and Remote
+(CSC)…; CLI `--sign … level=…`, `--ltv`, `--doc-timestamp`, `--csc-credentials`, `--csc-sign`. `--verify` and the
+verification cards report document timestamps (imprint checked against the covered bytes), the PAdES level and the
+LTV status. CSC API v2 client: info, auth/login, OAuth 2.0 (authorization code + PKCE on a loopback redirect,
+client credentials), credentials/list|info|authorize|sendOTP, signatures/signHash; only the hash is sent.
+
+Verified (debug build of this worktree, macOS 27.0.1 arm64):
+- `swift build` (whole package) passes; `PDF42 --selftest` 15/15 groups (4 new: OID/DER encoding, a PAdES B-B
+  signature with an in-memory key — subfilter, signing-certificate-v2 hash, no signing-time, tamper → invalid, legacy
+  subfilter —, incremental stream round trip incl. FlateDecode, CRL revocation coverage); `scripts/check_strings.py`
+  reports no PDF42 problems (one pre-existing DOC42 string remains).
+- External validator: **EU DSS 6.3** (the library behind the EU DSS demo webapp), run locally and **offline** — no
+  OCSP/CRL/AIA fetching, so only data embedded in the PDF counts; trust anchors = macOS system roots + a test root.
+  `scripts/pades/run.sh WORKDIR` reproduces it with a throw-away PKI (root → issuing CA → signer, OCSP responders and
+  CRLs on localhost). Results: B-LT → `PAdES-BASELINE-LT TOTAL_PASSED`; B-LTA → `PAdES-BASELINE-LTA TOTAL_PASSED`;
+  B-T signed then Enable LTV → LT TOTAL_PASSED, then Add Document Timestamp → LTA TOTAL_PASSED; CSC-signed B-LTA →
+  LTA TOTAL_PASSED; B-B / B-T → format BASELINE-B / BASELINE-T, INDETERMINATE (no revocation data offline, as
+  expected); legacy → PKCS7-T; a one-byte change → TOTAL_FAILED/HASH_FAILURE and the document timestamp's imprint
+  not intact. TSAs used: DigiCert (default) and Sectigo, both with the same results.
+- CSC: tested only against `scripts/pades/csc_mock.py` (local mock of the v2 endpoints, signing with the test key):
+  HTTP Basic, client credentials (wrong secret → `invalid_client`), explicit PIN+OTP (wrong PIN → error), and the
+  browser flow for an `oauth2code` credential (service-scope then credential-scope authorization code with PKCE;
+  the mock checks the verifier, redirect URI and that the token covers exactly the signed hash). The signHash request
+  body was 185 bytes: credential ID, algorithm OIDs and one SHA-256 hash.
+
+Not verified / limitations:
+- The EU DSS demo website itself was not used (uploading files to it was not permitted in this session); the same
+  DSS library was run locally instead. No EU trusted lists were loaded, so qualification is `NA`.
+- In that DSS run the timestamps themselves stay INDETERMINATE (`The ResponderId does not match the OCSP issuer
+  certificate`, `Unable to build a certificate chain up to a trusted list`) for both DigiCert and Sectigo even though
+  the responder key hashes match their CA keys; DSS still accepts them for the LT/LTA signature result. Not resolved.
+- No public CSC sandbox without an account was found (SSL.com eSigner needs a sandbox registration; BankID's
+  pre-production endpoint publishes no test credentials), so no real QTSP was contacted. The mock shares PDF42's reading of the spec.
+- The Sign dialog's new Format menu, the Remote (CSC)… dialogs and the two new Signature menu commands were not
+  exercised in the UI (no `audit-ui.py` scenario covers signing); Acrobat was not used to check "LTV enabled".
+- Not installed into /Applications; not published.
