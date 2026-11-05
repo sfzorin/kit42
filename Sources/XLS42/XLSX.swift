@@ -152,7 +152,11 @@ enum XLSX {
                         // Array formula (CSE or dynamic array): the other cells of its range hold the results.
                         if f.attr("t") == "array" {
                             cell.array = true
-                            if let r = f.attr("ref").flatMap(CellRange.init), r.count > 1 { arrayRanges.append(r) }
+                            if let r = f.attr("ref").flatMap(CellRange.init) {
+                                if r.count > 1 { arrayRanges.append(r) }
+                                // Without Excel 365's dynamic-array mark (cm) it's a Ctrl+Shift+Enter formula over a fixed range.
+                                if c.attr("cm") == nil { sheet.arrays[ref] = CellRange(ref, r.end) }
+                            }
                         }
                     }
                 }

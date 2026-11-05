@@ -188,7 +188,12 @@ final class Calculator {
         let v: Value
         if let e = Self.expression(cell.input) {
             let result = eval(e, sheet: sheet, at: ref)
-            if result.isMulti, cell.array || Self.isDynamic(cell.input), case .matrix(let m, _) = result {
+            if cell.array, let fixed = workbook.sheets[sheet].arrays[ref] {
+                // Legacy array formula: the result fills its range (single rows/columns repeat, the rest is #N/A).
+                let m: Matrix
+                if case .matrix(let mm, _) = result, mm.count > 0 { m = mm } else { m = Matrix(rows: 1, cols: 1, values: [scalar(result, at: ref)]) }
+                v = fillArray(m, sheet: sheet, range: fixed)
+            } else if result.isMulti, cell.array || Self.isDynamic(cell.input), case .matrix(let m, _) = result {
                 v = spill(m, sheet: sheet, at: ref)
             } else {
                 v = scalar(result, at: ref)
@@ -221,6 +226,17 @@ final class Calculator {
             if all { spillsDone.insert(sheet) }
         }
         return spilled[sheet]?[ref] ?? .empty
+    }
+
+    /// A legacy array formula's result over its fixed range (no #SPILL!: the range belongs to the formula).
+    private func fillArray(_ m: Matrix, sheet: Int, range: CellRange) -> Value {
+        for ref in range.cells where ref != range.start {
+            let v = m.at(ref.row - range.start.row, ref.col - range.start.col)
+            spilled[sheet, default: [:]][ref] = v.isEmpty ? .number(0) : v
+        }
+        spillRanges[sheet, default: [:]][range.start] = range
+        let first = m.at(0, 0)
+        return first
     }
 
     /// Writes an array result from `at` down and right; #SPILL! when a cell in the way isn't empty.

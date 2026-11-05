@@ -116,6 +116,8 @@ enum Cmd {
     static let fillRight = Command(L("Fill Right"), #selector(W.fillRight(_:)), shortcut: Shortcut("r"))
     static let find = Command(L("Find…"), #selector(W.focusSearchAction(_:)), shortcut: Shortcut("f"))
     static let findNext = Command(L("Find Next"), #selector(W.findNextAction(_:)), shortcut: Shortcut("g"))
+    static let arrayFormula = Command(L("Enter Array Formula"), #selector(W.enterArrayAction(_:)), symbol: "curlybraces",
+                                      shortcut: Shortcut("\r", [.command, .shift]))
     static let goToCell = Command(L("Go to Cell…"), #selector(W.goToCellAction(_:)), shortcut: Shortcut("g", [.command, .option]))
 
     // View
@@ -176,7 +178,7 @@ enum Cmd {
         var spec = MenuBarSpec(appName: "XLS42")
         spec.fileExtras = [.command(exportPDF), .command(exportCSV), .separator, .command(importCSV), .separator,
                            .command(setPrintArea), .command(clearPrintArea)]
-        spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator,
+        spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator, .command(arrayFormula), .separator,
                            .submenu(L("Fill"), [.command(fillDown), .command(fillRight), .command(fillUp), .command(fillLeft), .separator, .command(fillSeries)])]
         spec.find = [.command(find), .command(findNext), .command(replace), .command(goToCell)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator,

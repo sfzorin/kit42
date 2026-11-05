@@ -167,7 +167,11 @@ enum ODS {
                                 if let cs = cellXML.attr("number-matrix-columns-spanned").flatMap(Int.init),
                                    let rs = cellXML.attr("number-matrix-rows-spanned").flatMap(Int.init) {
                                     cell.array = true
-                                    if cs * rs > 1 { matrixRanges.append(CellRange(ref, CellRef(row: ref.row + rs - 1, col: ref.col + cs - 1))) }
+                                    let range = CellRange(ref, CellRef(row: ref.row + max(1, rs) - 1, col: ref.col + max(1, cs) - 1))
+                                    if cs * rs > 1 { matrixRanges.append(range) }
+                                    // ODF matrices are fixed ranges, like Excel's Ctrl+Shift+Enter formulas
+                                    // (dynamic-array functions keep spilling to their natural size).
+                                    if !Calculator.isDynamic(formula) { sheet.arrays[ref] = range }
                                 }
                             } else {
                                 cell.input = XLSX.inputText(for: value, style: style)
@@ -272,7 +276,15 @@ enum ODS {
     /// A solver_… name as Excel text: "Sheet1!$A$1:$B$2" for named ranges (several joined by ","), the expression otherwise.
     static func solverText(_ e: XMLElement) -> String? {
         if e.localName == "named-range", let addr = e.attr("cell-range-address") {
-            let parts = addr.split(separator: " ").compactMap { rangeFromODF(String($0)) }.map { r in
+            // Several ranges are separated by spaces (outside quoted sheet names).
+            var pieces: [String] = [], cur = "", quoted = false
+            for ch in addr {
+                if ch == "'" { quoted.toggle() }
+                if ch == " " && !quoted { if !cur.isEmpty { pieces.append(cur) }; cur = ""; continue }
+                cur.append(ch)
+            }
+            if !cur.isEmpty { pieces.append(cur) }
+            let parts = pieces.compactMap { rangeFromODF($0) }.map { r in
                 (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
             }
             return parts.isEmpty ? nil : parts.joined(separator: ",")
