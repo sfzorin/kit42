@@ -45,7 +45,7 @@ def prepare(app):
 binaries = {app: prepare(app) for app in APPS if not args.app or args.app == app}
 
 
-def run(app, name, arguments=(), settings=None, marker=None, snapshot=False):
+def run(app, name, arguments=(), settings=None, marker=None, snapshot=False, timeout=60):
     env = {k: v for k, v in os.environ.items() if not k.startswith('K42_')}
     env.update(K42_APPEARANCE='light', K42_UI_TEST_DIR=str(shots), K42_SCAN_DIR=str(out / 'saved-scans'))
     env.update(settings or {})
@@ -59,7 +59,7 @@ def run(app, name, arguments=(), settings=None, marker=None, snapshot=False):
     log = out / (name + '.log')
     try:
         result = subprocess.run([str(binaries[app]), *map(str, arguments)], env=env, cwd=REPO,
-                                capture_output=True, timeout=60)
+                                capture_output=True, timeout=timeout)
         text = (result.stdout + result.stderr).decode(errors='replace')
         log.write_text(text)
         ok = result.returncode == 0 and 'FAIL' not in text
@@ -102,6 +102,7 @@ if args.mode in ('all', 'tests'):
         ('PDF42', 'mark-samples', ('--mark-samples', out / 'marks'), {}, 'Mark samples: ', False),
         ('PDF42', 'mark-signature', (out / 'sample.pdf',), {'K42_OPEN_GENERATOR': 'signature', 'K42_SNAPSHOT_SHEET': '1'}, None, True),
         ('PDF42', 'mark-seal', (out / 'sample.pdf',), {'K42_OPEN_GENERATOR': 'seal', 'K42_SNAPSHOT_SHEET': '1'}, None, True),
+        ('PDF42', 'mark-learn', (out / 'sample.pdf',), {'K42_OPEN_GENERATOR': 'learn', 'K42_SNAPSHOT_SHEET': '1'}, None, True),
         ('PPT42', 'ppt-notes', (), {'K42_NEW': '1', 'K42_DO': 'auditnotes', 'K42_AUDIT_RECENT': '1'}, 'PPT notes UI regressions: 6/6 passed', True),
         ('PPT42', 'ppt-editing', (), {'K42_NEW': '1', 'K42_DO': 'auditediting', 'K42_PASTEBOARD': '1'}, 'PPT editing UI regressions:', True),
         ('PPT42', 'ppt-text', (), {'K42_NEW': '1', 'K42_DO': 'audittext', 'K42_PASTEBOARD': '1'}, 'PPT text/table/show UI regressions:', True),
@@ -110,7 +111,8 @@ if args.mode in ('all', 'tests'):
     ]
     for app, name, arguments, settings, marker, snapshot in tests:
         if app in binaries:
-            results.append(run(app, name, arguments, settings, marker, snapshot))
+            # The mark sample sheet renders ~240 signatures and stamps in a debug build.
+            results.append(run(app, name, arguments, settings, marker, snapshot, timeout=300 if name == 'mark-samples' else 60))
 
 if args.mode in ('all', 'screenshots'):
     # Fixtures come from the apps' existing headless exporters, independent of UI hooks.

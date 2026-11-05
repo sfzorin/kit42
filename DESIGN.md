@@ -190,6 +190,8 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 | `BannerView` | status bar (`info / success / warning / error`) |
 | `WelcomeWindowController` | start window |
 | `StampLibrary`, `StampLibraryViewController`, `ImageTools` | shared library of signatures and seals, background removal |
+| `SigmaLognormal`, `PenRenderer`, `PenType` | sigma-lognormal timing along a smooth line (geometry and time separated); ink from speed and direction for ballpoint, gel, fountain and felt-tip pens, paper fibres |
+| `SignatureLearning`, `LearnedSignature`, `SignaturePad` | user's samples (timed strokes from the pad, or traced from a picture: threshold, Zhang–Suen thinning, good-continuation tracing) → RDP via-points with real durations → blended and perturbed copies |
 | `SignatureGenerator`, `PenAlphabet` | signatures from a kinematic pen model: hand-drawn letter centre lines, centripetal spline, low-pass hand, speed from curvature over a few pen widths; 1320 styles (design seed low bits); copies vary by impression seed with a smooth drift, per-letter shifts and scales, and flourish changes |
 | `SealGenerator`, `SealCatalog` | 132 stamp templates in 15 categories built from layout families (round, oval, rect rows, office word, CJK grid, dater, table, triangle); `impress` gives imported pictures the same impression |
 | `MarkGeneratorController`, `GeneratedMark`, `InkTexture` | generator window; library items keep a JSON recipe (and imported originals in `Stamps/Sources`) so each insertion renders a new impression |

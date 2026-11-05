@@ -3,7 +3,7 @@ import AppKit
 /// A generated signature or seal kept in the library as a recipe (next to its preview PNG), so that every
 /// insertion is a new impression of the same mark: same letters and layout, different pressure, grain and angle.
 public struct GeneratedMark: Codable {
-    public enum Kind: String, Codable { case signature, seal, image }
+    public enum Kind: String, Codable { case signature, seal, image, learned }
 
     public var kind: Kind
     /// Signature: the name as typed.
@@ -14,14 +14,29 @@ public struct GeneratedMark: Codable {
     /// Imported stamp: file name in the library's Sources folder, and whether it is round (tilts more).
     public var source: String?
     public var round: Bool?
+    /// Signatures: pen type (PenType raw value; ballpoint when absent).
+    public var pen: Int?
+    /// A signature learned from the user's own samples.
+    public var learned: LearnedSignature?
     /// sRGB red, green, blue, alpha.
     public var ink: [Double]
     /// Stored as text: JSON numbers lose precision above 2^53.
     public var design: String
 
-    public static func signature(_ name: String, ink: NSColor, design: UInt64) -> GeneratedMark {
-        GeneratedMark(kind: .signature, name: name, ink: components(ink), design: String(design))
+    public static func signature(_ name: String, ink: NSColor, design: UInt64, pen: PenType = .ballpoint) -> GeneratedMark {
+        var m = GeneratedMark(kind: .signature, name: name, ink: components(ink), design: String(design))
+        m.pen = pen.rawValue
+        return m
     }
+
+    public static func learned(_ signature: LearnedSignature, ink: NSColor, pen: PenType) -> GeneratedMark {
+        var m = GeneratedMark(kind: .learned, ink: components(ink), design: "0")
+        m.learned = signature
+        m.pen = pen.rawValue
+        return m
+    }
+
+    public var penType: PenType { pen.flatMap(PenType.init(rawValue:)) ?? .ballpoint }
 
     public static func seal(_ spec: SealSpec) -> GeneratedMark {
         GeneratedMark(kind: .seal, template: spec.template.id, values: spec.values, ink: components(spec.ink), design: String(spec.designSeed))
@@ -43,7 +58,9 @@ public struct GeneratedMark: Codable {
     public func impression(_ seed: UInt64 = SeededRandom.freshSeed()) -> CGImage? {
         switch kind {
         case .signature:
-            return SignatureGenerator.render(name ?? "", design: designSeed, impression: seed, ink: inkColor)
+            return SignatureGenerator.render(name ?? "", design: designSeed, impression: seed, ink: inkColor, pen: penType)
+        case .learned:
+            return learned?.render(impression: seed, ink: inkColor, pen: penType)
         case .seal:
             return sealSpec.flatMap { SealGenerator.render($0, impression: seed) }
         case .image:
@@ -167,6 +184,23 @@ public enum MarkSamples {
                              "signature-\(n)-form\(f)-copy\(c)")
                 }
             }
+        }
+        // Learning: three recorded samples of one hand (with timing, as from the trackpad) → four new copies;
+        // and the same hand from a picture (as a scan or an iPhone sketch) traced into strokes → four copies.
+        let design = SignatureGenerator.design(form: .initialSurname, variant: 1, seed: 501)
+        let recorded = (0..<3).compactMap { SignatureGenerator.recordedSample("Sergey Zorin", design: design, impression: UInt64(900 + $0)) }
+        let learned = LearnedSignature(samples: recorded)
+        for c in 0..<4 { try save(learned.render(impression: UInt64(c + 1) &* 6151, ink: InkColor.blue.pen, pen: .ballpoint), "learned-timed-copy\(c)") }
+        if let picture = SignatureGenerator.render("Sergey Zorin", design: design, impression: 77, ink: InkColor.black.pen) {
+            try save(picture, "learned-source-picture")
+            if let traced = SignatureLearning.trace(picture) {
+                let fromPicture = LearnedSignature(samples: [traced])
+                for c in 0..<4 { try save(fromPicture.render(impression: UInt64(c + 11) &* 6151, ink: InkColor.blue.pen, pen: .ballpoint), "learned-traced-copy\(c)") }
+            }
+        }
+        // Pens: one signature in each pen type.
+        for pen in PenType.allCases {
+            try save(SignatureGenerator.render("Sergey Zorin", design: design, impression: 5, ink: InkColor.blue.pen, pen: pen), "pen-\(pen.rawValue)")
         }
         // An imported SVG stamp, three impressions (the import path used for the user's own stamps).
         let svg = folder.appendingPathComponent("imported-stamp.svg")

@@ -42,7 +42,7 @@ public enum DebugSnapshot {
             prepare?()
             // K42_OPEN_GENERATOR=signature|seal opens the signature/stamp generator (use with K42_SNAPSHOT_SHEET=1).
             if let mode = env["K42_OPEN_GENERATOR"] {
-                MarkGeneratorController.show(mode == "seal" ? .seal : .signature,
+                MarkGeneratorController.show(mode == "seal" ? .seal : mode == "learn" ? .learn : .signature,
                                              over: NSApp.orderedWindows.first { $0.isVisible }, onInsert: { _ in })
             }
             // K42_HIDE_PANELS=1 runs View › Hide All Panels first.

@@ -142,8 +142,11 @@ public final class StampLibraryViewController: NSViewController {
         let generate = NSStackView(views: [makeSignature, makeStamp])
         generate.spacing = 10
         generate.distribution = .fillEqually
+        let learn = NSButton(title: L("My Signature…"), target: self, action: #selector(learnSignature))
+        learn.bezelStyle = .push
+        learn.toolTip = L("Teach the generator your own signature: sign a few times or bring a scan")
 
-        let stack = NSStackView(views: [title, grid, generate, buttons])
+        let stack = NSStackView(views: [title, grid, generate, learn, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -159,6 +162,7 @@ public final class StampLibraryViewController: NSViewController {
             root.widthAnchor.constraint(equalToConstant: Self.width),
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
             generate.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            learn.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         view = root
         reload()
@@ -290,6 +294,8 @@ public final class StampLibraryViewController: NSViewController {
     @objc private func createSignature() { openGenerator(.signature) }
 
     @objc private func createStamp() { openGenerator(.seal) }
+
+    @objc private func learnSignature() { openGenerator(.learn) }
 
     @objc private func insertOnce() {
         guard let image = StampLibrary.pickImage(window: view.window) else { return }

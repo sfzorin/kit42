@@ -361,3 +361,24 @@ Verified on the merged tree: `swift build` (whole package); `PDF42 --selftest` 1
 B-LT and B-T→LTV → PAdES-BASELINE-LT TOTAL_PASSED, B-LTA, T→LTV→document timestamp and CSC B-LTA →
 PAdES-BASELINE-LTA TOTAL_PASSED, tampered → TOTAL_FAILED/HASH_FAILURE (timestamps INDETERMINATE as before).
 Not verified after the merge: the combined Sign dialog on screen, a real CryptoPro CSP, a real CSC provider.
+
+## Signature model: kinematics, pens, letter forms, learning — 2026-11-06
+
+- Kinematics: `SigmaLognormal` (lognormal impulses per movement, overlapping; arc directions; perturbation of D,
+  angles, onset, μ, σ per copy). A first version let the model build the line itself; the owner found it less smooth
+  (polygonal between via-points), so geometry and time are now separate: the line is the smooth centripetal spline
+  with a low-pass hand and smooth per-copy drift, the model supplies speed along it.
+- Pens (`PenRenderer`): ballpoint (downstroke ink, slow-point blobs, rare skips at speed, striations), gel, fountain
+  (width from stroke angle to the nib), felt-tip; paper-fibre texture in `InkTexture`.
+- Letters: alternative forms for 30 lowercase Latin and Cyrillic letters chosen per design; i/j/ё dots and t/f bars
+  as delayed strokes (none, dot or dash; short or long bar per design).
+- Learning: `My Signature…` window (pad with time and pressure, Open Picture…, Continuity import from iPhone/iPad),
+  `LearnedSignature` stored in the library recipe; copies blend two samples of the same structure and perturb timing.
+
+Verified: PDF42 debug build; `--mark-samples` sheets (generated signatures; learning from three timed samples and
+from a traced picture; four pens) inspected; `audit-ui.py --app PDF42 --mode tests`: mark-signature, mark-seal and
+the new mark-learn window snapshot pass. `mark-samples` was killed with SIGTERM inside the audit while other sessions
+ran their PDF42 audits (their timeout handler terminates every process of the shared audit bundle); run directly
+with the audit environment it completes with exit 0 in about 70 s (audit timeout for it raised to 300 s).
+pdf-markup (2 of 125) and pdf-pages (1 of 73) failures come from another agent's new, uncommitted PDF42 tests.
+Not verified: signing in the pad with a real trackpad, Continuity import from a real iPhone, a real scan.

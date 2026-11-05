@@ -656,9 +656,15 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 - Signature and stamp generator (in the Signatures and Stamps popover of PDF42, DOC42, IMG42, PPT42 and XLS42).
   **Create Signature…**: one or more names (one per line), a form — full name, initial and surname, surname,
   initials and a scribble, capital and a scribble, or any — and three styles out of 1320 (plan × flourish × capital variant × how
-  the initial joins), New Variants (⌘R) for three more. Signatures are written by a kinematic model of a fast hand with
-  a ballpoint pen: hand-drawn centre lines for Latin, Cyrillic and Turkish letters, a smooth spline without stops,
-  speed from curvature (two-thirds power law) setting line width and ink, flying starts and finishes.
+  the initial joins), New Variants (⌘R) for three more, and a pen: ballpoint, gel, fountain or felt-tip.
+  Signatures are written by a model of a fast hand: hand-drawn centre lines for Latin, Cyrillic and Turkish letters
+  with alternative forms of many lowercase letters, i-dots and t-bars added after the word, a smooth line through the
+  letters, and the pen's speed along it from the sigma-lognormal model of rapid movements. Speed and direction set
+  the ink: for a ballpoint, more ink on downstrokes, blobs where the pen is slow, skips where it is fast and fine
+  striations; for a fountain pen, width follows the stroke angle; paper fibres under every pen.
+  **My Signature…** learns your own signature: sign in the box a few times (trackpad or mouse, recorded with time and
+  pressure), open a scan or photo, or take a sketch or photo from an iPhone or iPad (Continuity). New copies are
+  re-synthesised from your samples — blended between samples and perturbed in the model — so they vary as yours do.
   **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,
   USA and Canada, Hong Kong and Taiwan — including the company chop with a signature line and the small round
   chop —, mainland China, Japan, Korea, India, Middle East, Latin America, office stamps, date and registration

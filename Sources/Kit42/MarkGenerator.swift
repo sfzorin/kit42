@@ -75,7 +75,7 @@ public final class InkColorPopUp: NSPopUpButton {
 /// Window that creates signatures (from names) or stamps (from a style and texts), shows previews,
 /// and adds them to the shared library or inserts one impression.
 public final class MarkGeneratorController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSTextFieldDelegate {
-    public enum Mode { case signature, seal }
+    public enum Mode { case signature, seal, learn }
 
     private static var openControllers: [MarkGeneratorController] = []
 
@@ -105,6 +105,14 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
     private var selected: [Int] = []                // per name, chosen variant
     private var activeRow = 0
     private var rowNames: [String] = []
+    private let penPopup = NSPopUpButton()
+
+    // Learn mode: the user's own signature
+    private let pad = SignaturePad(frame: NSRect(x: 0, y: 0, width: 600, height: 190))
+    private var samples: [SignatureSample] = []
+    private let samplesLabel = NSTextField(labelWithString: "")
+    private let learnTiles = NSStackView()
+    private var copySeeds: [UInt64] = (0..<3).map { _ in SeededRandom.freshSeed() }
 
     // Seal mode
     private let categoryPopup = NSPopUpButton()
@@ -125,10 +133,19 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         ink = InkColorPopUp(stamp: mode == .seal, initial: mode == .seal ? (SealTemplate.all.first?.ink ?? .blue) : .blue)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = mode == .signature ? L("Create Signature") : L("Create Stamp")
+        window.title = mode == .signature ? L("Create Signature") : mode == .learn ? L("My Signature") : L("Create Stamp")
         super.init(window: window)
         window.delegate = self
-        window.contentView = mode == .signature ? buildSignature() : buildSeal()
+        for pen in PenType.allCases { penPopup.addItem(withTitle: pen.title); penPopup.lastItem?.tag = pen.rawValue }
+        penPopup.target = self
+        penPopup.action = #selector(penChanged)
+        switch mode {
+        case .signature: window.contentView = buildSignature()
+        case .seal: window.contentView = buildSeal()
+        case .learn:
+            window.contentView = buildLearn()
+            window.initialFirstResponder = pad   // Continuity imports go to the first responder
+        }
         ink.onChange = { [weak self] _ in self?.refresh() }
     }
 
@@ -206,8 +223,10 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         formPopup.target = self
         formPopup.action = #selector(formChanged)
         let inkRow = NSStackView(views: [NSTextField(labelWithString: L("Form:")), formPopup,
+                                         NSTextField(labelWithString: L("Pen:")), penPopup,
                                          NSTextField(labelWithString: L("Ink:")), ink])
         inkRow.setCustomSpacing(18, after: formPopup)
+        inkRow.setCustomSpacing(18, after: penPopup)
         variantsStack.orientation = .vertical
         variantsStack.alignment = .leading
         variantsStack.spacing = 14
@@ -215,6 +234,106 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         note.textColor = .secondaryLabelColor
         note.font = .systemFont(ofSize: 11)
         return wrap([hint, textArea(names, height: 58), inkRow, variantsStack, note, buttonsRow(regenerate: L("New Variants"))])
+    }
+
+    private var pen: PenType { PenType(rawValue: penPopup.selectedTag()) ?? .ballpoint }
+
+    @objc private func penChanged() { refresh() }
+
+    /// Learn mode: sign a few times (or bring a picture), see new copies in your hand.
+    private func buildLearn() -> NSView {
+        let hint = NSTextField(wrappingLabelWithString: L("Sign in the box, then Add Sample. Three to five samples teach your hand; one is enough to start. A scan or an iPhone sketch works too."))
+        hint.textColor = .secondaryLabelColor
+        pad.translatesAutoresizingMaskIntoConstraints = false
+        pad.heightAnchor.constraint(equalToConstant: 190).isActive = true
+        pad.wantsLayer = true
+        pad.layer?.cornerRadius = 8
+        pad.layer?.borderWidth = 0.5
+        pad.layer?.borderColor = NSColor(white: 0.5, alpha: 0.5).cgColor
+        pad.onChange = { [weak self] in self?.scheduleRefresh() }
+        pad.onPicture = { [weak self] image in self?.addPicture(image) }
+        let add = NSButton(title: L("Add Sample"), target: self, action: #selector(addSample))
+        let clear = NSButton(title: L("Clear"), target: self, action: #selector(clearPad))
+        let open = NSButton(title: L("Open Picture…"), target: self, action: #selector(openPicture))
+        // Continuity: the system fills this item with "Add Sketch", "Take Photo" and "Scan Documents".
+        let device = NSPopUpButton(frame: .zero, pullsDown: true)
+        device.addItem(withTitle: L("From iPhone or iPad"))
+        let importItem = NSMenuItem(title: L("From iPhone or iPad"), action: nil, keyEquivalent: "")
+        importItem.identifier = NSMenuItem.importFromDeviceIdentifier
+        device.menu?.addItem(importItem)
+        let removeLast = NSButton(title: L("Remove Last"), target: self, action: #selector(removeSample))
+        let row = NSStackView(views: [add, clear, open, device])
+        row.spacing = 8
+        let samplesRow = NSStackView(views: [samplesLabel, removeLast])
+        samplesRow.spacing = 10
+        let inkRow = NSStackView(views: [NSTextField(labelWithString: L("Pen:")), penPopup, NSTextField(labelWithString: L("Ink:")), ink])
+        inkRow.setCustomSpacing(18, after: penPopup)
+        learnTiles.spacing = 10
+        for _ in 0..<3 {
+            let b = NSImageView()
+            b.imageScaling = .scaleProportionallyDown
+            b.wantsLayer = true
+            b.layer?.backgroundColor = NSColor.white.cgColor
+            b.layer?.cornerRadius = 8
+            b.layer?.borderWidth = 0.5
+            b.layer?.borderColor = NSColor(white: 0.5, alpha: 0.5).cgColor
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 190).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 84).isActive = true
+            learnTiles.addArrangedSubview(b)
+        }
+        updateSamplesLabel()
+        return wrap([hint, pad, row, samplesRow, inkRow, learnTiles, buttonsRow(regenerate: L("New Copies"))])
+    }
+
+    private func updateSamplesLabel() {
+        samplesLabel.stringValue = L("Samples: %d", samples.count)
+    }
+
+    /// Samples used for the preview: the saved ones, or what is in the box while there are none yet.
+    private var learnedSignature: LearnedSignature? {
+        let list = samples.isEmpty ? (pad.sample.map { [$0] } ?? []) : samples
+        return list.isEmpty ? nil : LearnedSignature(samples: list)
+    }
+
+    @objc private func addSample() {
+        guard let s = pad.sample else { NSSound.beep(); return }
+        samples.append(s)
+        pad.clear()
+        updateSamplesLabel()
+        refresh()
+    }
+
+    @objc private func clearPad() { pad.clear() }
+
+    @objc private func removeSample() {
+        guard !samples.isEmpty else { return }
+        samples.removeLast()
+        updateSamplesLabel()
+        refresh()
+    }
+
+    @objc private func openPicture() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image, .pdf]
+        panel.message = L("Choose a scan or photo of your signature (dark ink on light paper)")
+        guard let window, panel.runModal() == .OK, let url = panel.url,
+              let image = StampLibrary.image(at: url) ?? StampLibrary.rasterize(url) else { return }
+        _ = window
+        addPicture(image)
+    }
+
+    private func addPicture(_ image: CGImage) {
+        guard let traced = SignatureLearning.trace(image) else {
+            let alert = NSAlert()
+            alert.messageText = L("No signature found in the picture")
+            alert.informativeText = L("Use dark ink on light paper, cropped close to the signature.")
+            alert.runModal()
+            return
+        }
+        samples.append(traced)
+        updateSamplesLabel()
+        refresh()
     }
 
     private func buildSeal() -> NSView {
@@ -343,6 +462,22 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
                     self.preview.image = image.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
                 }
             }
+        case .learn:
+            guard let learned = learnedSignature else {
+                for case let v as NSImageView in learnTiles.arrangedSubviews { v.image = nil }
+                return
+            }
+            let seeds = copySeeds, pen = self.pen
+            DispatchQueue.global(qos: .userInitiated).async {
+                for (i, seed) in seeds.enumerated() {
+                    let image = learned.render(impression: seed, ink: color, pen: pen)
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, token == self.generation, let image,
+                              let tile = self.learnTiles.arrangedSubviews[safe: i] as? NSImageView else { return }
+                        tile.image = Self.fitted(image, in: NSSize(width: 176, height: 72))
+                    }
+                }
+            }
         case .signature:
             let list = names.string.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(6)
             rowNames = Array(list)
@@ -351,10 +486,11 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
             selected = Array(selected.prefix(rowNames.count))
             activeRow = min(activeRow, max(0, rowNames.count - 1))
             buildVariantRows()
+            let pen = self.pen
             let jobs = rowNames.enumerated().flatMap { r, name in designs[r].enumerated().map { (r, $0.offset, name, $0.element) } }
             DispatchQueue.global(qos: .userInitiated).async {
                 for (r, v, name, design) in jobs {
-                    let image = SignatureGenerator.render(name, design: design, impression: design &+ 1, ink: color)
+                    let image = SignatureGenerator.render(name, design: design, impression: design &+ 1, ink: color, pen: pen)
                     DispatchQueue.main.async { [weak self] in
                         guard let self, token == self.generation, let image else { return }
                         self.tile(r, v)?.image = Self.fitted(image, in: NSSize(width: 176, height: 72))
@@ -460,6 +596,7 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         switch mode {
         case .signature: designs = rowNames.map { _ in SignatureGenerator.designSeeds(3, form: form) }
         case .seal: sealImpression = SeededRandom.freshSeed()
+        case .learn: copySeeds = (0..<3).map { _ in SeededRandom.freshSeed() }
         }
         refresh()
     }
@@ -479,8 +616,9 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
     private func marks() -> [GeneratedMark] {
         switch mode {
         case .seal: return [.seal(sealSpec)]
+        case .learn: return learnedSignature.map { [.learned($0, ink: ink.color, pen: pen)] } ?? []
         case .signature:
-            return rowNames.enumerated().map { r, name in .signature(name, ink: ink.color, design: designs[r][selected[r]]) }
+            return rowNames.enumerated().map { r, name in .signature(name, ink: ink.color, design: designs[r][selected[r]], pen: pen) }
         }
     }
 
@@ -517,6 +655,3 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
     }
 }
 
-private extension Array {
-    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
-}
