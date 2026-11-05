@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         actions: [
             .init(L("New Presentation"), symbol: "rectangle.badge.plus", action: #selector(NSDocumentController.newDocument(_:))),
             .init(L("Open Presentation…"), symbol: "folder", action: #selector(NSDocumentController.openDocument(_:))),
+            .init(L("New from Template…"), symbol: "square.grid.2x2", action: #selector(AppDelegate.newFromTemplateAction(_:))),
         ])
 
     func applicationWillFinishLaunching(_ notification: Notification) {

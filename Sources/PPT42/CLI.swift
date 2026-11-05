@@ -138,7 +138,9 @@ enum DeckIO {
         d.pruneMedia()
         switch ext.lowercased() {
         case "odp": return ODPWriter.data(d)
+        case "otp": return ODPWriter.data(d, template: true)
         case "pptx": return PPTXWriter.data(d)
+        case "potx": return PPTXWriter.data(d, template: true)
         case "pdf": return Renderer.pdf(d)
         default: throw DeckError.invalid(L("Unsupported file type: %@", ext))
         }

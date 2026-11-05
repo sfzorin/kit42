@@ -554,4 +554,7 @@ let ppt42Strings: [[String]] = [
     ["Export as Movie…", "Экспорт в видео…", "Film Olarak Dışa Aktar…"],
     ["Seconds per slide:", "Секунд на слайд:", "Slayt başına saniye:"],
     ["Exporting the movie…", "Экспорт видео…", "Film dışa aktarılıyor…"],
+    ["New from Template…", "Создать из шаблона…", "Şablondan Yeni…"],
+    ["New from Template", "Создать из шаблона", "Şablondan Yeni"],
+    ["Open Template File…", "Открыть файл шаблона…", "Şablon Dosyası Aç…"],
 ]

@@ -30,6 +30,7 @@ extension DeckWindowController {
         }
         if env["K42_EDIT"] != nil, let o = selectedObjects.first { canvas.editor.begin(o, at: nil) }
         if env["K42_LAYOUTS"] != nil { showLayoutPicker() }
+        if env["K42_TEMPLATES"] != nil { TemplateGallery.show() }
         if env["K42_DUMP_SIDEBAR"] != nil {
             let t = thumbnails.table
             print("table frame \(t.frame) cols \(t.tableColumns.map { $0.width }) clip \(t.enclosingScrollView?.contentView.frame ?? .zero) sidebar \(thumbnails.view.frame)")

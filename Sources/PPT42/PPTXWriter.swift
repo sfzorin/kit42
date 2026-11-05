@@ -68,10 +68,14 @@ struct PPTXWriter {
     static var ns: String { "xmlns:a=\"\(nsA)\" xmlns:r=\"\(nsR)\" xmlns:p=\"\(nsP)\"" }
     static let head = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
 
-    static func data(_ deck: Deck) -> Data {
+    static func data(_ deck: Deck, template: Bool = false) -> Data {
         var w = PPTXWriter(deck: deck)
+        w.template = template
         return w.write()
     }
+
+    /// .potx: the same package with the template content type.
+    var template = false
 
     init(deck: Deck) { self.deck = deck }
 
@@ -126,7 +130,7 @@ struct PPTXWriter {
         }
         for (part, mime) in sink.overrides.sorted(by: { $0.key < $1.key }) { types += "<Override PartName=\"\(xmlEscape(part))\" ContentType=\"\(mime)\"/>" }
         let pml = "application/vnd.openxmlformats-officedocument.presentationml"
-        types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).presentation.main+xml\"/>"
+        types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).\(template ? "template" : "presentation").main+xml\"/>"
         types += "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"\(pml).slideMaster+xml\"/>"
         for i in deck.layouts.indices { types += "<Override PartName=\"/ppt/slideLayouts/slideLayout\(i + 1).xml\" ContentType=\"\(pml).slideLayout+xml\"/>" }
         for i in 0..<n { types += "<Override PartName=\"/ppt/slides/slide\(i + 1).xml\" ContentType=\"\(pml).slide+xml\"/>" }

@@ -4,8 +4,9 @@ import Kit42
 /// Writes a Deck as an OpenDocument presentation (.odp). Every property is written explicitly
 /// (colours flattened with the theme, inherited text styles resolved), so LibreOffice shows what we draw.
 enum ODPWriter {
-    static func data(_ deck: Deck) -> Data {
+    static func data(_ deck: Deck, template: Bool = false) -> Data {
         var w = ODPWriterImpl(deck: deck)
+        w.template = template
         return w.write()
     }
 }
@@ -110,6 +111,7 @@ private final class ODFShared {
 
 private struct ODPWriterImpl {
     let deck: Deck
+    var template = false
     var theme: Theme { deck.theme }
     let shared = ODFShared()
 
@@ -121,13 +123,14 @@ private struct ODPWriterImpl {
         let content = contentXML()
         let styles = stylesXML()
         var zip = ZipArchive()
-        zip["mimetype"] = Data("application/vnd.oasis.opendocument.presentation".utf8)
+        let mime = template ? "application/vnd.oasis.opendocument.presentation-template" : "application/vnd.oasis.opendocument.presentation"
+        zip["mimetype"] = Data(mime.utf8)
         zip.storedUncompressed.insert("mimetype")
         zip["content.xml"] = Data(content.utf8)
         zip["styles.xml"] = Data(styles.utf8)
         zip["meta.xml"] = Data(metaXML().utf8)
         var manifest = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\">"
-        manifest += "<manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.3\" manifest:media-type=\"application/vnd.oasis.opendocument.presentation\"/>"
+        manifest += "<manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.3\" manifest:media-type=\"\(mime)\"/>"
         for f in ["content.xml", "styles.xml", "meta.xml"] { manifest += "<manifest:file-entry manifest:full-path=\"\(f)\" manifest:media-type=\"text/xml\"/>" }
         for (media, path) in shared.pictures.sorted(by: { $0.key < $1.key }) {
             guard let data = deck.media[media] else { continue }

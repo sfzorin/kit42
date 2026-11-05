@@ -155,11 +155,12 @@ enum Cmd {
     static let rehearse = Command(L("Rehearse with Presenter View"), #selector(W.rehearseAction(_:)), symbol: "person.wave.2", shortcut: Shortcut("r", [.command, .option]))
     static let showSettings = Command(L("Slide Show Settings…"), #selector(W.showSettingsAction(_:)), symbol: "gearshape")
 
+    static let newFromTemplate = Command(L("New from Template…"), #selector(A.newFromTemplateAction(_:)), symbol: "square.grid.2x2", shortcut: Shortcut("n", [.command, .option, .shift]))
     static let welcome = Command(L("Welcome Window"), #selector(A.showWelcomeAction(_:)), shortcut: Shortcut("0", [.command, .shift]))
 
     static func menuBar(layoutsMenu: NSMenuDelegate) -> MenuBarSpec {
         var spec = MenuBarSpec(appName: "PPT42")
-        spec.fileExtras = [.command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportMovie), .command(exportOutline)]
+        spec.fileExtras = [.command(newFromTemplate), .separator, .command(exportPDF), .command(exportNotesPDF), .command(exportImages), .command(exportMovie), .command(exportOutline)]
         spec.editExtras = [.command(duplicate), .command(delete)]
         spec.find = [.command(find), .separator, .command(findNext), .command(findPrevious)]
         let layoutItem = NSMenuItem(title: L("Layout"), action: nil, keyEquivalent: "")
