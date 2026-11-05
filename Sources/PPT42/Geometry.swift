@@ -54,8 +54,32 @@ enum Shapes {
         CGFloat(o[key] ?? o[key == "adj" ? "adj1" : key] ?? defaults[prst]?[key] ?? defaults[prst]?["adj"] ?? 0) / 100000
     }
 
+    /// Sub-paths of an object's outline (custom geometry, preset or built-in fallback).
+    static func subpaths(_ o: SlideObject) -> [GeoSubpath] {
+        subpaths(o.geometry, adjust: o.adjust, size: o.frame.size, custom: o.custom)
+    }
+
+    static func subpaths(_ prst: String, adjust: [String: Int] = [:], size: CGSize, custom: CustomGeometry? = nil) -> [GeoSubpath] {
+        if let custom { return OOXMLGeometry.subpaths(custom, size: size, adjust: adjust) }
+        if let def = PresetDef.all[prst], prst != "rect" { return def.subpaths(size: size, adjust: adjust) }
+        return [GeoSubpath(path: legacyPath(prst, adjust: adjust, size: size))]
+    }
+
+    /// The filled outline of an object (clipping, hit testing, ODF export).
+    static func path(_ o: SlideObject) -> CGPath { path(o.geometry, adjust: o.adjust, size: o.frame.size, custom: o.custom) }
+
     /// Outline of a preset in a box of `size` at the origin (y down).
-    static func path(_ prst: String, adjust: [String: Int] = [:], size: CGSize) -> CGPath {
+    static func path(_ prst: String, adjust: [String: Int] = [:], size: CGSize, custom: CustomGeometry? = nil) -> CGPath {
+        let subs = subpaths(prst, adjust: adjust, size: size, custom: custom)
+        let filled = subs.filter { $0.fill != .none }
+        let use = filled.isEmpty ? subs : filled
+        if use.count == 1 { return use[0].path }
+        let p = CGMutablePath()
+        for s in use { p.addPath(s.path) }
+        return p
+    }
+
+    static func legacyPath(_ prst: String, adjust: [String: Int] = [:], size: CGSize) -> CGPath {
         let w = size.width, h = size.height, ss = min(w, h)
         let p = CGMutablePath()
         func poly(_ pts: [CGPoint]) {
@@ -198,6 +222,13 @@ enum Shapes {
             p.addRect(box)
         }
         return p
+    }
+
+    /// Area for the text inside an object's geometry (box-relative).
+    static func textRect(_ o: SlideObject) -> CGRect {
+        if let c = o.custom { return OOXMLGeometry.textRect(c, size: o.frame.size, adjust: o.adjust) ?? CGRect(origin: .zero, size: o.frame.size) }
+        if o.geometry != "rect", let def = PresetDef.all[o.geometry], let r = def.textRect(size: o.frame.size, adjust: o.adjust) { return r }
+        return textRect(o.geometry, size: o.frame.size)
     }
 
     /// Area for the text inside a preset (box-relative).

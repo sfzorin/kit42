@@ -133,16 +133,25 @@ enum Renderer {
         case .shape, .textBox:
             ctx.saveGState()
             transform(for: o, ctx: ctx, flips: true)
-            let path = Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size)
+            let subs = Shapes.subpaths(o)
             if o.shadow && (!o.fill.isNone || o.line.color != nil) { setShadow(ctx) }
-            if !o.fill.isNone {
-                ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-                drawFill(o.fill, in: path, bounds: CGRect(origin: .zero, size: o.frame.size), deck: deck, ctx: ctx)
-                if o.line.color != nil { stroke(path, o.line, deck: deck, ctx: ctx) }
-                ctx.endTransparencyLayer()
-            } else if o.line.color != nil {
-                stroke(path, o.line, deck: deck, ctx: ctx)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            let box = CGRect(origin: .zero, size: o.frame.size)
+            for sp in subs where sp.fill != .none && !o.fill.isNone {
+                drawFill(o.fill, in: sp.path, bounds: box, deck: deck, ctx: ctx)
+                if sp.fill != .norm {
+                    // Shading of parts that look 3-D (can top, folded corner…).
+                    let dark = sp.fill == .darken || sp.fill == .darkenLess
+                    let k: CGFloat = sp.fill == .darken || sp.fill == .lighten ? 0.4 : 0.2
+                    ctx.saveGState()
+                    ctx.addPath(sp.path)
+                    ctx.setFillColor((dark ? NSColor.black : NSColor.white).withAlphaComponent(k).cgColor)
+                    ctx.fillPath(using: .evenOdd)
+                    ctx.restoreGState()
+                }
             }
+            if o.line.color != nil { for sp in subs where sp.stroke { stroke(sp.path, o.line, deck: deck, ctx: ctx) } }
+            ctx.endTransparencyLayer()
             ctx.restoreGState()
         }
         if o.unsupported != nil, o.media == nil {
@@ -168,7 +177,7 @@ enum Renderer {
     /// Text area of an object in its own coordinates (geometry text rect minus insets).
     static func textFrame(_ o: SlideObject) -> CGRect {
         let insets = o.text?.insets ?? NSEdgeInsets()
-        let r = Shapes.textRect(o.geometry, size: o.frame.size)
+        let r = Shapes.textRect(o)
         return CGRect(x: r.minX + insets.left, y: r.minY + insets.top,
                       width: max(1, r.width - insets.left - insets.right), height: max(1, r.height - insets.top - insets.bottom))
     }
@@ -345,7 +354,7 @@ enum Renderer {
         ctx.saveGState()
         transform(for: o, ctx: ctx, flips: true)
         let box = CGRect(origin: .zero, size: o.frame.size)
-        let path = Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size)
+        let path = Shapes.path(o)
         if o.shadow {
             ctx.saveGState()
             setShadow(ctx)

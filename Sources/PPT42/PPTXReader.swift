@@ -89,6 +89,9 @@ struct PPTXReader {
     /// Line widths of the theme's lnStyleLst (points).
     var themeLineWidths: [CGFloat] = [0.75, 1, 1.5]
     var themeBackgrounds: [Fill] = []
+    var themeFills: [Fill] = []
+    var themeLines: [LineStyle] = []
+    var themeShadows: [Bool] = []
     var mediaByPart: [String: String] = [:]
 
     static func read(_ data: Data) throws -> Deck {
@@ -216,6 +219,9 @@ struct PPTXReader {
             let widths = fmt.child("lnStyleLst")?.children("ln").compactMap { $0.num("w").map { $0 / emuPerPoint } } ?? []
             if !widths.isEmpty { themeLineWidths = widths }
             themeBackgrounds = fmt.child("bgFillStyleLst")?.elements.compactMap { readFill(wrapping: $0, part: "") } ?? []
+            themeFills = fmt.child("fillStyleLst")?.elements.compactMap { readFill(wrapping: $0, part: "") } ?? []
+            themeLines = fmt.child("lnStyleLst")?.children("ln").map { ln in var l = LineStyle(color: PColor(scheme: "phClr")); readLine(ln, into: &l); return l } ?? []
+            themeShadows = fmt.child("effectStyleLst")?.children("effectStyle").map { $0.descendants("outerShdw").isEmpty == false } ?? []
         }
     }
 
@@ -309,6 +315,21 @@ struct PPTXReader {
         let name = deck.addMedia(data, ext: imageExtension(data))
         mediaByPart[target] = name
         return name
+    }
+
+    /// A theme style with its placeholder colour (phClr) replaced by `c`.
+    static func substitute(_ f: Fill, _ c: PColor) -> Fill {
+        func sub(_ x: PColor) -> PColor {
+            guard x.scheme == "phClr" else { return x }
+            var out = c
+            out.mods += x.mods
+            return out
+        }
+        switch f {
+        case .solid(let x): return .solid(sub(x))
+        case .gradient(var g): g.stops = g.stops.map { GradientStop(position: $0.position, color: sub($0.color)) }; return .gradient(g)
+        default: return f
+        }
     }
 
     mutating func readBackground(_ cSld: XMLElement?, part: String) -> Fill? {
@@ -589,20 +610,32 @@ struct PPTXReader {
             for gd in g.child("avLst")?.children("gd") ?? [] {
                 if let n = gd.a("name"), let f = gd.a("fmla"), f.hasPrefix("val "), let v = Int(f.dropFirst(4).trimmingCharacters(in: .whitespaces)) { o.adjust[n] = v }
             }
-        } else if spPr?.child("custGeom") != nil {
-            o.geometry = "rect"
+        } else if let cg = spPr?.child("custGeom") {
+            o.custom = readCustomGeometry(cg)
+            o.geometry = "custom"
         }
         if ["line", "straightConnector1", "bentConnector2", "bentConnector3", "bentConnector4", "curvedConnector3"].contains(o.geometry) { o.kind = .line }
         // Theme style references (p:style) give the defaults; spPr overrides.
         var line = base?.line ?? LineStyle.none
         var fill = base?.fill ?? Fill.none
         var fontColor: PColor?
+        var styleShadow = false
         if let style = e.child("style") {
             if let ref = style.child("lnRef"), let idx = ref.int("idx"), idx > 0 {
                 line.color = readColor(ref)
                 line.width = themeLineWidths.indices.contains(idx - 1) ? themeLineWidths[idx - 1] : 1
+                if themeLines.indices.contains(idx - 1), let c = line.color {
+                    let tl = themeLines[idx - 1]
+                    line.dash = tl.dash
+                    if let tc = tl.color, tc.scheme == "phClr" { var x = c; x.mods += tc.mods; line.color = x }
+                }
             }
-            if let ref = style.child("fillRef"), let idx = ref.int("idx"), idx > 0, let c = readColor(ref) { fill = .solid(c) }
+            if let ref = style.child("fillRef"), let idx = ref.int("idx"), idx > 0, let c = readColor(ref) {
+                fill = themeFills.indices.contains(idx - 1) ? Self.substitute(themeFills[idx - 1], c) : .solid(c)
+            }
+            if let ref = style.child("effectRef"), let idx = ref.int("idx"), idx > 0, themeShadows.indices.contains(idx - 1), themeShadows[idx - 1] {
+                styleShadow = true
+            }
             fontColor = readColor(style.child("fontRef"))
         }
         if let f = readFill(spPr, part: part) { fill = f }
@@ -610,7 +643,7 @@ struct PPTXReader {
         o.fill = o.kind == .line ? .none : fill
         o.line = line
         if o.kind == .line, o.line.color == nil, spPr?.child("ln")?.child("noFill") == nil { o.line.color = PColor(scheme: "tx1") }
-        o.shadow = spPr?.child("effectLst")?.child("outerShdw") != nil
+        o.shadow = spPr?.child("effectLst").map { $0.child("outerShdw") != nil } ?? styleShadow
         if let tx = e.child("txBody") {
             o.text = readTextBody(tx, part: part, base: base?.text)
             if let fontColor, var t = o.text {
@@ -629,6 +662,37 @@ struct PPTXReader {
         return o
     }
 
+    func readCustomGeometry(_ e: XMLElement) -> CustomGeometry {
+        var g = CustomGeometry()
+        func guides(_ list: XMLElement?) -> [GeoGuide] {
+            (list?.children("gd") ?? []).compactMap { gd in gd.a("name").map { GeoGuide(name: $0, fmla: gd.a("fmla") ?? "val 0") } }
+        }
+        g.adjust = guides(e.child("avLst"))
+        g.guides = guides(e.child("gdLst"))
+        if let r = e.child("rect") { g.rect = [r.a("l") ?? "l", r.a("t") ?? "t", r.a("r") ?? "r", r.a("b") ?? "b"] }
+        for p in e.child("pathLst")?.children("path") ?? [] {
+            var gp = GeoPath()
+            gp.w = p.a("w").flatMap(Double.init)
+            gp.h = p.a("h").flatMap(Double.init)
+            gp.fill = GeoFill(rawValue: p.a("fill") ?? "norm") ?? .norm
+            gp.stroke = p.bool("stroke") ?? true
+            for c in p.elements {
+                let pts = c.children("pt").map { ($0.a("x") ?? "0", $0.a("y") ?? "0") }
+                switch c.localName {
+                case "moveTo": if let q = pts.first { gp.commands.append(.move(q.0, q.1)) }
+                case "lnTo": if let q = pts.first { gp.commands.append(.line(q.0, q.1)) }
+                case "arcTo": gp.commands.append(.arc(wR: c.a("wR") ?? "0", hR: c.a("hR") ?? "0", st: c.a("stAng") ?? "0", sw: c.a("swAng") ?? "0"))
+                case "quadBezTo": if pts.count >= 2 { gp.commands.append(.quad(pts[0].0, pts[0].1, pts[1].0, pts[1].1)) }
+                case "cubicBezTo": if pts.count >= 3 { gp.commands.append(.cubic(pts[0].0, pts[0].1, pts[1].0, pts[1].1, pts[2].0, pts[2].1)) }
+                case "close": gp.commands.append(.close)
+                default: break
+                }
+            }
+            g.paths.append(gp)
+        }
+        return g
+    }
+
     mutating func readPicture(_ e: XMLElement, part: String, inherit: [SlideObject]) -> SlideObject? {
         var o = SlideObject(id: 0, kind: .picture, frame: .zero)
         readNonVisual(e, into: &o)
@@ -645,6 +709,7 @@ struct PPTXReader {
             }
         }
         if let g = spPr?.child("prstGeom")?.a("prst") { o.geometry = g }
+        if let cg = spPr?.child("custGeom") { o.custom = readCustomGeometry(cg); o.geometry = "custom" }
         var line = LineStyle.none
         readLine(spPr?.child("ln"), into: &line)
         o.line = line

@@ -490,6 +490,8 @@ struct SlideObject: Equatable {
     var geometry = "rect"
     /// Adjust values (prst-specific, 1/100000 of the shorter side for most).
     var adjust: [String: Int] = [:]
+    /// Custom outline (a:custGeom, ODF paths).
+    var custom: CustomGeometry?
     var fill: Fill = .none
     var line: LineStyle = .none
     var shadow = false
@@ -509,7 +511,7 @@ struct SlideObject: Equatable {
 
     static func == (a: SlideObject, b: SlideObject) -> Bool {
         a.id == b.id && a.name == b.name && a.kind == b.kind && a.frame == b.frame && a.rotation == b.rotation && a.flipH == b.flipH
-            && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.fill == b.fill && a.line == b.line
+            && a.flipV == b.flipV && a.geometry == b.geometry && a.adjust == b.adjust && a.custom == b.custom && a.fill == b.fill && a.line == b.line
             && a.shadow == b.shadow && a.opacity == b.opacity && a.text == b.text && a.placeholder == b.placeholder && a.media == b.media
             && a.crop.left == b.crop.left && a.crop.top == b.crop.top && a.crop.right == b.crop.right && a.crop.bottom == b.crop.bottom
             && a.table == b.table && a.children == b.children && a.build == b.build && a.descr == b.descr && a.unsupported == b.unsupported

@@ -549,8 +549,8 @@ private struct ODPWriterImpl {
         let vb = "0 0 \(Int((o.frame.width * scale).rounded())) \(Int((o.frame.height * scale).rounded()))"
         // OOXML preset name (LibreOffice writes it back to pptx as that preset) with our exact outline as the path.
         // No draw:text-areas: with ooxml-* types LibreOffice misplaces the text when they are absolute.
-        let type = "ooxml-\(o.geometry)"
-        let path = enhancedPath(Shapes.path(o.geometry, adjust: o.adjust, size: o.frame.size), scale: scale)
+        let type = o.custom != nil ? "non-primitive" : "ooxml-\(o.geometry)"
+        let path = enhancedPath(Shapes.path(o), scale: scale)
         x += "<draw:enhanced-geometry svg:viewBox=\"\(vb)\" draw:type=\"\(type)\" ppt42:prst=\"\(xmlEscape(o.geometry))\" draw:enhanced-path=\"\(path)\""
         if o.flipH { x += " draw:mirror-horizontal=\"true\"" }
         if o.flipV { x += " draw:mirror-vertical=\"true\"" }

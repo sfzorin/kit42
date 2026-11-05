@@ -605,6 +605,19 @@ private struct ODPReaderImpl {
                 if let ours = geo.a("prst") { o.geometry = ours }
                 else if type.hasPrefix("ooxml-") { o.geometry = String(type.dropFirst(6)) }
                 else { o.geometry = Self.prstByType[type] ?? "rect" }
+                if let mods = geo.a("modifiers"), type.hasPrefix("ooxml-"), let def = PresetDef.all[o.geometry] {
+                    let vals = mods.split(separator: " ").compactMap { Double($0) }
+                    for (n, v) in Swift.zip(def.adjNames, vals) { o.adjust[n] = Int(v) }
+                }
+                // Our own custom outlines, and shapes LibreOffice has no preset for: the literal path.
+                if o.geometry == "custom" || (Self.prstByType[type] == nil && !type.hasPrefix("ooxml-")) || type == "non-primitive" {
+                    if let d = geo.a("enhanced-path"), let c = Self.literalPath(d, viewBox: geo.a("viewBox"), size: frame.size) {
+                        o.custom = c
+                        o.geometry = "custom"
+                    } else if o.geometry == "custom" {
+                        o.geometry = "rect"
+                    }
+                }
                 o.flipH = geo.a("mirror-horizontal") == "true"
                 o.flipV = geo.a("mirror-vertical") == "true"
                 if let adj = geo.a("adjust") {
@@ -623,9 +636,19 @@ private struct ODPReaderImpl {
                 let n = e.int("corners") ?? 5
                 o.geometry = e.a("concave") == "true" ? "star5" : n == 3 ? "triangle" : n == 6 ? "hexagon" : n == 8 ? "octagon" : "pentagon"
             }
-            if e.localName == "polyline" || e.localName == "path" {
-                // No outline geometry in our model: keep the box with the stroke only.
-                o.geometry = "rect"
+            if e.localName == "polyline" || e.localName == "polygon" || e.localName == "path" {
+                var d = e.a("d") ?? ""
+                if e.localName != "path", let pts = e.a("points") {
+                    let nums = pts.replacingOccurrences(of: ",", with: " ").split(separator: " ")
+                    d = "M " + nums.joined(separator: " ")
+                    if e.localName == "polygon" { d += " Z" }
+                }
+                if let c = Self.literalPath(d, viewBox: e.a("viewBox"), size: frame.size, svg: true, open: e.localName == "polyline") {
+                    o.custom = c
+                    o.geometry = "custom"
+                } else {
+                    o.geometry = "rect"
+                }
             }
             applyGraphics(g, to: &o)
             if e.localName == "polyline" { o.fill = .none }
@@ -660,6 +683,86 @@ private struct ODPReaderImpl {
         default:
             return []
         }
+    }
+
+    /// A path of plain numbers (svg:d or a draw:enhanced-path without formulas) as custom geometry in viewBox units.
+    static func literalPath(_ d: String, viewBox: String?, size: CGSize, svg: Bool = false, open: Bool = false) -> CustomGeometry? {
+        guard !d.contains("?"), !d.contains("$") else { return nil }
+        // Tokens: command letters and numbers.
+        var toks: [String] = []
+        var cur = ""
+        for ch in d {
+            if ch.isLetter && ch != "e" && ch != "E" { if !cur.isEmpty { toks.append(cur); cur = "" }; toks.append(String(ch)) }
+            else if ch == " " || ch == "," { if !cur.isEmpty { toks.append(cur); cur = "" } }
+            else if ch == "-" && !cur.isEmpty && !(cur.last == "e" || cur.last == "E") { toks.append(cur); cur = "-" }
+            else { cur.append(ch) }
+        }
+        if !cur.isEmpty { toks.append(cur) }
+        let vb = (viewBox ?? "").split(separator: " ").compactMap { Double($0) }
+        let vx = vb.count == 4 ? vb[0] : 0, vy = vb.count == 4 ? vb[1] : 0
+        let vw = vb.count == 4 && vb[2] > 0 ? vb[2] : Double(size.width * 100), vh = vb.count == 4 && vb[3] > 0 ? vb[3] : Double(size.height * 100)
+        let path = CGMutablePath()
+        var i = 0, cmd = "M"
+        var p = CGPoint.zero, start = CGPoint.zero, lastCtrl: CGPoint?
+        var fill = true, stroke = true
+        func num() -> CGFloat? {
+            guard i < toks.count, let v = Double(toks[i]) else { return nil }
+            i += 1
+            return CGFloat(v)
+        }
+        func pt(_ rel: Bool) -> CGPoint? {
+            guard let x = num(), let y = num() else { return nil }
+            return rel ? CGPoint(x: p.x + x, y: p.y + y) : CGPoint(x: x - CGFloat(vx), y: y - CGFloat(vy))
+        }
+        var guardCount = 0
+        while i < toks.count, guardCount < 100000 {
+            guardCount += 1
+            if Double(toks[i]) == nil { cmd = toks[i]; i += 1 }
+            let rel = svg && cmd == cmd.lowercased() && cmd != "N" && cmd != "F" && cmd != "S"
+            switch cmd.uppercased() {
+            case "M":
+                guard let q = pt(rel) else { i += 1; continue }
+                path.move(to: q); p = q; start = q
+                cmd = rel ? "l" : "L"
+            case "L":
+                guard let q = pt(rel) else { i += 1; continue }
+                if path.isEmpty { path.move(to: q) } else { path.addLine(to: q) }
+                p = q
+            case "H":
+                guard let x = num() else { i += 1; continue }
+                p = CGPoint(x: rel ? p.x + x : x - CGFloat(vx), y: p.y); path.addLine(to: p)
+            case "V":
+                guard let y = num() else { i += 1; continue }
+                p = CGPoint(x: p.x, y: rel ? p.y + y : y - CGFloat(vy)); path.addLine(to: p)
+            case "C":
+                guard let a = pt(rel), let b = pt(rel), let q = pt(rel) else { i += 1; continue }
+                path.addCurve(to: q, control1: a, control2: b); p = q; lastCtrl = b
+                continue
+            case "S":
+                if !svg { stroke = false; continue }
+                guard let b = pt(rel), let q = pt(rel) else { i += 1; continue }
+                let a = lastCtrl.map { CGPoint(x: 2 * p.x - $0.x, y: 2 * p.y - $0.y) } ?? p
+                path.addCurve(to: q, control1: a, control2: b); p = q; lastCtrl = b
+                continue
+            case "Q":
+                guard let a = pt(rel), let q = pt(rel) else { i += 1; continue }
+                path.addQuadCurve(to: q, control: a); p = q
+            case "Z":
+                path.closeSubpath(); p = start
+            case "N": break
+            case "F": if !svg { fill = false } else { i += 1 }
+            default:
+                // Arcs and other commands: not literal enough.
+                return nil
+            }
+            lastCtrl = nil
+        }
+        guard !path.isEmpty else { return nil }
+        // Into points of the shape box, then the stored path units (1/100 pt).
+        let sx = size.width / CGFloat(vw), sy = size.height / CGFloat(vh)
+        var t = CGAffineTransform(scaleX: sx, y: sy)
+        guard let scaled = path.copy(using: &t) else { return nil }
+        return CustomGeometry(path: scaled, size: size, fill: (fill && !open) ? .norm : .none, stroke: stroke)
     }
 
     // MARK: Tables

@@ -251,11 +251,40 @@ struct PPTXWriter {
     }
 
     func geometry(_ o: SlideObject) -> String {
+        if let c = o.custom { return custGeom(c) }
         var prst = o.geometry
         if prst == "arrow" { prst = "straightConnector1" }
         if o.adjust.isEmpty { return "<a:prstGeom prst=\"\(prst)\"><a:avLst/></a:prstGeom>" }
         let gd = o.adjust.sorted { $0.key < $1.key }.map { "<a:gd name=\"\($0.key)\" fmla=\"val \($0.value)\"/>" }.joined()
         return "<a:prstGeom prst=\"\(prst)\"><a:avLst>\(gd)</a:avLst></a:prstGeom>"
+    }
+
+    func custGeom(_ c: CustomGeometry) -> String {
+        func gds(_ l: [GeoGuide]) -> String { l.map { "<a:gd name=\"\(xmlEscape($0.name))\" fmla=\"\(xmlEscape($0.fmla))\"/>" }.joined() }
+        var x = "<a:custGeom><a:avLst>\(gds(c.adjust))</a:avLst><a:gdLst>\(gds(c.guides))</a:gdLst><a:ahLst/><a:cxnLst/>"
+        let r = c.rect ?? ["l", "t", "r", "b"]
+        x += "<a:rect l=\"\(r[0])\" t=\"\(r[1])\" r=\"\(r[2])\" b=\"\(r[3])\"/><a:pathLst>"
+        func pt(_ a: String, _ b: String) -> String { "<a:pt x=\"\(a)\" y=\"\(b)\"/>" }
+        for p in c.paths {
+            var attrs = ""
+            if let w = p.w { attrs += " w=\"\(Int(w))\"" }
+            if let h = p.h { attrs += " h=\"\(Int(h))\"" }
+            if p.fill != .norm { attrs += " fill=\"\(p.fill.rawValue)\"" }
+            if !p.stroke { attrs += " stroke=\"0\"" }
+            x += "<a:path\(attrs)>"
+            for cmd in p.commands {
+                switch cmd {
+                case .move(let a, let b): x += "<a:moveTo>\(pt(a, b))</a:moveTo>"
+                case .line(let a, let b): x += "<a:lnTo>\(pt(a, b))</a:lnTo>"
+                case .arc(let wR, let hR, let st, let sw): x += "<a:arcTo wR=\"\(wR)\" hR=\"\(hR)\" stAng=\"\(st)\" swAng=\"\(sw)\"/>"
+                case .quad(let a, let b, let c, let d): x += "<a:quadBezTo>\(pt(a, b))\(pt(c, d))</a:quadBezTo>"
+                case .cubic(let a, let b, let c, let d, let e, let f): x += "<a:cubicBezTo>\(pt(a, b))\(pt(c, d))\(pt(e, f))</a:cubicBezTo>"
+                case .close: x += "<a:close/>"
+                }
+            }
+            x += "</a:path>"
+        }
+        return x + "</a:pathLst></a:custGeom>"
     }
 
     func nv(_ o: SlideObject, kind: String, extra: String = "", ph: Bool = true) -> String {
