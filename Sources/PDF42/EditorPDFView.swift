@@ -8,7 +8,8 @@ final class EditorPDFView: PDFView {
 
     var tool: Tool = .select {
         didSet {
-            inlineEditor?.end(commit: true)
+            cancelInteraction()
+            commitTextEdit()
             if tool != .select { selectAnnotation(nil) }
             clearSelection()
             if (oldValue == .link) != (tool == .link) { updateLinkBorders() }
@@ -17,6 +18,9 @@ final class EditorPDFView: PDFView {
     var color: NSColor = .systemRed
     /// In-place editor of page text (Edit Text tool), while open.
     var inlineEditor: InlineTextEditor?
+    var hasPendingTextEdit: Bool { inlineEditor?.hasPendingChanges == true }
+    func commitTextEdit() { inlineEditor?.end(commit: true) }
+    func cancelTextEdit() { inlineEditor?.end(commit: false) }
     var lineWidth: CGFloat = 2
     /// Dashed frames around links (View › Show Link Borders; always while the Link tool is active).
     var showsLinkBorders = false { didSet { updateLinkBorders() } }
@@ -35,6 +39,21 @@ final class EditorPDFView: PDFView {
     private var tempAnnotation: PDFAnnotation?
     private var inkPoints: [CGPoint] = []
 
+    /// An unfinished mouse gesture is a preview, not a document mutation.
+    func cancelInteraction() {
+        if let page = dragPage {
+            if drag == .move || drag == .resize { selectedAnnotation?.bounds = dragOriginalBounds }
+            if let tempAnnotation { page.removeAnnotation(tempAnnotation) }
+            refreshMarker()
+            annotationsChanged(on: page)
+        }
+        dragPage = nil
+        drag = .none
+        mouseHandled = false
+        tempAnnotation = nil
+        inkPoints = []
+    }
+
     override var acceptsFirstResponder: Bool { true }
 
     // MARK: - Selection
@@ -49,6 +68,7 @@ final class EditorPDFView: PDFView {
         selectionHandle = nil
         selectedAnnotation = annotation
         selectedPage = annotation == nil ? nil : (page ?? annotation?.page)
+        editor?.annotationSelectionChanged()
         guard let annotation, let page = selectedPage else { return }
 
         let frame = PDFAnnotation(bounds: .zero, forType: .square, withProperties: nil)
@@ -89,6 +109,7 @@ final class EditorPDFView: PDFView {
 
     private func hitAnnotation(on page: PDFPage, at point: CGPoint) -> PDFAnnotation? {
         for annotation in page.annotations.reversed() where !isMarker(annotation) {
+            if tool.isFormField && !annotation.isKind(.widget) { continue }
             // Form tools pick widgets (move, resize, delete); otherwise PDFView handles them (filling).
             if annotation.isSystemHandled, !(tool.isFormField && annotation.isKind(.widget)), !(tool == .link && annotation.isKind(.link)) { continue }
             if annotation is LinkBorderMarker { continue }
@@ -130,6 +151,7 @@ final class EditorPDFView: PDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        cancelInteraction()
         window?.makeFirstResponder(self)
         mouseHandled = true
         drag = .none
@@ -223,7 +245,7 @@ final class EditorPDFView: PDFView {
                 dragOriginalBounds = a.bounds
                 return
             }
-            if let widget = hitAnnotation(on: page, at: point) {
+            if let widget = hitAnnotation(on: page, at: point), widget.isKind(.widget) {
                 selectAnnotation(widget, on: page)
                 drag = .move
                 dragOriginalBounds = widget.bounds
@@ -238,6 +260,7 @@ final class EditorPDFView: PDFView {
             border.dashPattern = [3, 2]
             preview.border = border
             preview.color = .controlAccentColor
+            preview.shouldPrint = false
             page.addAnnotation(preview)
             tempAnnotation = preview
         }
@@ -368,6 +391,8 @@ final class EditorPDFView: PDFView {
                 return
             }
             if scalar.value == 27 {
+                cancelInteraction()
+                cancelTextEdit()
                 selectAnnotation(nil)
                 editor?.setTool(.select)
                 return

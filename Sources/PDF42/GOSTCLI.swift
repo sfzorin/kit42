@@ -115,8 +115,8 @@ enum GOSTCLI {
         // Same normalisation as the UI: PDFKit rewrite (classic xref) unless the file is already signed.
         var base = data
         if PDFSignatureVerifier.verify(data).isEmpty {
-            guard let normalised = PDFDocument(data: data)?.dataRepresentation() else { throw PDFStructureError.malformed("cannot open \(input)") }
-            base = normalised
+            guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount > 0 else { throw PDFStructureError.malformed("cannot open \(input)") }
+            base = try PDFMainCLI.signingData(data, pdf: pdf)
         }
         let all = try CryptoPro.certificates(signingOnly: false)
         let cert = all.first { $0.thumbprint.caseInsensitiveCompare(thumbprint) == .orderedSame }
@@ -138,11 +138,13 @@ enum GOSTCLI {
         options.timestampURL = tsa.flatMap(URL.init(string:))
         if visible {
             let size = CGSize(width: 220, height: 72)
-            options.visible = (0, CGRect(x: 340, y: 40, width: size.width, height: size.height),
-                               EditorWindowController.signatureAppearance(size: size, image: nil, name: cert.name, reason: reason, date: Date()))
+            guard let appearance = EditorWindowController.signatureAppearance(size: size, image: nil, name: cert.name, reason: reason, date: Date()) else {
+                throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
+            }
+            options.visible = (0, CGRect(x: 340, y: 40, width: size.width, height: size.height), appearance)
         }
         let signed = try PDFSigner.sign(base, options: options)
-        try signed.write(to: URL(fileURLWithPath: output))
+        try signed.write(to: URL(fileURLWithPath: output), options: .atomic)
         print("signed: \(output) (\(signed.count) bytes)")
         return 0
     }

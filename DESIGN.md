@@ -2,11 +2,13 @@
 
 PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42 share a look and a menu system. Shared UI components
 live in **Kit42** (`Sources/Kit42`); each app declares its commands and implements its own document or window behavior.
-This describes the current implementation; dated verification and remaining gaps are in [STATUS.md](STATUS.md).
+This describes the source as of 2026-11-06. Dated verification, published revisions, installed bundles and remaining
+gaps are recorded separately in [STATUS.md](STATUS.md).
 
 ## Principles
 
 - **Native macOS.** AppKit, system fonts, SF Symbols, system colours (light/dark). No custom chrome.
+  Core editing and bundled translations work offline through Apple's frameworks, without third-party runtime packages.
 - **Quiet main toolbar.** Only frequent actions; tools for the current mode live in the tool strip.
 - **One command — one definition.** A `Command` (title, SF Symbol, shortcut, selector) builds the menu item,
   toolbar button and strip button, keeping their labels and shortcuts in one place.
@@ -17,10 +19,28 @@ This describes the current implementation; dated verification and remaining gaps
   confirmations and errors can use native alerts or sheets.
 - **English text is British** (Colour, Grey, Centre). Title case for menu items, buttons, toolbar labels and undo
   names; sentence case for tooltips, field labels and checkboxes. One command keeps one label in every app.
-- **Three languages: English (default), Russian, Turkish.** Every string in code is English inside `L("…")`;
-  translations are `[en, ru, tr]` tables (`Kit42/Strings.swift`, `<App>/Strings.swift`, registered in `main.swift`).
+- **Twenty interface languages, English by default.** The picker follows emshandbook.com's language set and order:
+  `en`, `zh-Hans`, `zh-Hant`, `es`, `ar`, `fr`, `pt`, `id`, `ru`, `de`, `ja`, `vi`, `tr`, `fil`, `ko`, `th`,
+  `it`, `pl`, `ms`, `hu`. Labels use native language names. Explicit Chinese script tags take precedence over regions;
+  `zh-TW/HK/MO` map to Traditional, `zh-CN/SG` to Simplified, and `tl` maps to Filipino.
+  Every string in code is English inside `L("…")`. Existing `[en, ru, tr]` tables remain in
+  `Kit42/Strings.swift` and `<App>/Strings.swift`, registered in `main.swift`; the other 17 languages use shared
+  English-keyed JSON catalogs in `Kit42/Resources/Translations`. Registering legacy rows merges translations
+  without discarding other languages. Missing or empty translations fall back to the English key.
   The language is picked on the welcome screen and is shared by all six apps (`com.sfzorin.suite42` › `language`);
-  switching restarts the app. An ellipsis "…" marks commands that open a dialog.
+  switching restarts the app. `-Suite42Language <code>` overrides only the current process for audits.
+  `AppleLanguages` is set in the volatile argument domain before AppKit loads its strings. Arabic labels use native
+  Unicode text rendering; document geometry is not globally mirrored. An ellipsis "…" marks commands that open a dialog.
+  `Suite42_Kit42.bundle` is copied into each app and Quick Look extension's `Contents/Resources` before signing;
+  runtime lookup checks that location before SwiftPM's development bundle. `check_strings.py` checks all catalog
+  keys, nonempty values and printf argument identity/type/width/precision, including positional reordering;
+  document template fields, shortcut symbols and executable command/formula syntax must also remain intact.
+  The formula audit accepts XLS42's existing Russian SUM alias and localized sheet names in reference examples.
+  Welcome action buttons share the width required by their longest translated title; the identity pane and window
+  grow to fit that width and the translated tagline. `audit-localization.py` launches isolated copies and checks the
+  native picker, current language, translated File menu, catalog loading and visible label/action widths before
+  capturing each welcome window. It does not establish editing behavior or full dialog coverage.
+  Interface language does not translate document content, add OCR languages or alter the accepted formula syntax.
 
 ## Window layout
 
@@ -60,6 +80,35 @@ Typical PDF42 layout; other apps add their own formula bar, notes, inspectors or
   zoom, sections and the active column/header. Web layout disables print-margin grips. Test actions as well as
   appearance: a visible ruler is not evidence that its controls work.
 
+## PDF42 editing and output contracts
+
+- Pending in-place text participates in dirty state. Save/export commits the visible draft before taking a snapshot;
+  unchanged edits do not create Undo. Revert parses first: failed reads preserve the live model/draft; successful reads
+  cancel interactions and restore document metadata and views with stale Undo cleared.
+- Save and export render a separate snapshot. They preserve live annotation order, rotation and editability and fail
+  if redaction/rendering cannot complete. They must not substitute the original unredacted document on failure.
+  Apply Redactions and Compress This Document replace the same model that Save uses, with complete Undo/Redo.
+- Markup selection drives the colour/line-width controls. Width targets rectangle/ellipse/ink/widget borders; it is
+  disabled for text boxes, stamps, text markup and page overlays. Form tools select widgets; other markup cannot be moved by
+  mistake through a form tool. Escape or a tool switch rolls back an unfinished gesture. Undo after deletion restores
+  the annotation's stacking position. Edited text retains its source cover even when moved.
+- Page changes preserve page identity, current page and thumbnail selection. Multi-selection commands operate on all
+  selected pages. Destinations, attachment lookup and per-link magnification metadata follow reordered/replaced pages;
+  Undo restores these together. Crop/size/numbering controls validate before mutation and reject nonfinite/overflowing input.
+- Page-size scaling transforms annotation bounds, fonts and local drawing geometry. Pending page-content overlays are
+  safely baked into a resized page while Undo retains the original editable annotations. Custom annotation drawing
+  classes must be copied explicitly when retained; generic PDFAnnotation copying alone does not preserve their appearance.
+- Initial View metadata and the app's opening behavior are separate. PDF42 applies supported layout/sidebar/page and
+  magnification settings; window/title/tool/menu-bar and full-screen preferences remain serialized metadata for other viewers.
+- OCR operates on captured input and applies only to the document state that requested it. It must not mutate source
+  annotation/rotation state while rendering or overwrite intervening edits with an obsolete result.
+- Outputs validate allocation bounds and replace each destination only after successful generation. Multi-file split/
+  batch output is not an atomic group. Missing merge inputs are errors; a no-reduction compression still writes the
+  requested unchanged copy. Unsupported formats and invalid ranges must not produce a success-shaped no-op.
+
+These contracts describe the current source. README lists scenario boundaries; STATUS records the actual checked
+binary, failures/skips, installation and publication state. Native UI assertions complement saved-file inspection.
+
 ## XLS42 editing and output contracts
 
 - Commit the visible cell/formula draft before Save, Print, export, Find or a sheet/context change. The commit result
@@ -85,7 +134,7 @@ Typical PDF42 layout; other apps add their own formula bar, notes, inspectors or
   disabled when it would consume at least 80% of the printable body. PDF export does not substitute a screenshot for
   complete sheet layout or mutate the user's print settings.
 
-These describe the current local implementation, not a published release. Keep scenario coverage in README and
+These describe the source implementation. Keep scenario coverage in README and
 dated binary/test/installation evidence in STATUS; native action tests and PDFs establish more than panel snapshots.
 
 ## PPT42 editing and output contracts
@@ -121,6 +170,39 @@ dated binary/test/installation evidence in STATUS; native action tests and PDFs 
 
 These are local implementation contracts. Record exercised scenarios, limitations and the exact build's results in
 README/STATUS; passing model tests do not replace native actions, rendered-pixel assertions or saved-file checks.
+
+## IMG42 editing and output contracts
+
+- Pixel edits, markup, adjustments, image description and print resolution belong to one editing state. Undo/Redo
+  restores the source pixels, markup, pixel selection, selected mark and effective inspector/markup controls together.
+  A click, unchanged style or same-size resize must not create a phantom Undo entry. Native slider keyboard actions
+  have the same Undo boundary as mouse drags; Reset and Look changes preserve the complete previous adjustment state.
+- In-place text reads the active field editor. Only changed drafts participate in dirty state; Save/export/Print
+  commits visible text. Escape discards the draft, and restoring/resetting another state cancels stale editors and
+  unfinished gestures. Tool changes and Escape roll back unfinished mark movement, resizing and selection gestures.
+- The displayed animated frame is the frame frozen for editing/output. Pixel edits to animated or multipage input
+  produce a still image of the displayed frame/page; a successful output must not silently switch to the first frame.
+  File navigation/loading clears obsolete editing sources so a new destination cannot receive a previous image's pixels.
+  File-level Undo/Redo (lossless orientation and Trash) remains bound to its original URL across navigation; changing
+  another file must preserve the current image. Exporting over an existing image invalidates its decoded cache and thumbnail.
+- Show Original is a temporary view of the original bitmap at its original geometry, including after Crop/Resize.
+  Releasing it restores the edited geometry. Delayed full-resolution adjustment renders must not overwrite that preview.
+  Mutable Core Image filter instances are not shared between concurrent preview/full-resolution renders.
+- Background removal, Smart Lasso, Instant Alpha and text recognition apply only to their captured image/request
+  state. Revert, navigation, replacement, a newer request or intervening relevant edits invalidate older work. A stale
+  asynchronous result must not clear a newer selection, overwrite edits or act on another file.
+- Pixel masks match the image dimensions. Nonrectangular Crop retains transparency outside the selection; mask/render
+  failure aborts output rather than returning an unmasked rectangle. Instant Alpha follows a connected colour component.
+  Finite positive size/allocation checks precede bitmap creation; Smart Lasso also bounds contour resampling work.
+- Resize unit switches preserve exact pixel dimensions. Proportional resize updates both dimensions; invalid dimensions
+  stay invalid when units change. With Resample off, pixel dimensions are read-only and resolution changes print size.
+  Mark geometry and image stamps follow pixel transforms; text annotations retain their established upright orientation.
+- Output commits visible edits and checks adjustment/markup rendering. Failed rendering cannot save original pixels
+  without the requested effects. Per-file destination replacement is atomic after successful encoding; a batch is not
+  one atomic transaction. Do not mark the document clean or switch its file identity before a write succeeds.
+
+These are source contracts; STATUS records the exact tested binary, exercised scenarios and remaining limits.
+
 
 ## Menu bar (`MenuBarSpec` → `MenuBar.build`)
 
@@ -172,6 +254,20 @@ controllers, so recent-file actions must not assume every app has an `NSDocument
 Prefer ⌥⌘ or ⇧⌘ for app-specific shortcuts and check the assembled menu for collisions. Deliberate exceptions are
 documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and removes that shortcut from Page Setup.
 
+## Signature and stamp library
+
+- PDF42, DOC42, XLS42, IMG42 and PPT42 use the same local library and generator. A generated item stores a preview
+  and a JSON recipe; an imported stamp also keeps its original source. Insert renders a fresh impression from the
+  recipe. Importing a fixed picture retains a fixed image. Visual signatures and stamps are separate from the
+  certificate-based digital-signature commands.
+- **My Signature…** accepts strokes from `SignaturePad` or traces an imported picture. The pad records points,
+  time and available event pressure; picture samples have no measured timing. Rendering uses stroke geometry and
+  captured or modelled durations, blends structurally compatible samples, and varies each copy. The recipe keeps
+  the samples, ink and chosen pen locally. It does not send samples to a training service.
+- Generated and learned signatures share the renderer. A smooth path defines geometry; overlapping lognormal
+  movement impulses define speed along it. Ballpoint, gel, fountain and felt-tip pens convert that motion into
+  different widths and ink textures. Recipes without a pen field retain the ballpoint default.
+
 ## Kit42 components
 
 | Type | Purpose |
@@ -191,8 +287,8 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 | `WelcomeWindowController` | start window |
 | `StampLibrary`, `StampLibraryViewController`, `ImageTools` | shared library of signatures and seals, background removal |
 | `SigmaLognormal`, `PenRenderer`, `PenType` | sigma-lognormal timing along a smooth line (geometry and time separated); ink from speed and direction for ballpoint, gel, fountain and felt-tip pens, paper fibres |
-| `SignatureLearning`, `LearnedSignature`, `SignaturePad` | user's samples (timed strokes from the pad, or traced from a picture: threshold, Zhang–Suen thinning, good-continuation tracing) → RDP via-points with real durations → blended and perturbed copies |
-| `SignatureGenerator`, `PenAlphabet` | signatures from a kinematic pen model: hand-drawn letter centre lines, centripetal spline, low-pass hand, speed from curvature over a few pen widths; 1320 styles (design seed low bits); copies vary by impression seed with a smooth drift, per-letter shifts and scales, and flourish changes |
+| `SignatureLearning`, `LearnedSignature`, `SignaturePad` | user's samples: timed pad strokes or traced picture strokes (threshold, Zhang–Suen thinning, good-continuation tracing); RDP via-points with captured or modelled durations; compatible samples blended into varied copies |
+| `SignatureGenerator`, `PenAlphabet` | hand-drawn letter centre lines, centripetal spline and low-pass hand; sigma-lognormal speed along that smooth path; 1320 styles (design seed low bits); impression seeds vary drift, letter position/scale and flourishes |
 | `SealGenerator`, `SealCatalog` | 132 stamp templates in 15 categories built from layout families (round, oval, rect rows, office word, CJK grid, dater, table, triangle); `impress` gives imported pictures the same impression |
 | `MarkGeneratorController`, `GeneratedMark`, `InkTexture` | generator window; library items keep a JSON recipe (and imported originals in `Stamps/Sources`) so each insertion renders a new impression |
 | `InkColorPopUp` | ink colour presets with swatches plus Other Colour… |
@@ -225,8 +321,9 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 - Colours are never big wells: icon + colour bar, palette in a popover.
 - Thumbnails (PDF42 sidebar, IMG42 filmstrip): one centred column in sidebars; selection is an accent outline around
   the page or picture, never a filled cell.
-- Segmented tab bars use either all text or all icons with tooltips (PPT42 inspector: icons, since five text labels
-  do not fit 290 pt in Russian/Turkish).
+- Segmented tab bars use either all text or all icons with translated tooltips (PPT42 inspector uses icons because
+  five translated text labels do not fit its 290 pt width). Check intrinsic label widths across all 20 languages;
+  long translations must not be clipped to the English width.
 - Prominent buttons use the system accent (`bezelColor` unset); app colours are for icons only.
 - Menu items carry the command's SF Symbol; cells/pages have context menus built from the same commands.
 - For newly generated document text, prefer document fonts such as Helvetica Neue instead of SF, whose Cyrillic
@@ -249,6 +346,9 @@ defaults, while the suite language remains shared. See [README.md](README.md#reg
 Snapshots use AppKit view rendering, which can omit native composited material layers. Suspect artifacts must be
 checked in a live window before changing layout. For example, the XLS42 Format Cells tabs were black in a cached-view
 snapshot but rendered correctly in the live dialog. Responder-action tests do not simulate physical keyboard input.
+For PDF42, `--app PDF42` runs markup, pages/dialogs, core controls and lifecycle regressions. Pair it with
+`PDF42 --selftest` and `scripts/audit-pdf-cli.py --binary …`; keep skipped signing checks and limits of the local
+self-signed fixtures explicit. Use `--binary` with `--app` to audit a packaged release executable.
 For XLS42, `--app XLS42` runs the editing/formatting/lifecycle and print-layout regressions as well as snapshots.
 Pair it with `XLS42 --selftest` for calculation/model checks and `scripts/audit-spreadsheets-cli.py --binary …` for
 independent XLSX/ODS/CSV fixture conversions and PDF text/page checks. A fixture's scope and any skipped PDF checks
@@ -256,6 +356,19 @@ must remain visible in the recorded result.
 For PPT42, `--app PPT42` adds canvas/editing, text/table/show, lifecycle and inspector suites. Pair those with
 `PPT42 --selftest` and `scripts/audit-presentations-cli.py --binary …`; record skipped PDF/movie checks explicitly.
 Native control tests include rendered fill/border samples and complete-document output assertions where relevant.
+
+For IMG42, use `IMG42 --selftest`, `scripts/audit-ui.py --app IMG42` and
+`scripts/audit-images-cli.py --binary …` together. Pixel fixtures cover actual masks/transforms/adjustments, native
+scenarios cover controls and Undo/lifecycle, and independent saved-file checks cover encoding and metadata. Record
+codec- or Vision-dependent skips explicitly; successful panel toggles are not editing/output verification.
+The IMG42 native suite also exercises disposable-file Trash/Undo/Redo across navigation, actual full-screen Spaces,
+VisionKit text-selection gestures and Escape, and real Vision subject segmentation. The model-dependent scenario
+preserves its generated source, alpha output and masks; it must fail visibly if recognition or segmentation fails.
+
+`localization42audit` checks the language set and aliases, process-only overrides, bundled lookup, registration
+merging, formatting and English fallback without XCTest. `scripts/check_strings.py` checks catalog structure and
+protected literals; `scripts/audit-localization.py` checks native welcome screens and menu language in each app.
+These complement the behavioral suites and must not be reported as editing or complete linguistic review.
 
 ## Quick Look
 
@@ -267,6 +380,6 @@ Native control tests include rendered fill/border samples and complete-document 
   `QLSupportedContentTypes` (`QL_TYPES` in build.sh), bundle id `<app id>.preview|thumbnail`.
 - Extensions are sandboxed (`Resources/QuickLook/Extension.entitlements`) and signed before the app; the app is
   signed without `--deep`, which would strip their entitlements.
-- Extension strings use `PL("…")` (rows in `Previews42/Strings.swift`) and follow the system language: the sandbox
-  cannot read the suite's language choice.
+- Extension strings use `PL("…")` (legacy rows in `Previews42/Strings.swift`, additional languages in the Kit42
+  catalogs) and follow the first supported system language: the sandbox cannot read the suite's language choice.
 

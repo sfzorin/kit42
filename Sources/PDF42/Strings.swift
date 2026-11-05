@@ -2,6 +2,8 @@ import Kit42
 
 // PDF42 UI strings: [English, Русский, Türkçe].
 let pdf42Strings: [[String]] = [
+    ["The document changed during text recognition. Run OCR again.", "Документ изменился во время распознавания текста. Запустите распознавание снова.", "Metin tanıma sırasında belge değişti. OCR işlemini yeniden çalıştırın."],
+    ["The image size is invalid", "Недопустимый размер изображения", "Görüntü boyutu geçersiz"],
     ["View and edit PDF", "Просмотр и редактирование PDF", "PDF görüntüleme ve düzenleme"],
     ["Open PDF…", "Открыть PDF…", "PDF Aç…"],
     ["New Document", "Новый документ", "Yeni Belge"],
@@ -684,4 +686,8 @@ let pdf42Strings: [[String]] = [
     ["To use a key container whose certificate is not listed, choose it and install its certificate.", "Чтобы использовать контейнер, сертификата которого нет в списке, выберите его и установите сертификат.", "Sertifikası listede olmayan bir kapsayıcıyı kullanmak için onu seçin ve sertifikasını yükleyin."],
     ["Valid on the signing date (%@)", "Действует на дату подписи (%@)", "İmza tarihinde geçerli (%@)"],
     ["Verify Detached Signature (.sig)…", "Проверить отсоединённую подпись (.sig)…", "Ayrık İmzayı Doğrula (.sig)…"],
+    ["The image size is invalid", "Недопустимый размер изображения", "Görüntü boyutu geçersiz"],
+    ["The document changed during text recognition. Run OCR again.", "Документ изменился во время распознавания. Запустите OCR ещё раз.", "Metin tanıma sırasında belge değişti. OCR işlemini yeniden başlatın."],
+    ["Enter a valid HTTP or HTTPS timestamp URL.", "Введите корректный HTTP- или HTTPS-адрес сервера меток времени.", "Geçerli bir HTTP veya HTTPS zaman damgası adresi girin."],
+    ["The signature is added to a copy of the document. Certificates come from the macOS Keychain, a remote signing service (CSC) or, for GOST signatures, CryptoPro CSP. Long-term levels (B-T and above) need the timestamp server.", "Подпись добавляется в копию документа. Сертификаты берутся из Связки ключей macOS, облачного сервиса подписи (CSC), а для подписей ГОСТ — из КриптоПро CSP. Для долгосрочных уровней (B-T и выше) нужен сервер меток времени.", "İmza belgenin bir kopyasına eklenir. Sertifikalar macOS Anahtar Zinciri’nden, uzaktan imzalama hizmetinden (CSC) veya GOST imzaları için CryptoPro CSP’den alınır. Uzun süreli seviyeler (B-T ve üstü) zaman damgası sunucusu gerektirir."],
 ]

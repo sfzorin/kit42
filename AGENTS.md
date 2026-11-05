@@ -55,3 +55,36 @@ coverage and skipped PDF/movie checks in STATUS.md. Before installing a packaged
 CLI checks with `--binary build/PPT42.app/Contents/MacOS/PPT42`, and verify its code signature. Preserve running apps
 and open documents when replacing an installed bundle, retain a backup, and distinguish local installation from a
 published release.
+
+
+# PDF42 verification
+
+For changes to PDF markup, form controls, page commands, document lifecycle, navigation, geometry or metadata, build
+PDF42, run `.build/debug/PDF42 --selftest`, and run `python3 scripts/audit-ui.py --app PDF42` on a logged-in macOS desktop.
+Keep a regression scenario for each reproduced defect. Exercise actual controls/events, complete Undo/Redo state,
+rendered results and saved/reopened data where relevant. A button opening a panel is not proof that its operation works;
+do not weaken assertions to make a failed run pass.
+
+For changes to saving, redaction, forms, import/export, compression, signing or print layout, also run
+`python3 scripts/audit-pdf-cli.py --binary .build/debug/PDF42`. Record the binary identity, actual coverage and any skipped
+signature checks in STATUS.md. Local self-signed fixtures do not establish trusted-certificate/TSA interoperability or
+PDF/A conformance. Before installing a packaged PDF42, run its `--selftest`, the CLI checks with
+`--binary build/PDF42.app/Contents/MacOS/PDF42`, the native UI checks with that same `--binary` and `--app PDF42`, and verify
+its code signature. Preserve running apps and open documents, retain a backup of the previous bundle, and distinguish
+local installation from a published release.
+
+# IMG42 verification
+
+For changes to image viewing/navigation, markup, selections, pixel operations, adjustments, resizing or document
+lifecycle, build IMG42, run `.build/debug/IMG42 --selftest`, and run `python3 scripts/audit-ui.py --app IMG42` on a
+logged-in macOS desktop. Keep a regression scenario for each reproduced defect. Exercise actual controls/events,
+rendered pixels, complete Undo/Redo state and saved/reopened output where relevant. A screenshot or a panel opening
+does not establish that its tools work; do not weaken assertions to make a failed run pass.
+
+For changes to image import/export, orientation, metadata, encoding or printing, also run
+`python3 scripts/audit-images-cli.py --binary .build/debug/IMG42`. Record actual scenario coverage, any codec/Vision
+skips and the tested executable's SHA-256 in STATUS.md. Before installing a packaged IMG42, run its `--selftest`,
+the native UI checks with `--app IMG42 --binary` and the CLI checks with `--binary` against that same packaged
+executable, and verify its code signature. Check that the installed executable hash matches the tested binary.
+Preserve running applications and open images, retain a backup of the previous bundle, and distinguish local
+installation from a published or notarized release.

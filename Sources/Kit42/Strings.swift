@@ -53,6 +53,7 @@ let kit42Strings: [[String]] = [
     ["Restart", "Перезапустить", "Yeniden Başlat"],
 
     // Signature & stamp library
+    ["Signature or Stamp", "Подпись или печать", "İmza veya Kaşe"],
     ["Signatures and Stamps", "Подписи и печати", "İmzalar ve Kaşeler"],
     ["Add to Library…", "Добавить в библиотеку…", "Kitaplığa Ekle…"],
     ["Insert File…", "Вставить файл…", "Dosya Ekle…"],

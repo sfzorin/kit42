@@ -26,6 +26,7 @@ enum SignDialog {
     static func run(stampSelected: Bool) -> (options: PDFSigner.Options, visible: Bool, attachments: [EmbeddedFile])? {
         var choices = Self.choices()
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        var signButton: NSButton?
         let pin = NSSecureTextField()
         pin.placeholderString = L("Container PIN (if it has one)")
         func selected() -> Choice? {
@@ -42,6 +43,7 @@ enum SignDialog {
             if let title, let i = choices.firstIndex(where: { $0.title == title }) { popup.selectItem(at: i) }
             else if let last = UserDefaults.standard.string(forKey: "sign.certificate"), let i = choices.firstIndex(where: { $0.title == last }) { popup.selectItem(at: i) }
             popup.isEnabled = !choices.isEmpty
+            signButton?.isEnabled = !choices.isEmpty
             updatePIN()
         }
         fill()
@@ -97,12 +99,24 @@ enum SignDialog {
                                  rows: [(L("Certificate:"), popup), ("", actions), (L("PIN:"), pin), (L("Reason:"), reason), (L("Location:"), location),
                                         (L("Power of attorney:"), poaRow), ("", visible), (L("Format:"), format), ("", timestamp), (L("TSA server:"), tsa)])
         alert.icon = Theme42.symbol("checkmark.seal.fill", size: 40)
+        signButton = alert.buttons.first
+        signButton?.isEnabled = !choices.isEmpty
         while true {
             guard alert.runModal() == .alertFirstButtonReturn else { return nil }
             guard let choice = selected() else {
                 NSSound.beep()
                 continue
             }
+            let timestampURL: URL?
+            if timestamp.state == .on {
+                let value = tsa.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                      url.host?.isEmpty == false else {
+                    let error = NSAlert(); error.messageText = L("Enter a valid HTTP or HTTPS timestamp URL.")
+                    error.runModal(); continue
+                }
+                timestampURL = url
+            } else { timestampURL = nil }
             d.set(reason.stringValue, forKey: "sign.reason")
             d.set(location.stringValue, forKey: "sign.location")
             d.set(visible.state == .on, forKey: "sign.visible")
@@ -120,7 +134,7 @@ enum SignDialog {
             var o = PDFSigner.Options(signer: signer, reason: reason.stringValue, location: location.stringValue)
             // GOST signatures keep CryptoPro's format; the PAdES level applies to Keychain and CSC signers.
             o.level = signer.isGOST ? .legacy : PAdESLevel(rawValue: format.indexOfSelectedItem) ?? .baselineB
-            if timestamp.state == .on { o.timestampURL = URL(string: tsa.stringValue.trimmingCharacters(in: .whitespaces)) }
+            o.timestampURL = timestampURL
             if !signer.isGOST, o.level >= .baselineT, o.timestampURL == nil {
                 let ask = NSAlert()
                 ask.messageText = L("%@ needs a trusted timestamp", o.level.title)
@@ -128,6 +142,7 @@ enum SignDialog {
                 ask.addButton(withTitle: L("Sign as B-B"))
                 ask.addButton(withTitle: L("Cancel"))
                 guard ask.runModal() == .alertFirstButtonReturn else { continue }
+                o.level = .baselineB
             }
             return (o, visible.state == .on, attachments)
         }

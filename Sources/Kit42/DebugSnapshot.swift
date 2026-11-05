@@ -57,6 +57,7 @@ public enum DebugSnapshot {
                 var window = popover ?? NSApp.orderedWindows.first { $0.isVisible && $0.contentView != nil }
                 // K42_SNAPSHOT_SHEET=1 captures the sheet attached to the window (dialogs).
                 if env["K42_SNAPSHOT_SHEET"] != nil, let sheet = NSApp.windows.compactMap(\.attachedSheet).first { window = sheet }
+                guard LocalizationAudit.runIfRequested(in: window) else { exit(1) }
                 if let frame = window?.contentView?.superview,
                    let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
                     frame.cacheDisplay(in: frame.bounds, to: rep)

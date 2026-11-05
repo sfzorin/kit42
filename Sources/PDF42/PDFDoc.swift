@@ -13,6 +13,12 @@ final class PDFDoc: NSDocument {
     var keepCompareHighlights = false
     /// Outline edits, properties, page labels, initial view, attachments (written after PDFKit, see `DocumentWriter`).
     var extras = DocumentExtras()
+    private(set) var revision: UInt64 = 0
+
+    override func updateChangeCount(_ change: NSDocument.ChangeType) {
+        revision &+= 1
+        super.updateChangeCount(change)
+    }
 
     override init() {
         pdf = PDFDocument()
@@ -26,6 +32,10 @@ final class PDFDoc: NSDocument {
     }
 
     override class var autosavesInPlace: Bool { false }
+
+    override var isDocumentEdited: Bool {
+        super.isDocumentEdited || editor?.pdfView.hasPendingTextEdit == true
+    }
 
     /// A4 page (portrait or landscape, following the image) with the image fitted inside.
     static func page(from image: NSImage) -> PDFPage? {
@@ -61,21 +71,39 @@ final class PDFDoc: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
+        let restored: PDFDocument
+        let restoredData: Data?
+        let restoredSignatures: [SignatureInfo]
+        let restoredExtras: DocumentExtras
         if let type = UTType(typeName), type.conforms(to: .image), !type.conforms(to: .pdf) {
             guard let image = NSImage(data: data), let page = PDFDoc.page(from: image) else {
                 throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadCorruptFileError)
             }
-            pdf = PDFDocument()
-            pdf.insert(page, at: 0)
-            return
+            restored = PDFDocument()
+            restored.insert(page, at: 0)
+            restoredData = nil
+            restoredSignatures = []
+            restoredExtras = DocumentExtras()
+        } else {
+            guard let document = PDFDocument(data: data) else {
+                throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadCorruptFileError)
+            }
+            restored = document
+            restoredData = data
+            restoredExtras = DocumentExtras.read(data, pdf: document)
+            restoredSignatures = PDFSignatureVerifier.verify(data, attachments: restoredExtras.files)
         }
-        guard let doc = PDFDocument(data: data) else {
-            throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadCorruptFileError)
-        }
-        pdf = doc
-        originalData = data
-        extras = DocumentExtras.read(data, pdf: doc)
-        signatures = PDFSignatureVerifier.verify(data, attachments: extras.files)
+        // Parse first: a failed Revert must retain the live document and in-place draft.
+        editor?.pdfView.cancelTextEdit()
+        editor?.pdfView.cancelInteraction()
+        pdf = restored
+        originalData = restoredData
+        signatures = restoredSignatures
+        extras = restoredExtras
+        keepCompareHighlights = false
+        undoManager?.removeAllActions()
+        updateChangeCount(.changeCleared)
+        editor?.replaceDocument(restored)
     }
 
     override func data(ofType typeName: String) throws -> Data {
@@ -94,19 +122,19 @@ final class PDFDoc: NSDocument {
 
     override func write(to url: URL, ofType typeName: String) throws {
         let data = try data(ofType: typeName)
-        try data.write(to: url)
+        try data.write(to: url, options: .atomic)
         originalData = data
         signatures = PDFSignatureVerifier.verify(data, attachments: extras.files)
     }
 
     override func revert(toContentsOf url: URL, ofType typeName: String) throws {
         try super.revert(toContentsOf: url, ofType: typeName)
-        editor?.replaceDocument(pdf)
     }
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
-        editor?.prepareForSave()
-        guard let op = pdf.printOperation(for: printInfo, scalingMode: .pageScaleToFit, autoRotate: true) else {
+        let bytes = try data(ofType: "com.adobe.pdf")
+        guard let snapshot = PDFDocument(data: bytes),
+              let op = snapshot.printOperation(for: printInfo, scalingMode: .pageScaleToFit, autoRotate: true) else {
             throw NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
         }
         return op
