@@ -582,7 +582,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
                 let box = page.bounds(for: .cropBox)
                 rect = CGRect(x: box.maxX - 36 - 220, y: box.minY + 36, width: 220, height: 72)
             }
-            let appearance = Self.signatureAppearance(size: rect.size, image: stamp?.image, name: options.identity.name,
+            let appearance = Self.signatureAppearance(size: rect.size, image: stamp?.image, name: options.signerName,
                                                       reason: options.reason, date: Date())
             options.visible = (pdf.index(for: page), rect, appearance)
             if let stamp, !(alreadySigned && !doc.isDocumentEdited) {
@@ -598,10 +598,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
         } else { return }
         if let (a, p) = removedStamp { p.addAnnotation(a) }
 
-        var signed: Data
-        do { signed = try PDFSigner.sign(base, options: options) } catch {
+        var signed: PAdES.Result
+        do { signed = try PAdES.sign(base, options: options) } catch {
             // Offline or TSA problem: offer to sign without the timestamp.
-            guard options.timestampURL != nil else { presentError(error); return }
+            guard options.timestampURL != nil, error is Timestamp.TSAError || error is URLError else { presentError(error); return }
             let ask = NSAlert()
             ask.messageText = L("Could not get a trusted timestamp")
             ask.informativeText = error.localizedDescription
@@ -609,13 +609,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             ask.addButton(withTitle: L("Cancel"))
             guard ask.runModal() == .alertFirstButtonReturn else { return }
             options.timestampURL = nil
-            do { signed = try PDFSigner.sign(base, options: options) } catch { presentError(error); return }
+            do { signed = try PAdES.sign(base, options: options) } catch { presentError(error); return }
         }
+        saveSignedCopy(signed, suffix: alreadySigned ? nil : L("signed"))
+    }
 
+    /// Save panel for a signed/extended copy; warnings (missing revocation data) are shown first.
+    private func saveSignedCopy(_ result: PAdES.Result, suffix: String?) {
+        guard let doc = pdfDoc else { return }
+        let signed = result.data
+        if !result.warnings.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = L("Validation data is incomplete")
+            alert.informativeText = Array(Set(result.warnings)).sorted().joined(separator: "\n")
+            alert.runModal()
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         let baseName = doc.fileURL?.deletingPathExtension().lastPathComponent ?? doc.displayName ?? L("Document")
-        panel.nameFieldStringValue = alreadySigned ? "\(baseName).pdf" : L("%@ (signed).pdf", baseName)
+        panel.nameFieldStringValue = suffix.map { "\(baseName) (\($0)).pdf" } ?? "\(baseName).pdf"
         panel.directoryURL = doc.fileURL?.deletingLastPathComponent()
         panel.message = L("Save the signed document")
         panel.beginSheetModal(for: window!) { response in
@@ -632,6 +644,40 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
     }
 
     @objc func verifySignaturesAction(_ sender: Any?) { showSignatures() }
+
+    /// Adds the DSS (certificates, OCSP responses, CRLs) for the existing signatures: PAdES B-LT.
+    @objc func enableLTVAction(_ sender: Any?) {
+        guard let doc = pdfDoc, !doc.signatures.isEmpty, let original = doc.originalData else { return }
+        guard !doc.isDocumentEdited else {
+            presentError(PDFStructureError.unsupported(L("undo your changes first: validation data is added to the signed version")))
+            return
+        }
+        let result: PAdES.Result
+        do { result = try PAdES.addValidationData(original) } catch { presentError(error); return }
+        saveSignedCopy(result, suffix: nil)
+    }
+
+    /// RFC 3161 document timestamp over the whole file (B-LTA for signed files).
+    @objc func documentTimestampAction(_ sender: Any?) {
+        guard let doc = pdfDoc, let pdf else { return }
+        let signed = !doc.signatures.isEmpty
+        if signed && doc.isDocumentEdited {
+            presentError(PDFStructureError.unsupported(L("undo your changes first: the timestamp is added to the signed version")))
+            return
+        }
+        let d = UserDefaults.standard
+        guard let tsa = URL(string: d.string(forKey: "sign.tsaURL") ?? "http://timestamp.digicert.com") else { return }
+        prepareForSave()
+        let base: Data
+        if signed, let original = doc.originalData { base = original }
+        else if let data = PageOverlay.bakedData(pdf).map(AcroFormFixer.ensureFields) { base = data }
+        else { return }
+        do {
+            var result = PAdES.Result(data: try PAdES.addDocumentTimestamp(base, tsa: tsa))
+            if signed { result = try PAdES.addValidationData(result.data) }
+            saveSignedCopy(result, suffix: signed ? nil : L("timestamped"))
+        } catch { presentError(error) }
+    }
 
     /// Appearance of a visible signature: optional signature image, name, reason and date (3× resolution).
     static func signatureAppearance(size: CGSize, image: CGImage?, name: String, reason: String, date: Date) -> CGImage {
@@ -1102,6 +1148,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenu
             return !searchResults.isEmpty
         case #selector(verifySignaturesAction(_:)):
             return true
+        case #selector(enableLTVAction(_:)):
+            return !(pdfDoc?.signatures.isEmpty ?? true)
         case #selector(removeWatermarksAction(_:)):
             return hasRemovableOverlays
         case #selector(applyRedactionsAction(_:)):

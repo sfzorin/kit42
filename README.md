@@ -85,14 +85,34 @@ lets you switch extensions off.
   `--edit-text in out OLD NEW`, `--redact in out x,y,w,h[@page] …`, `--add-field in out`, `--fill in out name=value …`, `--fields file`.
   `--add-field` adds three demonstration fields; use the UI for custom field placement.
   Other CLI commands: `--ocr in out`, `--images-to-pdf out images…`, `--export in out.docx|out.txt`,
-  `--verify file`, `--sign in identity.p12 password out [visible] [tsa]`.
-  `--verify` prints signature statuses; its exit code is not a signature-validity result.
+  `--verify file`, `--sign in identity.p12 password out [visible] [tsa | tsa=URL] [level=pkcs7|B-B|B-T|B-LT|B-LTA]`
+  (default: B-T with a TSA, otherwise B-B), `--ltv in out` (add validation data to the existing signatures),
+  `--doc-timestamp in out [TSA-URL]`, `--csc-credentials SERVICE-URL [auth]`,
+  `--csc-sign in out SERVICE-URL CREDENTIAL-ID [auth] [pin=…] [otp=…] [tsa | tsa=URL] [level=…]`, where auth is
+  `token=…`, `user=… password=…` (CSC auth/login) or `client-id=… [client-secret=…] [port=8765] [no-browser]` (OAuth 2.0).
+  `--verify` prints signature statuses, the PAdES level and the LTV status; its exit code is not a signature-validity result.
 - Signatures and stamps (⇧⌘K): a library of PNGs/scans, the white background is removed automatically; or create them
   (see Common › Signature and stamp generator).
-- Digital signature (⌥⌘D): standard PDF signature (PKCS#7/CMS, adbe.pkcs7.detached, SHA-256), readable by Acrobat.
-  Certificate from the macOS Keychain, .p12 import or a self-signed one. Counter-signing is supported
-  (incremental update). Visible signature (select a placed signature image first, or bottom right of the page)
-  and RFC 3161 trusted timestamp (default TSA: DigiCert). Verification (⌥⌘V) and a status banner on open.
+- Digital signature (⌥⌘D): PAdES baseline signatures (ETSI EN 319 142-1, ETSI.CAdES.detached, SHA-256) chosen
+  in the Sign dialog's Format menu — **B-B** (signing-certificate-v2, no signing-time), **B-T** (plus an RFC 3161
+  signature timestamp), **B-LT** (plus a DSS with the certificate chains, OCSP responses and CRLs fetched at signing
+  for the signer and the timestamp authority), **B-LTA** (default; plus a document timestamp over the DSS) — or the
+  older basic adbe.pkcs7.detached signature. Certificate from the macOS Keychain, .p12 import, a self-signed one, or a
+  remote signing service. Counter-signing is supported (incremental update). Visible signature (select a placed
+  signature image first, or bottom right of the page); default TSA: DigiCert. Without a timestamp the level is B-B.
+  Verification (⌥⌘V) and a status banner on open; the verification card shows the PAdES level and whether long-term
+  validation is enabled (revocation data for every non-root certificate of the signer and timestamp paths).
+- Signature › Enable Long-Term Validation: adds or extends the DSS (certificates, OCSP, CRLs; /VRI per signature) of an
+  already signed PDF without invalidating it, so a B-T signature becomes B-LT. Signature › Add Document Timestamp: an
+  RFC 3161 document timestamp (ETSI.RFC3161) over the whole file — B-LTA for a signed file (its DSS is extended
+  afterwards), or a timestamp-only seal for an unsigned one. Validation data comes from the URLs in the certificates
+  (AIA OCSP/caIssuers, CRL distribution points), so these steps need a connection.
+- Remote signing (Sign dialog › Remote (CSC)…): Cloud Signature Consortium API v2 with a configurable service URL.
+  Sign-in by OAuth 2.0 in the browser (authorization code with PKCE and a loopback redirect
+  `http://127.0.0.1:PORT/callback` that must be registered with the provider), client credentials, HTTP Basic or a
+  pasted access token; credentials/list → credentials/authorize (PIN / one-time code, or credential-scoped OAuth for
+  `oauth2code` credentials) → signatures/signHash. Only the SHA-256 hash of the signed attributes is sent; the document
+  stays local. RSA (PKCS#1 v1.5) and ECDSA with SHA-256.
 - Thumbnails: drag to reorder pages, multi-select, drop PDFs/images to insert.
 - OCR (⌥⌘T): Vision (ru/en/tr) adds an invisible searchable text layer to scans. Print selected pages.
 - Reduce File Size (File menu): pictures are downsampled (100 / 150 / 220 dpi) and re-encoded as JPEG, text and vector
@@ -645,6 +665,13 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 ## Known limitations
 
 - GOST signatures (needs CryptoPro CSP), tracked formatting changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
+- PDF42 signatures: signing and LTV need a file with a classic cross-reference table (any file saved by PDF42; files
+  with cross-reference streams are re-saved before the first signature, which is impossible once they are signed).
+  The PAdES level is reported from the file's structure (attributes, timestamps, DSS order, revocation coverage); it is
+  not an eIDAS qualification check: PDF42 does not consult the EU trusted lists, and its trust decision is the macOS
+  trust store. CSC remote signing has been tested only against a local mock service, not a real QTSP. RSA-PSS keys,
+  OCSP nonces and asynchronous (multi-signature) CSC operations are not supported. Network calls block the window
+  while they run (the OAuth wait keeps the run loop alive).
 - XLS42 implements a subset of Excel/LibreOffice behavior; the function list and passing fixtures do not establish
   full format or calculation compatibility. Richer pivot tables refresh in its simpler one-pivot-per-sheet layout.
   CSV retains one sheet's computed values and automatically detects numeric/date fields on import, so it cannot

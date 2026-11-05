@@ -124,6 +124,8 @@ enum Cmd {
     static let sign = Command(L("Sign Document…"), #selector(W.signDocumentAction(_:)), symbol: "checkmark.seal",
                               shortcut: Shortcut("d", [.command, .option]), toolTip: L("Add a digital signature"), label: L("Sign Digitally"))
     static let verify = Command(L("Verify Signatures"), #selector(W.verifySignaturesAction(_:)), shortcut: Shortcut("v", [.command, .option]))
+    static let enableLTV = Command(L("Enable Long-Term Validation"), #selector(W.enableLTVAction(_:)))
+    static let documentTimestamp = Command(L("Add Document Timestamp"), #selector(W.documentTimestampAction(_:)))
     static let importCertificate = Command(L("Import Certificate (.p12)…"), #selector(A.importCertificateAction(_:)))
     static let createCertificate = Command(L("Create Self-Signed Certificate…"), #selector(A.createCertificateAction(_:)))
 
@@ -161,6 +163,7 @@ enum Cmd {
                           .command(watermark), .command(pageNumbers), .command(headerFooter), .command(pageLabels), .separator,
                           .command(removeWatermarks), .command(removeHeaderFooter)]),
             (L("Signature"), [.command(sign), .command(verify), .separator,
+                         .command(enableLTV), .command(documentTimestamp), .separator,
                          .command(importCertificate), .command(createCertificate)]),
         ]
         spec.help = [.command(shortcuts), .command(welcome)]

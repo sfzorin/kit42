@@ -4,7 +4,12 @@ import PDFKit
 
 // Command-line helpers for testing signatures without the UI:
 //   PDF42 --verify file.pdf
-//   PDF42 --sign in.pdf identity.p12 password out.pdf
+//   PDF42 --sign in.pdf identity.p12 password out.pdf [visible] [tsa | tsa=URL] [level=pkcs7|B-B|B-T|B-LT|B-LTA]
+//   PDF42 --ltv in.pdf out.pdf                          (DSS with certificates, OCSP, CRLs for every signature)
+//   PDF42 --doc-timestamp in.pdf out.pdf [TSA-URL]      (RFC 3161 document timestamp; B-LTA for signed files)
+//   PDF42 --csc-credentials SERVICE-URL [auth…]          (CSC API v2: list credentials)
+//   PDF42 --csc-sign in.pdf out.pdf SERVICE-URL CREDENTIAL-ID [auth…] [pin=…] [otp=…] [tsa=URL] [level=…]
+//   auth: token=… | user=… password=… | client-id=… [client-secret=…] [port=8765] [no-browser]
 Localization.register(rows: pdf42Strings)
 
 let args = CommandLine.arguments
@@ -39,7 +44,8 @@ if args.count >= 4, args[1] == "--compress" {
 if args.count >= 3, args[1] == "--verify" {
     let data = try Data(contentsOf: URL(fileURLWithPath: args[2]))
     for s in PDFSignatureVerifier.verify(data) {
-        print("\(s.status) | \(s.signer) | whole=\(s.coversWholeFile) | \(s.reason ?? "-") | ts=\(s.timestamp.map { "\($0)" } ?? "none") | \(s.trustMessage ?? "")")
+        let ltv = s.ltvEnabled.map { $0 ? "yes" : "no (\(s.ltvProblem ?? ""))" } ?? "-"
+        print("\(s.isDocumentTimestamp ? "doc-timestamp" : "signature") | \(s.status) | \(s.signer) | whole=\(s.coversWholeFile) | \(s.reason ?? "-") | ts=\(s.timestamp.map { "\($0)" } ?? "none") | level=\(s.level ?? "-") | ltv=\(ltv) | \(s.problem ?? s.trustMessage ?? "")")
     }
     exit(0)
 }
@@ -54,10 +60,88 @@ if args.count >= 6, args[1] == "--sign" {
         options.visible = (0, CGRect(x: 340, y: 40, width: size.width, height: size.height),
                            EditorWindowController.signatureAppearance(size: size, image: nil, name: identity.name, reason: "Signature test", date: Date()))
     }
+    applySignArguments(&options)
+    let signed = try PAdES.sign(base, options: options)
+    signed.warnings.forEach { print("warning: \($0)") }
+    try signed.data.write(to: URL(fileURLWithPath: args[5]))
+    print("signed \(signed.data.count) bytes, \(options.level.cliName)")
+    exit(0)
+}
+
+/// key=value argument.
+func argument(_ key: String) -> String? {
+    args.first { $0.hasPrefix(key + "=") }.map { String($0.dropFirst(key.count + 1)) }
+}
+
+func applySignArguments(_ options: inout PDFSigner.Options) {
     if args.contains("tsa") { options.timestampURL = URL(string: "http://timestamp.digicert.com") }
-    let signed = try PDFSigner.sign(base, options: options)
-    try signed.write(to: URL(fileURLWithPath: args[5]))
-    print("signed \(signed.count) bytes")
+    if let t = argument("tsa") { options.timestampURL = URL(string: t) }
+    options.level = argument("level").flatMap(PAdESLevel.named) ?? (options.timestampURL != nil ? .baselineT : .baselineB)
+    // B-B is the level without a timestamp.
+    if options.level == .baselineB { options.timestampURL = nil }
+}
+
+func cscClient(_ url: String) -> CSCClient {
+    guard let base = URL(string: url) else { print("bad URL \(url)"); exit(1) }
+    var config = CSCClient.Config(baseURL: base)
+    config.accessToken = argument("token")
+    config.username = argument("user")
+    config.password = argument("password")
+    config.clientID = argument("client-id")
+    config.clientSecret = argument("client-secret")
+    if let p = argument("port").flatMap(UInt16.init) { config.redirectPort = p }
+    config.openURL = { url in
+        print("Open to authorize: \(url.absoluteString)")
+        fflush(stdout)
+        if !args.contains("no-browser") { NSWorkspace.shared.open(url) }
+    }
+    return CSCClient(config)
+}
+
+if args.count >= 4, args[1] == "--ltv" {
+    let result = try PAdES.addValidationData(try Data(contentsOf: URL(fileURLWithPath: args[2])))
+    result.warnings.forEach { print("warning: \($0)") }
+    try result.data.write(to: URL(fileURLWithPath: args[3]))
+    print("ltv \(result.data.count) bytes")
+    exit(0)
+}
+if args.count >= 4, args[1] == "--doc-timestamp" {
+    let input = try Data(contentsOf: URL(fileURLWithPath: args[2]))
+    let signed = !PDFSignatureVerifier.verify(input).isEmpty
+    let base = signed ? input : PDFDocument(data: input)!.dataRepresentation()!
+    let tsa = URL(string: args.count > 4 ? args[4] : "http://timestamp.digicert.com")!
+    var result = PAdES.Result(data: try PAdES.addDocumentTimestamp(base, tsa: tsa))
+    if signed { result = try PAdES.addValidationData(result.data) }
+    result.warnings.forEach { print("warning: \($0)") }
+    try result.data.write(to: URL(fileURLWithPath: args[3]))
+    print("timestamped \(result.data.count) bytes")
+    exit(0)
+}
+if args.count >= 3, args[1] == "--csc-credentials" {
+    let client = cscClient(args[2])
+    do {
+        if let info = try? client.loadInfo() { print("service: \(info["name"] ?? "?") | auth: \(client.authTypes.joined(separator: ","))") }
+        for c in try client.listCredentials() {
+            print("\(c.id) | \(c.chain.first?.name ?? "-") | chain=\(c.chain.count) | auth=\(c.authMode) pin=\(c.needsPIN) otp=\(c.needsOTP) | algo=\(c.algorithms.joined(separator: ","))")
+        }
+    } catch { print("error: \(error.localizedDescription)"); exit(1) }
+    exit(0)
+}
+if args.count >= 6, args[1] == "--csc-sign" {
+    let input = try Data(contentsOf: URL(fileURLWithPath: args[2]))
+    let client = cscClient(args[4])
+    do {
+        let credential = try client.credential(args[5])
+        let signer = CSCSigner(client: client, credential: credential) { _ in (argument("pin"), argument("otp")) }
+        let base = PDFSignatureVerifier.verify(input).isEmpty ? PDFDocument(data: input)!.dataRepresentation()! : input
+        var options = PDFSigner.Options(identity: nil, reason: argument("reason") ?? "Remote signature test", location: "")
+        options.remote = signer
+        applySignArguments(&options)
+        let signed = try PAdES.sign(base, options: options)
+        signed.warnings.forEach { print("warning: \($0)") }
+        try signed.data.write(to: URL(fileURLWithPath: args[3]))
+        print("signed remotely \(signed.data.count) bytes, \(options.level.cliName)")
+    } catch { print("error: \(error.localizedDescription)"); exit(1) }
     exit(0)
 }
 

@@ -4,17 +4,25 @@ import Foundation
 import Kit42
 import Security
 
-/// Digital signatures in the standard PDF way (adbe.pkcs7.detached, CMS over /ByteRange),
-/// compatible with Adobe Acrobat and other validators.
+/// Digital signatures in the standard PDF way (CMS over /ByteRange): PAdES baseline (ETSI.CAdES.detached)
+/// or legacy adbe.pkcs7.detached, compatible with Adobe Acrobat and other validators. PAdES.swift adds the
+/// long-term levels (DSS, document timestamps).
 enum PDFSigner {
     struct Options {
-        var identity: SigningIdentity
+        /// Keychain/.p12 identity; nil when signing remotely (`remote`).
+        var identity: SigningIdentity?
         var reason: String
         var location: String
         /// Visible signature: page index, rectangle in page space, rendered appearance.
         var visible: (page: Int, rect: CGRect, appearance: CGImage)?
         /// RFC 3161 time-stamping authority, e.g. http://timestamp.digicert.com
         var timestampURL: URL?
+        /// Signature format; levels above B-T are completed by `PAdES.sign`.
+        var level: PAdESLevel = .baselineB
+        /// Remote signing service (CSC API) instead of a local key.
+        var remote: CMSRawSigner?
+
+        var signerName: String { identity?.name ?? remote?.chain.first?.name ?? L("Unknown") }
     }
 
     /// Reserved bytes for the CMS signature (hex doubles it).
@@ -23,6 +31,32 @@ enum PDFSigner {
     /// Appends a signature as an incremental update. `base` must use a classic xref table
     /// (any file saved by PDF42/PDFKit, or a file signed by PDF42).
     static func sign(_ base: Data, options: Options) throws -> Data {
+        let subFilter = options.level == .legacy ? "adbe.pkcs7.detached" : "ETSI.CAdES.detached"
+        var tail = "/M \(pdfDate(Date())) /Name \(pdfTextString(options.signerName))"
+        if !options.reason.isEmpty { tail += " /Reason \(pdfTextString(options.reason))" }
+        if !options.location.isEmpty { tail += " /Location \(pdfTextString(options.location))" }
+        tail += " /Prop_Build << /App << /Name /PDF42 >> >>"
+        let capacity = options.level == .legacy && options.remote == nil ? signatureCapacity : 2 * signatureCapacity
+        return try appendSignatureField(base, visible: options.visible, head: "/Type /Sig /Filter /Adobe.PPKLite /SubFilter /\(subFilter)",
+                                        tail: tail, capacity: capacity) { signed in
+            var cms: Data
+            if options.level == .legacy, options.remote == nil, let identity = options.identity {
+                cms = try cmsSign(signed, identity: identity.identity)
+            } else if let remote = options.remote {
+                cms = try CAdES.sign(signed, signer: remote)
+            } else if let identity = options.identity {
+                cms = try CAdES.sign(signed, signer: try KeychainSigner(identity.identity))
+            } else { throw CertificateError.failed(L("no certificate")) }
+            if let url = options.timestampURL { cms = try Timestamp.add(to: cms, tsa: url) }
+            return cms
+        }
+    }
+
+    /// Appends a signature field (invisible, or visible on `visible.page`) whose value dictionary is
+    /// `<< head /ByteRange … /Contents <…> tail >>`, then fills /Contents with `contents(signedBytes)`.
+    /// `base` must use a classic xref table (any file saved by PDF42/PDFKit, or a file signed by PDF42).
+    static func appendSignatureField(_ base: Data, visible: (page: Int, rect: CGRect, appearance: CGImage)?, head: String, tail: String,
+                                     capacity: Int, contents: (Data) throws -> Data) throws -> Data {
         let file = try PDFFileStructure(base)
         guard case .ref(let rootNum, _)? = file.trailer["Root"], let size = file.trailer["Size"]?.int else {
             throw PDFStructureError.malformed("no /Root")
@@ -40,7 +74,7 @@ enum PDFSigner {
         }
         try collect(pagesRoot, depth: 0)
         guard !pageNums.isEmpty else { throw PDFStructureError.malformed("page tree") }
-        let pageNum = pageNums[min(max(0, options.visible?.page ?? 0), pageNums.count - 1)]
+        let pageNum = pageNums[min(max(0, visible?.page ?? 0), pageNums.count - 1)]
         let node = try file.object(pageNum)
 
         var nextNum = size
@@ -88,7 +122,7 @@ enum PDFSigner {
         let fieldCount = try file.resolve(existingForm?["Fields"])?.items?.count ?? 0
         var rectText = "[0 0 0 0]"
         var appearance = ""
-        if let visible = options.visible {
+        if let visible {
             let r = visible.rect
             rectText = String(format: "[%.2f %.2f %.2f %.2f]", r.minX, r.minY, r.maxX, r.maxY)
             let imgNum = nextNum, maskNum = nextNum + 1, apNum = nextNum + 2
@@ -104,13 +138,8 @@ enum PDFSigner {
         updates[widgetNum] = "<< /Type /Annot /Subtype /Widget /FT /Sig /T \(pdfTextString("Signature\(fieldCount + 1)")) /F 132 /Rect \(rectText)\(appearance) /P \(pageNum) \(file.gen(pageNum)) R /V \(sigNum) 0 R >>"
 
         let byteRangePlaceholder = "[0 0000000000 0000000000 0000000000]"
-        let contentsPlaceholder = "<" + String(repeating: "0", count: signatureCapacity * 2) + ">"
-        var sig = "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange \(byteRangePlaceholder) /Contents \(contentsPlaceholder) /M \(pdfDate(Date()))"
-        sig += " /Name \(pdfTextString(options.identity.name))"
-        if !options.reason.isEmpty { sig += " /Reason \(pdfTextString(options.reason))" }
-        if !options.location.isEmpty { sig += " /Location \(pdfTextString(options.location))" }
-        sig += " /Prop_Build << /App << /Name /PDF42 >> >> >>"
-        updates[sigNum] = sig
+        let contentsPlaceholder = "<" + String(repeating: "0", count: capacity * 2) + ">"
+        updates[sigNum] = "<< \(head) /ByteRange \(byteRangePlaceholder) /Contents \(contentsPlaceholder) \(tail) >>"
 
         // Write the update
         var out = [UInt8](base)
@@ -154,9 +183,8 @@ enum PDFSigner {
         out.replaceSubrange(brStart..<brStart + padded.utf8.count, with: Array(padded.utf8))
 
         let signed = Data(out[0..<a] + out[b..<out.count])
-        var cms = try cmsSign(signed, identity: options.identity.identity)
-        if let url = options.timestampURL { cms = try Timestamp.add(to: cms, tsa: url) }
-        guard cms.count <= signatureCapacity else { throw PDFStructureError.unsupported(L("the signature is too large (%d bytes)", cms.count)) }
+        let cms = try contents(signed)
+        guard cms.count <= capacity else { throw PDFStructureError.unsupported(L("the signature is too large (%d bytes)", cms.count)) }
         let hex = cms.map { String(format: "%02X", $0) }.joined()
         out.replaceSubrange(a + 1..<a + 1 + hex.utf8.count, with: Array(hex.utf8))
         return Data(out)
@@ -247,9 +275,22 @@ struct SignatureInfo {
     var problem: String?
     /// Trusted time from an RFC 3161 timestamp, if the signature has one.
     var timestamp: Date?
+    /// A document timestamp (ETSI.RFC3161) rather than a signature.
+    var isDocumentTimestamp = false
+    /// "PAdES B-B" … "PAdES B-LTA", or a description of a non-PAdES format.
+    var level: String?
+    /// Whether the document holds revocation data for the whole certificate path (nil: not checked).
+    var ltvEnabled: Bool?
+    var ltvProblem: String?
+
+    var ltvSummary: String? {
+        guard let ltvEnabled else { return nil }
+        return ltvEnabled ? L("Long-term validation: enabled") : L("Long-term validation: not enabled (%@)", ltvProblem ?? "")
+    }
 
     var summary: String {
         switch status {
+        case .valid where isDocumentTimestamp: return coversWholeFile ? L("Document timestamp is valid") : L("Document timestamp is valid for its version")
         case .valid: return coversWholeFile ? L("Signature is valid") : L("Valid for its version; the document was extended after signing")
         case .untrusted: return L("The signature is intact, but the certificate is not verified")
         case .invalid: return problem ?? L("Signature is invalid")
@@ -276,10 +317,66 @@ enum PDFSignatureVerifier {
             readDictionary(bytes, around: br, contents: b..<c, into: &info)
             let cms = hexDecode(bytes[(b + 1)..<(c - 1)])
             let signed = Data(bytes[0..<b] + bytes[c..<(c + d)])
-            check(cms: cms, signed: signed, into: &info)
+            if info.isDocumentTimestamp { checkDocumentTimestamp(cms: cms, signed: signed, into: &info) }
+            else { check(cms: cms, signed: signed, into: &info) }
             results.append(info)
         }
+        let analysis = PAdES.analyze(data)
+        if analysis.count == results.count {
+            for i in results.indices {
+                results[i].level = analysis[i].level
+                results[i].ltvEnabled = analysis[i].ltvEnabled
+                results[i].ltvProblem = analysis[i].ltvProblem
+            }
+        }
         return results
+    }
+
+    /// RFC 3161 document timestamp: the token's message imprint must match the covered bytes.
+    private static func checkDocumentTimestamp(cms: Data, signed: Data, into info: inout SignatureInfo) {
+        let message = derTrimmed(cms)
+        guard let token = CMSParts(bytes: [UInt8](message)), let (alg, digest) = token.timestampImprint else {
+            info.problem = L("The signature is damaged (CMS cannot be read)")
+            return
+        }
+        info.signer = token.signerCertificate?.name ?? info.signer
+        info.timestamp = token.timestampTime
+        info.date = token.timestampTime
+        let actual: [UInt8]
+        switch alg {
+        case OID.sha256: actual = [UInt8](SHA256.hash(data: signed))
+        case OID.sha384: actual = [UInt8](SHA384.hash(data: signed))
+        case OID.sha512: actual = [UInt8](SHA512.hash(data: signed))
+        case OID.sha1: actual = [UInt8](Insecure.SHA1.hash(data: signed))
+        default: info.problem = L("The signature could not be verified"); return
+        }
+        guard actual == digest else { info.problem = L("The document was changed after signing"); return }
+        // Security.framework treats id-ct-TSTInfo content as detached: pass the TSTInfo explicitly.
+        func decode(_ detached: [UInt8]?) -> CMSDecoder? {
+            var d: CMSDecoder?
+            guard CMSDecoderCreate(&d) == errSecSuccess, let d,
+                  message.withUnsafeBytes({ CMSDecoderUpdateMessage(d, $0.baseAddress!, message.count) }) == errSecSuccess else { return nil }
+            if let detached { CMSDecoderSetDetachedContent(d, Data(detached) as CFData) }
+            return CMSDecoderFinalizeMessage(d) == errSecSuccess ? d : nil
+        }
+        var status: CMSSignerStatus = .unsigned
+        var trust: SecTrust?
+        var code: OSStatus = 0
+        for detached in [nil, token.encapsulatedContent] {
+            guard let d = decode(detached) else { continue }
+            trust = nil
+            CMSDecoderCopySignerStatus(d, 0, SecPolicyCreateBasicX509(), true, &status, &trust, &code)
+            if status != .needsDetachedContent { break }
+        }
+        if let trust {
+            var error: CFError?
+            if !SecTrustEvaluateWithError(trust, &error) { info.trustMessage = (error as Error?)?.localizedDescription }
+        }
+        switch status {
+        case .valid: info.status = .valid
+        case .invalidCert: info.status = .untrusted
+        default: info.status = .invalid; info.problem = L("The signature could not be verified")
+        }
     }
 
     private static func check(cms: Data, signed: Data, into info: inout SignatureInfo) {
@@ -347,14 +444,21 @@ enum PDFSignatureVerifier {
         }
     }
 
-    /// Reads /Reason, /Location, /M, /Name from the signature dictionary that holds this /ByteRange.
-    private static func readDictionary(_ bytes: [UInt8], around pos: Int, contents: Range<Int>, into info: inout SignatureInfo) {
+    /// The signature dictionary that holds this /ByteRange, without the /Contents value.
+    static func dictionaryRegion(_ bytes: [UInt8], around pos: Int, contents: Range<Int>) -> [UInt8] {
         let start = min(contents.lowerBound, max(0, pos - 4096))
         let before = Array(bytes[start..<contents.lowerBound])
         let after = Array(bytes[contents.upperBound..<min(bytes.count, contents.upperBound + 4096)])
         var region = before + after
         if let objStart = PDFFileStructure.lastIndex(of: " obj", in: before) { region = Array(before[objStart...]) + after }
         if let end = PDFSigner.find("endobj", in: region, from: 0) { region = Array(region[..<end]) }
+        return region
+    }
+
+    /// Reads /Reason, /Location, /M, /Name and the kind (signature or document timestamp) of the dictionary.
+    private static func readDictionary(_ bytes: [UInt8], around pos: Int, contents: Range<Int>, into info: inout SignatureInfo) {
+        let region = dictionaryRegion(bytes, around: pos, contents: contents)
+        info.isDocumentTimestamp = PDFSigner.find("/ETSI.RFC3161", in: region, from: 0) != nil
         func value(_ key: String) -> String? {
             guard let p = PDFSigner.find("/\(key)", in: region, from: 0) else { return nil }
             var lexer = PDFLexer(bytes: region, pos: p + key.utf8.count + 1)

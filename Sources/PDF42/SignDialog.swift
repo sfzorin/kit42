@@ -5,13 +5,15 @@ import Kit42
 enum SignDialog {
     static func run(stampSelected: Bool) -> (options: PDFSigner.Options, visible: Bool)? {
         var identities = CertificateStore.identities()
+        var remotes: [CSCSigner] = []
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         func fill(select name: String? = nil) {
             popup.removeAllItems()
-            popup.addItems(withTitles: identities.map(\.displayName))
-            if identities.isEmpty { popup.addItem(withTitle: L("No certificates")) }
-            if let name, let i = identities.firstIndex(where: { $0.displayName == name }) { popup.selectItem(at: i) }
-            popup.isEnabled = !identities.isEmpty
+            let titles = identities.map(\.displayName) + remotes.map { "☁︎ " + $0.credential.label }
+            popup.addItems(withTitles: titles)
+            if titles.isEmpty { popup.addItem(withTitle: L("No certificates")) }
+            if let name, let i = titles.firstIndex(of: name) { popup.selectItem(at: i) }
+            popup.isEnabled = !titles.isEmpty
         }
         fill()
 
@@ -26,6 +28,9 @@ enum SignDialog {
         actions.add(L("Create…")) {
             if let id = createCertificate() { identities = CertificateStore.identities(); fill(select: id.displayName) }
         }
+        actions.add(L("Remote (CSC)…")) {
+            if let signer = connectRemote() { remotes.append(signer); fill(select: "☁︎ " + signer.credential.label) }
+        }
 
         let d = UserDefaults.standard
         let visible = NSButton(checkboxWithTitle: stampSelected ? L("Visible signature (in place of the selected image)") : L("Visible signature (bottom right of the current page)"),
@@ -34,15 +39,19 @@ enum SignDialog {
         let timestamp = NSButton(checkboxWithTitle: L("Add a trusted timestamp (needs internet)"), target: nil, action: nil)
         timestamp.state = d.object(forKey: "sign.tsa") == nil || d.bool(forKey: "sign.tsa") ? .on : .off
         let tsa = NSTextField(string: d.string(forKey: "sign.tsaURL") ?? "http://timestamp.digicert.com")
+        let format = NSPopUpButton(frame: .zero, pullsDown: false)
+        format.addItems(withTitles: PAdESLevel.allCases.map(\.title))
+        format.selectItem(at: d.object(forKey: "sign.level") == nil ? PAdESLevel.baselineLTA.rawValue : d.integer(forKey: "sign.level"))
         let alert = NSAlert.form(L("Sign Document"),
-                                 info: L("The signature is added to a copy of the document. Certificates come from the macOS Keychain."),
+                                 info: L("The signature is added to a copy of the document. Certificates come from the macOS Keychain or a remote signing service (CSC). Long-term levels (B-T and above) need the timestamp server."),
                                  ok: L("Sign…"),
                                  rows: [(L("Certificate:"), popup), ("", actions), (L("Reason:"), reason), (L("Location:"), location),
-                                        ("", visible), ("", timestamp), (L("TSA server:"), tsa)])
+                                        ("", visible), (L("Format:"), format), ("", timestamp), (L("TSA server:"), tsa)])
         alert.icon = Theme42.symbol("checkmark.seal.fill", size: 40)
         while true {
             guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-            guard !identities.isEmpty, popup.indexOfSelectedItem >= 0, popup.indexOfSelectedItem < identities.count else {
+            let index = popup.indexOfSelectedItem
+            guard index >= 0, index < identities.count + remotes.count else {
                 NSSound.beep()
                 continue
             }
@@ -51,10 +60,78 @@ enum SignDialog {
             d.set(visible.state == .on, forKey: "sign.visible")
             d.set(timestamp.state == .on, forKey: "sign.tsa")
             d.set(tsa.stringValue, forKey: "sign.tsaURL")
-            var o = PDFSigner.Options(identity: identities[popup.indexOfSelectedItem], reason: reason.stringValue, location: location.stringValue)
+            d.set(format.indexOfSelectedItem, forKey: "sign.level")
+            var o = PDFSigner.Options(identity: index < identities.count ? identities[index] : nil, reason: reason.stringValue, location: location.stringValue)
+            if index >= identities.count { o.remote = remotes[index - identities.count] }
+            o.level = PAdESLevel(rawValue: format.indexOfSelectedItem) ?? .baselineB
             if timestamp.state == .on { o.timestampURL = URL(string: tsa.stringValue.trimmingCharacters(in: .whitespaces)) }
+            if o.level >= .baselineT, o.timestampURL == nil {
+                let ask = NSAlert()
+                ask.messageText = L("%@ needs a trusted timestamp", o.level.title)
+                ask.informativeText = L("Turn on the timestamp, or the document is signed as PAdES B-B.")
+                ask.addButton(withTitle: L("Sign as B-B"))
+                ask.addButton(withTitle: L("Cancel"))
+                guard ask.runModal() == .alertFirstButtonReturn else { continue }
+            }
             return (o, visible.state == .on)
         }
+    }
+
+    /// Connects to a Cloud Signature Consortium (API v2) service and picks a credential.
+    static func connectRemote() -> CSCSigner? {
+        let d = UserDefaults.standard
+        let url = NSTextField(string: d.string(forKey: "csc.url") ?? "")
+        url.placeholderString = "https://provider.example/csc/v2"
+        let clientID = NSTextField(string: d.string(forKey: "csc.clientID") ?? "")
+        clientID.placeholderString = L("OAuth client ID")
+        let secret = NSSecureTextField()
+        secret.placeholderString = L("Optional")
+        let port = NSTextField(string: d.string(forKey: "csc.port") ?? "8765")
+        let token = NSSecureTextField()
+        token.placeholderString = L("Optional: an access token instead of OAuth")
+        let alert = NSAlert.form(L("Remote Signing (CSC API)"),
+                                 info: L("Signs with a certificate held by a trust service provider. Only the document hash is sent; you sign in at the provider in your browser (redirect http://127.0.0.1:PORT/callback)."),
+                                 ok: L("Connect"),
+                                 rows: [(L("Service URL:"), url), (L("Client ID:"), clientID), (L("Client secret:"), secret),
+                                        (L("Redirect port:"), port), (L("Access token:"), token)])
+        guard alert.runModal() == .alertFirstButtonReturn, let base = URL(string: url.stringValue.trimmingCharacters(in: .whitespaces)) else { return nil }
+        d.set(url.stringValue, forKey: "csc.url")
+        d.set(clientID.stringValue, forKey: "csc.clientID")
+        d.set(port.stringValue, forKey: "csc.port")
+        var config = CSCClient.Config(baseURL: base)
+        config.accessToken = token.stringValue.isEmpty ? nil : token.stringValue
+        config.clientID = clientID.stringValue.isEmpty ? nil : clientID.stringValue
+        config.clientSecret = secret.stringValue.isEmpty ? nil : secret.stringValue
+        config.redirectPort = UInt16(port.stringValue) ?? 8765
+        let client = CSCClient(config)
+        do {
+            let credentials = try client.listCredentials().filter { !$0.chain.isEmpty }
+            guard !credentials.isEmpty else { throw CSCError.service(L("no credentials with certificates")) }
+            var chosen = credentials[0]
+            if credentials.count > 1 {
+                let list = NSPopUpButton(frame: .zero, pullsDown: false)
+                list.addItems(withTitles: credentials.map(\.label))
+                let pick = NSAlert.form(L("Choose a Certificate"), ok: L("Choose"), rows: [(L("Certificate:"), list)])
+                guard pick.runModal() == .alertFirstButtonReturn else { return nil }
+                chosen = credentials[list.indexOfSelectedItem]
+            }
+            return CSCSigner(client: client, credential: chosen, authData: askAuthData)
+        } catch {
+            NSApp.presentError(error)
+            return nil
+        }
+    }
+
+    /// PIN and/or one-time password for an explicitly authorized remote credential.
+    static func askAuthData(_ credential: CSCClient.Credential) throws -> (pin: String?, otp: String?) {
+        let pin = NSSecureTextField(), otp = NSTextField()
+        var rows: [(String, NSView)] = []
+        if credential.needsPIN || !credential.needsOTP { rows.append((L("PIN:"), pin)) }
+        if credential.needsOTP { rows.append((L("One-time code:"), otp)) }
+        let alert = NSAlert.form(L("Authorize Signature"), info: credential.label, ok: L("Sign"), rows: rows)
+        alert.window.initialFirstResponder = rows[0].1
+        guard alert.runModal() == .alertFirstButtonReturn else { throw CSCError.service(L("authorization was cancelled")) }
+        return (rows.contains { $0.1 === pin } ? pin.stringValue : nil, credential.needsOTP ? otp.stringValue : nil)
     }
 
     static func importCertificate() -> SigningIdentity? {
@@ -119,6 +196,8 @@ enum SignDialog {
         var lines = [s.summary]
         if let d = s.date { lines.append(L("Signed: %@", d.formatted(date: .long, time: .shortened))) }
         if let t = s.timestamp { lines.append(L("Trusted timestamp: %@", t.formatted(date: .long, time: .standard))) }
+        if let level = s.level { lines.append(L("Format: %@", level)) }
+        if let ltv = s.ltvSummary { lines.append(ltv) }
         if let r = s.reason { lines.append(L("Reason: %@", r)) }
         if let l = s.location { lines.append(L("Location: %@", l)) }
         if s.status == .untrusted, let t = s.trustMessage { lines.append(t) }
