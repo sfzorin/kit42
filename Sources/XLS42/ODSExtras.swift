@@ -224,8 +224,7 @@ extension ODS {
             x += "<table:database-range table:name=\"__Anonymous_Sheet_DB__\(si)\" table:target-range-address=\"\(xmlEscape(odfRange(sheet.name, f)))\" table:display-filter-buttons=\"true\">"
             var items: [String] = []
             func condition(_ field: Int, _ c: FilterCondition) -> String {
-                let numeric = Double(c.value.replacingOccurrences(of: ",", with: ".")) != nil
-                return "<table:filter-condition table:field-number=\"\(field)\" table:value=\"\(xmlEscape(c.value))\" table:operator=\"\(xmlEscape(odfOperators[c.op] ?? "="))\" table:data-type=\"\(numeric ? "number" : "text")\"/>"
+                return "<table:filter-condition table:field-number=\"\(field)\" table:value=\"\(xmlEscape(c.value))\" table:operator=\"\(xmlEscape(odfOperators[c.op] ?? "="))\"/>"
             }
             for (col, cf) in sheet.customFilters.sorted(by: { $0.key < $1.key }) where f.cols.contains(col) {
                 let parts = cf.conditions.map { condition(col - f.start.col, $0) }

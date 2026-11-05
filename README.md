@@ -151,7 +151,7 @@ lets you switch extensions off.
 - Data › More Filters: AutoFilter, Standard Filter… (up to four conditions: =, <>, <, >, contains, begins/ends with,
   largest/smallest N or %, empty; AND/OR; case-sensitive; no duplications; copy results to another place), Advanced
   Filter… from a criteria range (rows OR, columns AND, Excel's criteria syntax), Reset Filter. AutoFilter conditions are
-  saved in `.xlsx` (customFilters, top10).
+  saved in `.xlsx` (customFilters, top10) and `.ods` (database ranges with filter conditions, filtered rows).
 - Data › Subtotals…: group by a column, sum/count/average/max/min/product/count numbers/stdev/var, columns to total,
   page break between groups, SUBTOTAL rows plus an outline (levels 1–3); Remove All.
 - Data › Text to Columns… (tab/comma/semicolon/space/other, merged delimiters, text delimiter, fixed widths, column
