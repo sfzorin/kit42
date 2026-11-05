@@ -106,6 +106,10 @@ private struct ODPReaderImpl {
         // Slide size and master background from the master of the first page.
         masterName = pages.first?.a("master-page-name") ?? masters.keys.sorted().first ?? "Default"
         // Our own files: one master page per layout ("PPT42-L1"…), the slide master in "Default".
+        // Slide size first: layouts read below are in the page's coordinates.
+        if let master = masters[masterName], let pl = master.a("page-layout-name"), let size = pageLayouts[pl], size.width > 0, size.height > 0, size != deck.size {
+            deck.resize(to: size)
+        }
         let ours = masters.keys.filter { $0.hasPrefix("PPT42-L") }.sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
         // Files from LibreOffice with several master pages (one per PowerPoint layout): each master page becomes a layout.
         var used: [String] = []
@@ -121,7 +125,7 @@ private struct ODPReaderImpl {
             if let pl = master.a("page-layout-name"), let size = pageLayouts[pl], size.width > 0, size.height > 0, size != deck.size {
                 deck.resize(to: size)
             }
-            if let dp = master.a("style-name"), let fill = pageFill(dp, explicitOnly: false) { deck.master.background = fill }
+            if let fill = masterBackground(master) { deck.master.background = fill }
             var objects: [SlideObject] = []
             for e in master.elements where e.localName != "notes" && e.a("class") == nil && (ours.isEmpty || masterName == "Default" || e.a("layer") == "backgroundobjects") {
                 objects += readShape(e, slide: nil)
@@ -139,6 +143,15 @@ private struct ODPReaderImpl {
         return deck
     }
 
+    /// A master page's background: its drawing-page style, else the "<master>-background" presentation style (LibreOffice templates).
+    mutating func masterBackground(_ m: XMLElement) -> Fill? {
+        if let dp = m.a("style-name"), let fill = pageFill(dp, explicitOnly: false), !fill.isNone { return fill }
+        guard let name = m.a("name") else { return nil }
+        let g = props("\(name)-background", "graphic")
+        guard let kind = g["fill"], kind != "none" else { return m.a("style-name").flatMap { pageFill($0, explicitOnly: false) } }
+        return fill(g, kind: kind)
+    }
+
     /// Layouts from our master pages: their decoration (layer "layout") and placeholder frames.
     mutating func readLayouts(_ names: [String], own: Bool) {
         let footers = deck.master.placeholders.filter { $0.placeholder?.isFooter == true }
@@ -146,7 +159,7 @@ private struct ODPReaderImpl {
         for name in names {
             guard let m = masters[name] else { continue }
             var l = Layout(name: m.a("display-name") ?? name, type: "cust")
-            if let dp = m.a("style-name"), let fill = pageFill(dp, explicitOnly: false) { l.background = fill }
+            if let fill = masterBackground(m) { l.background = fill }
             var placeholders: [SlideObject] = []
             var id = 2, idx = 1
             var classes: [String] = []
@@ -448,6 +461,10 @@ private struct ODPReaderImpl {
                 grad.stops = [GradientStop(position: 0, color: b), GradientStop(position: 1, color: a)]
             }
             return .gradient(grad)
+        case "hatch":
+            // Hatching is approximated by its background colour (or a light tint of the hatch lines).
+            if g["fill-hatch-solid"] == "true", let c = hexColor(g["fill-color"]) { return .solid(opacity < 1 ? c.withAlpha(opacity) : c) }
+            return .solid((hexColor(g["fill-color"]) ?? PColor(rgb: 0x3465A4)).withAlpha(0.25))
         case "bitmap":
             if let n = g["fill-image-name"], let href = fillImages[n], let data = zip[href] {
                 return .picture(deck.addMedia(data, ext: imageExtension(data)))
