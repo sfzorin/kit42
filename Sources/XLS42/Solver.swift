@@ -2,7 +2,7 @@ import Foundation
 import Kit42
 
 /// Tools › Solver model: an objective cell to maximise/minimise/reach, variable cells and constraints.
-struct SolverModel {
+struct SolverModel: Equatable {
     enum Goal: Equatable { case max, min, value(Double) }
     enum Op: String, CaseIterable { case le = "<=", ge = ">=", eq = "=", int = "int", bin = "bin" }
     struct Constraint: Equatable {
@@ -18,6 +18,8 @@ struct SolverModel {
     var nonNegative = true
     /// Linear engine (simplex, branch and bound for integers); nonlinear models use Nelder–Mead.
     var linear = true
+    /// Other solver_… options read from the file (tolerances, time limits, LibreOffice's engine), written back unchanged.
+    var extra: [String: String] = [:]
 }
 
 struct SolverResult {

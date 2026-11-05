@@ -3,7 +3,7 @@ import Kit42
 
 final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation, NSToolbarItemValidation, NSTextFieldDelegate {
     let grid = GridView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-    private let scrollView = NSScrollView()
+    let scrollView = NSScrollView()
     private lazy var columnHeader = HeaderView(grid: grid, columns: true)
     private lazy var rowHeader = HeaderView(grid: grid, columns: false)
     lazy var freezeOverlay = FreezeOverlay(grid: grid)
@@ -28,6 +28,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     private let toolbarController = ToolbarController(identifier: "XLS42.toolbar", elements: Cmd.toolbar)
     private let nameBox = NSTextField()
     private let formulaField = NSTextField()
+    /// Field editor of the formula bar while it is being edited.
+    var formulaFieldEditor: NSTextView? { formulaField.currentEditor() as? NSTextView }
+    var formulaBarString: String { formulaField.stringValue }
     private let tabs = NSStackView()
     let status = NSTextField(labelWithString: "")
     private let sheetInfo = NSTextField(labelWithString: "")
@@ -100,6 +103,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             grid.rebuildLayout()
             updateOutlineGutters()
             grid.select(CellRef(row: 0, col: 0))
+            // A split saved in the file, once the scroll view has its size.
+            DispatchQueue.main.async { [weak self] in self?.restoreSplit() }
         }
     }
 
@@ -332,7 +337,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let sel = grid.selection
         nameBox.stringValue = sel.count > 1 && sel.end.row < RefPart.maxRow ? sel.a1 : grid.active.a1
         if !grid.isEditing {
-            formulaField.stringValue = sheet[grid.active].input
+            formulaField.stringValue = formulaBarText(at: grid.active)
             hideSignatureHint()
         }
         let style = sheet[grid.active].style
@@ -432,11 +437,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     func selectSheet(_ index: Int) {
         guard let doc, index < doc.workbook.sheets.count else { return }
         grid.commitEdit(move: nil)
+        storeSplit()
         sheetIndex = index
         reloadTabs()
         grid.rebuildLayout()
         updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
+        restoreSplit()
     }
 
     @objc private func tabClicked(_ sender: NSButton) {
@@ -445,11 +452,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             renameSheet(sender)
             return
         }
+        storeSplit()
         sheetIndex = sender.tag
         reloadTabs()
         grid.rebuildLayout()
         updateOutlineGutters()
         grid.select(CellRef(row: 0, col: 0))
+        restoreSplit()
     }
 
     @objc func addSheet(_ sender: Any?) {
@@ -544,9 +553,15 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         }
         let current = sheet[ref]
         guard current.input != input else { return }
+        if let a = sheet.array(containing: ref) {
+            // A cell of an array formula: unchanged text is no change; other text only replaces a one-cell array.
+            if input == sheet[a.anchor].input { selectionDidChange(); return }
+            if a.range.count > 1 { report(Self.partOfArrayMessage); selectionDidChange(); return }
+        }
         guard guardEditable(CellRange(ref, ref)), validateInput(input, at: ref) else { selectionDidChange(); return }
         doc.change(L("Typing")) { wb in
             var cell = wb.sheets[sheetIndex][ref]
+            if wb.sheets[sheetIndex].arrays[ref] != nil { wb.sheets[sheetIndex].arrays[ref] = nil; cell.array = false }
             cell.input = input
             cell.value = input.hasPrefix("=") && input.count > 1 ? .empty : XLSX.constant(input)
             if cell.style.numberFormat == "General", !input.hasPrefix("=") {
@@ -585,6 +600,22 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func clearContents(_ sender: Any?) {
+        let range = clampedSelection
+        guard guardArrays(range) else { return }
+        if let doc, sheet.arrays.values.contains(where: { range.contains($0.start) && range.contains($0.end) }) {
+            // Whole array formulas go with their cells.
+            guard guardEditable(range) else { return }
+            doc.change(L("Clear")) { wb in
+                dropArrays(in: range, of: &wb)
+                for ref in range.cells where wb.sheets[sheetIndex].cells[ref] != nil {
+                    var cell = wb.sheets[sheetIndex][ref]
+                    cell.input = ""
+                    cell.value = .empty
+                    wb.sheets[sheetIndex][ref] = cell
+                }
+            }
+            return
+        }
         modifyCells(L("Clear")) { cell in
             cell.input = ""
             cell.value = .empty
@@ -643,7 +674,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         let dest = grid.active
         let pb = NSPasteboard.general
         if let clip = Self.clip, clip.changeCount == pb.changeCount {
-            guard guardEditable(CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))) else { return }
+            let target = CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))
+            guard guardEditable(target), guardArrays(target) else { return }
             doc.change(L("Paste")) { wb in
                 for (offset, cell) in clip.cells {
                     let target = CellRef(row: dest.row + offset.row, col: dest.col + offset.col)
@@ -967,6 +999,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func freezeFirstColumnAction(_ sender: Any?) { setFreeze(rows: 0, cols: sheet.frozenCols == 1 && sheet.frozenRows == 0 ? 0 : 1) }
 
     private func setFreeze(rows: Int, cols: Int) {
+        // Freezing replaces a split window (as in Excel and Calc).
+        if grid.split != nil, rows > 0 || cols > 0 { setSplit(nil) }
         // Start from the top-left so the frozen part shows the first rows/columns.
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
@@ -1120,6 +1154,12 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     func controlTextDidBeginEditing(_ obj: Notification) {
         if (obj.object as? NSTextField) === formulaField, !grid.isEditing {
+            // {=…} of an array formula is edited without the braces.
+            let text = formulaField.stringValue
+            if text.hasPrefix("{="), text.hasSuffix("}") {
+                formulaField.stringValue = String(text.dropFirst().dropLast())
+                formulaFieldEditor?.string = formulaField.stringValue
+            }
             grid.beginEdit(initial: formulaField.stringValue)
             guard grid.isEditing else {
                 // Refused (protected cell): give the text back.
@@ -1197,6 +1237,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         case #selector(openHyperlinkAction(_:)): return hyperlinkTarget(at: grid.active) != nil
         case #selector(resetFilterAction(_:)): return !sheet.filterHidden.isEmpty || !sheet.filterValues.isEmpty || !sheet.customFilters.isEmpty
         case #selector(applyCellStyleAction(_:)):
+            if let name = item.representedObject as? String { item.state = name == style.styleName ? .on : .off; break }
             item.state = item.tag < CellStyles.presets.count && CellStyles.presets[item.tag].name == (style.styleName ?? "Normal") ? .on : .off
         case #selector(fillUpAction(_:)), #selector(fillDown(_:)): return grid.selection.rows.count > 1
         case #selector(fillLeftAction(_:)): return grid.selection.cols.count > 1

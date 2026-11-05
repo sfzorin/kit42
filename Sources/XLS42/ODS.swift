@@ -27,11 +27,19 @@ enum ODS {
         // Styles: common (styles.xml) then automatic (content.xml); number styles from both.
         var numberFormats: [String: String] = [:]
         var styles: [String: StyleInfo] = [:]
+        var commonCellStyles: [String] = []
         for container in [stylesRoot?.child("styles"), stylesRoot?.child("automatic-styles"), content.child("automatic-styles")] {
             guard let container else { continue }
             for e in (container.children ?? []).compactMap({ $0 as? XMLElement }) {
                 if let name = e.attr("name"), let code = numberFormat(e) { numberFormats[name] = code }
-                if e.localName == "style", let name = e.attr("name") { styles[name] = styleInfo(e) }
+                if e.localName == "style", let name = e.attr("name") {
+                    styles[name] = styleInfo(e)
+                    // Named (common) cell styles: their name stays on the cells (Format › Cell Styles).
+                    if container === stylesRoot?.child("styles"), e.attr("family") == "table-cell", name != "Default" {
+                        styles[name]?.style.styleName = CellStyles.internalName(e.attr("display-name") ?? name)
+                        commonCellStyles.append(name)
+                    }
+                }
                 if e.localName == "default-style", e.attr("family") == "table-cell" { styles["__default"] = styleInfo(e) }
             }
         }
@@ -65,6 +73,10 @@ enum ODS {
 
         var wb = Workbook()
         wb.sheets = []
+        for name in commonCellStyles {
+            let s = cellStyle(name)
+            if let n = s.styleName, wb.cellStyles[n] == nil { wb.cellStyles[n] = s }
+        }
         wb.structureProtected = spreadsheet.attr("structure-protected") == "true"
         let validationRules = readValidations(spreadsheet)
         for table in spreadsheet.children("table") {
@@ -155,7 +167,11 @@ enum ODS {
                                 if let cs = cellXML.attr("number-matrix-columns-spanned").flatMap(Int.init),
                                    let rs = cellXML.attr("number-matrix-rows-spanned").flatMap(Int.init) {
                                     cell.array = true
-                                    if cs * rs > 1 { matrixRanges.append(CellRange(ref, CellRef(row: ref.row + rs - 1, col: ref.col + cs - 1))) }
+                                    let range = CellRange(ref, CellRef(row: ref.row + max(1, rs) - 1, col: ref.col + max(1, cs) - 1))
+                                    if cs * rs > 1 { matrixRanges.append(range) }
+                                    // ODF matrices are fixed ranges, like Excel's Ctrl+Shift+Enter formulas
+                                    // (dynamic-array functions keep spilling to their natural size).
+                                    if !Calculator.isDynamic(formula) { sheet.arrays[ref] = range }
                                 }
                             } else {
                                 cell.input = XLSX.inputText(for: value, style: style)
@@ -189,16 +205,31 @@ enum ODS {
                 v.ranges = ranges(refs)
                 sheet.validations.append(v)
             }
+            // Sheet-local names: the Solver model (LibreOffice keeps Excel's hidden solver_… names here).
+            var solverNames: [String: String] = [:]
+            for case let e as XMLElement in table.child("named-expressions")?.children ?? [] {
+                guard let name = e.attr("name"), SolverFiles.isSolverName(name), let text = solverText(e) else { continue }
+                solverNames[name] = text
+            }
+            if !solverNames.isEmpty { sheet.solver = SolverFiles.model(solverNames, sheet: sheet.name) }
             if let ranges = table.attr("print-ranges") {
                 sheet.printArea = rangeFromODF(String(ranges.split(separator: " ").first ?? "")).flatMap { CellRange($0.range.replacingOccurrences(of: "$", with: "")) }
             }
             wb.sheets.append(sheet)
         }
         // Named ranges
-        for n in spreadsheet.child("named-expressions")?.children("named-range") ?? [] {
+        var globalSolver: [String: String] = [:]
+        for case let n as XMLElement in spreadsheet.child("named-expressions")?.children ?? [] {
+            if let name = n.attr("name"), SolverFiles.isSolverName(name) { if let t = solverText(n) { globalSolver[name] = t }; continue }
+            guard n.localName == "named-range" else { continue }
             if let name = n.attr("name"), let addr = n.attr("cell-range-address"), let r = rangeFromODF(addr) {
                 wb.names[name] = (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
             }
+        }
+        if let opt = globalSolver["solver_opt"], let bang = opt.lastIndex(of: "!") {
+            var name = String(opt[..<bang])
+            if name.hasPrefix("'") { name = String(name.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'") }
+            if let si = wb.sheetIndex(named: name), wb.sheets[si].solver == nil { wb.sheets[si].solver = SolverFiles.model(globalSolver, sheet: name) }
         }
         readDatabaseRanges(spreadsheet, &wb)
         PivotFiles.readODS(spreadsheet, &wb)
@@ -211,6 +242,15 @@ enum ODS {
                     for item in entry.children("config-item") { if let k = item.attr("name") { items[k] = item.stringValue } }
                     if items["HorizontalSplitMode"] == "2" { wb.sheets[i].frozenCols = Int(items["HorizontalSplitPosition"] ?? "0") ?? 0 }
                     if items["VerticalSplitMode"] == "2" { wb.sheets[i].frozenRows = Int(items["VerticalSplitPosition"] ?? "0") ?? 0 }
+                    // Split window (mode 1): positions in pixels, panes' first column/row in Position….
+                    let hx = items["HorizontalSplitMode"] == "1" ? Double(items["HorizontalSplitPosition"] ?? "") ?? 0 : 0
+                    let vy = items["VerticalSplitMode"] == "1" ? Double(items["VerticalSplitPosition"] ?? "") ?? 0 : 0
+                    if wb.sheets[i].frozenRows == 0, wb.sheets[i].frozenCols == 0, hx > 0 || vy > 0 {
+                        func n(_ k: String) -> Int { max(0, Int(items[k] ?? "") ?? 0) }
+                        let pane = Int(items["ActiveSplitRange"] ?? "").flatMap { $0 >= 0 && $0 < 4 ? SheetSplit.odsPanes[$0] : nil }
+                        wb.sheets[i].split = SheetSplit.from(x: hx, y: vy, topLeft: CellRef(row: vy > 0 ? n("PositionTop") : n("PositionBottom"), col: n("PositionLeft")),
+                                                             paneTopLeft: CellRef(row: n("PositionBottom"), col: hx > 0 ? n("PositionRight") : n("PositionLeft")), activePane: pane)
+                    }
                     if items["ShowGrid"] == "false" { wb.sheets[i].showGridlines = false }
                     if let tab = items["TabColor"].flatMap(Int.init), tab >= 0, tab <= 0xFFFFFF {
                         let rgb = tab & 0xFFFFFF
@@ -221,6 +261,38 @@ enum ODS {
         }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
         return wb
+    }
+
+    /// Style name as an NCName, encoded like LibreOffice ("Heading 1" → "Heading_20_1").
+    static func styleNCName(_ name: String) -> String {
+        var out = ""
+        for (i, ch) in CellStyles.odfName(name).unicodeScalars.enumerated() {
+            let ok = CharacterSet.letters.contains(ch) || ch == "_" || (i > 0 && (CharacterSet.decimalDigits.contains(ch) || ch == "-" || ch == "."))
+            out += ok ? String(ch) : String(format: "_%x_", ch.value)
+        }
+        return out
+    }
+
+    /// A solver_… name as Excel text: "Sheet1!$A$1:$B$2" for named ranges (several joined by ","), the expression otherwise.
+    static func solverText(_ e: XMLElement) -> String? {
+        if e.localName == "named-range", let addr = e.attr("cell-range-address") {
+            // Several ranges are separated by spaces (outside quoted sheet names).
+            var pieces: [String] = [], cur = "", quoted = false
+            for ch in addr {
+                if ch == "'" { quoted.toggle() }
+                if ch == " " && !quoted { if !cur.isEmpty { pieces.append(cur) }; cur = ""; continue }
+                cur.append(ch)
+            }
+            if !cur.isEmpty { pieces.append(cur) }
+            let parts = pieces.compactMap { rangeFromODF($0) }.map { r in
+                (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: ",")
+        }
+        guard var t = e.attr("expression") else { return nil }
+        for prefix in ["of:", "oooc:"] where t.hasPrefix(prefix) { t.removeFirst(prefix.count) }
+        if t.hasPrefix("=") { t.removeFirst() }
+        return t
     }
 
     private static func descendantsNamed(_ e: XMLElement, _ name: String) -> [XMLElement] {
@@ -489,14 +561,36 @@ enum ODS {
             auto += xml
             return name
         }
+        // Named cell styles: common styles in styles.xml (display name = the style's name, LibreOffice's for Accent 1…).
+        var commonStyles = "", commonDataStyles: [String: String] = [:]
+        var namedStyles = Set<String>()
+        for d in CellStyles.definitions(wb) {
+            namedStyles.insert(d.name)
+            var x = "<style:style style:name=\"\(xmlEscape(styleNCName(d.name)))\" style:display-name=\"\(xmlEscape(CellStyles.odfName(d.name)))\" style:family=\"table-cell\" style:parent-style-name=\"Default\""
+            if d.style.numberFormat != "General" {
+                let ds = commonDataStyles[d.style.numberFormat] ?? "N\(commonDataStyles.count + 900)"
+                if commonDataStyles[d.style.numberFormat] == nil, let xml = odfNumberStyle(d.style.numberFormat, name: ds) {
+                    commonDataStyles[d.style.numberFormat] = ds
+                    commonStyles = xml + commonStyles
+                }
+                if commonDataStyles[d.style.numberFormat] != nil { x += " style:data-style-name=\"\(ds)\"" }
+            }
+            commonStyles += x + ">" + cellProperties(d.style) + "</style:style>"
+        }
         func styleName(_ s: CellStyle) -> String? {
             guard s != .default else { return nil }
             if let n = cellStyles[s] { return n }
             let name = "ce\(cellStyles.count + 1)"
             cellStyles[s] = name
-            var x = "<style:style style:name=\"\(name)\" style:family=\"table-cell\" style:parent-style-name=\"Default\""
+            let parent = s.styleName.flatMap { namedStyles.contains($0) ? styleNCName($0) : nil } ?? "Default"
+            var x = "<style:style style:name=\"\(name)\" style:family=\"table-cell\" style:parent-style-name=\"\(xmlEscape(parent))\""
             if let ds = dataStyle(s.numberFormat) { x += " style:data-style-name=\"\(ds)\"" }
-            x += "><style:table-cell-properties"
+            x += ">" + cellProperties(s) + "</style:style>"
+            auto += x
+            return name
+        }
+        func cellProperties(_ s: CellStyle) -> String {
+            var x = "<style:table-cell-properties"
             if let f = s.fill { x += " fo:background-color=\"#\(hex(f))\"" }
             func b(_ side: BorderSide?) -> String { side.map { "\($0.width * 0.75)pt \($0.style == "double" ? "double" : "solid") #\(hex($0.color))" } ?? "none" }
             if s.left != nil || s.right != nil || s.top != nil || s.bottom != nil {
@@ -516,9 +610,7 @@ enum ODS {
             if s.doubleUnderline { x += " style:text-underline-type=\"double\"" }
             if s.strike { x += " style:text-line-through-style=\"solid\"" }
             if let c = s.textColor { x += " fo:color=\"#\(hex(c))\"" }
-            x += "/></style:style>"
-            auto += x
-            return name
+            return x + "/>"
         }
         func colStyle(_ w: CGFloat) -> String {
             if let n = columnStyles[w] { return n }
@@ -602,6 +694,7 @@ enum ODS {
                 t += "</table:table-row>"
             }
             t += String(repeating: "</table:table-row-group>", count: openRows)
+            if let m = sheet.solver { t += SolverFiles.odsNames(m, sheet: sheet.name) }
             t += "</table:table>"
             body += t
         }
@@ -625,22 +718,31 @@ enum ODS {
         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" \
         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" \
         xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xlink="http://www.w3.org/1999/xlink" \
-        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" \
+        xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" xmlns:ooo="http://openoffice.org/2004/office" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
         let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
-        let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/></office:styles></office:document-styles>"
+        let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/>\(commonStyles)</office:styles></office:document-styles>"
         var tables = ""
         for s in wb.sheets {
             tables += "<config:config-item-map-entry config:name=\"\(xmlEscape(s.name))\">"
             if s.frozenCols > 0 { tables += "<config:config-item config:name=\"HorizontalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"HorizontalSplitPosition\" config:type=\"int\">\(s.frozenCols)</config:config-item><config:config-item config:name=\"PositionRight\" config:type=\"int\">\(s.frozenCols)</config:config-item>" }
             if s.frozenRows > 0 { tables += "<config:config-item config:name=\"VerticalSplitMode\" config:type=\"short\">2</config:config-item><config:config-item config:name=\"VerticalSplitPosition\" config:type=\"int\">\(s.frozenRows)</config:config-item><config:config-item config:name=\"PositionBottom\" config:type=\"int\">\(s.frozenRows)</config:config-item>" }
+            if s.frozenRows == 0, s.frozenCols == 0, let sp = s.split, sp.x > 0 || sp.y > 0 {
+                func item(_ name: String, _ type: String, _ v: Int) -> String { "<config:config-item config:name=\"\(name)\" config:type=\"\(type)\">\(v)</config:config-item>" }
+                let px = sp.pixels, pane = sp.paneTopLeft
+                tables += item("HorizontalSplitMode", "short", px.x > 0 ? 1 : 0) + item("VerticalSplitMode", "short", px.y > 0 ? 1 : 0)
+                tables += item("HorizontalSplitPosition", "int", px.x) + item("VerticalSplitPosition", "int", px.y)
+                tables += item("ActiveSplitRange", "short", SheetSplit.odsPanes.firstIndex(of: sp.normalizedPane) ?? 2)
+                tables += item("PositionLeft", "int", sp.topLeft.col) + item("PositionRight", "int", px.x > 0 ? pane.col : 0)
+                tables += item("PositionTop", "int", px.y > 0 ? sp.topLeft.row : 0) + item("PositionBottom", "int", pane.row)
+            }
             if let tab = s.tabColor, let rgb = Int(XLSX.argb(tab).dropFirst(2), radix: 16) {
                 tables += "<config:config-item config:name=\"TabColor\" config:type=\"int\">\(rgb)</config:config-item>"
             }
             tables += "<config:config-item config:name=\"ShowGrid\" config:type=\"boolean\">\(s.showGridlines)</config:config-item></config:config-item-map-entry>"
         }
-        let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings \(ns)><office:settings><config:config-item-set config:name=\"ooo:view-settings\"><config:config-item-map-indexed config:name=\"Views\"><config:config-item-map-entry><config:config-item-map-named config:name=\"Tables\">\(tables)</config:config-item-map-named></config:config-item-map-entry></config:config-item-map-indexed></config:config-item-set></office:settings></office:document-settings>"
+        let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings \(ns)><office:settings><config:config-item-set config:name=\"ooo:view-settings\"><config:config-item-map-indexed config:name=\"Views\"><config:config-item-map-entry><config:config-item config:name=\"ViewId\" config:type=\"string\">view1</config:config-item><config:config-item-map-named config:name=\"Tables\">\(tables)</config:config-item-map-named><config:config-item config:name=\"ActiveTable\" config:type=\"string\">\(xmlEscape(wb.sheets.first { !$0.hidden }?.name ?? wb.sheets[0].name))</config:config-item></config:config-item-map-entry></config:config-item-map-indexed></config:config-item-set></office:settings></office:document-settings>"
         let manifest = """
         <?xml version="1.0" encoding="UTF-8"?>
         <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3">
@@ -722,6 +824,10 @@ enum ODS {
         var s = prefix + "." + a.text
         if let b { s += ":" + (sheet.map { _ in prefix } ?? "") + "." + b.text }
         return s
+    }
+
+    static func odfCell(_ sheet: String, _ r: CellRef) -> String {
+        "\(odfSheet(sheet, absolute: true)).$\(CellRef.columnName(r.col))$\(r.row + 1)"
     }
 
     static func odfRange(_ sheet: String, _ r: CellRange) -> String {

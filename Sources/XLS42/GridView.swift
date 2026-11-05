@@ -893,7 +893,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         isEditing = true
         editingCell = active
         let cell = sheet[active]
-        editor.stringValue = initial ?? cell.input
+        editor.stringValue = initial ?? controller?.editText(at: active) ?? cell.input
         editor.font = cell.style.font(scale: scale)
         editor.alignment = initial == nil && !cell.input.hasPrefix("=") ? displayAlignment(cell) : .left
         positionEditor(active)

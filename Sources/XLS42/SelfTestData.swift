@@ -193,6 +193,7 @@ extension SelfTest {
         inf.constraints = [.init(lhs: CellRange("B1")!, op: .ge, rhs: "5"), .init(lhs: CellRange("B1")!, op: .le, rhs: "3")]
         check("solver reports an infeasible model", Solver.solve(infeasible, sheet: 0, model: inf)?.status == .infeasible)
         failed += sheetFeatureFiles()
+        failed += viewAndModelFiles()
         return failed
     }
 

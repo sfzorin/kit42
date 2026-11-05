@@ -1,6 +1,40 @@
 import AppKit
 import Kit42
 
+/// Format › Cell Styles: the presets, then the front document's own named styles (added when the menu opens).
+final class CellStyleMenu: NSObject, NSMenuDelegate {
+    static let shared = CellStyleMenu()
+    static let firstTag = 1000
+
+    static func install(in menu: NSMenu?) {
+        func find(_ m: NSMenu) -> NSMenu? {
+            for item in m.items {
+                guard let sub = item.submenu else { continue }
+                if sub.items.contains(where: { $0.action == #selector(SheetWindowController.applyCellStyleAction(_:)) }) { return sub }
+                if let found = find(sub) { return found }
+            }
+            return nil
+        }
+        if let m = menu, let sub = find(m) { sub.delegate = shared }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        for item in menu.items where item.tag >= Self.firstTag - 1 { menu.removeItem(item) }
+        let editor = (NSApp.mainWindow?.windowController ?? NSApp.keyWindow?.windowController) as? SheetWindowController
+        let names = editor?.documentStyleNames ?? []
+        guard !names.isEmpty else { return }
+        let sep = NSMenuItem.separator()
+        sep.tag = Self.firstTag - 1
+        menu.addItem(sep)
+        for (i, name) in names.enumerated() {
+            let item = NSMenuItem(title: L(name), action: #selector(SheetWindowController.applyCellStyleAction(_:)), keyEquivalent: "")
+            item.representedObject = name
+            item.tag = Self.firstTag + i
+            menu.addItem(item)
+        }
+    }
+}
+
 /// Named cell styles (Format › Cell Styles): Excel's built-in set, saved as cellStyles in .xlsx.
 enum CellStyles {
     struct Preset {
@@ -66,6 +100,55 @@ enum CellStyles {
         Preset(name: "Percent") { s in s.numberFormat = "0%" },
         Preset(name: "Comma") { s in s.numberFormat = "#,##0.00" },
     ]
+
+    static func preset(named name: String) -> Preset? { presets.first { $0.name == name } }
+
+    /// LibreOffice names of styles that Excel names differently (Accent 1 ↔ Accent1); others keep their name.
+    static let odfNames = ["Accent1": "Accent 1", "Accent2": "Accent 2", "Accent3": "Accent 3"]
+
+    /// Name used in XLS42 (Excel's) for a style name read from a file: LibreOffice's "Accent 1" and
+    /// "Excel Built-in Good" (its name for Excel's built-in styles) become "Accent1" and "Good".
+    static func internalName(_ fileName: String) -> String {
+        var n = fileName
+        if n.hasPrefix("Excel Built-in ") { n.removeFirst("Excel Built-in ".count) }
+        if n.hasPrefix("Excel_20_Built-in_20_") { n.removeFirst("Excel_20_Built-in_20_".count) }
+        return odfNames.first { $0.value == n }?.key ?? n
+    }
+
+    static func odfName(_ name: String) -> String { odfNames[name] ?? name }
+
+    /// The formatting a named style stands for: the document's definition, else the preset's.
+    static func definition(_ name: String, in wb: Workbook) -> CellStyle? {
+        if let s = wb.cellStyles[name] { return s }
+        guard let p = preset(named: name) else { return nil }
+        return applied(p, to: .default)
+    }
+
+    /// Named styles to write: the document's own and every name used by a cell (first-use order, then by name).
+    static func definitions(_ wb: Workbook) -> [(name: String, style: CellStyle)] {
+        var names: [String] = []
+        var seen = Set<String>()
+        for sheet in wb.sheets {
+            for ref in sheet.cells.keys.sorted() {
+                if let n = sheet.cells[ref]?.style.styleName, n != "Normal", !seen.contains(n) { seen.insert(n); names.append(n) }
+            }
+        }
+        for n in wb.cellStyles.keys.sorted() where !seen.contains(n) && n != "Normal" { seen.insert(n); names.append(n) }
+        return names.compactMap { n in
+            var s = definition(n, in: wb) ?? wb.sheets.lazy.flatMap { $0.cells.values }.first { $0.style.styleName == n }?.style
+            s?.styleName = n
+            return s.map { (n, $0) }
+        }
+    }
+
+    /// A document style (not a preset) applied like a preset: its formatting replaces the cell's.
+    static func applied(document style: CellStyle, name: String, to cell: CellStyle) -> CellStyle {
+        var s = style
+        s.styleName = name
+        s.locked = cell.locked
+        s.hiddenFormula = cell.hiddenFormula
+        return s
+    }
 
     /// The style with a preset applied: attributes the preset sets replace the cell's, the rest stays.
     static func applied(_ preset: Preset, to style: CellStyle) -> CellStyle {

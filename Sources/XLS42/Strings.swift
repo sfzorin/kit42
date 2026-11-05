@@ -954,4 +954,13 @@ let xls42Strings: [[String]] = [
     ["Operation:", "Операция:", "İşlem:"],
     ["Hide Formula Bar", "Скрыть строку формул", "Formül Çubuğunu Gizle"],
     ["Show Formula Bar", "Показать строку формул", "Formül Çubuğunu Göster"],
+    ["Array Formula", "Формула массива", "Dizi Formülü"],
+    ["Enter Array Formula", "Ввести формулу массива", "Dizi Formülü Gir"],
+    ["You can't change part of an array.", "Нельзя изменить часть массива.", "Bir dizinin bir bölümünü değiştiremezsiniz."],
+    ["Heading", "Заголовок", "Başlık"],
+    ["Footnote", "Сноска", "Dipnot"],
+    ["Status", "Состояние", "Durum"],
+    ["Error", "Ошибка", "Hata"],
+    ["Accent", "Акцент", "Vurgu"],
+    ["Result", "Результат", "Sonuç"],
 ]
