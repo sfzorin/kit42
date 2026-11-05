@@ -4,7 +4,21 @@ This report records dated source, build and UI verification evidence (dates in E
 Earlier sections retain the scope of their original snapshots; later results supersede them only where stated. Feature usage and commands are in [README.md](README.md); shared UI contracts are in
 [DESIGN.md](DESIGN.md). A passing audit covers the scenarios listed here, not every feature or file format.
 
-## Source, builds and publication
+## Latest GitHub publication — 2026-11-06
+
+The integrated source is published in `sfzorin/kit42` on `main`:
+[`5e50cc58acfa75db02728ec1e3caa487f7b8df1b`](https://github.com/sfzorin/kit42/commit/5e50cc58acfa75db02728ec1e3caa487f7b8df1b).
+GitHub's API confirmed that exact commit after the push. It contains twenty interface languages (3,003 source keys),
+the latest PDF/IMG fixes and regressions, and updated README, DESIGN, STATUS and verification instructions, on top of
+the already published PAdES/CSC/GOST and signature-learning work. Repository About text was updated and read back
+from GitHub. Author and committer are `sfzorin <s.zorin@dannie.cc>`; no co-author trailers were added.
+
+This is a source publication. Verified local packages are ad-hoc signed, remain version 1.0/build 1 and were not
+uploaded as a downloadable/notarized release. Installed snapshots documented below retain their separate binary
+identities. The original shared working checkout was preserved; integration and publication used an isolated worktree.
+Final validation evidence is in [Integrated publication build](#integrated-publication-build--2026-11-06).
+
+## Earlier source, build and publication checkpoints
 
 - All six apps are present: PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42.
 - During the PPT42 follow-up, concurrent work created merge commit `85b6df66964f867353f96251619aa2b85af51ccf`
@@ -760,7 +774,7 @@ The publication worktree starts at GitHub `8087d005d01ff502dd98ac298d079479519b5
 and learned-signature work already on GitHub with the completed PDF editor fixes, twenty-language interface and
 IMG42 regression work. The original shared checkout was preserved. The README and DESIGN describe this combined
 source; repository About text has been updated to the six-app suite, twenty languages, offline core and optional
-CryptoPro integration. Source publication is recorded separately below once the push is verified.
+CryptoPro integration. Verified source publication is recorded at the top of this report.
 
 All seventeen additional-language catalogs now contain **3,003 source keys** each, including 134 new signing/image
 strings beyond the earlier frozen language build. Exact coverage and format validation pass; validator unit tests
