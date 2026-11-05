@@ -208,7 +208,7 @@ enum ChartODF {
             default: props += "/><style:graphic-properties draw:stroke=\"none\" draw:fill=\"solid\" draw:fill-color=\"\(c)\"/>"
             }
             let ss = style("chS\(i + 1)", props + textProps(m.textSize))
-            x += "<chart:series chart:style-name=\"\(ss)\" chart:values-cell-range-address=\"local-table.$\(col)$2:.$\(col)$\(rows + 1)\" chart:label-cell-address=\"local-table.$\(col)$1\" chart:class=\"\(cls)\">"
+            x += "<chart:series chart:style-name=\"\(ss)\" chart:values-cell-range-address=\"local-table.$\(col)$2:.$\(col)$\(rows + 1)\" chart:label-cell-address=\"local-table.$\(col)$1\" chart:class=\"\(m.kind == .doughnut ? "chart:circle" : cls)\">"
             if m.kind == .scatter { x += "<chart:domain table:cell-range-address=\"local-table.$A$2:.$A$\(rows + 1)\"/>" }
             if m.kind == .pie || m.kind == .doughnut || (m.varyColors && m.series.count == 1) {
                 for k in 0..<rows {

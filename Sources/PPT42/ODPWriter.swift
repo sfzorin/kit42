@@ -192,13 +192,15 @@ private struct ODPWriterImpl {
         }
         common += "<style:style style:name=\"Default-outline1\" style:family=\"presentation\">\(neutral)</style:style>"
         for i in 2...9 { common += "<style:style style:name=\"Default-outline\(i)\" style:family=\"presentation\" style:parent-style-name=\"Default-outline\(i - 1)\"/>" }
+        // Layout master pages first: their styles and named fills belong in the lists below.
+        let layoutPages = layoutMasters(auto)
         common += markers()
         common += shared.xml
 
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(Self.ns)><office:styles>\(common)</office:styles>"
             + "<office:automatic-styles>\(pageLayout)\(auto.xml)</office:automatic-styles>"
             + "<office:master-styles><style:master-page style:name=\"Default\" style:page-layout-name=\"PM1\" draw:style-name=\"\(masterDP)\">\(masterShapes)"
-            + notesMaster + "</style:master-page>" + layoutMasters(auto) + "</office:master-styles></office:document-styles>"
+            + notesMaster + "</style:master-page>" + layoutPages + "</office:master-styles></office:document-styles>"
     }
 
     var notesMaster: String {
@@ -216,7 +218,8 @@ private struct ODPWriterImpl {
             if l.showMasterShapes {
                 for o in deck.master.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
             }
-            for o in l.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto) }
+            // LibreOffice shows only the background objects layer of master pages.
+            for o in l.objects { x += object(o, slide: nil, number: deck.firstSlideNumber, styles: auto).replacingOccurrences(of: "draw:layer=\"layout\"", with: "draw:layer=\"backgroundobjects\"") }
             var outline = 0
             for p in l.placeholders {
                 guard let ph = p.placeholder, !ph.isFooter else { continue }
@@ -591,7 +594,14 @@ private struct ODPWriterImpl {
         // OOXML preset name (LibreOffice writes it back to pptx as that preset) with our exact outline as the path.
         // No draw:text-areas: with ooxml-* types LibreOffice misplaces the text when they are absolute.
         let type = o.custom != nil ? "non-primitive" : "ooxml-\(o.geometry)"
-        let path = enhancedPath(Shapes.path(o), scale: scale)
+        // Every sub-path, with its own no-fill / no-stroke (smiley mouths, callout lines, scroll curls).
+        let path = Shapes.subpaths(o).map { sp -> String in
+            var s = enhancedPath(sp.path, scale: scale)
+            s.removeLast()
+            if sp.fill == .none { s += "F " }
+            if !sp.stroke { s += "S " }
+            return s + "N"
+        }.joined(separator: " ")
         x += "<draw:enhanced-geometry svg:viewBox=\"\(vb)\" draw:type=\"\(type)\" ppt42:prst=\"\(xmlEscape(o.geometry))\" draw:enhanced-path=\"\(path)\""
         if o.flipH { x += " draw:mirror-horizontal=\"true\"" }
         if o.flipV { x += " draw:mirror-vertical=\"true\"" }

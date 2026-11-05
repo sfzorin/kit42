@@ -156,6 +156,11 @@ private struct ODPReaderImpl {
     mutating func readLayouts(_ names: [String], own: Bool) {
         let footers = deck.master.placeholders.filter { $0.placeholder?.isFooter == true }
         var layouts: [Layout] = []
+        // Our layout master pages repeat the slide master's shapes: those are not layout shapes.
+        var masterFrames: [CGRect] = []
+        if own, let m = masters["Default"] {
+            for e in m.elements where e.localName != "notes" && e.a("class") == nil { masterFrames += readShape(e, slide: nil).map(\.frame) }
+        }
         for name in names {
             guard let m = masters[name] else { continue }
             var l = Layout(name: m.a("display-name") ?? name, type: "cust")
@@ -174,8 +179,8 @@ private struct ODPReaderImpl {
                     if type != "title" { idx += 1 }
                     id += 1
                     placeholders.append(o)
-                } else if !own || e.a("layer") != "backgroundobjects" {
-                    l.objects += readShape(e, slide: nil)
+                } else {
+                    l.objects += readShape(e, slide: nil).filter { o in !masterFrames.contains { abs($0.minX - o.frame.minX) < 0.5 && abs($0.minY - o.frame.minY) < 0.5 && abs($0.width - o.frame.width) < 0.5 && abs($0.height - o.frame.height) < 0.5 } }
                 }
             }
             if classes.contains("subtitle") { l.type = "title"; for i in placeholders.indices where placeholders[i].placeholder?.type == "title" { placeholders[i].placeholder?.type = "ctrTitle" } }
