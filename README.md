@@ -268,40 +268,57 @@ lets you switch extensions off.
 
 ## PPT42 — presentations (PPTX, ODP)
 
-- Files: PowerPoint .pptx (PresentationML: slides, master and layouts with theme colours/fonts and placeholder positions,
-  text with runs, bullets/numbering and levels, preset shapes with fill/line/shadow, lines and arrows, pictures with
-  crop, tables, groups, backgrounds solid/gradient/picture, speaker notes, 16:9 and 4:3, transitions, entrance builds
-  as p:timing) and OpenDocument .odp (pages, frames, custom shapes, images, tables, groups, notes, styles, transitions).
-  Legacy .ppt opens with a message suggesting conversion. Charts and SmartArt are shown as placeholder boxes.
-  Fonts missing on the Mac (Calibri, Aptos…) are replaced by close ones (Carlito if installed, Helvetica Neue).
-- Export: PDF (⌥⌘E; one page per slide), notes pages PDF, PNG/JPEG images of slides, outline as RTF or Markdown;
-  printing of slides, handouts (1–9 per page) or notes pages.
-- Editing like Impress/Keynote: thumbnails sidebar (add, duplicate, delete, multi-select, drag to reorder, copy/paste
-  slides, context menu with layout and transition), New Slide ⇧⌘N with a layout picker (Title, Title and Content, Two
-  Content, Section Header, Title Only, Blank, Picture with Caption), canvas with zoom to fit, handles to move / resize /
-  rotate (⇧ keeps proportions or snaps to 15°), snapping guides to the slide centre/edges and other objects, arrow
-  keys nudge, align and distribute, arrange (front/back), group/ungroup, copy/paste objects (also images and text from
-  other apps), drag & drop of images.
-- Text in place (double-click, Return or just type): format bar and Format menu — font, size, bold/italic/underline/
-  strikethrough, colour, super/subscript, alignment, vertical alignment, bullets/numbering, Tab/⇧Tab levels, line
-  spacing; shrink-on-overflow and auto-height text boxes; slide number and date fields; tables (rows×columns, Tab to the
-  next cell, add/delete rows and columns).
-- Inspector (⌥⌘I): Slide (layout, background colour/gradient/picture, transition, hide, theme, slide size), Shape
-  (position and size in cm, rotation, fill, line colour/width/dash/arrowheads, opacity, corner radius, shadow, build
-  animation), Text. Six built-in themes; Master view (⌥⌘5) edits title/body styles, placeholder positions and
-  background for all slides. Views: Normal, Outline (editable: Tab-indented lines are bullets, new title lines add
-  slides), Slide Sorter, Notes Page; notes pane under the canvas. Find and Replace (⌘F) in slides and notes. Undo everywhere.
-- Slide show: ⌥⌘P from the start, ⇧⌘P from the current slide (Page Setup keeps its menu item); transitions fade, push,
-  wipe, cover, dissolve, split, zoom (Core Animation); builds appear/fade/fly in/zoom on click; click/→/Space next,
-  ←/⌫ previous, number + Return jumps, B/W black/white screen, Esc ends; presenter view (current and next slide, notes,
-  timer, clock) on a second display, or Rehearse (⌥⌘R) in a window.
-- Command line: `--info file`, `--export in out.pdf [--notes] | dir [--jpeg --width N] | out.rtf | out.md`,
-  `--convert in.pptx out.odp` (and back), `--demo out.pptx` (a deck with every feature).
+- Files: PowerPoint .pptx and .potx (PresentationML: slides, master and layouts with theme colours/fonts and placeholder
+  positions, text with runs, bullets/numbering and levels, preset and custom shapes with fill/line/shadow and theme style
+  references, lines and arrows with arrowhead sizes, pictures with crop, tables, groups, charts, SmartArt, video and
+  audio, comments, backgrounds solid/gradient/picture, speaker notes, 16:9 and 4:3, transitions, animations as p:timing)
+  and OpenDocument .odp and .otp (pages, master pages as layouts, frames, custom shapes and paths, images, tables,
+  groups, chart objects, media plugins, annotations, notes, styles, transitions, anim:* effects). Legacy .ppt opens with
+  a message suggesting conversion. Fonts missing on the Mac (Calibri, Aptos…) are replaced by close ones.
+- Shapes: all 187 OOXML preset shapes (geometry, shading, text areas and adjust handles from the preset definitions —
+  data generated from LibreOffice's oox-drawingml-cs-presets, MPL 2.0, by `Resources/PPT42/make_presets.py`), drawn
+  with yellow adjust handles on the canvas; custom geometry (a:custGeom with guide formulas, moveTo/lnTo/arcTo/quad/cubic,
+  ODF svg paths) read, drawn and written back; Insert › Shape in sections (basic, arrows, flowchart, stars and banners,
+  callouts, brackets and math, lines).
+- Charts: column/bar (clustered, stacked, 100 %), line, area, pie, doughnut and scatter drawn natively from the chart part's
+  caches (titles, legend, axis titles, data labels, gridlines, theme/series/point colours, number formats); unchanged
+  charts are written back with their chart XML and workbook untouched, edited or new ones as chart parts with caches
+  and an embedded workbook; Insert › Chart… (⌥⇧⌘C) with a data grid and chart type, chart options in the inspector,
+  double-click edits the data. ODP: chart objects (Object N/content.xml) read and written so LibreOffice shows them.
+- SmartArt: shown and edited as the shapes of its drawing part; unchanged or text-edited diagrams keep their parts
+  (texts written into the drawing and the data model), moved ones too; Format › Convert to Shapes.
+- Master view (⌥⌘5): the master and every layout in the sidebar; placeholder position, size and text styles per
+  layout; Slide › Master Layouts: new, duplicate, rename, delete, insert placeholder. Saved to slideLayout parts and,
+  in ODP, to one master page per layout.
+- Review: Insert › Comment (⌥⌘M), comments pane in the inspector (reply, resolve, delete), markers on the slide;
+  pptx comments with threads (modern threaded comments are read), odp annotations.
+- Media: Insert › Video or Audio… (mp4/mov/m4a/mp3) with a poster frame; plays in the slide show on click or
+  automatically, optionally looped (inspector); pptx videoFile/audioFile + p14:media, odp draw:plugin.
+- Animations (inspector › Animation tab): entrance (appear, fade, fly in, zoom, wipe), exit (disappear, fade out,
+  fly out, zoom out), emphasis (pulse, spin, grow/shrink, change colour) and motion paths, on click / with previous /
+  after previous, delay and duration, reorder; numbers and paths shown on the canvas; played in the slide show.
+- Export: PDF (⌥⌘E), notes pages PDF, PNG/JPEG images, outline as RTF or Markdown, movie (.mp4 with slide timings,
+  animation steps and cross-fades); printing of slides, handouts or notes pages. File › New from Template… (the six
+  themes or a template file); Save As .potx/.otp.
+- Editing like Impress/Keynote: thumbnails sidebar, New Slide with a layout picker, canvas with zoom, handles to move /
+  resize / rotate with snapping guides, align/distribute, arrange, group, copy/paste, drag & drop of images; text in
+  place with the format bar (formatting while editing is its own undo step); tables; Inspector (⌥⌘I) with Slide,
+  Shape, Text, Animation and Comments tabs; six built-in themes; Outline, Slide Sorter and Notes Page views; Find and
+  Replace; undo everywhere.
+- Slide show: ⌥⌘P / ⇧⌘P, Present in Window; transitions, animations, media; click/→/Space next, ←/⌫ previous,
+  number + Return jumps, B/W black/white screen, L laser pointer, P pen (E erases), G slide overview, C hides the
+  cursor, Esc ends; presenter view on a second display, or Rehearse (⌥⌘R) in a window.
+- Command line: `--info file` (objects, charts, media, animations, comments), `--export in out.pdf [--notes] | dir
+  [--jpeg --width N] | out.rtf | out.md | out.mp4 [--seconds 5]`, `--convert in.pptx out.odp|.potx|.otp` (and back),
+  `--demo out.pptx|odp` (a deck with every feature).
 - UI checks: `K42_SNAPSHOT` with `K42_SLIDE=n`, `K42_VIEW=sorter|outline|notes|master`, `K42_SELECT=i,j`,
-  `K42_INSPECTOR=1|slide|shape|text`, `K42_EDIT`, `K42_SHOW=1` (+`K42_SHOW_STEPS`), `K42_PRESENTER=1`, `K42_LAYOUTS`,
-  `K42_DO="cmd;cmd"` (scripted commands, see Snapshot.swift), `K42_SAVE=path`, `K42_PASTEBOARD=1` (private pasteboard).
-- Not yet: charts/SmartArt editing, custom geometry (read as rectangles), motion paths and exit animations, embedded
-  media, comments, layout editing in Master view (only the master).
+  `K42_INSPECTOR=slide|shape|text|animation|comments`, `K42_EDIT`, `K42_SHOW=1|window` (+`K42_SHOW_STEPS`,
+  `K42_SHOW_KEYS`), `K42_PRESENTER=1`, `K42_LAYOUTS`, `K42_TEMPLATES`, `K42_DO="cmd;cmd"` (scripted commands such as
+  chart:, anim:, comment:, media:, newlayout, see Snapshot.swift), `K42_SAVE=path`, `K42_PASTEBOARD=1` (private
+  pasteboard), `K42_CANVAS_PNG`. Test runs neither activate the app nor save the window frame.
+- Not yet: SmartArt layout (shapes are not re-laid out when text is added; geometry changes save it as shapes),
+  hatch and pattern fills (approximated), 3-D chart looks (drawn flat), wipe animations (fade), comment positions in
+  LibreOffice's legacy-comment import are approximate.
 
 ## SCN42 — scanning (replaces Image Capture)
 

@@ -196,13 +196,13 @@ extension Deck {
         title(&s9, "Charts")
         var col = SlideObject(id: 30, kind: .chart, frame: CGRect(x: 50, y: 140, width: 440, height: 340))
         var m = ChartModel.sample(.column)
-        m.title = "Sales by quarter"
+        m.title = Optional("Sales by quarter")  // demo content, not UI
         m.dataLabels = true
         m.valAxisTitle = "M€"
         col.chart = m
         var pie = SlideObject(id: 31, kind: .chart, frame: CGRect(x: 510, y: 140, width: 400, height: 340))
         var pm = ChartModel.sample(.doughnut)
-        pm.title = "Budget"
+        pm.title = Optional("Budget")
         pm.percentLabels = true
         pie.chart = pm
         s9.objects += [col, pie]
