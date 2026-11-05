@@ -328,6 +328,7 @@ enum XLSReader {
             wb.sheets.append(sheet)
         }
         // Defined names and print areas
+        var solverNames: [Int: [String: String]] = [:]
         for (k, d) in nameRecords.enumerated() {
             let cce = u16(d, 4), itab = u16(d, 8), cch = d.count > 3 ? Int(d[3]) : 0
             let (_, end) = shortString(d, at: 14, cch: cch)
@@ -335,6 +336,11 @@ enum XLSReader {
             let rgce = Array(d[end..<(end + cce)])
             guard let text = Formula42.decode(rgce, at: CellRef(row: 0, col: 0), globals: g, sheetNames: g.sheets.map(\.name)) else { continue }
             let name = g.names[k]
+            if SolverFiles.isSolverName(name) {
+                // Excel's Solver model: hidden names scoped to their sheet.
+                if itab > 0, itab <= wb.sheets.count { solverNames[itab - 1, default: [:]][name] = text }
+                continue
+            }
             if name == "_xlnm.Print_Area", itab > 0, itab <= wb.sheets.count {
                 let part = text.split(separator: ",").first.map(String.init) ?? text
                 wb.sheets[itab - 1].printArea = CellRange((part.split(separator: "!").last.map(String.init) ?? part).replacingOccurrences(of: "$", with: ""))
@@ -342,6 +348,7 @@ enum XLSReader {
                 wb.names[name] = text
             }
         }
+        for (i, names) in solverNames { wb.sheets[i].solver = SolverFiles.model(names, sheet: wb.sheets[i].name) }
         if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
         return wb
     }

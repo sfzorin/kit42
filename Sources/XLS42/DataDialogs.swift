@@ -561,7 +561,11 @@ extension SheetWindowController {
                 + zip(model.variables, result.values).map { "\($0.a1) = \(NumberFormat.general($1))" }.joined(separator: "\n")
             alert.addButton(withTitle: L("Keep"))
             alert.addButton(withTitle: L("Undo"))
-            if alert.runModal() != .alertFirstButtonReturn { doc?.undoManager?.undo() }
+            if alert.runModal() != .alertFirstButtonReturn {
+                // Original values back; the model stays with the sheet (Excel's Restore Original Values).
+                doc?.undoManager?.undo()
+                if let doc, sheetIndex < doc.workbook.sheets.count { doc.workbook.sheets[sheetIndex].solver = model }
+            }
         case .infeasible: report(L("No solution satisfies all the conditions."))
         case .unbounded: report(L("The result can grow without limit (unbounded)."))
         case .failed: report(L("The model can't be solved: check the cells and conditions."))
