@@ -182,6 +182,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         info(L("Keyboard Shortcuts"), lines.joined(separator: "\n"))
     }
 
+    @objc func cryptoProAction(_ sender: Any?) { SignDialog.showCryptoPro() }
+
+    /// Detached CAdES signature (.sig) of any file with a CryptoPro certificate.
+    @objc func gostSignFileAction(_ sender: Any?) {
+        guard CryptoPro.isInstalled else { SignDialog.showCryptoPro(); return }
+        let open = NSOpenPanel()
+        open.message = L("Choose the file to sign")
+        guard open.runModal() == .OK, let file = open.url else { return }
+        let certs = (try? CryptoPro.certificates()) ?? []
+        guard !certs.isEmpty else {
+            info(L("No GOST certificates"), L("CryptoPro CSP has no certificate linked to a private key. Insert the token or install the certificate from its key container."))
+            SignDialog.showCryptoPro()
+            return
+        }
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.addItems(withTitles: certs.map(\.displayName))
+        let pin = NSSecureTextField()
+        pin.placeholderString = L("Container PIN (if it has one)")
+        let tsa = NSTextField(string: "")
+        tsa.placeholderString = L("Optional: TSA URL for CAdES-T")
+        let alert = NSAlert.form(L("Sign File with GOST"), info: L("A detached signature “%@.sig” (CAdES) is saved next to the file.", file.lastPathComponent),
+                                 ok: L("Sign"), rows: [(L("Certificate:"), popup), (L("PIN:"), pin), (L("TSA server:"), tsa)])
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let cert = certs[max(0, popup.indexOfSelectedItem)]
+        let out = file.appendingPathExtension("sig")
+        do {
+            let url = URL(string: tsa.stringValue.trimmingCharacters(in: .whitespaces)).flatMap { $0.scheme == nil ? nil : $0 }
+            try CryptoPro.signDetached(file: file, to: out, options: CryptoPro.SignOptions(thumbprint: cert.thumbprint,
+                                       pin: pin.stringValue.isEmpty ? nil : pin.stringValue, tsa: url))
+            NSWorkspace.shared.activateFileViewerSelecting([out])
+        } catch { NSApp.presentError(error) }
+    }
+
+    /// Verifies a detached signature; an МЧД can be checked along with it.
+    @objc func gostVerifyFileAction(_ sender: Any?) {
+        let open = NSOpenPanel()
+        open.message = L("Choose the signature file (.sig, .p7s)")
+        guard open.runModal() == .OK, let sigURL = open.url, let sig = try? Data(contentsOf: sigURL) else { return }
+        var file = sigURL.deletingPathExtension()
+        if !FileManager.default.fileExists(atPath: file.path) {
+            let pick = NSOpenPanel()
+            pick.message = L("Choose the signed file")
+            guard pick.runModal() == .OK, let url = pick.url else { return }
+            file = url
+        }
+        let parsed = CMSInfo(sig)
+        var s = SignatureInfo()
+        s.coversWholeFile = true
+        PDFSignatureVerifier.describe(parsed, into: &s)
+        s.isGOST = parsed?.isGOST ?? false
+        if CryptoPro.isInstalled {
+            do {
+                let v = try CryptoPro.verifyDetached(file: file, signature: sigURL)
+                switch v.status {
+                case .valid: s.status = .valid
+                case .untrusted: s.status = .untrusted; s.trustMessage = v.message
+                case .invalid: s.status = .invalid; s.problem = L("The document was changed after signing") + (v.message.map { "\n" + $0 } ?? "")
+                }
+            } catch { s.status = .invalid; s.problem = error.localizedDescription }
+        } else {
+            s.status = .notChecked
+            s.trustMessage = CryptoPro.installHelp
+        }
+        let ask = NSAlert()
+        ask.messageText = L("Check a power of attorney (МЧД) too?")
+        ask.addButton(withTitle: L("Choose МЧД…"))
+        ask.addButton(withTitle: L("No"))
+        if ask.runModal() == .alertFirstButtonReturn, let files = SignDialog.choosePowerOfAttorney(),
+           let xml = files.first, let poa = PowerOfAttorney(xml: xml.data) {
+            s.powerOfAttorney = poa.check(signer: s.certificate, signedAt: s.date, xml: xml.data, poaSignature: files.dropFirst().first?.data)
+        }
+        SignDialog.showResults([s], window: nil)
+    }
+
     private func info(_ title: String, _ text: String) {
         let alert = NSAlert()
         alert.messageText = title

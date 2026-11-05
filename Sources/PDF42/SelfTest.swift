@@ -166,6 +166,10 @@ enum PDFSelfTest {
             ("testPAdESBaselineSignature", testPAdESBaselineSignature),
             ("testIncrementalStreamsRoundTrip", testIncrementalStreamsRoundTrip),
             ("testRevocationCoverageByCRL", testRevocationCoverageByCRL),
+            ("testGOSTReferenceCMSIsParsed", testGOSTReferenceCMSIsParsed),
+            ("testGOSTSignatureInPDFWithoutCSPIsNotChecked", testGOSTSignatureInPDFWithoutCSPIsNotChecked),
+            ("testCertmgrListIsParsed", testCertmgrListIsParsed),
+            ("testPowerOfAttorneyIsParsed", testPowerOfAttorneyIsParsed),
         ]
         for (name, run) in checks {
             let before = failures

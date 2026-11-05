@@ -3,19 +3,52 @@ import Kit42
 
 /// Dialogs for digital signatures: choose certificate, import/create, show verification results.
 enum SignDialog {
-    static func run(stampSelected: Bool) -> (options: PDFSigner.Options, visible: Bool)? {
-        var identities = CertificateStore.identities()
-        var remotes: [CSCSigner] = []
+    /// A certificate offered for signing: from the Keychain, from CryptoPro CSP (GOST) or a remote signing service (CSC).
+    enum Choice {
+        case keychain(SigningIdentity)
+        case gost(CryptoPro.Certificate)
+        case remote(CSCSigner)
+
+        var title: String {
+            switch self {
+            case .keychain(let id): return id.displayName
+            case .gost(let c): return L("GOST: %@", c.displayName)
+            case .remote(let r): return "☁︎ " + r.credential.label
+            }
+        }
+    }
+
+    static func choices() -> [Choice] {
+        let gost = CryptoPro.isInstalled ? ((try? CryptoPro.certificates()) ?? []) : []
+        return CertificateStore.identities().map(Choice.keychain) + gost.map(Choice.gost)
+    }
+
+    static func run(stampSelected: Bool) -> (options: PDFSigner.Options, visible: Bool, attachments: [EmbeddedFile])? {
+        var choices = Self.choices()
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        func fill(select name: String? = nil) {
+        let pin = NSSecureTextField()
+        pin.placeholderString = L("Container PIN (if it has one)")
+        func selected() -> Choice? {
+            let i = popup.indexOfSelectedItem
+            return i >= 0 && i < choices.count ? choices[i] : nil
+        }
+        func updatePIN() {
+            if case .gost? = selected() { pin.isEnabled = true } else { pin.isEnabled = false }
+        }
+        func fill(select title: String? = nil) {
             popup.removeAllItems()
-            let titles = identities.map(\.displayName) + remotes.map { "☁︎ " + $0.credential.label }
-            popup.addItems(withTitles: titles)
-            if titles.isEmpty { popup.addItem(withTitle: L("No certificates")) }
-            if let name, let i = titles.firstIndex(of: name) { popup.selectItem(at: i) }
-            popup.isEnabled = !titles.isEmpty
+            popup.addItems(withTitles: choices.map(\.title))
+            if choices.isEmpty { popup.addItem(withTitle: L("No certificates")) }
+            if let title, let i = choices.firstIndex(where: { $0.title == title }) { popup.selectItem(at: i) }
+            else if let last = UserDefaults.standard.string(forKey: "sign.certificate"), let i = choices.firstIndex(where: { $0.title == last }) { popup.selectItem(at: i) }
+            popup.isEnabled = !choices.isEmpty
+            updatePIN()
         }
         fill()
+        let popupTarget = ClosureTarget { updatePIN() }
+        defer { withExtendedLifetime(popupTarget) {} }
+        popup.target = popupTarget
+        popup.action = #selector(ClosureTarget.fire)
 
         let reason = NSTextField(string: UserDefaults.standard.string(forKey: "sign.reason") ?? L("I agree with the content of this document"))
         let location = NSTextField(string: UserDefaults.standard.string(forKey: "sign.location") ?? "")
@@ -23,14 +56,30 @@ enum SignDialog {
 
         let actions = ButtonRow()
         actions.add(L("Import .p12…")) {
-            if let id = importCertificate() { identities = CertificateStore.identities(); fill(select: id.displayName) }
+            if let id = importCertificate() { choices = Self.choices(); fill(select: Choice.keychain(id).title) }
         }
         actions.add(L("Create…")) {
-            if let id = createCertificate() { identities = CertificateStore.identities(); fill(select: id.displayName) }
+            if let id = createCertificate() { choices = Self.choices(); fill(select: Choice.keychain(id).title) }
         }
         actions.add(L("Remote (CSC)…")) {
-            if let signer = connectRemote() { remotes.append(signer); fill(select: "☁︎ " + signer.credential.label) }
+            if let signer = connectRemote() { choices.append(.remote(signer)); fill(select: Choice.remote(signer).title) }
         }
+        actions.add(L("CryptoPro (GOST)…")) {
+            if showCryptoPro() { choices = Self.choices(); fill() }
+        }
+
+        // Power of attorney (МЧД) embedded before signing, with its own .sig when it lies next to it.
+        var attachments: [EmbeddedFile] = []
+        let poaLabel = NSTextField(labelWithString: L("None"))
+        poaLabel.lineBreakMode = .byTruncatingMiddle
+        let poaRow = ButtonRow()
+        poaRow.add(L("Choose МЧД…")) {
+            guard let files = choosePowerOfAttorney() else { return }
+            attachments = files
+            poaLabel.stringValue = files.map(\.name).joined(separator: ", ")
+        }
+        poaRow.add(L("Remove")) { attachments = []; poaLabel.stringValue = L("None") }
+        poaRow.addArrangedSubview(poaLabel)
 
         let d = UserDefaults.standard
         let visible = NSButton(checkboxWithTitle: stampSelected ? L("Visible signature (in place of the selected image)") : L("Visible signature (bottom right of the current page)"),
@@ -43,15 +92,14 @@ enum SignDialog {
         format.addItems(withTitles: PAdESLevel.allCases.map(\.title))
         format.selectItem(at: d.object(forKey: "sign.level") == nil ? PAdESLevel.baselineLTA.rawValue : d.integer(forKey: "sign.level"))
         let alert = NSAlert.form(L("Sign Document"),
-                                 info: L("The signature is added to a copy of the document. Certificates come from the macOS Keychain or a remote signing service (CSC). Long-term levels (B-T and above) need the timestamp server."),
+                                 info: L("The signature is added to a copy of the document. Certificates come from the macOS Keychain, a remote signing service (CSC) or, for GOST signatures, CryptoPro CSP. Long-term levels (B-T and above) need the timestamp server."),
                                  ok: L("Sign…"),
-                                 rows: [(L("Certificate:"), popup), ("", actions), (L("Reason:"), reason), (L("Location:"), location),
-                                        ("", visible), (L("Format:"), format), ("", timestamp), (L("TSA server:"), tsa)])
+                                 rows: [(L("Certificate:"), popup), ("", actions), (L("PIN:"), pin), (L("Reason:"), reason), (L("Location:"), location),
+                                        (L("Power of attorney:"), poaRow), ("", visible), (L("Format:"), format), ("", timestamp), (L("TSA server:"), tsa)])
         alert.icon = Theme42.symbol("checkmark.seal.fill", size: 40)
         while true {
             guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-            let index = popup.indexOfSelectedItem
-            guard index >= 0, index < identities.count + remotes.count else {
+            guard let choice = selected() else {
                 NSSound.beep()
                 continue
             }
@@ -60,12 +108,20 @@ enum SignDialog {
             d.set(visible.state == .on, forKey: "sign.visible")
             d.set(timestamp.state == .on, forKey: "sign.tsa")
             d.set(tsa.stringValue, forKey: "sign.tsaURL")
+            d.set(choice.title, forKey: "sign.certificate")
             d.set(format.indexOfSelectedItem, forKey: "sign.level")
-            var o = PDFSigner.Options(identity: index < identities.count ? identities[index] : nil, reason: reason.stringValue, location: location.stringValue)
-            if index >= identities.count { o.remote = remotes[index - identities.count] }
-            o.level = PAdESLevel(rawValue: format.indexOfSelectedItem) ?? .baselineB
+            let signer: PDFSigner.Signer
+            switch choice {
+            case .keychain(let id): signer = .keychain(id)
+            case .gost(let c):
+                signer = .cryptoPro(c, CryptoPro.SignOptions(thumbprint: c.thumbprint, pin: pin.stringValue.isEmpty ? nil : pin.stringValue))
+            case .remote(let r): signer = .remote(r)
+            }
+            var o = PDFSigner.Options(signer: signer, reason: reason.stringValue, location: location.stringValue)
+            // GOST signatures keep CryptoPro's format; the PAdES level applies to Keychain and CSC signers.
+            o.level = signer.isGOST ? .legacy : PAdESLevel(rawValue: format.indexOfSelectedItem) ?? .baselineB
             if timestamp.state == .on { o.timestampURL = URL(string: tsa.stringValue.trimmingCharacters(in: .whitespaces)) }
-            if o.level >= .baselineT, o.timestampURL == nil {
+            if !signer.isGOST, o.level >= .baselineT, o.timestampURL == nil {
                 let ask = NSAlert()
                 ask.messageText = L("%@ needs a trusted timestamp", o.level.title)
                 ask.informativeText = L("Turn on the timestamp, or the document is signed as PAdES B-B.")
@@ -73,7 +129,68 @@ enum SignDialog {
                 ask.addButton(withTitle: L("Cancel"))
                 guard ask.runModal() == .alertFirstButtonReturn else { continue }
             }
-            return (o, visible.state == .on)
+            return (o, visible.state == .on, attachments)
+        }
+    }
+
+    /// Picks an МЧД XML; its signature (`name.xml.sig`, `name.sig`, `.p7s`) is taken along when present.
+    static func choosePowerOfAttorney() -> [EmbeddedFile]? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.xml]
+        panel.message = L("Choose the machine-readable power of attorney (МЧД, XML)")
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return nil }
+        guard PowerOfAttorney(xml: data) != nil else {
+            let a = NSAlert()
+            a.messageText = L("This XML file is not a machine-readable power of attorney")
+            a.runModal()
+            return nil
+        }
+        var files = [EmbeddedFile(name: url.lastPathComponent, data: data, desc: L("Power of attorney (МЧД)"), modified: Date(), mime: "application/xml")]
+        if let sig = PowerOfAttorney.signatureFile(next: url), let sd = try? Data(contentsOf: sig) {
+            files.append(EmbeddedFile(name: sig.lastPathComponent, data: sd, desc: L("Signature of the power of attorney"), modified: Date(), mime: "application/pkcs7-signature"))
+        }
+        return files
+    }
+
+    /// CryptoPro status: install instructions, or key containers whose certificates can be installed.
+    /// Returns true when certificates may have changed.
+    @discardableResult
+    static func showCryptoPro() -> Bool {
+        let alert = NSAlert()
+        alert.icon = Theme42.symbol("key.fill", size: 40)
+        guard CryptoPro.isInstalled else {
+            alert.messageText = L("CryptoPro CSP is not installed")
+            alert.informativeText = CryptoPro.installHelp
+            alert.addButton(withTitle: L("Open cryptopro.ru"))
+            alert.addButton(withTitle: L("Test CA"))
+            alert.addButton(withTitle: L("Close"))
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: NSWorkspace.shared.open(CryptoPro.downloadURL)
+            case .alertSecondButtonReturn: NSWorkspace.shared.open(CryptoPro.testCAURL)
+            default: break
+            }
+            return false
+        }
+        let certs = (try? CryptoPro.certificates()) ?? []
+        let containers = (try? CryptoPro.containers()) ?? []
+        alert.messageText = L("CryptoPro CSP %@", CryptoPro.versionInfo() ?? "")
+        var info = L("Certificates with a key: %d. Key containers: %d.", certs.count, containers.count)
+        if let license = CryptoPro.licenseInfo() { info += "\n" + license }
+        info += "\n" + L("To use a key container whose certificate is not listed, choose it and install its certificate.")
+        alert.informativeText = info
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
+        popup.addItems(withTitles: containers.isEmpty ? [L("No key containers (insert the token)")] : containers)
+        popup.isEnabled = !containers.isEmpty
+        alert.accessoryView = popup
+        alert.addButton(withTitle: L("Install Certificate"))
+        alert.addButton(withTitle: L("Close"))
+        guard alert.runModal() == .alertFirstButtonReturn, !containers.isEmpty else { return false }
+        do {
+            try CryptoPro.installCertificate(container: containers[popup.indexOfSelectedItem], pin: nil)
+            return true
+        } catch {
+            NSApp.presentError(error)
+            return false
         }
     }
 
@@ -185,7 +302,9 @@ enum SignDialog {
     }
 
     private static func card(_ s: SignatureInfo, index: Int) -> NSView {
-        let style: BannerView.Style = s.status == .valid ? (s.coversWholeFile ? .success : .info) : s.status == .untrusted ? .warning : .error
+        let poaError = s.powerOfAttorney.contains { $0.level == .error }
+        let style: BannerView.Style = poaError ? .error : s.status == .valid ? (s.coversWholeFile ? .success : .info)
+            : s.status == .untrusted || s.status == .notChecked ? .warning : .error
         let color: NSColor = style == .success ? .systemGreen : style == .info ? .systemBlue : style == .warning ? .systemOrange : .systemRed
         let symbol = style == .success ? "checkmark.seal.fill" : style == .error ? "xmark.seal.fill" : "exclamationmark.triangle.fill"
         let icon = NSImageView(image: Theme42.symbol(symbol, size: 20, weight: .semibold) ?? NSImage())
@@ -200,11 +319,19 @@ enum SignDialog {
         if let ltv = s.ltvSummary { lines.append(ltv) }
         if let r = s.reason { lines.append(L("Reason: %@", r)) }
         if let l = s.location { lines.append(L("Location: %@", l)) }
-        if s.status == .untrusted, let t = s.trustMessage { lines.append(t) }
+        lines += s.details
+        if s.status == .untrusted || s.status == .notChecked, let t = s.trustMessage { lines.append(t) }
+        if !s.powerOfAttorney.isEmpty {
+            lines.append(L("Power of attorney (МЧД):"))
+            for f in s.powerOfAttorney {
+                let mark = f.level == .ok ? "✓" : f.level == .error ? "✗" : f.level == .warning ? "!" : "·"
+                lines.append("\(mark) \(f.text)")
+            }
+        }
         let body = NSTextField(wrappingLabelWithString: lines.joined(separator: "\n"))
         body.font = .systemFont(ofSize: 12)
         body.textColor = .secondaryLabelColor
-        body.preferredMaxLayoutWidth = 300
+        body.preferredMaxLayoutWidth = 360
 
         let text = NSStackView(views: [title, body])
         text.orientation = .vertical

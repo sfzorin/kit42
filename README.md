@@ -14,7 +14,7 @@ Interface in English, Russian and Turkish.
 | **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX/ODP, POTX/OTP templates, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown, MP4/MOV |
 | **SCN42** | scanning (replaces Image Capture) | scanners (USB, network, AirScan), iPhone/iPad camera, images, PDF | searchable PDF, PDF/A-style, multi-page TIFF, JPEG, PNG, HEIC, TXT/RTF |
 
-**По-русски.** Набор из шести программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
+**По-русски.** Набор из шести программ для macOS: PDF42 (PDF: правка, подписи — в том числе ГОСТ через установленный пользователем КриптоПро CSP и МЧД, сжатие), DOC42 (тексты Word/ODT/RTF/
 Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений), PPT42 (презентации PPTX/ODP, показ слайдов) и SCN42 (сканирование: сканеры и iPhone, автообрезка, распознавание текста, PDF). Основные операции работают без интернета,
 интерфейс на английском, русском и турецком.
 
@@ -113,6 +113,32 @@ lets you switch extensions off.
   pasted access token; credentials/list → credentials/authorize (PIN / one-time code, or credential-scoped OAuth for
   `oauth2code` credentials) → signatures/signHash. Only the SHA-256 hash of the signed attributes is sent; the document
   stays local. RSA (PKCS#1 v1.5) and ECDSA with SHA-256.
+- GOST signatures (ГОСТ Р 34.10-2012) through the user's own **CryptoPro CSP 5.0 for macOS**, which PDF42 does not
+  include. Install CSP from cryptopro.ru (registration, administrator rights; 90-day trial licence, then a purchased
+  serial number), the certificate with its key container (token or folder) and the CA root. PDF42 calls CSP's
+  `cryptcp`/`certmgr`/`csptest` from `/opt/cprocsp/bin` (`SUITE42_CPROCSP_BIN` overrides the path) and performs no
+  GOST cryptography itself; without CSP, GOST signatures are shown as "not checked", with the signer's details
+  taken from the signature.
+  - Sign Document lists CryptoPro certificates linked to a key (“GOST: …”, with SNILS/INN) next to Keychain ones,
+    with an optional container PIN. The PDF gets a detached CAdES CMS from CSP in `/Contents`
+    (`/Filter /CryptoPro#20PDF`, `/SubFilter /adbe.pkcs7.detached`), and CAdES-T when a TSA is set.
+    Counter-signing keeps earlier signatures valid. GOST signatures keep this format; the PAdES Format menu applies
+    to Keychain and CSC signers.
+  - Signature › CryptoPro CSP… shows the CSP version, licence and key containers, and installs a certificate from a
+    container into the personal store. When CSP is missing, it shows installation steps and links to the test CA.
+  - Signature › Sign Any File with GOST (.sig)… writes a detached CAdES-BES signature `file.sig` (DER), as commonly
+    used in Russia. Verify Detached Signature (.sig)… checks it through CSP, optionally with a power of attorney.
+  - Power of attorney (МЧД): choose the XML in Sign Document; it is embedded in the PDF before signing, together with
+    its own signature (`poa.xml.sig`/`.p7s` next to it), so the new signature covers both. Verification reads the
+    unified format (`EMCHD_1`) and format 002 (UTF-8 or windows-1251). It checks validity on the signing date, that the signer is
+    the representative (SNILS, otherwise personal INN), the principal's INN, and the МЧД's own signature through CSP.
+    Revocation in the FNS registry is not checked; the number to look up is shown.
+  - CLI: `--gost-status`, `--gost-certs [all]`,
+    `--gost-sign in.pdf out.pdf --thumbprint SHA1 [--pin PIN] [--poa poa.xml] [--tsa URL] [--reason TEXT] [--visible]`,
+    `--gost-sign-file file [--out file.sig] --thumbprint SHA1 [--pin PIN] [--tsa URL]`,
+    `--gost-verify file.pdf`, `--gost-verify file --sig file.sig [--poa poa.xml]`,
+    `--poa-check poa.xml [--sig document.sig] [--date YYYY-MM-DD]`. Unlike `--verify`, these return the verdict as the exit code:
+    0 valid, 1 invalid, 2 intact but certificate not trusted, 3 not checked (no CSP), 4 power-of-attorney mismatch.
 - Thumbnails: drag to reorder pages, multi-select, drop PDFs/images to insert.
 - OCR (⌥⌘T): Vision (ru/en/tr) adds an invisible searchable text layer to scans. Print selected pages.
 - Reduce File Size (File menu): pictures are downsampled (100 / 150 / 220 dpi) and re-encoded as JPEG, text and vector
@@ -664,7 +690,6 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 
 ## Known limitations
 
-- GOST signatures (needs CryptoPro CSP), tracked formatting changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
 - PDF42 signatures: signing and LTV need a file with a classic cross-reference table (any file saved by PDF42; files
   with cross-reference streams are re-saved before the first signature, which is impossible once they are signed).
   The PAdES level is reported from the file's structure (attributes, timestamps, DSS order, revocation coverage); it is
@@ -672,6 +697,11 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   trust store. CSC remote signing has been tested only against a local mock service, not a real QTSP. RSA-PSS keys,
   OCSP nonces and asynchronous (multi-signature) CSC operations are not supported. Network calls block the window
   while they run (the OAuth wait keeps the run loop alive).
+- GOST signatures need the user's own CryptoPro CSP. The GOST path has been exercised only against stand-in tools
+  (`scripts/fake-cryptopro`), not against a real CSP install, so `cryptcp` option compatibility (`-cadesbes`,
+  `-cadest`) and interoperability with CryptoPro PDF/Acrobat are not yet confirmed (see STATUS.md).
+  МЧД revocation is not checked online, and the МЧД XML is not validated against the FNS schema.
+- Tracked formatting changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
 - XLS42 implements a subset of Excel/LibreOffice behavior; the function list and passing fixtures do not establish
   full format or calculation compatibility. Richer pivot tables refresh in its simpler one-pivot-per-sheet layout.
   CSV retains one sheet's computed values and automatically detects numeric/date fields on import, so it cannot
@@ -712,7 +742,13 @@ swiftc -module-cache-path .build/ModuleCache Sources/Kit42/Zip.swift Sources/Kit
   scripts/audit-documents-regressions.swift -o .build/audit-documents-regressions
 .build/audit-documents-regressions
 python3 scripts/check_strings.py
+python3 scripts/audit-gost-cli.py
 ```
+
+`audit-gost-cli.py` runs PDF42's GOST commands against `scripts/fake-cryptopro`, OpenSSL (RSA) stand-ins for
+`cryptcp`/`certmgr`/`csptest` that need Homebrew `openssl@3`. It covers process plumbing, PDF embedding,
+verdicts and МЧД matching, but not GOST cryptography. With a real CSP and a certificate from the CryptoPro test CA,
+run `python3 scripts/audit-gost-cli.py --real --thumbprint SHA1 [--pin PIN] --snils <SNILS in the certificate>`.
 
 These cover malformed PDF/ZIP input, attachment extraction, spreadsheet references and numeric precision,
 text encodings, CSV/ODS previews, scan save state, and preservation of existing files when exports fail.

@@ -74,8 +74,8 @@ final class PDFDoc: NSDocument {
         }
         pdf = doc
         originalData = data
-        signatures = PDFSignatureVerifier.verify(data)
         extras = DocumentExtras.read(data, pdf: doc)
+        signatures = PDFSignatureVerifier.verify(data, attachments: extras.files)
     }
 
     override func data(ofType typeName: String) throws -> Data {
@@ -96,7 +96,7 @@ final class PDFDoc: NSDocument {
         let data = try data(ofType: typeName)
         try data.write(to: url)
         originalData = data
-        signatures = PDFSignatureVerifier.verify(data)
+        signatures = PDFSignatureVerifier.verify(data, attachments: extras.files)
     }
 
     override func revert(toContentsOf url: URL, ofType typeName: String) throws {
