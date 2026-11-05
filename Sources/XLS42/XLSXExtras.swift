@@ -51,6 +51,7 @@ extension XLSX {
         if let af = root.child("autoFilter"), let range = af.attr("ref").flatMap(CellRange.init) {
             sheet.autoFilter = range
             for fc in af.children("filterColumn") {
+                if let id = fc.attr("colId").flatMap(Int.init), let cf = readCustomFilter(fc) { sheet.customFilters[range.start.col + id] = cf; continue }
                 guard let id = fc.attr("colId").flatMap(Int.init), let filters = fc.child("filters") else { continue }
                 var values = Set(filters.children("filter").compactMap { $0.attr("val") })
                 if filters.attr("blank") == "1" { values.insert("") }
@@ -99,6 +100,20 @@ extension XLSX {
                 sheet.comments[ref] = comment.child("text")?.allText.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
+        // Hyperlinks: external targets in the relationships, places in the workbook as location.
+        if let links = root.child("hyperlinks") {
+            let raw = rawRelations(zip, relsPath)
+            for h in links.children("hyperlink") {
+                guard let range = h.attr("ref").flatMap(CellRange.init) else { continue }
+                var target: String?
+                if let id = h.attr("id"), let t = raw[id] { target = t + (h.attr("location").map { "#" + $0 } ?? "") }
+                else if let loc = h.attr("location") { target = "#" + loc }
+                if let target { for ref in range.cells.prefix(1000) { sheet.hyperlinks[ref] = target } }
+            }
+        }
+        if let breaks = root.child("rowBreaks") {
+            for b in breaks.children("brk") { if let id = b.attr("id").flatMap(Int.init), id > 0 { sheet.rowBreaks.insert(id) } }
+        }
         // Drawings: pictures and charts
         guard let drawingID = root.child("drawing")?.attr("id"), let (_, drawingPath) = rels[drawingID],
               let data = zip[drawingPath], let drawing = (try? XMLDocument(data: data))?.rootElement() else { return }
@@ -135,6 +150,14 @@ extension XLSX {
                 sheet.charts.append(chart)
             }
         }
+    }
+
+    /// Relationship targets as written (external URLs aren't paths).
+    static func rawRelations(_ zip: ZipArchive, _ path: String) -> [String: String] {
+        guard let data = zip[path], let root = (try? XMLDocument(data: data))?.rootElement() else { return [:] }
+        var out: [String: String] = [:]
+        for r in root.children("Relationship") { if let id = r.attr("Id"), let t = r.attr("Target") { out[id] = t } }
+        return out
     }
 
     static func relations(_ zip: ZipArchive, _ path: String, base: String) -> [String: (String, String)] {
@@ -183,12 +206,64 @@ extension XLSX {
     struct Counters { var drawing = 0, chart = 0, image = 0, comments = 0 }
 
     /// Writes the sheet's extra parts into the package; returns XML for the worksheet and content-type overrides.
+    /// AutoFilter conditions as Excel stores them: <customFilters> (wildcards for contains/begins/ends), <top10>, blanks.
+    static func customFilterXML(_ f: ColumnFilter) -> String {
+        if let c = f.conditions.first, [.top, .bottom, .topPercent, .bottomPercent].contains(c.op) {
+            let top = c.op == .top || c.op == .topPercent, percent = c.op == .topPercent || c.op == .bottomPercent
+            return "<top10\(top ? "" : " top=\"0\"")\(percent ? " percent=\"1\"" : "") val=\"\(xmlEscape(c.value))\"/>"
+        }
+        if f.conditions.count == 1, f.conditions[0].op == .empty { return "<filters blank=\"1\"/>" }
+        var x = "<customFilters\(f.and && f.conditions.count > 1 ? " and=\"1\"" : "")>"
+        for c in f.conditions.prefix(2) {
+            let (op, val): (String, String)
+            switch c.op {
+            case .contains: (op, val) = ("equal", "*\(c.value)*")
+            case .notContains: (op, val) = ("notEqual", "*\(c.value)*")
+            case .beginsWith: (op, val) = ("equal", "\(c.value)*")
+            case .endsWith: (op, val) = ("equal", "*\(c.value)")
+            case .notEmpty: (op, val) = ("notEqual", " ")
+            case .empty: (op, val) = ("equal", "")
+            default: (op, val) = (c.op.rawValue, c.value)
+            }
+            x += "<customFilter\(op == "equal" ? "" : " operator=\"\(op)\"") val=\"\(xmlEscape(val))\"/>"
+        }
+        return x + "</customFilters>"
+    }
+
+    static func readCustomFilter(_ fc: XMLElement) -> ColumnFilter? {
+        if let t = fc.child("top10") {
+            let top = t.attr("top") != "0", percent = t.attr("percent") == "1"
+            let op: FilterCondition.Op = top ? (percent ? .topPercent : .top) : (percent ? .bottomPercent : .bottom)
+            return ColumnFilter(conditions: [FilterCondition(op: op, value: t.attr("val") ?? "10")])
+        }
+        guard let cfs = fc.child("customFilters") else { return nil }
+        var conditions: [FilterCondition] = []
+        for c in cfs.children("customFilter") {
+            let op = c.attr("operator") ?? "equal", val = c.attr("val") ?? ""
+            let inner = val.count >= 2 ? String(val.dropFirst().dropLast()) : ""
+            if op == "notEqual", val == " " { conditions.append(.init(op: .notEmpty)); continue }
+            if op == "equal" || op == "notEqual" {
+                let eq = op == "equal"
+                if val.hasPrefix("*"), val.hasSuffix("*"), val.count >= 2, !inner.contains("*") { conditions.append(.init(op: eq ? .contains : .notContains, value: inner)); continue }
+                if eq, val.hasSuffix("*"), !val.dropLast().contains("*") { conditions.append(.init(op: .beginsWith, value: String(val.dropLast()))); continue }
+                if eq, val.hasPrefix("*"), !val.dropFirst().contains("*") { conditions.append(.init(op: .endsWith, value: String(val.dropFirst()))); continue }
+            }
+            guard let o = FilterCondition.Op(rawValue: op) else { continue }
+            conditions.append(.init(op: o, value: val))
+        }
+        guard !conditions.isEmpty else { return nil }
+        return ColumnFilter(conditions: conditions, and: cfs.attr("and") == "1" || cfs.attr("and") == "true")
+    }
+
     static func writeExtras(_ sheet: Sheet, sheetNumber: Int, zip: inout ZipArchive, counters: inout Counters, dxfs: inout [Dxf])
         -> (filter: String, conditional: String, tail: String, types: String) {
         var filter = "", conditional = "", tail = "", types = ""
         if let f = sheet.autoFilter {
             filter = "<autoFilter ref=\"\(f.a1)\">"
-            for (col, values) in sheet.filterValues.sorted(by: { $0.key < $1.key }) {
+            for (col, cf) in sheet.customFilters.sorted(by: { $0.key < $1.key }) where f.cols.contains(col) {
+                filter += "<filterColumn colId=\"\(col - f.start.col)\">" + customFilterXML(cf) + "</filterColumn>"
+            }
+            for (col, values) in sheet.filterValues.sorted(by: { $0.key < $1.key }) where sheet.customFilters[col] == nil {
                 filter += "<filterColumn colId=\"\(col - f.start.col)\"><filters\(values.contains("") ? " blank=\"1\"" : "")>"
                 filter += values.filter { !$0.isEmpty }.sorted().map { "<filter val=\"\(xmlEscape($0))\"/>" }.joined()
                 filter += "</filters></filterColumn>"
@@ -312,6 +387,22 @@ extension XLSX {
             rels.append("<Relationship Id=\"rIdComments\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments\(n).xml\"/>")
             rels.append("<Relationship Id=\"rIdVml\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing\(n).vml\"/>")
             tail += "<legacyDrawing r:id=\"rIdVml\"/>"
+        }
+        if !sheet.hyperlinks.isEmpty {
+            conditional += "<hyperlinks>"
+            for (k, (ref, target)) in sheet.hyperlinks.sorted(by: { $0.key < $1.key }).enumerated() {
+                if target.hasPrefix("#") {
+                    conditional += "<hyperlink ref=\"\(ref.a1)\" location=\"\(xmlEscape(String(target.dropFirst())))\"/>"
+                } else {
+                    rels.append("<Relationship Id=\"rIdLink\(k + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"\(xmlEscape(target))\" TargetMode=\"External\"/>")
+                    conditional += "<hyperlink ref=\"\(ref.a1)\" r:id=\"rIdLink\(k + 1)\"/>"
+                }
+            }
+            conditional += "</hyperlinks>"
+        }
+        if !sheet.rowBreaks.isEmpty {
+            let breaks = sheet.rowBreaks.sorted()
+            tail = "<rowBreaks count=\"\(breaks.count)\" manualBreakCount=\"\(breaks.count)\">" + breaks.map { "<brk id=\"\($0)\" max=\"16383\" man=\"1\"/>" }.joined() + "</rowBreaks>" + tail
         }
         if !rels.isEmpty { zip["xl/worksheets/_rels/sheet\(sheetNumber).xml.rels"] = Data(relsXML(rels).utf8) }
         return (filter, conditional, tail, types)

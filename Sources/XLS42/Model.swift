@@ -53,7 +53,7 @@ struct CellRange: Hashable {
 
     init?(_ s: String) {
         let parts = s.split(separator: ":")
-        guard let a = CellRef(String(parts[0])) else { return nil }
+        guard !parts.isEmpty, parts.count <= 2, let a = CellRef(String(parts[0])) else { return nil }
         let b = parts.count > 1 ? CellRef(String(parts[1])) : a
         guard let b else { return nil }
         self.init(a, b)
@@ -127,6 +127,14 @@ struct CellStyle: Hashable {
     var numberFormat = "General"
     /// Protected from editing while the sheet is protected (Excel default: locked).
     var locked = true
+    /// Protection: the formula isn't shown while the sheet is protected.
+    var hiddenFormula = false
+    /// Text rotation in degrees (−90…90; 255 = stacked vertically) and shrink to fit.
+    var rotation = 0
+    var shrink = false
+    var doubleUnderline = false
+    /// Named cell style the formatting came from (Heading 1, Good, …).
+    var styleName: String?
     var left: BorderSide?
     var right: BorderSide?
     var top: BorderSide?
@@ -170,6 +178,8 @@ struct Cell: Equatable {
     var style: CellStyle = .default
     /// Cached value: the constant, or the formula result after recalculation.
     var value: Value = .empty
+    /// Array formula (Excel CSE / ODF matrix): its result fills the cells below and to the right.
+    var array = false
 
     var isFormula: Bool { input.hasPrefix("=") && input.count > 1 }
     var isBlank: Bool { input.isEmpty && style == .default }
@@ -206,6 +216,17 @@ struct Sheet {
     var protection: SheetProtection?
     /// Pivot table on this sheet (its settings, for Refresh; saved as a pivot table in .xlsx / .ods).
     var pivot: PivotSpec?
+    /// Ranges filled by spilling array formulas (anchor → range), set by the recalculation.
+    var spills: [CellRef: CellRange] = [:]
+    /// Sheet tab colour and visibility.
+    var tabColor: NSColor?
+    var hidden = false
+    /// Hyperlinks: URL, e-mail, file or "#Sheet!A1" for a place in the workbook.
+    var hyperlinks: [CellRef: String] = [:]
+    /// Standard filter conditions per column of the AutoFilter range (with value lists in `filterValues`).
+    var customFilters: [Int: ColumnFilter] = [:]
+    /// Manual page breaks before these rows (Subtotals › page break between groups).
+    var rowBreaks: Set<Int> = []
 
     init(name: String) { self.name = name }
 
@@ -233,6 +254,22 @@ struct Sheet {
     var isProtected: Bool { protection != nil }
     var maxRowLevel: Int { rowLevels.values.max() ?? 0 }
     var maxColLevel: Int { colLevels.values.max() ?? 0 }
+}
+
+/// One condition of a standard filter or an AutoFilter custom filter.
+struct FilterCondition: Equatable {
+    enum Op: String, CaseIterable {
+        case equal, notEqual, greaterThan, lessThan, greaterThanOrEqual, lessThanOrEqual
+        case contains, notContains, beginsWith, endsWith, top, bottom, topPercent, bottomPercent, empty, notEmpty
+    }
+    var op: Op
+    var value: String = ""
+}
+
+/// Conditions on one filter column, joined by AND or OR (Excel keeps at most two, or one top/bottom N).
+struct ColumnFilter: Equatable {
+    var conditions: [FilterCondition]
+    var and = true
 }
 
 /// Data validation rule (Excel's subset): allowed values for a set of ranges.
@@ -322,6 +359,8 @@ struct Workbook {
     var names: [String: String] = [:]
     /// Excel serial dates: 1900 system (default) or 1904.
     var date1904 = false
+    /// Workbook structure protection: sheets can't be added, deleted, moved, renamed or hidden.
+    var structureProtected = false
 
     func sheetIndex(named name: String) -> Int? {
         sheets.firstIndex { $0.name.caseInsensitiveCompare(name) == .orderedSame }

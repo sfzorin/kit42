@@ -33,6 +33,8 @@ indirect enum Expr {
     case call(String, [Expr])
     case name(String)
     case missing   // empty argument: IF(A1,,1)
+    /// Array constant {1,2;3,4} (also values computed elsewhere, e.g. lifted arguments).
+    case array(Matrix)
 }
 
 struct FormulaError: Error { let message: String }
@@ -46,12 +48,14 @@ enum Formula {
         case sheetPrefix(String)   // "Sheet1!" or "'My sheet'!"
         case op(String)
         case lparen, rparen, sep, colon
+        case lbrace, rbrace, rowSep   // array constants: {1,2;3,4}
     }
 
     static func tokenize(_ s: String) throws -> [Token] {
         var tokens: [Token] = []
         let chars = Array(s)
         var i = 0
+        var braces = 0
         func isWordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber || c == "_" || c == "." || c == "$" || c == "\\" }
         while i < chars.count {
             let c = chars[i]
@@ -94,6 +98,9 @@ enum Formula {
                 tokens.append(.error(e.uppercased()))
             case "(": tokens.append(.lparen); i += 1
             case ")": tokens.append(.rparen); i += 1
+            case "{": tokens.append(.lbrace); braces += 1; i += 1
+            case "}": tokens.append(.rbrace); braces = max(0, braces - 1); i += 1
+            case ";" where braces > 0: tokens.append(.rowSep); i += 1
             case ",", ";": tokens.append(.sep); i += 1
             case ":": tokens.append(.colon); i += 1
             case "+", "-", "*", "/", "^", "&", "%", "=":
@@ -226,6 +233,29 @@ enum Formula {
                 let e = try comparison()
                 guard next() == .rparen else { throw FormulaError(message: "Не хватает «)»") }
                 return e
+            case .lbrace:
+                var rows: [[Value]] = [[]]
+                while true {
+                    var negative = false
+                    if case .op(let o)? = peek, o == "-" || o == "+" { negative = o == "-"; pos += 1 }
+                    guard let t = next() else { throw FormulaError(message: "Не хватает «}»") }
+                    switch t {
+                    case .number(let d): rows[rows.count - 1].append(.number(negative ? -d : d))
+                    case .string(let s): rows[rows.count - 1].append(.string(s))
+                    case .bool(let b): rows[rows.count - 1].append(.bool(b))
+                    case .error(let e): rows[rows.count - 1].append(.error(Formula.canonicalError(e)))
+                    case .word(let w) where ["TRUE", "ИСТИНА"].contains(w.uppercased()): rows[rows.count - 1].append(.bool(true))
+                    case .word(let w) where ["FALSE", "ЛОЖЬ"].contains(w.uppercased()): rows[rows.count - 1].append(.bool(false))
+                    default: throw FormulaError(message: "Неверный элемент массива")
+                    }
+                    guard let sep = next() else { throw FormulaError(message: "Не хватает «}»") }
+                    if sep == .rbrace { break }
+                    if sep == .rowSep { rows.append([]); continue }
+                    guard sep == .sep else { throw FormulaError(message: "Неверный массив") }
+                }
+                let cols = rows[0].count
+                guard cols > 0, rows.allSatisfy({ $0.count == cols }) else { throw FormulaError(message: "Неверный массив") }
+                return .array(Matrix(rows: rows.count, cols: cols, values: rows.flatMap { $0 }))
             case .sheetPrefix(let sheet):
                 guard case .word(let w)? = next() else { throw FormulaError(message: "Ожидалась ссылка после имени листа") }
                 return try reference(w, sheet: sheet)
@@ -262,7 +292,11 @@ enum Formula {
                 guard case .word(let w2)? = next(), let b = Formula.refPart(w2) else { throw FormulaError(message: "Неверный диапазон") }
                 return .range(sheet: sheet, a, b)
             }
-            guard !a.wholeColumn, !a.wholeRow else { throw FormulaError(message: "Неверная ссылка \(w)") }
+            guard !a.wholeColumn, !a.wholeRow else {
+                // A bare word like "x" (LET/LAMBDA names), not a column.
+                if sheet == nil, !w.contains("$"), !w.first!.isNumber { return .name(w) }
+                throw FormulaError(message: "Неверная ссылка \(w)")
+            }
             return .ref(sheet: sheet, a)
         }
     }
@@ -315,17 +349,75 @@ enum Formula {
         "КОДСИМВ": "CODE", "ЧЁТН": "EVEN", "НЕЧЁТ": "ODD", "СРЗНАЧА": "AVERAGEA", "РАБДЕНЬ": "WORKDAY",
         "ИСТИНА": "TRUE", "ЛОЖЬ": "FALSE", "ПРОМЕЖУТОЧНЫЕ.ИТОГИ": "SUBTOTAL", "ДВССЫЛ": "INDIRECT",
         "СМЕЩ": "OFFSET", "МОДА": "MODE", "ГРАДУСЫ": "DEGREES", "РАДИАНЫ": "RADIANS",
+        "ПРОСМОТР": "LOOKUP", "ПОИСКПОЗX": "XMATCH", "АДРЕС": "ADDRESS", "ФИЛЬТР": "FILTER", "СОРТ": "SORT", "СОРТПО": "SORTBY",
+        "УНИК": "UNIQUE", "ПОСЛЕДОВ": "SEQUENCE", "СЛУЧМАССИВ": "RANDARRAY", "ТРАНСП": "TRANSPOSE", "ТЕКСТДО": "TEXTBEFORE",
+        "ТЕКСТПОСЛЕ": "TEXTAFTER", "ТЕКСТРАЗД": "TEXTSPLIT", "ПЕЧСИМВ": "CLEAN", "ЧЗНАЧ": "NUMBERVALUE", "ФИКСИРОВАННЫЙ": "FIXED",
+        "РУБЛЬ": "DOLLAR", "ЮНИКОД": "UNICODE", "ЮНИСИМВ": "UNICHAR", "ЧИСТРАБДНИ.МЕЖД": "NETWORKDAYS.INTL",
+        "РАБДЕНЬ.МЕЖД": "WORKDAY.INTL", "НОМНЕДЕЛИ": "WEEKNUM", "НОМНЕДЕЛИ.ISO": "ISOWEEKNUM", "ДОЛЯГОДА": "YEARFRAC",
+        "ДНЕЙ360": "DAYS360", "ДАТАЗНАЧ": "DATEVALUE", "ВРЕМЗНАЧ": "TIMEVALUE", "ОКРВВЕРХ.МАТ": "CEILING.MATH",
+        "ОКРВНИЗ.МАТ": "FLOOR.MATH", "ЧАСТНОЕ": "QUOTIENT", "НОД": "GCD", "НОК": "LCM", "ЧИСЛКОМБ": "COMBIN", "ПЕРЕСТ": "PERMUT",
+        "СУММРАЗНКВ": "SUMX2MY2", "СУММСУММКВ": "SUMX2PY2", "СУММКВРАЗН": "SUMXMY2", "МОДА.НСК": "MODE.MULT", "МОДА.ОДН": "MODE.SNGL",
+        "СТАНДОТКЛОНП": "STDEVP", "ДИСПР": "VARP", "РАНГ.СР": "RANK.AVG", "ПЕРСЕНТИЛЬ": "PERCENTILE", "ПРОЦЕНТИЛЬ.ВКЛ": "PERCENTILE.INC",
+        "ПРОЦЕНТИЛЬ.ИСКЛ": "PERCENTILE.EXC", "КВАРТИЛЬ": "QUARTILE", "КВАРТИЛЬ.ВКЛ": "QUARTILE.INC", "КВАРТИЛЬ.ИСКЛ": "QUARTILE.EXC",
+        "ПРОЦЕНТРАНГ": "PERCENTRANK", "ПРОЦЕНТРАНГ.ВКЛ": "PERCENTRANK.INC", "ПРОЦЕНТРАНГ.ИСКЛ": "PERCENTRANK.EXC", "КОРРЕЛ": "CORREL",
+        "ПИРСОН": "PEARSON", "НАКЛОН": "SLOPE", "ОТРЕЗОК": "INTERCEPT", "КВПИРСОН": "RSQ", "ПРЕДСКАЗ": "FORECAST",
+        "ПРЕДСКАЗ.ЛИНЕЙН": "FORECAST.LINEAR", "ТЕНДЕНЦИЯ": "TREND", "РОСТ": "GROWTH", "ЛИНЕЙН": "LINEST", "НОРМ.РАСП": "NORM.DIST",
+        "НОРМ.ОБР": "NORM.INV", "НОРМ.СТ.РАСП": "NORM.S.DIST", "НОРМ.СТ.ОБР": "NORM.S.INV", "СТЬЮДЕНТ.РАСП": "T.DIST",
+        "СТЬЮДЕНТ.РАСП.2Х": "T.DIST.2T", "СТЬЮДЕНТ.РАСП.ПХ": "T.DIST.RT", "СТЬЮДЕНТ.ОБР": "T.INV", "СТЬЮДЕНТ.ОБР.2Х": "T.INV.2T",
+        "БИНОМ.РАСП": "BINOM.DIST", "ПУАССОН.РАСП": "POISSON.DIST", "ЭКСП.РАСП": "EXPON.DIST", "ХИ2.РАСП": "CHISQ.DIST",
+        "ХИ2.РАСП.ПХ": "CHISQ.DIST.RT", "ХИ2.ОБР": "CHISQ.INV", "ХИ2.ОБР.ПХ": "CHISQ.INV.RT", "НОРМРАСП": "NORMDIST",
+        "НОРМОБР": "NORMINV", "НОРМСТРАСП": "NORMSDIST", "НОРМСТОБР": "NORMSINV", "СРОТКЛ": "AVEDEV", "КВАДРОТКЛ": "DEVSQ",
+        "СРГЕОМ": "GEOMEAN", "СРГАРМ": "HARMEAN", "ЭКСЦЕСС": "KURT", "СКОС": "SKEW", "НОРМАЛИЗАЦИЯ": "STANDARDIZE",
+        "КОВАРИАЦИЯ.Г": "COVARIANCE.P", "КОВАРИАЦИЯ.В": "COVARIANCE.S", "КОВАР": "COVAR", "ЧАСТОТА": "FREQUENCY",
+        "МУМНОЖ": "MMULT", "МОПРЕД": "MDETERM", "МОБР": "MINVERSE", "МЕДИН": "MUNIT", "ПРПЛТ": "IPMT", "ОСПЛТ": "PPMT", "КПЕР": "NPER",
+        "СТАВКА": "RATE", "ЧПС": "NPV", "ЧИСТНЗ": "XNPV", "ВСД": "IRR", "ЧИСТВНДОХ": "XIRR", "МВСД": "MIRR", "АПЛ": "SLN", "ФУО": "DB",
+        "ДДОБ": "DDB", "АСЧ": "SYD", "ЭФФЕКТ": "EFFECT", "НОМИНАЛ": "NOMINAL", "ОБЩПЛАТ": "CUMIPMT", "ОБЩДОХОД": "CUMPRINC",
+        "ЕФОРМУЛА": "ISFORMULA", "ЕЧЁТН": "ISEVEN", "ЕЧЕТН": "ISEVEN", "ЕНЕЧЁТ": "ISODD", "ЕНЕЧЕТ": "ISODD", "ТИП": "TYPE",
+        "ЯЧЕЙКА": "CELL", "ИНФОРМ": "INFO", "ЛИСТ": "SHEET", "ЛИСТЫ": "SHEETS", "ЕССЫЛКА": "ISREF", "Ф.ТЕКСТ": "FORMULATEXT",
+        "ТИП.ОШИБКИ": "ERROR.TYPE", "ПРЕОБР": "CONVERT", "ДЕС.В.ДВ": "DEC2BIN", "ДВ.В.ДЕС": "BIN2DEC", "ДЕС.В.ШЕСТН": "DEC2HEX",
+        "ШЕСТН.В.ДЕС": "HEX2DEC", "ДЕС.В.ВОСЬМ": "DEC2OCT", "ВОСЬМ.В.ДЕС": "OCT2DEC", "ДВ.В.ШЕСТН": "BIN2HEX", "ШЕСТН.В.ДВ": "HEX2BIN",
+        "ДВ.В.ВОСЬМ": "BIN2OCT", "ВОСЬМ.В.ДВ": "OCT2BIN", "ШЕСТН.В.ВОСЬМ": "HEX2OCT", "ВОСЬМ.В.ШЕСТН": "OCT2HEX", "БИТ.И": "BITAND",
+        "БИТ.ИЛИ": "BITOR", "БИТ.ИСКЛИЛИ": "BITXOR", "БИТ.СДВИГЛ": "BITLSHIFT", "БИТ.СДВИГП": "BITRSHIFT", "ДЕЛЬТА": "DELTA",
+        "ПОРОГ": "GESTEP", "ДВФАКТР": "FACTDOUBLE", "МУЛЬТИНОМ": "MULTINOMIAL",
+        "РИМСКОЕ": "ROMAN", "АРАБСКОЕ": "ARABIC", "ОСНОВАНИЕ": "BASE", "ДЕС": "DECIMAL", "КОРЕНЬПИ": "SQRTPI", "АГРЕГАТ": "AGGREGATE",
+        "ГАММА": "GAMMA", "ГАММАНЛОГ": "GAMMALN", "ДОВЕРИТ.НОРМ": "CONFIDENCE.NORM", "ФИШЕР": "FISHER", "ФИШЕРОБР": "FISHERINV",
+        "СТАНДОТКЛОНА": "STDEVA", "СТАНДОТКЛОНПА": "STDEVPA", "ДИСПА": "VARA", "ДИСПРА": "VARPA", "МАКСА": "MAXA", "МИНА": "MINA",
+        "БЗРАСПИС": "FVSCHEDULE", "ПДЛИТ": "PDURATION", "ЭКВ.СТАВКА": "RRI", "ВЫБОРСТОЛБЦ": "CHOOSECOLS",
+        "ВЫБОРСТРОК": "CHOOSEROWS", "ВСТОЛБИК": "VSTACK", "ГСТОЛБИК": "HSTACK", "ПОСТОЛБЦ": "TOCOL", "ПОСТРОК": "TOROW",
+        "ВЗЯТЬ": "TAKE", "СБРОСИТЬ": "DROP", "ГИПЕРССЫЛКА": "HYPERLINK",
     ]
 
     /// Functions Excel stores with the "_xlfn." prefix.
     static let futureFunctions: Set<String> = [
         "IFS", "IFNA", "XLOOKUP", "CONCAT", "TEXTJOIN", "MAXIFS", "MINIFS", "SWITCH", "XOR", "DAYS",
         "STDEV.S", "STDEV.P", "VAR.S", "VAR.P", "RANK.EQ",
+        "XMATCH", "SORTBY", "UNIQUE", "SEQUENCE", "RANDARRAY", "TEXTBEFORE", "TEXTAFTER", "TEXTSPLIT", "LET", "LAMBDA",
+        "VSTACK", "HSTACK", "TOCOL", "TOROW", "CHOOSECOLS", "CHOOSEROWS", "TAKE", "DROP", "EXPAND", "WRAPROWS", "WRAPCOLS",
+        "NORM.DIST", "NORM.INV", "NORM.S.DIST", "NORM.S.INV", "T.DIST", "T.DIST.2T", "T.DIST.RT", "T.INV", "T.INV.2T",
+        "CHISQ.DIST", "CHISQ.DIST.RT", "CHISQ.INV", "CHISQ.INV.RT", "BINOM.DIST", "POISSON.DIST", "EXPON.DIST",
+        "PERCENTILE.INC", "PERCENTILE.EXC", "QUARTILE.INC", "QUARTILE.EXC", "PERCENTRANK.INC", "PERCENTRANK.EXC",
+        "MODE.SNGL", "MODE.MULT", "RANK.AVG", "FORECAST.LINEAR", "CEILING.MATH", "FLOOR.MATH", "CEILING.PRECISE",
+        "FLOOR.PRECISE", "ISOWEEKNUM", "MUNIT", "F.INV", "F.INV.RT", "T.TEST", "Z.TEST", "BITAND", "BITOR", "BITXOR", "BITLSHIFT",
+        "BITRSHIFT", "UNICODE", "UNICHAR", "NUMBERVALUE", "ISFORMULA", "SHEET", "SHEETS", "FORMULATEXT", "COVARIANCE.P",
+        "COVARIANCE.S", "GAMMA", "GAMMALN.PRECISE", "GAMMA.DIST", "GAMMA.INV", "COMBINA", "PERMUTATIONA", "ACOT", "ACOTH",
+        "COT", "COTH", "CSC", "CSCH", "SEC", "SECH", "ARABIC", "BASE", "DECIMAL", "AGGREGATE", "PHI", "GAUSS",
+        "CONFIDENCE.NORM", "CONFIDENCE.T", "LOGNORM.DIST", "LOGNORM.INV", "WEIBULL.DIST", "F.DIST", "F.DIST.RT",
+        "ERF.PRECISE", "ERFC.PRECISE", "PDURATION", "RRI", "SKEW.P", "BETA.DIST", "BETA.INV", "BINOM.INV",
+        "REGEXTEST", "REGEXEXTRACT", "REGEXREPLACE", "VALUETOTEXT", "ARRAYTOTEXT",
     ]
+
+    /// Prefix Excel files use for the function ("_xlfn.", "_xlfn._xlws." or none).
+    static func filePrefix(_ name: String) -> String {
+        if worksheetFunctions.contains(name) { return "_xlfn._xlws." }
+        if name == "REGEX" { return "_xlfn.ORG.LIBREOFFICE." }
+        return futureFunctions.contains(name) ? "_xlfn." : ""
+    }
+
+    static let worksheetFunctions: Set<String> = ["FILTER", "SORT"]
 
     static func canonicalFunction(_ name: String) -> String {
         var up = name.uppercased()
-        for prefix in ["_XLFN._XLWS.", "_XLFN.", "_XLWS."] where up.hasPrefix(prefix) { up.removeFirst(prefix.count) }
+        for prefix in ["_XLFN._XLWS.", "_XLFN.", "_XLWS.", "ORG.LIBREOFFICE.", "COM.MICROSOFT.", "LEGACY."] where up.hasPrefix(prefix) { up.removeFirst(prefix.count) }
         return russianNames[up] ?? up
     }
 
@@ -358,13 +450,14 @@ enum Formula {
             case .bool(let b): return b ? "TRUE" : "FALSE"
             case .error(let err): return err
             case .missing: return ""
+            case .array(let m): return arrayText(m, col: ",", row: ";")
             case .name(let n): return n
             case .ref(let sheet, let p): return sheetPrefix(sheet) + p.text
             case .range(let sheet, let a, let b): return sheetPrefix(sheet) + a.text + ":" + b.text
             case .unary(let o, let x): return o + s(x, 6)
             case .percent(let x): return s(x, 7) + "%"
             case .call(let name, let args):
-                let n = forFile && futureFunctions.contains(name) ? "_xlfn." + name : name
+                let n = forFile ? filePrefix(name) + name : name
                 return n + "(" + args.map { s($0, 0) }.joined(separator: ",") + ")"
             case .binary(let o, let l, let r):
                 let prec = precedence(o)
@@ -373,6 +466,20 @@ enum Formula {
             }
         }
         return s(e, 0)
+    }
+
+    /// "{1,2;3,4}" (Excel) or "{1;2|3;4}" (OpenFormula).
+    static func arrayText(_ m: Matrix, col: String, row: String) -> String {
+        func item(_ v: Value) -> String {
+            switch v {
+            case .number(let d): return Value.formatGeneral(d)
+            case .string(let s): return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            case .bool(let b): return b ? "TRUE" : "FALSE"
+            case .error(let e): return e
+            case .empty: return "0"
+            }
+        }
+        return "{" + (0..<m.rows).map { r in (0..<m.cols).map { item(m[r, $0]) }.joined(separator: col) }.joined(separator: row) + "}"
     }
 
     static func precedence(_ op: String) -> Int {

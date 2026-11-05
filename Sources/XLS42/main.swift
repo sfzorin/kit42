@@ -4,6 +4,13 @@ import Kit42
 Localization.register(rows: xls42Strings)
 
 if CommandLine.arguments.contains("--selftest") { exit(SelfTest.run()) }
+// XLS42 --lo-compare [dir] [soffice path] [verbose]: function values against LibreOffice (headless, private profile)
+if let i = CommandLine.arguments.firstIndex(of: "--lo-compare") {
+    let rest = CommandLine.arguments.dropFirst(i + 1)
+    let dir = rest.first { $0.hasPrefix("/") && !$0.hasSuffix("soffice") } ?? NSTemporaryDirectory() + "xls42-lo-compare"
+    let soffice = rest.first { $0.hasSuffix("soffice") } ?? "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    exit(SelfTest.loCompare(dir: dir, soffice: soffice))
+}
 // XLS42 --roundtrip in.xlsx out.xlsx: read, recalculate, write (for testing compatibility)
 if let i = CommandLine.arguments.firstIndex(of: "--roundtrip"), CommandLine.arguments.count > i + 2 {
     let args = CommandLine.arguments
@@ -66,6 +73,15 @@ if let i = CommandLine.arguments.firstIndex(of: "--convert"), CommandLine.argume
 if let i = CommandLine.arguments.firstIndex(of: "--pivot-demo"), CommandLine.arguments.count > i + 1 {
     let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     let data = SelfTest.pivotDemo()
+    try (out.pathExtension.lowercased() == "ods" ? ODS.write(data) : XLSX.write(data)).write(to: out)
+    print("wrote \(out.path)")
+    exit(0)
+}
+
+// XLS42 --feature-demo out.(xlsx|ods): tab colours, hidden sheet, hyperlinks, cell styles (for format checks)
+if let i = CommandLine.arguments.firstIndex(of: "--feature-demo"), CommandLine.arguments.count > i + 1 {
+    let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let data = SelfTest.featureDemo()
     try (out.pathExtension.lowercased() == "ods" ? ODS.write(data) : XLSX.write(data)).write(to: out)
     print("wrote \(out.path)")
     exit(0)

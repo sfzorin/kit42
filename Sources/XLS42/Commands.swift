@@ -55,6 +55,45 @@ enum Cmd {
                                       shortcut: Shortcut("v", [.command, .option]))
     static let print = Command(L("Print…"), #selector(NSDocument.printDocument(_:)), symbol: "printer", toolTip: L("Print"), label: L("Print"))
 
+    // Data (Calc's Data menu)
+    static let sortDialog = Command(L("Sort…"), #selector(W.sortDialogAction(_:)), symbol: "arrow.up.arrow.down.square",
+                                    toolTip: L("Sort by up to three keys"), label: L("Sort"))
+    static let sortLists = Command(L("Sort Lists…"), #selector(W.sortListsAction(_:)))
+    static let standardFilter = Command(L("Standard Filter…"), #selector(W.standardFilterAction(_:)), symbol: "line.3.horizontal.decrease")
+    static let advancedFilter = Command(L("Advanced Filter…"), #selector(W.advancedFilterAction(_:)))
+    static let resetFilter = Command(L("Reset Filter"), #selector(W.resetFilterAction(_:)))
+    static let subtotals = Command(L("Subtotals…"), #selector(W.subtotalsAction(_:)), symbol: "sum")
+    static let textToColumns = Command(L("Text to Columns…"), #selector(W.textToColumnsAction(_:)))
+    static let removeDuplicates = Command(L("Remove Duplicates…"), #selector(W.removeDuplicatesAction(_:)))
+    static let descriptiveStatistics = Command(L("Descriptive Statistics…"), #selector(W.descriptiveStatisticsAction(_:)))
+    static let correlation = Command(L("Correlation…"), #selector(W.correlationAction(_:)))
+
+    // Tools
+    static let goalSeek = Command(L("Goal Seek…"), #selector(W.goalSeekAction(_:)), symbol: "target")
+    static let solver = Command(L("Solver…"), #selector(W.solverAction(_:)), symbol: "function")
+    static let protectWorkbook = Command(L("Protect Workbook Structure"), #selector(W.protectWorkbookAction(_:)))
+
+    // Sheet
+    static let insertSheetItem = Command(L("Insert Sheet"), #selector(W.addSheet(_:)))
+    static let renameSheet = Command(L("Rename Sheet…"), #selector(W.renameSheetAction(_:)))
+    static let deleteSheet = Command(L("Delete Sheet…"), #selector(W.deleteSheetAction(_:)))
+    static let moveCopySheet = Command(L("Move or Copy Sheet…"), #selector(W.moveCopySheetAction(_:)))
+    static let tabColor = Command(L("Tab Colour…"), #selector(W.tabColorAction(_:)))
+    static let hideSheet = Command(L("Hide Sheet"), #selector(W.hideSheetAction(_:)))
+    static let showSheet = Command(L("Show Sheet…"), #selector(W.showSheetAction(_:)))
+
+    // Insert, format, view
+    static let hyperlink = Command(L("Hyperlink…"), #selector(W.insertHyperlinkAction(_:)), symbol: "link", shortcut: Shortcut("k"))
+    static let removeHyperlink = Command(L("Remove Hyperlink"), #selector(W.removeHyperlinkAction(_:)))
+    static let openHyperlink = Command(L("Open Hyperlink"), #selector(W.openHyperlinkAction(_:)))
+    static let formatCells = Command(L("Cells…"), #selector(W.formatCellsAction(_:)), symbol: "tablecells", shortcut: Shortcut("1", [.command, .option]),
+                                     toolTip: L("Format Cells"))
+    static let split = Command(L("Split Window"), #selector(W.toggleSplitAction(_:)), symbol: "rectangle.split.2x2.fill")
+    static let statusBar = Command(L("Hide Status Bar"), #selector(W.toggleStatusBarAction(_:)), shortcut: Shortcut("s", [.command, .option, .shift]))
+    static let fillUp = Command(L("Fill Up"), #selector(W.fillUpAction(_:)))
+    static let fillLeft = Command(L("Fill Left"), #selector(W.fillLeftAction(_:)))
+    static let fillSeries = Command(L("Series…"), #selector(W.fillSeriesAction(_:)))
+
     // Edit (context menu)
     static let cut = Command(L("Cut"), #selector(NSText.cut(_:)), symbol: "scissors")
     static let copy = Command(L("Copy"), #selector(NSText.copy(_:)), symbol: "doc.on.doc")
@@ -66,6 +105,7 @@ enum Cmd {
                           .command(clear), .command(clearFormats), .separator,
                           .command(sortAscending), .command(sortDescending), .separator,
                           .command(merge), .command(freeze), .separator,
+                          .command(formatCells), .command(hyperlink), .command(openHyperlink), .separator,
                           .command(comment), .command(hideRows), .command(unhideRows), .command(defineName)])
     }
 
@@ -136,15 +176,17 @@ enum Cmd {
         var spec = MenuBarSpec(appName: "XLS42")
         spec.fileExtras = [.command(exportPDF), .command(exportCSV), .separator, .command(importCSV), .separator,
                            .command(setPrintArea), .command(clearPrintArea)]
-        spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator, .command(fillDown), .command(fillRight)]
+        spec.editExtras = [.command(pasteSpecial), .separator, .command(clear), .command(clearFormats), .separator,
+                           .submenu(L("Fill"), [.command(fillDown), .command(fillRight), .command(fillUp), .command(fillLeft), .separator, .command(fillSeries)])]
         spec.find = [.command(find), .command(findNext), .command(replace), .command(goToCell)]
         spec.view = [.command(zoomIn), .command(zoomOut), .command(actualSize), .separator,
                      .command(formatBar), .command(formulaBar), .command(gridlines), .separator,
-                     .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]
+                     .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn), .command(split), .separator, .command(statusBar)]
         spec.insert = [.command(insertRows), .command(insertColumns), .command(insertSheet), .separator, .command(autoSum), .command(insertFunction),
                        .command(defineName), .separator, .command(insertPicture), .command(stamps), .submenu(L("Chart"), charts.menuElements),
-                       .separator, .command(comment), .command(deleteComment)]
-        spec.format = [.command(bold), .command(italic), .command(underline), .command(strike), .separator,
+                       .separator, .command(hyperlink), .command(removeHyperlink), .separator, .command(comment), .command(deleteComment)]
+        spec.format = [.command(formatCells), .submenu(L("Cell Styles"), W.cellStyleCommands.menuElements), .separator,
+                       .command(bold), .command(italic), .command(underline), .command(strike), .separator,
                        .command(alignLeft), .command(alignCenter), .command(alignRight), .command(wrap), .command(merge), .separator,
                        .submenu(L("Number"), numberFormats.menuElements + [.separator, .command(increaseDecimals), .command(decreaseDecimals)]),
                        .submenu(L("Borders"), [.command(bordersAll), .command(bordersOutside), .command(bordersBottom), .command(bordersNone)]),
@@ -157,10 +199,19 @@ enum Cmd {
                                      .command(hideRows), .command(unhideRows), .command(hideColumns), .command(unhideColumns), .separator,
                                      .command(deleteRows), .command(deleteColumns), .separator,
                                      .command(freeze), .command(freezeTopRow), .command(freezeFirstColumn)]),
-                       (L("Data"), [.command(validation), .command(clearValidation), .separator,
+                       (L("Sheet"), [.command(insertSheetItem), .command(deleteSheet), .command(renameSheet), .command(moveCopySheet), .separator,
+                                     .command(tabColor), .separator, .command(hideSheet), .command(showSheet), .separator,
+                                     .command(protectSheet), .command(protectWorkbook)]),
+                       (L("Data"), [.command(sortDialog), .command(sortAscending), .command(sortDescending), .separator,
+                                    .submenu(L("More Filters"), [.command(filter), .command(standardFilter), .command(advancedFilter), .command(resetFilter)]),
+                                    .separator, .command(subtotals), .command(validation), .command(clearValidation), .separator,
+                                    .command(textToColumns), .command(removeDuplicates),
+                                    .submenu(L("Statistics"), [.command(descriptiveStatistics), .command(correlation)]), .separator,
                                     .command(pivot), .command(refreshPivot), .separator,
                                     .command(group), .command(ungroup), .command(collapseAll), .command(expandAll), .separator,
-                                    .command(protectSheet)])]
+                                    .command(sortLists)]),
+                       (L("Tools"), [.command(goalSeek), .command(solver), .separator, .command(insertFunction), .command(replace), .separator,
+                                     .command(protectSheet), .command(protectWorkbook)])]
         spec.help = [.command(functions), .command(welcome)]
         return spec
     }

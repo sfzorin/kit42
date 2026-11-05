@@ -7,7 +7,7 @@ import Kit42
 enum FunctionCatalog {
     enum Category: String, CaseIterable {
         case math = "Math", statistical = "Statistical", text = "Text", logical = "Logical", date = "Date & Time"
-        case lookup = "Lookup & Reference", information = "Information", financial = "Financial"
+        case lookup = "Lookup & Reference", information = "Information", financial = "Financial", engineering = "Engineering"
         var title: String { L(rawValue) }
     }
 
@@ -21,11 +21,13 @@ enum FunctionCatalog {
         var description: String { L(summary) }
     }
 
-    private static func f(_ name: String, _ c: Category, _ args: String, _ summary: String) -> Function {
+    static func f(_ name: String, _ c: Category, _ args: String, _ summary: String) -> Function {
         Function(name: name, category: c, args: args.isEmpty ? [] : args.components(separatedBy: ", "), summary: summary)
     }
 
-    static let all: [Function] = [
+    static let all: [Function] = core + extra
+
+    static let core: [Function] = [
         // Math
         f("SUM", .math, "number1, [number2], …", "Adds all the numbers"),
         f("PRODUCT", .math, "number1, [number2], …", "Multiplies all the numbers"),
