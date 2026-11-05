@@ -177,7 +177,9 @@ let img42Strings: [[String]] = [
     ["Shadow", "Тень", "Gölge"],
     ["Loupe Magnification", "Увеличение лупы", "Büyüteç Büyütmesi"],
     ["Border Colour", "Цвет контура", "Kenarlık Rengi"],
+    ["Border colour", "Цвет контура", "Kenarlık rengi"],
     ["Fill Colour", "Цвет заливки", "Dolgu Rengi"],
+    ["Fill colour", "Цвет заливки", "Dolgu rengi"],
     ["Text Style", "Стиль текста", "Metin Stili"],
     ["Font", "Шрифт", "Yazı Tipi"],
     ["Text Colour", "Цвет текста", "Metin Rengi"],
@@ -186,11 +188,12 @@ let img42Strings: [[String]] = [
     ["Italic", "Курсив", "İtalik"],
     ["Underline", "Подчёркнутый", "Altı Çizili"],
     ["Align Left", "По левому краю", "Sola Hizala"],
-    ["Align Center", "По центру", "Ortala"],
+    ["Align Centre", "По центру", "Ortala"],
     ["Align Right", "По правому краю", "Sağa Hizala"],
     ["Alignment", "Выравнивание", "Hizalama"],
 
     // Resize dialog
+    ["The image size or resolution is invalid.", "Некорректный размер изображения или разрешение.", "Görüntü boyutu veya çözünürlüğü geçersiz."],
     ["Width:", "Ширина:", "Genişlik:"],
     ["Height:", "Высота:", "Yükseklik:"],
     ["Resolution:", "Разрешение:", "Çözünürlük:"],

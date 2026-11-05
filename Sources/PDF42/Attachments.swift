@@ -96,7 +96,7 @@ extension EditorWindowController {
     @objc func saveAttachmentAction(_ sender: Any?) {
         guard let window, let row = sidebar.selectedAttachment, let info = attachmentInfo(row) else { return }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = info.name
+        panel.nameFieldStringValue = AttachmentExport.fileName(info.name)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             do { try info.data.write(to: url) } catch { self?.presentError(error) }
@@ -107,10 +107,9 @@ extension EditorWindowController {
     @objc func openAttachmentAction(_ sender: Any?) {
         guard let row = sidebar.selectedAttachment, let info = attachmentInfo(row) else { return }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PDF42 Attachments/\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent(info.name)
         do {
-            try info.data.write(to: url)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = try AttachmentExport.write(info.data, name: info.name, to: dir)
             NSWorkspace.shared.open(url)
         } catch { presentError(error) }
     }

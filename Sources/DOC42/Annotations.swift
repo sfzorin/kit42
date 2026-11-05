@@ -137,7 +137,10 @@ extension OdtFormat {
         for node in e.children ?? [] {
             if let el = node as? XMLElement {
                 switch el.localName {
-                case "s": s += String(repeating: " ", count: Int(el.attr("c") ?? "1") ?? 1)
+                case "s":
+                    // Malformed counts must not trap or allocate arbitrary memory while opening a note.
+                    let count = min(10_000, max(1, Int(el.attr("c") ?? "1") ?? 1))
+                    s += String(repeating: " ", count: count)
                 case "tab": s += "\t"
                 case "line-break": s += "\n"
                 case "note", "annotation": break

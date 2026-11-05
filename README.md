@@ -1,21 +1,29 @@
 # Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42 · SCN42
 
-A small native office suite for macOS: five apps that look and work alike, share one menu system and design
-(the Kit42 library), need no internet and no third-party libraries — only AppKit, PDFKit, Core Image, Vision and
-Security from macOS. Interface in English, Russian and Turkish.
+A small native office suite for macOS: six apps that share one menu system and design (the Kit42 library).
+Core editing works offline and uses Apple's system frameworks, with no third-party runtime packages.
+Network features, such as trusted signature timestamps and opening web links, need a connection.
+Interface in English, Russian and Turkish.
 
 | App | For | Opens | Saves |
 |---|---|---|---|
 | **PDF42** | reading, editing, signing PDFs | PDF, images | PDF (also signed, compressed, password-protected), DOCX, RTF, HTML, TXT, PNG/JPEG |
 | **DOC42** | documents | DOCX, DOC, RTF, ODT, Markdown, TXT, HTML | the same + PDF |
 | **XLS42** | spreadsheets | XLSX, XLS (97–2003), ODS, CSV/TSV | XLSX, ODS, CSV, PDF |
-| **IMG42** | viewing and quick editing of images | JPEG, PNG, HEIC, AVIF, WebP, GIF, TIFF, PSD, RAW, SVG, PDF, … | the original format, PNG, JPEG, HEIC, TIFF, AVIF |
-| **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX, ODP, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown |
-| **SCN42** | scanning (replaces Image Capture) | scanners (USB, network, AirScan), iPhone/iPad camera, images, PDF | searchable PDF, PDF/A, multi-page TIFF, JPEG, PNG, HEIC, TXT/RTF |
+| **IMG42** | viewing and quick editing of images | JPEG, PNG, HEIC, AVIF, WebP, GIF, TIFF, PSD, RAW, SVG, PDF, … | writable original formats; PNG, JPEG, HEIC, TIFF, AVIF where supported |
+| **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX/ODP, POTX/OTP templates, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown, MP4/MOV |
+| **SCN42** | scanning (replaces Image Capture) | scanners (USB, network, AirScan), iPhone/iPad camera, images, PDF | searchable PDF, PDF/A-style, multi-page TIFF, JPEG, PNG, HEIC, TXT/RTF |
 
 **По-русски.** Набор из шести программ для macOS: PDF42 (PDF: правка, подписи, сжатие), DOC42 (тексты Word/ODT/RTF/
-Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений) PPT42 (презентации PPTX/ODP, показ слайдов) и SCN42 (сканирование: сканеры и iPhone, автообрезка, распознавание текста, PDF). Работают без интернета,
+Markdown), XLS42 (таблицы Excel/ODS/CSV), IMG42 (просмотр и простая правка изображений), PPT42 (презентации PPTX/ODP, показ слайдов) и SCN42 (сканирование: сканеры и iPhone, автообрезка, распознавание текста, PDF). Основные операции работают без интернета,
 интерфейс на английском, русском и турецком.
+
+## Current status
+
+The [status report dated 2026-11-05](STATUS.md) records the audit fixes, verified builds and tests, known limitations,
+and what has been published. The six local app bundles build successfully; the audit fixes and documentation are
+currently changes in the working tree, not a published release. See the report before treating the GitHub baseline
+or an installed copy as the audited version.
 
 ## Install
 
@@ -25,7 +33,10 @@ git clone https://github.com/sfzorin/kit42.git && cd kit42
 ./build.sh PDF42 install    # one app, plus a copy in /Applications
 ```
 
-Requires macOS 14+ and the Xcode Command Line Tools (Swift 5.9+). To make an app the default one for a file type:
+The package declares macOS 14+ and Swift tools 5.9; the verified environment is listed in [STATUS.md](STATUS.md).
+Install the Xcode Command Line Tools to build. The default build uses ad-hoc signing and does not notarize the apps.
+It writes `build/*.app`; only the explicit `install` argument replaces a copy in `/Applications`.
+To make an app the default one for a file type:
 Finder › Get Info › Open with › Change All.
 
 Quick Look (space bar in Finder) and Finder thumbnails come with the apps, for formats macOS shows as plain text or
@@ -72,7 +83,12 @@ lets you switch extensions off.
 - Command line (headless): `--watermark in out TEXT [pages]`, `--number-pages in out [format] [position] [skip-first]`,
   `--split in dir 1-2,3|every:N|each`, `--merge out a.pdf b.png …`, `--compare a b [marked.pdf]`,
   `--edit-text in out OLD NEW`, `--redact in out x,y,w,h[@page] …`, `--add-field in out`, `--fill in out name=value …`, `--fields file`.
-- Signatures and stamps (⇧⌘K): a library of PNGs/scans, the white background is removed automatically.
+  `--add-field` adds three demonstration fields; use the UI for custom field placement.
+  Other CLI commands: `--ocr in out`, `--images-to-pdf out images…`, `--export in out.docx|out.txt`,
+  `--verify file`, `--sign in identity.p12 password out [visible] [tsa]`.
+  `--verify` prints signature statuses; its exit code is not a signature-validity result.
+- Signatures and stamps (⇧⌘K): a library of PNGs/scans, the white background is removed automatically; or create them
+  (see Common › Signature and stamp generator).
 - Digital signature (⌥⌘D): standard PDF signature (PKCS#7/CMS, adbe.pkcs7.detached, SHA-256), readable by Acrobat.
   Certificate from the macOS Keychain, .p12 import or a self-signed one. Counter-signing is supported
   (incremental update). Visible signature (select a placed signature image first, or bottom right of the page)
@@ -123,6 +139,9 @@ lets you switch extensions off.
   `--detach in out name|all`, `--attachments file [dir]`, `--pdfa in out`, `--bates in out PREFIX start [digits] [position]`,
   `--bates-batch outdir PREFIX start a.pdf b.pdf…`, `--header-footer in out "l|c|r" "l|c|r" [pages]`,
   `--labels in out "1-4:r;5-:D;9-:D:A-"`, `--fonts file`.
+  `--attachments` lists embedded files and attachment annotations; with a directory it extracts the EmbeddedFiles
+  entries, sanitizing filenames and numbering collisions without overwriting existing files. `--detach` removes
+  attachments from the output PDF.
 - UI checks: `PDF42 file.pdf` with `K42_SNAPSHOT=out.png` (+ `K42_SNAPSHOT_SHEET=1`), `K42_APPEARANCE=dark|light`,
   `K42_MARKUP`, `K42_TOOL=n`, `K42_REDACT="x,y,w,h;…"`, `K42_COMPRESS`, `K42_STAMPS`, `K42_COMPARE=other.pdf`,
   `K42_ACTION=watermarkAction|pageNumbersAction|splitAction|signDocumentAction|applyRedactionsAction|mergeList|textField|…`
@@ -132,11 +151,18 @@ lets you switch extensions off.
 
 ## XLS42 — spreadsheets (.xlsx, .xls, .ods, .csv)
 
+This section describes the current local source, including the November 5 follow-up fixes. Those changes have not
+been published as a release; dated test results and installed-bundle state are recorded in [STATUS.md](STATUS.md).
+
 - Opens .xlsx, legacy .xls (Excel 97–2003, formulas decompiled), .ods (LibreOffice/OpenOffice) and CSV/TSV
   (UTF-8/UTF-16/Windows-1251, delimiter detection); saves .xlsx, .ods and CSV. The format is detected by content.
+  When Open/Revert supplies an explicit workbook type, mismatched or invalid workbook data is rejected instead
+  of being reinterpreted as CSV.
 - Displayed like Excel: column widths and row heights, fonts, fills, borders, merged cells, wrapped text,
   overflow into neighbouring cells, `###` for numbers that don't fit, theme colours.
-- Number formats: thousands separators, decimals, currency, %, dates and times, `[Red]`, sections `;`.
+- Number formats: thousands separators, decimals, currency, %, dates and times, `[Red]`, sections `;`, scientific
+  notation and elapsed hours. A workbook's 1900/1904 date system is used for date entry, formulas, display, Find,
+  fill series and CSV/PDF export; XLSX/ODS round trips retain the epoch and serial values.
 - 384 functions (Help › Supported Functions, Insert › Function…) in nine categories: conditional aggregates
   (SUMIFS…MINIFS, AGGREGATE, SUBTOTAL that skips nested subtotals and filtered rows), logic (IFS, SWITCH, XOR, LET,
   LAMBDA through a defined name), lookup (XLOOKUP, XMATCH, LOOKUP, INDEX with whole rows/columns, OFFSET, INDIRECT
@@ -148,30 +174,49 @@ lets you switch extensions off.
   F, binomial, Poisson, gamma, beta, lognormal, Weibull distributions and their inverses), finance (PMT, IPMT, PPMT,
   NPER, RATE, NPV, XNPV, IRR, XIRR, MIRR, depreciation, CUMIPMT…), information (CELL, INFO, ISFORMULA, TYPE, SHEET…)
   and engineering (CONVERT, base conversions, BIT…). Russian names (СУММ, ЕСЛИ, ВПР) are accepted too. References
-  A1/$A$1, ranges, other sheets, whole columns, array constants {1,2;3,4}; recalculation with cycle detection.
+  A1/$A$1, ranges, other sheets, whole rows and columns (`1:3`, `A:C`), array constants {1,2;3,4}; recalculation with cycle detection.
 - Arrays like Excel 365: operators and scalar functions work element by element (`=SUM(A1:A9*B1:B9)`,
   `=MAX(IF(…))`); dynamic-array formulas spill into the cells below/right (#SPILL! when something is in the way) and are
   saved as array formulas (`.xlsx` with Excel's dynamic-array marking, `.ods` matrix formulas). Edit › Enter Array
   Formula (⌘⇧Return, in the cell or the formula bar) enters a classic Ctrl+Shift+Enter formula over the selected range:
   the formula bar shows `{=…}` in every cell of it, the result fills the range (single rows/columns repeat, extra cells
-  #N/A, as in Excel/Calc), only the whole range can be edited (⌘⇧Return again) or cleared ("You can't change part of an
-  array"). Saved as legacy array formulas (`.xlsx` `t="array" ref=…` without the dynamic-array `cm`; `.ods`
+  #N/A, as in Excel/Calc). Typing into or clearing part of a legacy array is rejected; re-enter the full range with
+  ⌘⇧Return. Fill, AutoFill, Series and ordinary/Paste Special cell-content writes also reject partial-array changes,
+  including Skip blanks destinations. Replacing a complete array removes its array metadata; Undo restores it.
+  Paste Formats can format part of an array. Replace All skips legacy arrays and locked cells.
+  Saved as legacy array formulas (`.xlsx` `t="array" ref=…` without the dynamic-array `cm`; `.ods`
   `table:number-matrix-columns/rows-spanned`), and read from Excel and LibreOffice files the same way. `XLS42 --lo-compare` writes ~490 test formulas to `.xlsx` (or `ods`), lets LibreOffice compute them
-  headless with a private profile and compares: all agree except functions LibreOffice 25.2 lacks, array formulas
+  headless with a private profile and compares. The historical LibreOffice 25.2 comparison recorded differences for
+  functions it lacks, array formulas
   LibreOffice only computes with Ctrl+Shift+Enter, locale formatting (FIXED/DOLLAR) and a few places where XLS42
   follows Excel (WEEKNUM type 1 at year end, MROUND/ATAN2 errors, PERCENTRANK truncating, TYPE(TRUE)=4, CONVERT
   constants).
+  This optional comparison requires LibreOffice; it prints `DIFF` for mismatches but does not return a failure exit
+  status for them, so it is not a strict regression gate.
 - Editing: formula bar, cell references picked with the mouse, copy and paste with formula shifting, fill down/right,
   insert/delete rows and columns with formulas adjusted, sorting, sheets, AutoSum, selection totals.
+- Explicit rectangular selections include blank cells. Row/column header selections are bounded by the used data
+  along the opposite axis. Copy/Cut, paste/Paste Special (including external text), fill/AutoFill/Series, cell formatting,
+  sorting, Text to Columns and Remove Duplicates accept at most **100,000 cells per operation**; this is not a workbook-size limit. Clear Contents and
+  Clear Formats visit only stored cells and support larger sparse selections. A Cut rejected by the size limit preserves
+  the data and clipboard. Pasting outside the worksheet or across a protected/partial-array destination is rejected
+  before changing cells. External TSV paste respects quoted tabs, newlines and quotes, and keeps destination formatting.
 - Freeze panes: at the selected cell, top row or first column — frozen rows/columns stay while scrolling (saved to .xlsx
   and .ods; the .ods view settings declare the `ooo:` namespace, without which LibreOffice ignored them).
-- Export to PDF: current sheet, all sheets or the selection; automatic orientation, fit to width, gridlines;
+- Export to PDF: current sheet, all visible sheets or the selection; automatic orientation, fit to width, gridlines;
   pages break at row/column boundaries. Printing uses the same layout. CSV export (delimiter choice, UTF-8), CSV/TSV import as a sheet.
+  CSV stores one sheet's computed values without formulas or workbook formatting: Save/Export uses the active sheet,
+  while `--convert input output.csv` uses the first sheet. CSV import keeps equals-prefixed fields as literal text;
+  it does not execute them as formulas. XLSX/ODS preserve literal strings that resemble formulas, numbers, booleans
+  or dates, including embedded tabs, CR and LF. Undecodable legacy XLS formulas retain their cached values.
 - Context menu on cells; formatting bar with font, size, colours, alignment, number formats, borders.
 - Fill handle (series of numbers/dates, "Item 1 → Item 2", formulas), find and replace, hide/unhide rows and columns,
   AutoFilter with value checklist, defined names, comments, conditional formatting (value rules, text, duplicates,
   colour scales, data bars), pictures and charts (column, bar, line, area, pie, scatter) — all saved to .xlsx.
-- Printing: print area, frozen rows repeated on every page, page numbers, options in the print dialog.
+- Printing: print area, frozen rows repeated on every page, page numbers, options in the print dialog. Fit to width
+  scales wide tables to the printable width. If repeated frozen rows would consume 80% or more of the printable body,
+  repetition is disabled for that sheet so the body remains printable. Row Autofit grows and shrinks wrapped rows
+  and supports Undo/Redo.
 - Insert › Function… (also the `fx` button by the formula bar, ⇧⌘F): searchable list of all functions grouped by
   category, with signature, description (en/ru/tr), argument fields and a live result; while typing a formula the
   signature of the current function is shown above the grid.
@@ -217,6 +262,11 @@ lets you switch extensions off.
   `SolverSettings` API reads XLS42's models from both formats and solves them; models LibreOffice wrote open in XLS42).
 - Sheet menu: insert, delete, rename, move or copy (to a position, with a new name), tab colour, hide and show,
   protect workbook structure. Tab colours, hidden sheets and structure protection are saved in `.xlsx` and `.ods`.
+  Pending in-cell text is committed before inserting, renaming, moving, copying, duplicating or deleting a sheet.
+  Validation errors keep the draft open and block the operation. Save, PDF export and Print also commit pending input;
+  invalid input stays available for correction. Successful Revert discards the draft and resets obsolete selection;
+  a failed Revert preserves the workbook and draft. Renaming a sheet updates its formula references, names and
+  supported validation, conditional-format and internal-link references.
 - View › Split Window: two or four panes at the active cell, the left/top panes scroll on their own (freeze is turned
   off; Freeze Panes replaces a split). The split is saved per sheet and restored on open: `.xlsx` `sheetView/pane
   state="split"` with xSplit/ySplit in twips (headers included, as Excel measures), `topLeftCell` of both panes and the
@@ -234,12 +284,27 @@ lets you switch extensions off.
   `.xlsx` (cellStyleXfs/cellStyles, cells by xfId) and `.ods` (`style:style` of family table-cell in `office:styles` with
   `style:display-name`, cells' automatic styles with `style:parent-style-name`; Accent1 ↔ LibreOffice's "Accent 1",
   "Excel Built-in Good" from LibreOffice's .xlsx import ↔ Good). Styles read from files stay on the cells, unused
-  document styles are kept too.
-- Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas incl. ~490 function cases checked against
-  LibreOffice, formats, data tools, solver, file round trips) and `--uitest` (editing operations in a window; the
+  document styles are kept too. For numeric categories, Decimal places accepts 0–10 using the keyboard or stepper
+  and stays synchronized with the format code; custom format codes are not limited to ten decimal places.
+  Mixed border selections show a mixed state. Accepting unchanged settings keeps those edges; None removes all edges,
+  Outline applies outer edges and clears inner ones, and All applies both. Choosing a font/background colour enables
+  that colour; changing border colour or style restyles existing edges. Double borders render as two separate strokes
+  in the grid and PDF. Formatting changes support Undo/Redo.
+  ODS retains empty formatted/unlocked input cells, empty merged ranges, named-style overrides, named constants and
+  expressions, quoted-sheet print areas, and dashed/dotted borders.
+- Tests: `build/XLS42.app/Contents/MacOS/XLS42 --selftest` (formulas with fixed expected values,
+  formats, data tools, solver, file round trips) and `--uitest` (editing operations in a window; the
   clipboard is restored afterwards). `--feature-demo out.xlsx|ods` writes a file with the sheet features for checks in
   other apps, `--model-demo out.xlsx|ods` one with a Solver model, a split window, named cell styles and array formulas;
   `--info file` prints them (solver, split, styles, arrays) for any file.
+  `--convert input output.xlsx|ods|csv` chooses the output format; `--roundtrip input output` always writes XLSX.
+  `--lo-compare /absolute/output/directory [/path/to/soffice] [ods] [verbose]` is the optional LibreOffice comparison
+  described above. The directory must be absolute; the default executable is
+  `/Applications/LibreOffice.app/Contents/MacOS/soffice`. `ods` selects ODS instead of XLSX, and `verbose` prints every
+  comparison. This comparison is separate from `--selftest` and is not run by the CLI audit script.
+  `--export-pdf input.xlsx output.pdf [all] [landscape] [nogrid] [nofit]` uses the same print layout;
+  `all` selects visible sheets. `python3 scripts/audit-spreadsheets-cli.py --binary .build/debug/XLS42` checks real
+  XLSX/ODS/CSV conversions and PDF output; see the regression matrix below for its scope.
 
 ## DOC42 — documents (.docx, .doc, .rtf, .odt, .md, .txt)
 
@@ -247,12 +312,22 @@ lets you switch extensions off.
   lists, indents, line spacing, tables, images, signatures and stamps from the shared library, PDF export, word count.
 - Word styles (Heading 1, Title, docDefaults, theme fonts) and lists are resolved on open, so documents
   look as intended. Saving .docx uses our own writer, which keeps tables and images.
-- Opens and saves .docx, .rtf, .odt, .md, .txt (and .doc, HTML) keeping pictures, tables, lists (bulleted, numbered,
-  lettered), headings, page size, margins, header, footer and page numbers. Markdown: GitHub tables, nested lists,
-  code, links, strikethrough, pictures by relative path. Text: UTF-8/UTF-16/Windows-1251 detected and saved back as found.
+- Opens and saves .docx, .rtf, .odt, .md, .txt, .doc and HTML. DOCX preserves supported pictures, tables, lists,
+  styles and page settings; other formats retain only the features they support. Markdown: GitHub tables, nested lists,
+  code, links, strikethrough, pictures by relative path. TXT contains plain text. UTF-8/UTF-16/Windows-1251 are detected;
+  the original text encoding is retained when all characters fit, otherwise saving uses UTF-8.
 - Export: PDF (paginated A4/Letter), Word .docx/.doc, RTF, ODT, HTML, Markdown, text.
 - Real pages on screen (text flows across sheets), paper size, orientation, margins, header/footer, page numbers —
-  printed and exported exactly as shown. Table rows/columns insert/delete. Pictures and Word styles survive .docx round trips.
+  printing and PDF export use the document's page settings. Table rows/columns insert/delete.
+  Pictures and Word styles survive .docx round trips.
+- Horizontal and vertical rulers (View › Show/Hide Ruler, ⌥⌘R) follow page geometry and zoom. Drag the margin
+  boundaries in the horizontal ruler's middle band to change left/right page margins, or the vertical boundaries
+  for top/bottom margins. The upper triangle adjusts the first-line indent; lower triangles adjust left/right paragraph
+  indents in the active column or header/footer. Dragging the left indent carries the first line. Hold Option to bypass
+  the 0.25 cm snap. A click without dragging changes nothing; margin and paragraph changes support Undo/Redo.
+  Page margins apply to the corresponding section; the vertical ruler follows the visible page when the caret is offscreen.
+  Web layout keeps print settings intact and disables page-margin dragging; paragraph indents remain editable.
+  Page Setup rejects non-finite/negative measurements and settings that leave less than 36 pt per column or in height.
 - Footnotes (⌥⌘N): numbered automatically, shown at the bottom of their page, click to edit; read from and saved to .docx
   (footnotes.xml; endnotes are read as footnotes), .odt (text:note), Markdown `[^1]`, a "Notes" list in RTF/HTML/text.
 - Comments (⌥⌘M): highlighted text with cards in the margin (author, date, edit, resolve, delete); .docx comments.xml
@@ -270,16 +345,20 @@ lets you switch extensions off.
   sectPr / w:cols and read back (continuous breaks open a new page).
 - Dark mode: the window, rulers, comment and change cards follow the system; pages stay white paper with black text.
 - Table of contents from Title/Heading 1–3 with dot leaders, page numbers and links to the headings; Update rebuilds it
-  in place. Saved as a Word TOC field with bookmarks and hyperlinks.
+  in place. Run Update after changing margins or column width to recalculate its tab stops and page numbers.
+  Saved as a Word TOC field with bookmarks and hyperlinks.
 - Find bar across all pages with replace; Find and Replace dialog (⌥⌘F): match case, whole words, regular expressions,
   Replace / Replace All (undoable).
+- Clear Formatting resets selected text to Body appearance while preserving pictures, fields, table/list structure, links, comments,
+  tracked changes and section breaks. Character styles inherit parent styles, including underline. Formatting commands
+  supported in headers/footers target that editor; drop caps are available only in the body.
 - Links (⌘K: insert, edit, remove; saved in docx/odt/rtf/md/html), special characters, Paragraph dialog (indents, spacing,
   exact line height), Clone Formatting (⌥⌘C; double-click keeps it on), Statistics (document and selection).
 - Styles panel (⌘T or F11, also Format › Styles): paragraph styles (Body, Title, Heading 1–6, Quote, List, Caption,
   TOC 1–3, Footnote, custom) and character styles (Emphasis, Strong, Code, custom), each shown in its look; click to
   apply; New Style from Selection, Update Style to Match Selection, Modify Style (font, size, bold/italic/underline,
   colour, spacing, line spacing, indents, alignment, based on, next style), delete custom styles. A changed style
-  restyles every paragraph in it (and in styles based on it), keeping what was formatted by hand; undoable. Saved as
+  restyles body paragraphs in it (and in styles based on it), keeping what was formatted by hand; undoable. Saved as
   real styles: .docx styles.xml with w:pStyle/w:rStyle (run properties equal to the style are left to it), .odt
   named styles in styles.xml (paragraph styles); read back from Word, LibreOffice and DOC42 files.
 - Navigator (F5, side panel): headings as a tree (click to jump, drag a heading to move its chapter), tables, images,
@@ -303,7 +382,7 @@ lets you switch extensions off.
   rows), insert/delete rows and columns with merged cells, Sort (column, ascending/descending, numbers or text, heading
   row kept), Formula (=SUM(ABOVE), LEFT, AVERAGE, MIN, MAX, COUNT, PRODUCT; updates), Convert Text to Table (tabs,
   semicolons, commas, paragraphs) and Table to Text, AutoFormat presets, Tab moves between cells. Rows joined by a merged
-  cell are kept on one page. .docx: w:tblBorders/w:tcBorders, w:shd, w:gridSpan, w:vMerge, w:tblHeader, w:tblGrid
+  cell are kept on one page when the group fits on a page. .docx: w:tblBorders/w:tcBorders, w:shd, w:gridSpan, w:vMerge, w:tblHeader, w:tblGrid
   widths, w:tblCellMar; read back (the system reader drops spans and shading: DOC42 rebuilds the tables).
 - Pictures: click for handles (corners keep proportions; Shift frees them), drag a floating picture to move it; wrap in
   line, square, top and bottom, behind or in front of text (Format › Image › Wrap); anchored to the paragraph, placed on
@@ -316,8 +395,18 @@ lets you switch extensions off.
   words, strikethrough single/double; w:caps, w:smallCaps, w:dstrike, w:spacing, w:u, w:vertAlign, read back).
 - PDF export (File › Export as PDF…): page range, image quality, headings as PDF bookmarks, clickable links (web
   addresses, table of contents and other internal links), comments as notes, title and author in the PDF properties.
-- View: single page, book view (two pages), multiple pages, web layout (no pages); status bar with page X of Y, words
+  Invalid ranges or ranges containing no document page report an error. Oversized range endpoints are bounded to
+  actual pages. Saving/exporting commits pending header/footer edits; Revert discards pending edits and restores
+  document settings and styles from the saved file.
+- View: single page, book view (two pages), multiple pages, web layout (paper edges and headers/footers hidden;
+  explicit page/section breaks remain); the window subtitle shows page X of Y; status bar with words
   (of the selection), language, layout buttons and a zoom slider (View › Hide Status Bar; Hide All Panels hides it too).
+  Hide All Panels temporarily hides both rulers and comments without changing their saved visibility preferences;
+  restoring panels returns the previous state, and new windows retain the saved settings.
+- Command line: `--stats file`, `--dump file`, `--demo out.docx`, `--export in out.pdf|docx|doc|rtf|odt|html|txt|md`,
+  `--toc in out`, `--replace in out FIND REPLACEMENT [--case] [--words] [--regex]`,
+  `--pdf in out.pdf [--pages 1-2] [--quality 0.5] [--comments] [--no-bookmarks]`.
+  Known document extensions are routed directly to their reader, including in a headless process without registered UTIs.
 - Known limits: small caps are shown as capitals when the font has no small capitals (saved correctly); heading rows
   repeat on each page in Word/LibreOffice but not on DOC42's screen; .odt keeps paragraph styles but not character
   styles, list definitions, fields or rich headers (plain text there); page-relative positions of floating pictures from
@@ -337,7 +426,7 @@ lets you switch extensions off.
   the toolbar slides in at the top), slideshow (⇧⌘F, 3 s, Space pauses, Esc stops).
 - Panels (View menu, each with a check mark; state remembered): Markup Toolbar ⇧⌘A, Filmstrip ⌥⌘F (lazy cached
   thumbnails, click to jump), Info Panel ⌘I (file, dimensions, format, colour profile, camera, lens, exposure, ISO,
-  GPS with Show in Maps, all EXIF/IPTC/TIFF fields), Adjust Colour ⌥⌘C, Hide All Panels ⇧⌘\.
+  GPS with Show in Maps, all EXIF/IPTC/TIFF fields in a collapsible All Metadata section), Adjust Colour ⌥⌘C, Hide All Panels ⇧⌘\.
 - Toolbar like Preview's: Previous/Next · Zoom − 1:1 + · Highlight ▾ (colour) · Remove Background, Rotate · Markup ·
   Adjust · Info · Share · Search (Live Text: words are recognised with Vision and highlighted, Return goes to the next
   match; Edit › Copy Text in Image ⇧⌘C).
@@ -354,6 +443,7 @@ lets you switch extensions off.
   Adjust Colour; Adjust Size; Shape Style ▾ (width, dashed, arrowheads, shadow, loupe zoom); Border and Fill colour;
   Text Style ▾ (font, size, colour, bold/italic/underline, alignment); Image Description (alt text, saved in the metadata).
   Marks stay objects — select, move, resize with handles, restyle, ⌫ deletes — until the image is saved.
+  Save and Export include text still being edited. Revert to Saved discards pending text, and Undo restores it.
 - Smart Lasso: paint a wide stroke around the object's edge (24 pt on screen at any zoom); the selection snaps to the
   edge inside the stroke — colour edges across the band, a two-region fit and Vision's subject mask, joined into one
   closed path by dynamic programming. Then Crop / Delete / Copy / Invert as with any selection.
@@ -363,8 +453,13 @@ lets you switch extensions off.
 - Image: Rotate ⌘L / ⌘R and Flip — untouched JPEG/HEIC/PNG/TIFF files get a new orientation tag (no re-encoding, undoable);
   otherwise it becomes an edit. Adjust Size ⌥⌘R (pixels, %, cm, inches, resolution, keep proportions), Remove Background
   (Vision subject lifting), Image Description.
-- Files: Save ⌘S writes markup + adjustments in the original format (JPEG quality 0.92, EXIF/GPS kept, orientation reset),
-  asking once before replacing; Save As ⇧⌘S and Export ⇧⌘E (PNG, JPEG with quality, HEIC, TIFF, AVIF; size presets).
+  Switching size units preserves pixel dimensions. With Resample image off, changing resolution changes print size
+  without resizing pixels. DPI changes support Undo/Redo and are written on Save and Export. Invalid size or resolution
+  disables OK. Metadata-only saving attempts to preserve the encoded pixels, with ordinary image writing as a fallback.
+- Files: for a writable single still image, Save ⌘S writes markup + adjustments in the original format
+  (JPEG quality 0.92, EXIF/GPS kept, orientation reset), asking once before replacing. Pixel edits to animated,
+  multi-page or read-only inputs use Save As to export the displayed frame/page. Save As ⇧⌘S and Export ⇧⌘E offer
+  PNG, JPEG with quality, HEIC, TIFF and AVIF when supported, with size presets.
   Leaving an edited image asks Save / Don't Save / Cancel. Move to Trash ⌘⌫ (undo puts it back), Copy ⌘C (image or
   selection), Show in Finder ⇧⌘R, Open With, Share, Print (fit to page), Open Recent.
 - Command line (headless): `--info files…`, `--edit in out [--brightness N --contrast N … --look sepia --auto --demo-marks
@@ -402,7 +497,7 @@ lets you switch extensions off.
 - SmartArt: shown and edited as the shapes of its drawing part; unchanged or text-edited diagrams keep their parts
   (texts written into the drawing and the data model), moved ones too; Format › Convert to Shapes.
 - Master view (⌥⌘5): the master and every layout in the sidebar; placeholder position, size and text styles per
-  layout; Slide › Master Layouts: new, duplicate, rename, delete, insert placeholder. Saved to slideLayout parts and,
+  layout, including placeholder shadow, opacity and shape rounding; Slide › Master Layouts: new, duplicate, rename, delete, insert placeholder. Saved to slideLayout parts and,
   in ODP, to one master page per layout.
 - Review: Insert › Comment (⌥⌘M), comments pane in the inspector (reply, resolve, delete), markers on the slide;
   pptx comments with threads (modern threaded comments are read), odp annotations.
@@ -414,25 +509,52 @@ lets you switch extensions off.
 - Export: PDF (⌥⌘E), notes pages PDF, PNG/JPEG images, outline as RTF or Markdown, movie (.mp4 with slide timings,
   animation steps and cross-fades); printing of slides, handouts or notes pages. File › New from Template… (the six
   themes or a template file); Save As .potx/.otp.
+  Notes PDF and printed notes continue onto additional pages when the notes exceed one page; the on-screen Notes Page
+  view remains a preview of the first notes page. PDF and image export omit hidden slides unless explicitly included.
+  Movies contain rendered slide states and cross-fades without embedded audio/video playback; embedded videos remain
+  poster images. MP4 and MOV outputs use their respective containers. Failed movie exports preserve an existing destination.
 - Editing like Impress/Keynote: thumbnails sidebar, New Slide with a layout picker, canvas with zoom, handles to move /
   resize / rotate with snapping guides, align/distribute, arrange, group, copy/paste, drag & drop of images; text in
   place with the format bar (formatting while editing is its own undo step); tables; Inspector (⌥⌘I) with Slide,
   Shape, Text, Animation and Comments tabs; six built-in themes; Outline, Slide Sorter and Notes Page views; Find and
-  Replace; undo everywhere.
+  Replace. Find Next/Previous visits each occurrence in text, individual table cells and notes. Replace All can match
+  across formatting runs, preserves surrounding formatting, inherits the first matched character's formatting for the
+  replacement, and leaves dynamic fields intact. Individual replacement works in table cells; notes replacement updates
+  both the document and visible editor and supports Undo/Redo through the notes editor's text undo history.
+  Text formatting reaches nested groups and tables. Vertical alignment applies to the edited table cell or all text
+  containers of the selected object. Inserting/deleting table rows and columns transforms merged spans and retains
+  the content of a merged anchor while part of its span survives. Empty paragraphs retain their chosen formatting.
+  Inspector fill/line controls apply to grouped shapes and tables; table borders support colour, width and removal,
+  while unsupported dashed-table-border controls are disabled. Geometry inputs reject invalid/nonfinite values.
+  Group flip and Ungroup preserve reflected child geometry. Pasting between documents remaps embedded media names
+  so a destination image with the same filename cannot replace the pasted image. Undo/Redo restores objects, media
+  and selection together.
+  Pending in-place and outline text is included in the document's edited state. Save/export flushes outline typing
+  immediately; object commands commit in-place text first. An unchanged text edit creates no document Undo step.
+  Failed Revert preserves the visible draft; successful Revert discards it, cancels delayed outline updates and refreshes
+  the document views. Notes editors clear obsolete local Undo when switching slides; Revert resets notes and outline Undo.
 - Slide show: ⌥⌘P / ⇧⌘P, Present in Window; transitions, animations, media; click/→/Space next, ←/⌫ previous,
   number + Return jumps, B/W black/white screen, L laser pointer, P pen (E erases), G slide overview, C hides the
-  cursor, Esc ends; presenter view on a second display, or Rehearse (⌥⌘R) in a window.
-- Command line: `--info file` (objects, charts, media, animations, comments), `--export in out.pdf [--notes] | dir
-  [--jpeg --width N] | out.rtf | out.md | out.mp4 [--seconds 5]`, `--convert in.pptx out.odp|.potx|.otp` (and back),
-  `--demo out.pptx|odp` (a deck with every feature).
+  cursor, Esc ends; presenter view on a second display, or Rehearse (⌥⌘R) in a window. An automatic entrance group on
+  the first slide runs at show startup; later navigation cancels stale delayed animation requests.
+- Command line: `--info file` (objects, charts, media, animations, comments), `--export in out.pdf [--notes --hidden] | dir
+  [--jpeg --width N --hidden] | out.rtf | out.md | out.mp4|mov [--seconds 5 --width N --hidden]`,
+  `--convert in.pptx out.odp|.potx|.otp` (and back), `--demo out.pptx|odp` (a representative feature deck),
+  `--selftest` (file, layout and malformed-input regression fixtures). `python3 scripts/audit-presentations-cli.py
+  --binary .build/debug/PPT42` independently checks conversion, templates, PDF notes/visibility, images, failed outputs
+  and movie containers; use a packaged binary path to test that build.
 - UI checks: `K42_SNAPSHOT` with `K42_SLIDE=n`, `K42_VIEW=sorter|outline|notes|master`, `K42_SELECT=i,j`,
   `K42_INSPECTOR=slide|shape|text|animation|comments`, `K42_EDIT`, `K42_SHOW=1|window` (+`K42_SHOW_STEPS`,
   `K42_SHOW_KEYS`), `K42_PRESENTER=1`, `K42_LAYOUTS`, `K42_TEMPLATES`, `K42_DO="cmd;cmd"` (scripted commands such as
   chart:, anim:, comment:, media:, newlayout, see Snapshot.swift), `K42_SAVE=path`, `K42_PASTEBOARD=1` (private
-  pasteboard), `K42_CANVAS_PNG`. Test runs neither activate the app nor save the window frame.
+  pasteboard), `K42_CANVAS_PNG`. Test runs do not save the window frame. Snapshot runs request app activation before capture.
 - Not yet: SmartArt layout (shapes are not re-laid out when text is added; geometry changes save it as shapes),
   hatch and pattern fills (approximated), 3-D chart looks (drawn flat), wipe animations (fade), comment positions in
-  LibreOffice's legacy-comment import are approximate.
+  LibreOffice's legacy-comment import are approximate. Table borders do not support dash patterns; table text autofit
+  is not an inspector command. The Notes Page view previews the first page, while notes PDF/printing paginate all notes.
+  Bitmap rendering requires positive finite slide dimensions, a width and computed height of at most 16,384 pixels
+  each, and at most 64,000,000 pixels. ODP table expansion is limited to 100,000 cells per table; repeated-space counts
+  above 1,000,000 or invalid repeats/spans are rejected. These are explicit resource limits, not compatibility claims.
 
 ## SCN42 — scanning (replaces Image Capture)
 
@@ -455,7 +577,9 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   divided out; sharper text; adaptive B&W; border clean-up), photo auto-enhance.
 - Pages: thumbnails with drag-to-reorder, drop images/PDFs to insert, rotate ⌘L/⌘R, delete ⌘⌫, move ⌥⌘↑/↓, Rescan Page ⌥⌘B,
   Insert Next Scan After This Page, Split Document Here (rest goes to a new window), Enhance ⌥⌘E, colour per page,
-  Crop and Straighten Again, Remove Blank Pages; everything undoable.
+  Crop and Straighten Again, Remove Blank Pages. Rotation, reordering, deletion, rescan and image adjustments support Undo;
+  OCR does not. Dropping before the first thumbnail inserts at the start. Rescan replaces its selected page after
+  processing and cannot start while another scan or its image processing is still running.
 - Text: Recognize Text ⌥⌘R (Vision, Russian/English/Turkish + your languages): invisible text layer in PDFs (searchable,
   selectable), Copy Text ⇧⌘C, Export Text (.txt, .rtf).
 - Saving ⌘S: PDF (one file or one per page), PDF/A-style (XMP pdfaid 2B, sRGB output intent), multi-page TIFF (B&W as 1-bit
@@ -464,10 +588,13 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   counter `{n}`, first line of text `{title}`), folder (default ~/Documents/Scans), then open in PDF42, IMG42, Finder or the
   default app. Export… (any name/place/format), Share, Send by Mail, Print, **Copy** ⌥⌘P (scan and print N copies
   on the default printer).
+  Saving writes a snapshot: later scans, edits or OCR results remain unsaved. Close is blocked while scanning or image
+  processing is pending; after that, Close → Save closes only after a successful save with no remaining changes.
+  Each output file is replaced only after successful encoding; a multi-file export is not one atomic transaction.
 - History (⌥⌘3): saved scans with thumbnails; double-click opens, right-click reveals or removes.
 - Command line (headless, nothing scans for real): `--make-test-inputs dir` (skewed page on a grey glass with a shadow,
-  three photos on the glass, feeder pages: blank with noise, skewed, upside down, yellowed, sideways), `--process in out
-  [--crop --deskew --rotate --enhance --photo --gray --bw]`, `--pipeline dir|files… out.pdf [--ocr --remove-blank --compress
+  three photos on the glass, feeder pages: blank with noise, skewed, upside down, yellowed, sideways), `--process in out.png|out.jpg
+  [--crop --deskew --rotate --enhance --photo --gray --bw --dpi n]`, `--pipeline dir|files… out.pdf [--ocr --text out.txt|out.rtf --remove-blank --compress
   original|high|balanced|smallest --bw --gray --pdfa --format tiff|jpeg|png|heic]` (prints crop angle and box, deskew,
   rotation, ink, blank, OCR sample, sizes), `--detect-photos glass.png [outdir]`, `--fake-scan dir out.pdf [--feeder --duplex
   --photos --dpi n]`, `--list-devices [s]` (read-only discovery), `--name template`.
@@ -480,20 +607,164 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 
 ## Common
 
+- Signature and stamp generator (in the Signatures and Stamps popover of PDF42, DOC42, IMG42, PPT42 and XLS42).
+  **Create Signature…**: one or more names (one per line), a form — full name, initial and surname, surname,
+  initials and a scribble, capital and a scribble, or any — and three styles out of 240 (plan × flourish × how the
+  initial joins), New Variants (⌘R) for three more. Signatures are written by a kinematic model of a fast hand with
+  a ballpoint pen: hand-drawn centre lines for Latin, Cyrillic and Turkish letters, a smooth spline without stops,
+  speed from curvature (two-thirds power law) setting line width and ink, flying starts and finishes.
+  **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,
+  USA and Canada, Hong Kong and Taiwan — including the company chop with a signature line and the small round
+  chop —, mainland China, Japan, Korea, India, Middle East, Latin America, office stamps, date and registration
+  stamps, personal stamps); every text is editable, an empty date means today. Generic designs only: no state
+  emblems and no notary, court, customs, police or prescription seals. Ink: blue, violet, black, red, green or any
+  colour. **Add to Library…** also imports your own stamp (SVG, PDF, PNG, JPEG, HEIC, TIFF) either as a stamp or as a
+  fixed picture.
+  Generated and imported stamps are saved as a recipe, so **every insertion is a new impression**: the same
+  signature or stamp with different pen pressure and ink shade, slightly different size, slant and angle (signatures
+  ±2°; round stamps 2–8°, rectangular 0.3–2°), uneven pad pressure, grain, skips and sometimes a faint double
+  strike. `PDF42 --mark-samples DIR` writes a sample sheet of every form, style and an imported SVG.
 - Interface language (English, Russian, Turkish) is chosen on the welcome screen and shared by all apps; system panels
   (Print, Save, toolbar items) follow it too.
 - Any panel can be hidden: View › Hide All Panels (⇧⌘\\) leaves only the document; View › Show Toolbar (⌥⌘T),
-  Show Toolbar Labels (icons only makes the toolbar half as tall) and each app's own bars. In full screen (⌃⌘F) the
+  Show Toolbar Labels (icons only makes the toolbar half as tall) and each app's own bars. Default toolbars carry
+  frequent actions only; View › Customize Toolbar offers the rest (for example DOC42's Footnote, Track Changes, Zoom,
+  Print and Export as PDF, SCN42's Overview, Delete and Enhance). In full screen (⌃⌘F) the
   bars slide in only when the pointer reaches the top edge.
-- Autosave every 30 s to a backup location: documents survive a crash.
+- PDF42, DOC42, XLS42 and PPT42 use AppKit autosave with a 30-second delay to a backup location. This does not save
+  every keystroke immediately. IMG42 edits and unsaved SCN42 scans remain in memory until saved.
+- File › Open Recent refreshes from the app's document history when opened; Clear Menu is disabled for an empty list.
+  IMG42 routes opening through its image controller. SCN42 opens recent saved scans in the system's default app;
+  File › Open imports pages into a scan document.
 - Dark mode everywhere; `K42_APPEARANCE=dark` (or `light`) forces it for one run, e.g. with `K42_SNAPSHOT`.
 - `scripts/check_strings.py` — finds UI strings without a Russian/Turkish translation.
-- Distribution to other Macs: `DEVELOPER_ID="Developer ID Application: …" ./scripts/sign_and_notarize.sh`
-  (needs an Apple Developer account; see the script header).
+- Distribution to other Macs: `DEVELOPER_ID="Developer ID Application: …" ./scripts/sign_and_notarize.sh PDF42 DOC42 XLS42 IMG42 PPT42 SCN42`
+  (needs an Apple Developer account and stored notarization credentials; see the script header).
+  Pass the app names explicitly: the script's current no-argument fallback forms one combined name and is not usable.
 
-## Not implemented
+## Known limitations
 
 - GOST signatures (needs CryptoPro CSP), tracked formatting changes in DOC42, saving to legacy .xls, Excel 5.0/95 files.
+- XLS42 implements a subset of Excel/LibreOffice behavior; the function list and passing fixtures do not establish
+  full format or calculation compatibility. Richer pivot tables refresh in its simpler one-pivot-per-sheet layout.
+  CSV retains one sheet's computed values and automatically detects numeric/date fields on import, so it cannot
+  preserve workbook types, formulas or formatting.
+- XLS42's 100,000-cell edit limit applies per checked operation, not per workbook. Formula operations requiring a
+  dense matrix are limited to 2,000,000 cells and return `#NUM!` when that allocation would be exceeded; unsupported
+  spill size/placement returns `#SPILL!`. Sparse aggregates can inspect larger references without allocating blank
+  positions. Bounded statistical/financial loops reject workloads over 1,000,000 iterations with `#NUM!`.
+  ODS import rejects invalid repeat/span dimensions and expansion beyond 1,000,000 materialized cells across a
+  workbook, instead of silently clipping repeated content. Large empty repeated regions remain sparse.
+  CSV export rejects a rectangle larger than 2,000,000 positions from A1 to the last used cell, including intervening
+  blanks; a single far-away cell can therefore exceed the export limit even in a sparse workbook.
+- IMG42 and SCN42 have no document recovery autosave. Image codec support depends on the Mac; pixel edits to animated,
+  multi-page or read-only inputs export the displayed frame/page through Save As. AVIF export is offered only when supported.
+- PDF/A export has not been checked with a conformance validator in this audit; see each app's format notes above.
+- The audit's scanner tests use a virtual source. Physical scanners, Continuity Camera and the minimum supported macOS
+  version were not validated in this run. More detailed coverage is in [STATUS.md](STATUS.md).
+
+## Regression checks
+
+Run these commands from the repository root after installing the Xcode Command Line Tools and Python 3.
+The document CLI check also needs Poppler's `pdfinfo` and `pdftotext` on PATH. The spreadsheet CLI check uses them for
+PDF checks and records an explicit SKIP when either is missing. The checks use generated fixtures,
+do not need a physical scanner or XCTest, and do not open interactive windows:
+
+```bash
+swift build
+.build/debug/PDF42 --selftest
+.build/debug/XLS42 --selftest
+.build/debug/PPT42 --selftest
+.build/debug/SCN42 --selftest
+python3 scripts/audit-media-previews.py
+python3 scripts/audit-documents-video.py
+python3 scripts/audit-documents-cli.py
+python3 scripts/audit-spreadsheets-cli.py --binary .build/debug/XLS42
+python3 scripts/audit-presentations-cli.py --binary .build/debug/PPT42
+swiftc -module-cache-path .build/ModuleCache Sources/Kit42/Zip.swift Sources/Kit42/TextDecoding.swift \
+  scripts/audit-documents-regressions.swift -o .build/audit-documents-regressions
+.build/audit-documents-regressions
+python3 scripts/check_strings.py
+```
+
+These cover malformed PDF/ZIP input, attachment extraction, spreadsheet references and numeric precision,
+text encodings, CSV/ODS previews, scan save state, and preservation of existing files when exports fail.
+The document CLI check verifies DOCX round trips and PDF text. The spreadsheet CLI check writes its fixtures,
+converted files, PDFs, command log and `result.json` to `build/xls-cli-audit` (`--output-dir` changes that path).
+It accepts `--binary build/XLS42.app/Contents/MacOS/XLS42` for testing a packaged bundle and `--skip-pdf` for an
+explicitly limited run. The presentation CLI runner writes corresponding artifacts and `result.json` to
+`build/ppt-cli-audit`; it accepts `--binary build/PPT42.app/Contents/MacOS/PPT42`, `--output-dir`, `--skip-pdf` and
+`--skip-movie`. PDF checks require Poppler and report explicit SKIP results when unavailable; an explicitly skipped
+movie check also remains visible in the report. Movie checks exercise successful creation and replacement.
+
+XLS42's regression scenarios are listed below as coverage, not as a claim that every scenario has passed on the
+current binary. Actual run results belong in [STATUS.md](STATUS.md); none establishes complete Excel compatibility.
+
+| Common workflow | Regression coverage | Boundary of the check |
+|---|---|---|
+| Enter and navigate cells | Native editing: selection traversal, validation rejection/correction, pending draft, Undo/Redo | Native actions/event dispatch, not physical keyboard or IME testing |
+| Copy, paste and fill | Internal/external quoted text, Paste Special, Skip blanks, protected cells, partial/full legacy arrays, fill directions and date/growth series | Listed operations and fixtures; rejected writes must leave cells/undo history unchanged |
+| Format a selected table | Native Format Cells controls, mixed borders, None/Outline/All, colours, wrap, Autofit, Undo/Redo and border file round trips | Representative controls/fixtures; screenshots alone do not prove behavior |
+| Save and reopen | Pending edits, validation failure, successful/failed Revert; XLSX→ODS→XLSX values, empty input styles, borders, merges, names, panes and visibility | Generated fixtures; unsupported third-party workbook features are not certified |
+| Exchange CSV/TSV | Unicode, delimiter/quote escaping, embedded CR/LF, equals-prefixed literal text, displayed 1904 dates | CSV types and workbook formatting are inherently unavailable |
+| Recalculate ordinary formulas | Existing function cases plus bounds, sparse aggregates, blank range tails, named ranges, reference changes, error propagation and spill collisions | Formula subset; historical LibreOffice comparisons are separate and optional |
+| Use dates and number formats | 1900/1904 entry, functions, file round trips, Find/Series, CSV/PDF, scientific and elapsed-time formats | Targeted dates/formats, not every locale or custom format code |
+| Rename and restructure sheets | Native rename/reference cases plus existing sheet, row/column and data-tool tests | Supported metadata and formulas; not every external-link format |
+| Print or export PDF | Current sheet/selection/visible workbook, print area, landscape, wide fit, oversized frozen titles and extracted PDF text | Native layout plus CLI PDFs; no physical printer validation |
+| Open malformed or oversized data | Invalid XML indices/repeats/spans, worksheet limits, dense allocation and expensive numeric arguments | Explicit fixtures and resource limits, not an exhaustive fuzzing campaign |
+
+PPT42's scenarios define the scope of its regression suites. Run results, binary identity and installation state are
+recorded in [STATUS.md](STATUS.md); a passing fixture does not establish a usage percentage or full PowerPoint/Impress
+compatibility.
+
+| Common presentation workflow | Regression coverage | Boundary of the check |
+|---|---|---|
+| Move, resize and arrange objects | Native canvas mouse events, selection, snapping/rotation, stack order, align/distribute, Group/Ungroup and Undo/Redo | Generated objects and native event dispatch; not physical device testing |
+| Format text and shapes | Selected text Undo/Redo, empty paragraphs, nested-group formatting, inspector geometry/fill/line controls, master appearance and rendered border/fill pixels | Representative controls; unsupported table dash/autofit controls stay disabled |
+| Find and replace | Every occurrence, cross-run text, table cells, notes, dynamic fields, formatting preservation and Undo/Redo | Supported text model; no guarantee for unsupported imported document parts |
+| Edit tables | Cell alignment, insert/delete through merged rows/columns, spans, retained anchor text, Undo/Redo and formatting round trips | Supported rectangular table model; no full PowerPoint table-style parity claim |
+| Copy between presentations | Object/slide paste, media filename collisions, pending text, Undo/Redo and restored selection | Generated image/media fixtures, not every embedded object format |
+| Save and reopen | In-place/outline drafts, notes Undo after slide changes, successful/failed Revert, PPTX↔ODP and POTX/OTP templates, notes/text whitespace, visibility and styles | Generated files; external Office/LibreOffice interoperability is a separate check |
+| Export and print | Visible/hidden PDF scope, complete multi-page notes, image dimensions, output preservation on failure, MP4/MOV containers | Exported artifacts and PDF text; no physical printer or embedded-media movie playback testing |
+| Present slides | First automatic build, click builds, hidden-slide navigation, black screen and Previous/End | Native show controller; multiple physical displays, external media and timing under load remain separate checks |
+| Reject oversized or malformed input | Bitmap dimensions, ODP repeats/spans, empty/corrupt structures and explicit failures | Resource limits and chosen fixtures, not exhaustive fuzzing |
+
+These checks still use macOS frameworks: restrictive execution sandboxes can block AppKit or the video encoder even
+without visible windows. Run them in a normal logged-in macOS session when those services are required.
+
+Native interface checks require a logged-in macOS desktop and access to WindowServer:
+
+```bash
+swift build
+python3 scripts/audit-ui.py
+# Optional: only the behavioral checks, or screenshots for one app.
+python3 scripts/audit-ui.py --mode tests
+python3 scripts/audit-ui.py --mode tests --app IMG42
+python3 scripts/audit-ui.py --mode tests --app SCN42
+python3 scripts/audit-ui.py --app DOC42
+python3 scripts/audit-ui.py --app XLS42
+python3 scripts/audit-ui.py --app PPT42
+python3 scripts/audit-ui.py --mode screenshots --app PDF42
+```
+
+The runner creates separate test app bundles in `build/ui-audit/apps`. Separate bundle identifiers isolate
+app-specific preferences; the suite-wide interface language remains shared. Test windows may activate the app.
+Logs and screenshots go to `build/ui-audit`. It checks recent-file menus,
+spreadsheet selection and formatting, document panels, note replacement, image resizing/DPI and undo,
+and scanner page ordering, rescan and close/save behavior. Scanner checks use generated images.
+XLS42 adds editing/protection/array checks, native Format Cells controls, row Autofit Undo/Redo, pending-edit and
+Revert lifecycle, sheet-reference changes, sparse conditional formatting and actual PDF scope/layout assertions.
+PPT42 adds canvas manipulation, media-safe copy/paste, text/Find/table commands, document lifecycle, inspector
+controls with rendered fill/border checks, and slideshow navigation/builds.
+DOC42 checks dispatch native mouse events for ruler drags at 25–200% zoom, exercise section/column/header targeting,
+and check repeated Undo/Redo, formatting, Find/Replace, tables, comments, picture resize, page geometry, pending header
+edits, Revert, format round trips and PDF page ranges. Complex documents are checked for complete text/glyph coverage
+after changes to view modes, columns and font size; export isolation and dynamic field widths are also exercised.
+Fixtures use disposable documents. These checks exercise native
+actions and event dispatch; they do not replace testing physical input devices or every third-party document.
+Screenshots cover all six apps in light and dark appearances at different window sizes.
+DOC42 additionally captures book, columns and web layouts.
+The snapshots render AppKit views; native material layers may require checking the live window as well.
 
 ## Structure
 
@@ -506,6 +777,8 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 - `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42`, `Sources/SCN42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
+- `STATUS.md` — dated audit results, local build/publication state and unverified areas.
+- `AGENTS.md` — repository rules, including owner-only Git authorship and documentation upkeep.
 
 ## License
 

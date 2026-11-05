@@ -4,6 +4,7 @@ import Kit42
 /// `XLS42 --uitest`: drives a real window through the controller and checks the results.
 enum UITest {
     static func run() {
+        setbuf(stdout, nil)
         let doc = SheetDocument()
         NSDocumentController.shared.addDocument(doc)
         doc.makeWindowControllers()
@@ -11,7 +12,7 @@ enum UITest {
         guard let w = doc.editor else { print("FAIL no window"); exit(1) }
         doc.undoManager?.groupsByEvent = false   // one undo step per change, as with separate user actions
         // The tests copy and paste: keep the user's clipboard and put it back afterwards.
-        let pasteboard = NSPasteboard.general
+        let pasteboard = SheetWindowController.pasteboard
         let savedClipboard: [[(NSPasteboard.PasteboardType, Data)]] = (pasteboard.pasteboardItems ?? []).map { item in
             item.types.compactMap { t in item.data(forType: t).map { (t, $0) } }
         }
@@ -75,9 +76,10 @@ enum UITest {
         select("A5", to: "C5"); w.mergeAction(nil)
         check("merge", w.sheet.merges.contains(CellRange(CellRef("A5")!, CellRef("C5")!)))
 
+        let sourceSheet = w.sheet.name.replacingOccurrences(of: "'", with: "''")
         w.addSheet(nil)
-        w.setInput("=Лист1!A3*2", at: CellRef("A1")!)
-        check("cross-sheet ref (new sheet)", cell("A1").value == .number(60) || cell("A1").value == .error("#REF!"), "\(cell("A1").value)")
+        w.setInput("='\(sourceSheet)'!A3*2", at: CellRef("A1")!)
+        check("cross-sheet ref (new sheet)", cell("A1").value == .number(60), "\(cell("A1").value)")
 
         w.selectSheet(0)
         // Fill handle: series and text increments
@@ -125,6 +127,10 @@ enum UITest {
         failed += features(w, doc)
         failed += data(w, doc)
         failed += filesAndArrays(w, doc)
+        failed += interactions(w, doc)
+        failed += deepEditing(w, doc)
+        failed += deepCommon(w, doc)
+        failed += deepSheetReferences(w, doc)
         restoreClipboard()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         exit(failed == 0 ? 0 : 1)

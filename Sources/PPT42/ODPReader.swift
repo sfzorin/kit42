@@ -22,13 +22,23 @@ func odfPoints(_ s: String?) -> CGFloat? {
         factor = f
         break
     }
-    guard let v = Double(s) else { return nil }
+    guard let v = Double(s), v.isFinite, (CGFloat(v) * factor).isFinite else { return nil }
     return CGFloat(v) * factor
 }
 
 private func percent(_ s: String?) -> CGFloat? {
     guard let s, s.hasSuffix("%"), let v = Double(s.dropLast()) else { return nil }
     return CGFloat(v) / 100
+}
+
+private func odfBreakCharacter(_ element: XMLElement, ordinary: String) -> String {
+    switch element.a("character") {
+    case "cr": return "\r"
+    case "lf": return "\n"
+    case "crlf": return "\r\n"
+    case "ls": return "\u{2028}"
+    default: return ordinary
+    }
 }
 
 private func hexColor(_ s: String?) -> PColor? {
@@ -87,8 +97,10 @@ private struct ODPReaderImpl {
     init(zip: ZipArchive) { self.zip = zip }
 
     mutating func read() throws -> Deck {
-        guard let content = xmlRoot(zip["content.xml"]) else { throw DeckError.invalid(L("The file is damaged")) }
+        guard let content = xmlRoot(zip["content.xml"]), content.child("body")?.child("presentation") != nil else { throw DeckError.invalid(L("The file is damaged")) }
+        try validateContent(content)
         let stylesRoot = xmlRoot(zip["styles.xml"])
+        if let stylesRoot { try validateContent(stylesRoot) }
         deck = Deck.makeDefault()
         deck.slides = []
         if let s = stylesRoot {
@@ -141,6 +153,40 @@ private struct ODPReaderImpl {
         for page in pages { deck.slides.append(readPage(page)) }
         if deck.slides.isEmpty { deck.slides = [deck.newSlide(layout: 0)] }
         return deck
+    }
+
+    /// Reject invalid/unbounded expansion before constructing table matrices or repeated text.
+    private func validateContent(_ root: XMLElement) throws {
+        func count(_ element: XMLElement, _ attribute: String, maximum: Int = 100_000) throws -> Int {
+            guard let raw = element.a(attribute) else { return 1 }
+            guard let value = Int(raw), (1...maximum).contains(value) else { throw DeckError.invalid(L("The file is damaged")) }
+            return value
+        }
+        for space in root.descendants("s") { _ = try count(space, "c", maximum: 1_000_000) }
+        for layout in root.descendants("page-layout-properties") {
+            for key in ["page-width", "page-height"] where layout.a(key) != nil {
+                guard let size = odfPoints(layout.a(key)), size > 0, size <= 14_400 else { throw DeckError.invalid(L("The file is damaged")) }
+            }
+        }
+        for table in root.descendants("table") {
+            var columns = 0, rows = 0, rowWidth = 0
+            for column in table.descendants("table-column") {
+                columns += try count(column, "number-columns-repeated")
+                guard columns <= 100_000 else { throw DeckError.invalid(L("The file is damaged")) }
+            }
+            for row in table.descendants("table-row") {
+                rows += try count(row, "number-rows-repeated")
+                var width = 0
+                for cell in row.elements where cell.localName == "table-cell" || cell.localName == "covered-table-cell" {
+                    width += try count(cell, "number-columns-repeated")
+                    _ = try count(cell, "number-columns-spanned")
+                    _ = try count(cell, "number-rows-spanned")
+                    guard width <= 100_000 else { throw DeckError.invalid(L("The file is damaged")) }
+                }
+                rowWidth = max(rowWidth, width)
+                guard rows <= 100_000, rows <= 100_000 / max(1, max(columns, rowWidth)) else { throw DeckError.invalid(L("The file is damaged")) }
+            }
+        }
     }
 
     /// A master page's background: its drawing-page style, else the "<master>-background" presentation style (LibreOffice templates).
@@ -402,7 +448,7 @@ private struct ODPReaderImpl {
     func readNotes(_ notes: XMLElement) -> String {
         for f in notes.descendants("frame") where f.a("class") == "notes" {
             guard let box = f.child("text-box") else { continue }
-            return plainText(box).trimmingCharacters(in: .whitespacesAndNewlines)
+            return plainText(box)
         }
         return ""
     }
@@ -415,7 +461,7 @@ private struct ODPReaderImpl {
             switch el.localName {
             case "s": return String(repeating: " ", count: el.int("c") ?? 1)
             case "tab": return "\t"
-            case "line-break": return "\n"
+            case "line-break": return odfBreakCharacter(el, ordinary: "\n")
             default: return (el.children ?? []).map(inline).joined()
             }
         }
@@ -724,14 +770,14 @@ private struct ODPReaderImpl {
                     // OOXML presets: modifiers are adj, adj1, adj2… in order.
                     let vals = mods.split(separator: " ").compactMap { Double($0) }
                     let names = vals.count == 1 ? ["adj"] : (1...max(1, vals.count)).map { "adj\($0)" }
-                    for (n, v) in Swift.zip(names, vals) where Shapes.defaults[String(type.dropFirst(6))] != nil { o.adjust[n] = Int(v) }
+                    for (n, v) in Swift.zip(names, vals) where Shapes.defaults[String(type.dropFirst(6))] != nil { o.adjust[n] = Int(exactly: v.rounded(.towardZero)) }
                 }
                 if let ours = geo.a("prst") { o.geometry = ours }
                 else if type.hasPrefix("ooxml-") { o.geometry = String(type.dropFirst(6)) }
                 else { o.geometry = Self.prstByType[type] ?? "rect" }
                 if let mods = geo.a("modifiers"), type.hasPrefix("ooxml-"), let def = PresetDef.all[o.geometry] {
                     let vals = mods.split(separator: " ").compactMap { Double($0) }
-                    for (n, v) in Swift.zip(def.adjNames, vals) { o.adjust[n] = Int(v) }
+                    for (n, v) in Swift.zip(def.adjNames, vals) { o.adjust[n] = Int(exactly: v.rounded(.towardZero)) }
                 }
                 // Our own custom outlines, and shapes LibreOffice has no preset for: the literal path.
                 if o.geometry == "custom" || (Self.prstByType[type] == nil && !type.hasPrefix("ooxml-")) || type == "non-primitive" {
@@ -903,8 +949,12 @@ private struct ODPReaderImpl {
                 columnCellStyles.append(c.a("default-cell-style-name"))
             }
         }
-        let rows = tbl.descendants("table-row")
-        let cols = max(widths.count, rows.map { $0.elements.filter { $0.localName == "table-cell" || $0.localName == "covered-table-cell" }.count }.max() ?? 1)
+        let rows = tbl.descendants("table-row").flatMap { Array(repeating: $0, count: $0.int("number-rows-repeated") ?? 1) }
+        func cells(_ row: XMLElement) -> [XMLElement] {
+            row.elements.filter { $0.localName == "table-cell" || $0.localName == "covered-table-cell" }
+                .flatMap { Array(repeating: $0, count: $0.int("number-columns-repeated") ?? 1) }
+        }
+        let cols = max(widths.count, rows.map { cells($0).count }.max() ?? 1)
         while widths.count < cols { widths.append(0) }
         let known = widths.filter { $0 > 0 }.reduce(0, +)
         let missing = widths.filter { $0 <= 0 }.count
@@ -918,14 +968,14 @@ private struct ODPReaderImpl {
         for (ri, tr) in rows.enumerated() {
             t.rows[ri] = odfPoints(props(tr.a("style-name"), "table-row")["row-height"] ?? props(tr.a("style-name"), "table-row")["min-row-height"]) ?? 28
             var ci = 0
-            for c in tr.elements where c.localName == "table-cell" || c.localName == "covered-table-cell" {
+            for c in cells(tr) {
                 guard ci < t.columns.count else { break }
                 var cell = TableCell()
                 if c.localName == "covered-table-cell" {
                     cell.merged = true
                 } else {
-                    cell.gridSpan = c.int("number-columns-spanned") ?? 1
-                    cell.rowSpan = c.int("number-rows-spanned") ?? 1
+                    cell.gridSpan = min(t.columns.count - ci, c.int("number-columns-spanned") ?? 1)
+                    cell.rowSpan = min(t.rows.count - ri, c.int("number-rows-spanned") ?? 1)
                     let sn = c.a("style-name") ?? tr.a("default-cell-style-name") ?? (columnCellStyles.indices.contains(ci) ? columnCellStyles[ci] : nil)
                     var g = props(sn, "graphic")
                     g.merge(props(sn, "table-cell")) { a, _ in a }
@@ -1113,7 +1163,7 @@ private struct ODPReaderImpl {
                 for c in el.children ?? [] { inline(c, own, link: href) }
             case "s": add(String(repeating: " ", count: max(1, el.int("c") ?? 1)), rp, link: link)
             case "tab": add("\t", rp, link: link)
-            case "line-break": add("\u{0B}", rp, link: link)
+            case "line-break": add(odfBreakCharacter(el, ordinary: "\u{0B}"), rp, link: link)
             case "page-number": add(el.stringValue ?? "", rp, field: "slidenum")
             case "date", "time": add(el.stringValue ?? "", rp, field: "datetime")
             case "note", "annotation", "bookmark", "bookmark-start", "bookmark-end", "soft-page-break": break

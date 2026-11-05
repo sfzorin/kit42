@@ -35,11 +35,12 @@ final class SheetPrintView: NSView {
     private func ranges() -> [(Int, CellRange)] {
         switch options.scope {
         case .selection:
-            guard let selection else { return [] }
+            guard let selection, workbook.sheets.indices.contains(activeSheet) else { return [] }
             return [(activeSheet, selection)]
         case .workbook:
-            return workbook.sheets.indices.compactMap { i in (workbook.sheets[i].printArea ?? workbook.sheets[i].usedRange).map { (i, $0) } }
+            return workbook.sheets.indices.filter { !workbook.sheets[$0].hidden }.compactMap { i in (workbook.sheets[i].printArea ?? workbook.sheets[i].usedRange).map { (i, $0) } }
         case .sheet:
+            guard workbook.sheets.indices.contains(activeSheet) else { return [] }
             let s = workbook.sheets[activeSheet]
             return (s.printArea ?? s.usedRange).map { [(activeSheet, $0)] } ?? []
         }
@@ -68,10 +69,12 @@ final class SheetPrintView: NSView {
             var grid = makeGrid(sheet, index: i, range: range, zoom: 0.75)
             let width = grid.x(range.end.col + 1) - grid.x(range.start.col)
             if options.fitWidth, width > slot.width {
-                grid = makeGrid(sheet, index: i, range: range, zoom: max(0.2, 0.75 * slot.width / width))
+                grid = makeGrid(sheet, index: i, range: range, zoom: 0.75 * slot.width / width)
             }
             // Title rows: frozen rows above the printed block repeat on every page.
-            let titleRows = options.repeatTitles ? min(sheet.frozenRows, range.start.row + (range.rows.count > sheet.frozenRows ? sheet.frozenRows : 0)) : 0
+            var titleRows = options.repeatTitles ? min(sheet.frozenRows, range.start.row + (range.rows.count > sheet.frozenRows ? sheet.frozenRows : 0)) : 0
+            // Oversized frozen regions must not consume the entire body on every page.
+            if titleRows > 0, grid.y(titleRows) >= body * 0.8 { titleRows = 0 }
             let titleHeight = titleRows > 0 ? grid.y(titleRows) : 0
             let firstBodyRow = titleRows > 0 ? max(range.start.row, titleRows) : range.start.row
 
@@ -86,7 +89,7 @@ final class SheetPrintView: NSView {
                 }
                 return out
             }
-            let cols = breaks(range.start.col, range.end.col, grid.x, slot.width)
+            let cols = options.fitWidth ? [(grid.x(range.start.col), grid.x(range.end.col + 1))] : breaks(range.start.col, range.end.col, grid.x, slot.width)
             let rows = firstBodyRow <= range.end.row ? breaks(firstBodyRow, range.end.row, grid.y, body - titleHeight) : [(grid.y(firstBodyRow), grid.y(firstBodyRow))]
             for c in cols {
                 for r in rows {

@@ -1,195 +1,264 @@
 import AppKit
 import Kit42
 
-/// Word/Writer-style ruler above the pages: page margins (grey) and the text area (white) in centimetres,
-/// counted from the left margin. Dragging a margin edge changes the page margins; the triangles are the
-/// current paragraph's first-line, left and right indents.
+/// Page margins and paragraph indents in centimetres. Margin boundaries have a separate
+/// central hit area, so zero paragraph indents cannot cover them. One drag is one undoable edit.
 final class DocRuler: NSView {
-    static let height: CGFloat = 24
+    enum Orientation { case horizontal, vertical }
+    static let height: CGFloat = 30
     static let cm: CGFloat = 28.3465
-
+    let orientation: Orientation
     weak var paged: PagedView?
-    /// Character index of the cursor: the ruler follows its page.
+    weak var headerTextView: NSTextView?
     var location = 0
-    /// Current margins and paragraph indents.
     var setup = PageSetup() { didSet { needsDisplay = true } }
     var paragraph: NSParagraphStyle = .default { didSet { needsDisplay = true } }
-    var onMargins: ((CGFloat, CGFloat) -> Void)?
+    var onMargins: ((CGFloat, CGFloat, Int) -> Void)?
+    var onVerticalMargins: ((CGFloat, CGFloat, Int) -> Void)?
     var onIndents: ((_ firstLine: CGFloat, _ head: CGFloat, _ tail: CGFloat) -> Void)?
 
-    private enum Handle { case leftMargin, rightMargin, firstLine, head, tail }
-    private var dragging: Handle?
-    private var dragValue: CGFloat = 0   // points, in the handle's own terms
-
+    private enum Handle { case leadingMargin, trailingMargin, firstLine, head, tail }
+    private struct Geometry {
+        let origin: CGFloat
+        let scale: CGFloat
+        let setup: PageSetup
+        let location: Int
+        let column: Int
+        let headerWidth: CGFloat?
+    }
+    private struct Drag {
+        let handle: Handle
+        let geometry: Geometry
+        let paragraph: NSParagraphStyle
+        let pointer: CGFloat
+        let original: CGFloat
+        var value: CGFloat
+        var moved = false
+    }
+    private var drag: Drag?
+    private var horizontal: Bool { orientation == .horizontal }
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: Self.height) }
-
-    /// Page left edge (x in the ruler) and points → ruler pixels.
-    private var geometry: (x: CGFloat, scale: CGFloat)? {
-        guard let paged, let card = paged.card(at: location) ?? paged.cards.first else { return nil }
-        let left = convert(NSPoint(x: card.frame.minX, y: 0), from: paged).x
-        let right = convert(NSPoint(x: card.frame.maxX, y: 0), from: paged).x
-        guard card.frame.width > 0 else { return nil }
-        return (left, (right - left) / card.frame.width)
+    override var intrinsicContentSize: NSSize {
+        horizontal ? NSSize(width: NSView.noIntrinsicMetric, height: Self.height)
+            : NSSize(width: Self.height, height: NSView.noIntrinsicMetric)
     }
 
-    private func margins() -> (left: CGFloat, right: CGFloat) {
-        var l = setup.margins.left, r = setup.margins.right
-        if dragging == .leftMargin { l = dragValue }
-        if dragging == .rightMargin { r = dragValue }
-        return (l, r)
+    init(orientation: Orientation = .horizontal) {
+        self.orientation = orientation
+        super.init(frame: .zero)
+        toolTip = horizontal
+            ? L("Drag margin boundaries in the middle of the ruler; triangles adjust paragraph indents. Hold Option for precise adjustment.")
+            : L("Drag the top and bottom margin boundaries. Hold Option for precise adjustment.")
+    }
+    required init?(coder: NSCoder) { fatalError("not supported") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private func axis(_ point: NSPoint) -> CGFloat { horizontal ? point.x : point.y }
+    private func rect(_ start: CGFloat, _ length: CGFloat, across: CGFloat, thickness: CGFloat) -> NSRect {
+        horizontal ? NSRect(x: start, y: across, width: length, height: thickness)
+            : NSRect(x: across, y: start, width: thickness, height: length)
     }
 
-    private func indents() -> (first: CGFloat, head: CGFloat, tail: CGFloat) {
-        var f = paragraph.firstLineHeadIndent, h = paragraph.headIndent
-        // Tail: ≤ 0 counts from the right margin, > 0 from the left one.
-        let width = setup.size.width - margins().left - margins().right
-        var t = paragraph.tailIndent <= 0 ? width + paragraph.tailIndent : paragraph.tailIndent
-        switch dragging {
-        case .firstLine: f = dragValue
-        case .head:
-            f += dragValue - h   // the left indent carries the first line along, as in Word
-            h = dragValue
-        case .tail: t = dragValue
+    private var geometry: Geometry? {
+        if let drag { return drag.geometry }
+        guard let paged, var card = (headerTextView?.superview as? PageCard) ?? paged.card(at: location) ?? paged.cards.first else { return nil }
+        var at = location
+        if headerTextView != nil, let container = card.textViews.first?.textContainer {
+            at = paged.layoutManager.characterRange(forGlyphRange: paged.layoutManager.glyphRange(for: container), actualGlyphRange: nil).location
+        }
+        if !horizontal {
+            // Follow the visible sheet while scrolling, even when the caret is on a different page.
+            let visible = paged.visibleRect
+            if !card.frame.intersects(visible), let next = paged.cards.first(where: { $0.frame.intersects(visible) }) {
+                card = next
+                if let container = card.textViews.first?.textContainer {
+                    let glyphs = paged.layoutManager.glyphRange(for: container)
+                    at = paged.layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil).location
+                }
+            }
+        }
+        let start = convert(NSPoint.zero, from: card)
+        let end = convert(NSPoint(x: card.bounds.width, y: card.bounds.height), from: card)
+        let length = horizontal ? card.bounds.width : card.bounds.height
+        let scale = (axis(end) - axis(start)) / length
+        guard length > 0, scale.isFinite, scale > 0 else { return nil }
+        let tv = paged.textView(at: location)
+        let column = card.textViews.firstIndex(where: { $0 === tv }) ?? 0
+        return Geometry(origin: axis(start), scale: scale, setup: card.setup, location: at, column: column,
+                        headerWidth: headerTextView?.bounds.width)
+    }
+
+    private func margins(_ g: Geometry) -> (leading: CGFloat, trailing: CGFloat) {
+        var first = horizontal ? g.setup.margins.left : g.setup.margins.top
+        var last = horizontal ? g.setup.margins.right : g.setup.margins.bottom
+        if drag?.handle == .leadingMargin { first = drag!.value }
+        if drag?.handle == .trailingMargin { last = drag!.value }
+        return (first, last)
+    }
+    private func length(_ g: Geometry) -> CGFloat { horizontal ? g.setup.size.width : g.setup.size.height }
+    private func column(_ g: Geometry) -> (start: CGFloat, width: CGFloat) {
+        let m = margins(g), n = max(1, g.setup.columns), gap = g.setup.columnSpacing
+        if let width = g.headerWidth { return (m.leading, width) }
+        let width = max(36, (g.setup.size.width - m.leading - m.trailing - CGFloat(n - 1) * gap) / CGFloat(n))
+        return (m.leading + CGFloat(g.column) * (width + gap), width)
+    }
+    private func indents(_ g: Geometry) -> (first: CGFloat, head: CGFloat, tail: CGFloat) {
+        let p = drag?.paragraph ?? paragraph
+        var first = p.firstLineHeadIndent, head = p.headIndent
+        var tail = p.tailIndent <= 0 ? column(g).width + p.tailIndent : p.tailIndent
+        switch drag?.handle {
+        case .firstLine: first = drag!.value
+        case .head: first += drag!.value - head; head = drag!.value
+        case .tail: tail = drag!.value
         default: break
         }
-        return (f, h, t)
+        return (first, head, tail)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        bounds.fill()
+        NSColor.windowBackgroundColor.setFill(); bounds.fill()
+        let across = horizontal ? bounds.height : bounds.width
         NSColor.separatorColor.setFill()
-        NSRect(x: 0, y: bounds.height - 0.5, width: bounds.width, height: 0.5).fill()
-        guard let (x0, k) = geometry else { return }
-        let (ml, mr) = margins()
-        let page = NSRect(x: x0, y: 4, width: setup.size.width * k, height: bounds.height - 9)
-        NSColor.labelColor.withAlphaComponent(0.09).setFill()
-        NSBezierPath(roundedRect: page, xRadius: 2, yRadius: 2).fill()
-        let textX = x0 + ml * k, textW = (setup.size.width - ml - mr) * k
-        NSColor.textBackgroundColor.setFill()
-        NSRect(x: textX, y: page.minY, width: textW, height: page.height).fill()
-
-        // Ticks: every 0.5 cm, numbers every cm, counted from the left margin.
-        let font = NSFont.systemFont(ofSize: 8.5)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+        rect(0, horizontal ? bounds.width : bounds.height, across: across - 0.5, thickness: 0.5).fill()
+        guard let g = geometry else { return }
+        let m = margins(g), start = g.origin + m.leading * g.scale
+        let body = (length(g) - m.leading - m.trailing) * g.scale
+        let page = rect(g.origin, length(g) * g.scale, across: 4, thickness: across - 8)
+        NSColor.labelColor.withAlphaComponent(0.09).setFill(); page.fill()
+        NSColor.textBackgroundColor.setFill(); rect(start, body, across: 4, thickness: across - 8).fill()
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 8.5), .foregroundColor: NSColor.secondaryLabelColor]
+        let lower = -Int(m.leading / Self.cm * 2), upper = Int((length(g) - m.leading) / Self.cm * 2)
         NSColor.tertiaryLabelColor.setFill()
-        let startCm = -Int(ml / Self.cm * 2), endCm = Int((setup.size.width - ml) / Self.cm * 2)
-        for half in startCm...max(startCm, endCm) {
-            let x = textX + CGFloat(half) * Self.cm / 2 * k
-            guard x >= page.minX + 2, x <= page.maxX - 2, half != 0 else { continue }
+        for half in lower...max(lower, upper) where half != 0 {
+            let position = start + CGFloat(half) * Self.cm / 2 * g.scale
+            guard position > g.origin + 2, position < g.origin + length(g) * g.scale - 2 else { continue }
             if half % 2 == 0 {
-                let s = "\(abs(half / 2))" as NSString
-                let size = s.size(withAttributes: attrs)
-                if Self.cm * k > size.width + 4 { s.draw(at: NSPoint(x: x - size.width / 2, y: page.midY - size.height / 2), withAttributes: attrs) }
-                else { NSRect(x: x - 0.5, y: page.midY - 3, width: 1, height: 6).fill() }
+                let label = "\(abs(half / 2))" as NSString, size = label.size(withAttributes: attrs)
+                if Self.cm * g.scale > (horizontal ? size.width : size.height) + 4 {
+                    label.draw(at: horizontal ? NSPoint(x: position - size.width / 2, y: across / 2 - size.height / 2)
+                               : NSPoint(x: across / 2 - size.width / 2, y: position - size.height / 2), withAttributes: attrs)
+                } else { rect(position - 0.5, 1, across: across / 2 - 3, thickness: 6).fill() }
+            } else { rect(position - 0.5, 1, across: across / 2 - 1.5, thickness: 3).fill() }
+        }
+        // Explicit boundary lines leave the central grip separate from the indent triangles.
+        NSColor.secondaryLabelColor.setFill()
+        for position in [start, start + body] {
+            rect(position - 0.5, 1, across: horizontal ? 10 : 4, thickness: horizontal ? across - 20 : across - 8).fill()
+        }
+        if horizontal {
+            let c = column(g), i = indents(g), x = g.origin + c.start * g.scale
+            triangle(at: x + i.first * g.scale, top: true, active: drag?.handle == .firstLine)
+            triangle(at: x + i.head * g.scale, top: false, active: drag?.handle == .head)
+            triangle(at: x + i.tail * g.scale, top: false, active: drag?.handle == .tail)
+        }
+        if let drag, drag.moved {
+            let value = drag.handle == .tail ? column(g).width - drag.value : drag.value
+            let label = String(format: "%.2f %@", value / Self.cm, L("cm")) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]
+            let size = label.size(withAttributes: attributes)
+            if horizontal {
+                let x = min(bounds.width - size.width - 4, max(2, start + 8))
+                NSColor.windowBackgroundColor.setFill(); NSRect(x: x, y: 9, width: size.width + 4, height: size.height).fill()
+                label.draw(at: NSPoint(x: x + 2, y: 9), withAttributes: attributes)
             } else {
-                NSRect(x: x - 0.5, y: page.midY - 1.5, width: 1, height: 3).fill()
+                let position = g.origin + (drag.handle == .leadingMargin ? m.leading : length(g) - m.trailing) * g.scale
+                NSColor.controlAccentColor.setFill(); rect(position - 1, 2, across: 1, thickness: across - 2).fill()
             }
-        }
-
-        // Indent markers.
-        let (f, h, t) = indents()
-        let accent = NSColor.controlAccentColor
-        triangle(at: textX + f * k, top: true, color: dragging == .firstLine ? accent : .secondaryLabelColor)
-        triangle(at: textX + h * k, top: false, color: dragging == .head ? accent : .secondaryLabelColor)
-        triangle(at: textX + t * k, top: false, color: dragging == .tail ? accent : .secondaryLabelColor)
-
-        if let d = dragging {
-            // Value while dragging.
-            let value: CGFloat
-            switch d {
-            case .leftMargin: value = ml
-            case .rightMargin: value = mr
-            case .firstLine: value = f
-            case .head: value = h
-            case .tail: value = setup.size.width - ml - mr - t
-            }
-            let s = String(format: "%.2f %@", value / Self.cm, L("cm")) as NSString
-            let label: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: accent]
-            let size = s.size(withAttributes: label)
-            let x = d == .leftMargin ? textX : d == .rightMargin ? textX + textW : d == .firstLine ? textX + f * k : d == .head ? textX + h * k : textX + t * k
-            NSColor.windowBackgroundColor.setFill()
-            let box = NSRect(x: min(bounds.width - size.width - 6, max(2, x + 6)), y: 1, width: size.width + 4, height: size.height)
-            box.fill()
-            s.draw(at: NSPoint(x: box.minX + 2, y: box.minY), withAttributes: label)
         }
     }
 
-    private func triangle(at x: CGFloat, top: Bool, color: NSColor) {
-        let p = NSBezierPath()
-        if top {
-            p.move(to: NSPoint(x: x - 4.5, y: 2)); p.line(to: NSPoint(x: x + 4.5, y: 2)); p.line(to: NSPoint(x: x, y: 8))
-        } else {
-            let b = bounds.height - 3
-            p.move(to: NSPoint(x: x - 4.5, y: b)); p.line(to: NSPoint(x: x + 4.5, y: b)); p.line(to: NSPoint(x: x, y: b - 6))
-        }
-        p.close()
-        color.setFill()
-        p.fill()
+    private func triangle(at x: CGFloat, top: Bool, active: Bool) {
+        let base: CGFloat = top ? 2 : bounds.height - 2, tip: CGFloat = top ? 8 : bounds.height - 8
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: x - 5, y: base)); path.line(to: NSPoint(x: x + 5, y: base)); path.line(to: NSPoint(x: x, y: tip)); path.close()
+        (active ? NSColor.controlAccentColor : .secondaryLabelColor).setFill(); path.fill()
     }
 
-    private func handle(at point: NSPoint) -> Handle? {
-        guard let (x0, k) = geometry else { return nil }
-        let (ml, mr) = margins()
-        let textX = x0 + ml * k
-        let (f, h, t) = indents()
-        let top = point.y < bounds.height / 2
-        if top, abs(point.x - (textX + f * k)) <= 5 { return .firstLine }
-        if !top, abs(point.x - (textX + h * k)) <= 5 { return .head }
-        if !top, abs(point.x - (textX + t * k)) <= 5 { return .tail }
-        if abs(point.x - textX) <= 4 { return .leftMargin }
-        if abs(point.x - (x0 + (setup.size.width - mr) * k)) <= 4 { return .rightMargin }
+    private func handle(at point: NSPoint, geometry g: Geometry) -> Handle? {
+        guard bounds.contains(point) else { return nil }
+        let m = margins(g), position = axis(point)
+        if horizontal {
+            let c = column(g), i = indents(g), start = g.origin + c.start * g.scale
+            if point.y <= 9, abs(position - (start + i.first * g.scale)) <= 6 { return .firstLine }
+            if point.y >= bounds.height - 9 {
+                if abs(position - (start + i.head * g.scale)) <= 6 { return .head }
+                if abs(position - (start + i.tail * g.scale)) <= 6 { return .tail }
+            }
+        }
+        guard paged?.viewMode != .web else { return nil }
+        if abs(position - (g.origin + m.leading * g.scale)) <= 6 { return .leadingMargin }
+        if abs(position - (g.origin + (length(g) - m.trailing) * g.scale)) <= 6 { return .trailingMargin }
         return nil
     }
 
     override func resetCursorRects() {
-        guard let (x0, k) = geometry else { return }
-        let (ml, mr) = margins()
-        for x in [x0 + ml * k, x0 + (setup.size.width - mr) * k] {
-            addCursorRect(NSRect(x: x - 4, y: 0, width: 8, height: bounds.height), cursor: .resizeLeftRight)
+        guard let g = geometry else { return }
+        let m = margins(g), across = horizontal ? bounds.height : bounds.width
+        if paged?.viewMode != .web {
+            for position in [g.origin + m.leading * g.scale, g.origin + (length(g) - m.trailing) * g.scale] {
+                addCursorRect(rect(position - 6, 12, across: horizontal ? 10 : 0, thickness: horizontal ? across - 20 : across), cursor: horizontal ? .resizeLeftRight : .resizeUpDown)
+            }
+        }
+        if horizontal {
+            let c = column(g), i = indents(g), start = g.origin + c.start * g.scale
+            for (position, y) in [(i.first, CGFloat(0)), (i.head, bounds.height - 9), (i.tail, bounds.height - 9)] {
+                addCursorRect(NSRect(x: start + position * g.scale - 6, y: y, width: 12, height: 9), cursor: .resizeLeftRight)
+            }
         }
     }
 
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        guard let h = handle(at: p), let (x0, k) = geometry else { return }
-        dragging = h
-        let (ml, mr) = margins()
-        let (f, hd, t) = indents()
-        switch h {
-        case .leftMargin: dragValue = ml
-        case .rightMargin: dragValue = mr
-        case .firstLine: dragValue = f
-        case .head: dragValue = hd
-        case .tail: dragValue = t
+        let point = convert(event.locationInWindow, from: nil)
+        guard let g = geometry, let handle = handle(at: point, geometry: g) else { return }
+        // Capture originals before enabling preview; a click alone must never edit the document.
+        let m = margins(g), i = indents(g)
+        let value: CGFloat
+        switch handle {
+        case .leadingMargin: value = m.leading
+        case .trailingMargin: value = m.trailing
+        case .firstLine: value = i.first
+        case .head: value = i.head
+        case .tail: value = i.tail
         }
-        let snap = Self.cm / 4
-        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { min(max(v, lo), max(lo, hi)) }
-        while let e = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), e.type == .leftMouseDragged {
-            let x = convert(e.locationInWindow, from: nil).x
-            var v = (x - x0) / k                       // points from the page's left edge
-            if !e.modifierFlags.contains(.option) { v = (v / snap).rounded() * snap }
-            let textWidth = setup.size.width - ml - mr
-            switch h {
-            case .leftMargin: dragValue = clamp(v, 0, setup.size.width - mr - Self.cm * 2)
-            case .rightMargin: dragValue = clamp(setup.size.width - v, 0, setup.size.width - ml - Self.cm * 2)
-            case .firstLine: dragValue = clamp(v - ml, 0, textWidth - Self.cm)
-            case .head: dragValue = clamp(v - ml, 0, textWidth - Self.cm)
-            case .tail: dragValue = clamp(v - ml, Self.cm, textWidth)
-            }
-            needsDisplay = true
-        }
-        let (nf, nh, nt) = indents()
-        let (nl, nr) = margins()
-        dragging = nil
-        switch h {
-        case .leftMargin, .rightMargin: onMargins?(nl, nr)
-        case .firstLine, .head, .tail:
-            let width = setup.size.width - nl - nr
-            onIndents?(max(0, nf), nh, nt >= width - 0.5 ? 0 : nt - width)
-        }
-        window?.invalidateCursorRects(for: self)
-        needsDisplay = true
+        drag = Drag(handle: handle, geometry: g, paragraph: paragraph, pointer: axis(point), original: value, value: value)
     }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard var d = drag else { return }
+        let delta = (axis(convert(event.locationInWindow, from: nil)) - d.pointer) / d.geometry.scale
+        guard abs(delta * d.geometry.scale) >= 1 || d.moved else { return }
+        let g = d.geometry, m = margins(g), c = column(g)
+        var value = d.original + (d.handle == .trailingMargin ? -delta : delta)
+        if !event.modifierFlags.contains(.option) { let snap = Self.cm / 4; value = (value / snap).rounded() * snap }
+        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { min(max(v, lo), max(lo, hi)) }
+        let minimum = horizontal ? max(Self.cm * 2, CGFloat(max(1, g.setup.columns)) * 36 + CGFloat(max(0, g.setup.columns - 1)) * g.setup.columnSpacing) : Self.cm * 2
+        switch d.handle {
+        case .leadingMargin: value = clamp(value, 0, length(g) - m.trailing - minimum)
+        case .trailingMargin: value = clamp(value, 0, length(g) - m.leading - minimum)
+        case .firstLine: value = clamp(value, 0, c.width - Self.cm)
+        case .head:
+            // Carry the first-line marker without letting either marker leave the column.
+            let offset = d.paragraph.firstLineHeadIndent - d.paragraph.headIndent
+            value = clamp(value, max(0, -offset), c.width - Self.cm - max(0, offset))
+        case .tail: value = clamp(value, Self.cm, c.width)
+        }
+        d.value = value; d.moved = true; drag = d; needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let d = drag else { return }
+        let m = margins(d.geometry), i = indents(d.geometry), width = column(d.geometry).width
+        drag = nil
+        if d.moved, abs(d.value - d.original) > 0.001 {
+            switch d.handle {
+            case .leadingMargin, .trailingMargin:
+                if horizontal { onMargins?(m.leading, m.trailing, d.geometry.location) }
+                else { onVerticalMargins?(m.leading, m.trailing, d.geometry.location) }
+            case .firstLine, .head, .tail:
+                onIndents?(i.first, i.head, i.tail >= width - 0.5 ? 0 : i.tail - width)
+            }
+        }
+        window?.invalidateCursorRects(for: self); needsDisplay = true
+    }
+    override func cancelOperation(_ sender: Any?) { drag = nil; needsDisplay = true }
 }

@@ -82,7 +82,7 @@ extension XLSX {
                 default: kind = nil
                 }
                 guard let kind else { continue }
-                let dxf = rule.attr("dxfId").flatMap(Int.init).flatMap { $0 < dxfs.count ? dxfs[$0] : nil }
+                let dxf = rule.attr("dxfId").flatMap(Int.init).flatMap { $0 >= 0 && $0 < dxfs.count ? dxfs[$0] : nil }
                 for range in ranges {
                     sheet.conditionalFormats.append(ConditionalFormat(range: range, kind: kind, fill: dxf?.fill, textColor: dxf?.text, bold: dxf?.bold ?? false))
                 }
@@ -108,7 +108,17 @@ extension XLSX {
                 var target: String?
                 if let id = h.attr("id"), let t = raw[id] { target = t + (h.attr("location").map { "#" + $0 } ?? "") }
                 else if let loc = h.attr("location") { target = "#" + loc }
-                if let target { for ref in range.cells.prefix(1000) { sheet.hyperlinks[ref] = target } }
+                if let target {
+                    var count = 0
+                    for row in range.rows {
+                        for col in range.cols {
+                            guard count < 1000 else { break }
+                            sheet.hyperlinks[CellRef(row: row, col: col)] = target
+                            count += 1
+                        }
+                        if count == 1000 { break }
+                    }
+                }
             }
         }
         if let breaks = root.child("rowBreaks") {

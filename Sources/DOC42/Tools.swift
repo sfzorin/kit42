@@ -145,7 +145,7 @@ extension DocWindowController {
             return f
         }
         let alignment = NSPopUpButton(frame: .zero, pullsDown: false)
-        alignment.addItems(withTitles: [L("Left"), L("Center"), L("Right"), L("Justify")])
+        alignment.addItems(withTitles: [L("Left"), L("Centre"), L("Right"), L("Justify")])
         alignment.selectItem(at: [NSTextAlignment.center: 1, .right: 2, .justified: 3][p.alignment] ?? 0)
         let left = field(p.headIndent, k)
         let right = field(p.tailIndent < 0 ? -p.tailIndent : 0, k)
@@ -258,7 +258,7 @@ extension DocWindowController {
         guard let storage = textView.textStorage else { return }
         let sel = NSRange(location: textView.selectedRange().location, length: 0)
         let at = sel.location
-        let section = paged.setup(at: at).section
+        let section = currentSetup.section
         var attrs = textView.typingAttributes
         attrs[.docSection] = section
         let ns = storage.string as NSString

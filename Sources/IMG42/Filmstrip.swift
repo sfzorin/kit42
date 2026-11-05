@@ -118,8 +118,9 @@ final class ThumbItem: NSCollectionViewItem {
 
     override var isSelected: Bool {
         didSet {
-            view.layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor : nil
-            view.layer?.borderWidth = isSelected ? 2 : 0
+            // Outline only, as in PDF42's page thumbnails: a filled cell hid light images.
+            view.layer?.backgroundColor = nil
+            view.layer?.borderWidth = isSelected ? 3 : 0
             view.layer?.borderColor = NSColor.controlAccentColor.cgColor
         }
     }

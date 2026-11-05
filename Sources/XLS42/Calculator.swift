@@ -230,6 +230,7 @@ final class Calculator {
 
     /// A legacy array formula's result over its fixed range (no #SPILL!: the range belongs to the formula).
     private func fillArray(_ m: Matrix, sheet: Int, range: CellRange) -> Value {
+        guard range.count <= Self.maximumMatrixCells else { return .error("#NUM!") }
         for ref in range.cells where ref != range.start {
             let v = m.at(ref.row - range.start.row, ref.col - range.start.col)
             spilled[sheet, default: [:]][ref] = v.isEmpty ? .number(0) : v
@@ -252,7 +253,7 @@ final class Calculator {
                 if spilled[sheet]?[ref] != nil { return .error("#SPILL!") }
             }
         }
-        if s.merges.contains(where: { m in range.contains(m.start) || range.contains(m.end) }) { return .error("#SPILL!") }
+        if s.merges.contains(where: { m in range.start.row <= m.end.row && m.start.row <= range.end.row && range.start.col <= m.end.col && m.start.col <= range.end.col }) { return .error("#SPILL!") }
         for r in 0..<m.rows {
             for c in 0..<m.cols where r != 0 || c != 0 {
                 let v = m[r, c]
@@ -277,27 +278,49 @@ final class Calculator {
         return i
     }
 
-    func rangeMatrix(sheet s: Int, _ a: RefPart, _ b: RefPart) -> (Matrix, CellRef) {
-        let sheet = workbook.sheets[s]
-        var used = sheet.usedRange
-        // Spilled results count as used cells (whole columns over a spill).
-        if let extent = spillExtent(sheet: s) {
-            used = used.map { CellRange($0.start, CellRef(row: max($0.end.row, extent.row), col: max($0.end.col, extent.col))) } ?? CellRange(extent, extent)
+    static let maximumMatrixCells = 2_000_000
+
+    static func referenceRange(_ a: RefPart, _ b: RefPart) -> CellRange {
+        CellRange(CellRef(row: a.wholeColumn ? 0 : min(a.row, b.row), col: a.wholeRow ? 0 : min(a.col, b.col)),
+                  CellRef(row: a.wholeColumn ? RefPart.maxRow : max(a.row, b.row), col: a.wholeRow ? RefPart.maxCol : max(a.col, b.col)))
+    }
+
+    /// Resolve workbook names without materializing their range; LET locals retain their evaluated values.
+    func referencedRange(_ e: Expr, sheet: Int, remaining: Int = 20) throws -> (sheet: Int, range: CellRange)? {
+        switch e {
+        case .range(let name, let a, let b): return (try sheetIndex(name, sheet), Self.referenceRange(a, b))
+        case .name(let name):
+            guard remaining > 0, !locals.contains(where: { $0[name.uppercased()] != nil }),
+                  let definition = workbook.names.first(where: { $0.key.caseInsensitiveCompare(name) == .orderedSame })?.value,
+                  let expression = Self.expression("=" + definition) else { return nil }
+            return try referencedRange(expression, sheet: sheet, remaining: remaining - 1)
+        default: return nil
         }
-        var r1 = a.wholeColumn ? 0 : min(a.row, b.row)
-        var r2 = a.wholeColumn ? (used?.end.row ?? 0) : max(a.row, b.row)
-        var c1 = a.wholeRow ? 0 : min(a.col, b.col)
-        var c2 = a.wholeRow ? (used?.end.col ?? 0) : max(a.col, b.col)
-        // Keep huge ranges (A1:A1048576) within the used area.
-        if let used {
-            r2 = min(r2, max(used.end.row, r1))
-            c2 = min(c2, max(used.end.col, c1))
-        } else { r2 = r1; c2 = c1 }
-        r1 = max(0, r1); c1 = max(0, c1)
+    }
+
+    func storedReferenceCells(sheet: Int, range: CellRange) -> [CellRef] {
+        _ = spillExtent(sheet: sheet)
+        return Set(workbook.sheets[sheet].cells.keys).union(spilled[sheet]?.keys.map { $0 } ?? []).filter { range.contains($0) }.sorted()
+    }
+
+    /// Aggregate references visit stored cells (including spills), not every blank position.
+    private func sparseReference(_ e: Expr, sheet: Int) throws -> (CellRange, [Value])? {
+        guard let (si, range) = try referencedRange(e, sheet: sheet) else { return nil }
+        return (range, storedReferenceCells(sheet: si, range: range).map { value(sheet: si, ref: $0) })
+    }
+
+    func rangeMatrix(sheet s: Int, _ a: RefPart, _ b: RefPart) throws -> (Matrix, CellRef) {
+        let range = Self.referenceRange(a, b)
+        guard range.start.row >= 0, range.start.col >= 0, range.end.row <= RefPart.maxRow,
+              range.end.col <= RefPart.maxCol else { throw XLError.ref }
+        // Blank positions are part of an explicit range (INDEX, COUNTBLANK and arrays
+        // depend on its shape). Reject oversized matrices before allocating them.
+        guard range.count <= Self.maximumMatrixCells else { throw XLError.num }
+        _ = spillExtent(sheet: s)
         var values: [Value] = []
-        values.reserveCapacity((r2 - r1 + 1) * (c2 - c1 + 1))
-        for r in r1...r2 { for c in c1...c2 { values.append(value(sheet: s, ref: CellRef(row: r, col: c))) } }
-        return (Matrix(rows: r2 - r1 + 1, cols: c2 - c1 + 1, values: values), CellRef(row: r1, col: c1))
+        values.reserveCapacity(range.count)
+        for r in range.rows { for c in range.cols { values.append(value(sheet: s, ref: CellRef(row: r, col: c))) } }
+        return (Matrix(rows: range.rows.count, cols: range.cols.count, values: values), range.start)
     }
 
     private func evalThrowing(_ e: Expr, sheet: Int, at: CellRef) throws -> Operand {
@@ -325,7 +348,7 @@ final class Calculator {
                            origin: CellRef(row: p.row, col: p.col))
         case .range(let sheetName, let a, let b):
             let s = try sheetIndex(sheetName, sheet)
-            let (m, origin) = rangeMatrix(sheet: s, a, b)
+            let (m, origin) = try rangeMatrix(sheet: s, a, b)
             return .matrix(m, origin: origin)
         case .unary(let op, let x):
             let o = eval(x, sheet: sheet, at: at)
@@ -356,6 +379,7 @@ final class Calculator {
     func elementwise(_ ops: [Operand], _ f: ([Value]) throws -> Value) -> Operand {
         let ms = ops.map(matrix)
         let rows = ms.map(\.rows).max() ?? 1, cols = ms.map(\.cols).max() ?? 1
+        guard cols == 0 || rows <= Self.maximumMatrixCells / cols else { return .value(.error("#NUM!")) }
         var out: [Value] = []
         out.reserveCapacity(rows * cols)
         for r in 0..<rows {
@@ -374,14 +398,18 @@ final class Calculator {
     func binary(_ op: String, _ a: Value, _ b: Value) throws -> Value {
         if case .error(let c) = a { throw XLError(code: c) }
         if case .error(let c) = b { throw XLError(code: c) }
+        func finite(_ value: Double) throws -> Value {
+            guard value.isFinite else { throw XLError.num }
+            return .number(value)
+        }
         switch op {
-        case "+": return .number(try num(a) + num(b))
-        case "-": return .number(try num(a) - num(b))
-        case "*": return .number(try num(a) * num(b))
+        case "+": return try finite(num(a) + num(b))
+        case "-": return try finite(num(a) - num(b))
+        case "*": return try finite(num(a) * num(b))
         case "/":
             let d = try num(b)
             guard d != 0 else { throw XLError.div0 }
-            return .number(try num(a) / d)
+            return try finite(num(a) / d)
         case "^":
             let r = pow(try num(a), try num(b))
             guard r.isFinite else { throw XLError.num }
@@ -416,10 +444,20 @@ final class Calculator {
 
     // MARK: - Coercion
 
+    /// Integer arguments must fail as spreadsheet errors rather than trap in Int conversion.
+    static func integer(_ value: Double) throws -> Int {
+        guard value.isFinite, abs(value) < 9e15 else { throw XLError.num }
+        return Int(value.rounded(.towardZero))
+    }
+
+    var dateOffset: Double { workbook.date1904 ? 1462 : 0 }
+
     func num(_ v: Value) throws -> Double {
         switch v {
         case .empty: return 0
-        case .number(let d): return d
+        case .number(let d):
+            guard d.isFinite else { throw XLError.num }
+            return d
         case .bool(let b): return b ? 1 : 0
         case .string(let s):
             if let d = parseNumber(s) { return d }
@@ -431,10 +469,10 @@ final class Calculator {
     func parseNumber(_ s: String) -> Double? {
         let t = s.trimmingCharacters(in: .whitespaces)
         if t.isEmpty { return nil }
-        if let d = Double(t) { return d }
-        if let d = Double(t.replacingOccurrences(of: ",", with: ".").replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "\u{00A0}", with: "")) { return d }
+        if let d = Double(t) { return d.isFinite ? d : nil }
+        if let d = Double(t.replacingOccurrences(of: ",", with: ".").replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "\u{00A0}", with: "")) { return d.isFinite ? d : nil }
         if t.hasSuffix("%"), let d = parseNumber(String(t.dropLast())) { return d / 100 }
-        if let date = DateMath.parse(t) { return date }
+        if let date = DateMath.parse(t, date1904: workbook.date1904) { return date }
         return nil
     }
 
@@ -514,7 +552,10 @@ final class Calculator {
         var out: [Double] = []
         for arg in args {
             if case .missing = arg { continue }
-            let op = eval(arg, sheet: sheet, at: at)
+            let op: Operand
+            if let (_, stored) = try sparseReference(arg, sheet: sheet) {
+                op = .matrix(Matrix(rows: stored.count, cols: 1, values: stored), origin: nil)
+            } else { op = eval(arg, sheet: sheet, at: at) }
             let fromRef: Bool
             if case .matrix = op { fromRef = true } else { fromRef = isReference(arg) }
             for v in values(op) {
@@ -683,6 +724,7 @@ final class Calculator {
         }
         let ms = ops.map { $0.map(matrix) }
         let rows = ms.compactMap { $0?.rows }.max() ?? 1, cols = ms.compactMap { $0?.cols }.max() ?? 1
+        guard cols > 0, rows <= Self.maximumMatrixCells / cols else { throw XLError.num }
         var out: [Value] = []
         out.reserveCapacity(rows * cols)
         for r in 0..<rows {
@@ -701,6 +743,7 @@ final class Calculator {
     private func elementwiseKeepingErrors(_ a: Operand, _ b: Matrix, _ f: (Value, Value) -> Value) -> Operand {
         let am = matrix(a)
         let rows = max(am.rows, b.rows), cols = max(am.cols, b.cols)
+        guard cols > 0, rows <= Self.maximumMatrixCells / cols else { return .value(.error("#NUM!")) }
         var out: [Value] = []
         for r in 0..<rows { for c in 0..<cols { out.append(f(am.at(r, c), b.at(r, c))) } }
         var origin: CellRef?
@@ -736,6 +779,7 @@ final class Calculator {
                     let no = args.count > 2 ? eval(args[2], sheet: sheet, at: at) : .value(.bool(false))
                     let cm = matrix(cond), ym = matrix(yes), nm = matrix(no)
                     let rows = max(cm.rows, ym.rows, nm.rows), cols = max(cm.cols, ym.cols, nm.cols)
+                    guard cols > 0, rows <= Self.maximumMatrixCells / cols else { throw XLError.num }
                     var out: [Value] = []
                     for r in 0..<rows {
                         for c in 0..<cols {
@@ -770,6 +814,7 @@ final class Calculator {
         }
         func a(_ i: Int) -> Value { arg(args, i, sheet, at) }
         func n(_ i: Int, _ d: Double? = nil) throws -> Double { try numArg(args, i, sheet, at, default: d) }
+        func integer(_ i: Int, _ d: Double? = nil) throws -> Int { try Self.integer(n(i, d)) }
         func t(_ i: Int, _ d: String? = nil) throws -> String { try textArg(args, i, sheet, at, default: d) }
         func op(_ i: Int) -> Operand { i < args.count ? eval(args[i], sheet: sheet, at: at) : .value(.empty) }
         func nums() throws -> [Double] { try numbers(args, sheet: sheet, at: at) }
@@ -782,7 +827,9 @@ final class Calculator {
         switch name {
         // Math & aggregates
         case "SUM": return try r(nums().reduce(0, +))
-        case "PRODUCT": return try r(nums().reduce(1, *))
+        case "PRODUCT":
+            let values = try nums()
+            return try r(values.isEmpty ? 0 : values.reduce(1, *))
         case "AVERAGE":
             let v = try nums()
             guard !v.isEmpty else { throw XLError.div0 }
@@ -793,12 +840,20 @@ final class Calculator {
             return try r(v.reduce(0, +) / Double(v.count))
         case "MIN": return try r(nums().min() ?? 0)
         case "MAX": return try r(nums().max() ?? 0)
-        case "COUNT":
-            return .value(.number(Double(args.flatMap { values(eval($0, sheet: sheet, at: at)) }.filter {
-                if case .number = $0 { return true }; return false }.count)))
-        case "COUNTA":
-            return .value(.number(Double(args.flatMap { values(eval($0, sheet: sheet, at: at)) }.filter { !$0.isEmpty }.count)))
+        case "COUNT", "COUNTA":
+            var count = 0
+            for argument in args {
+                let stored = try sparseReference(argument, sheet: sheet)?.1 ?? values(eval(argument, sheet: sheet, at: at))
+                count += stored.filter { value in
+                    if name == "COUNTA" { return !value.isEmpty }
+                    if case .number = value { return true }; return false
+                }.count
+            }
+            return .value(.number(Double(count)))
         case "COUNTBLANK":
+            if let first = args.first, let (range, stored) = try sparseReference(first, sheet: sheet) {
+                return .value(.number(Double(range.count - stored.filter { !$0.isEmpty && $0 != .string("") }.count)))
+            }
             return .value(.number(Double(values(op(0)).filter { $0.isEmpty || $0 == .string("") }.count)))
         case "SUMSQ": return try r(nums().map { $0 * $0 }.reduce(0, +))
         case "MEDIAN":
@@ -821,7 +876,7 @@ final class Calculator {
         case "LARGE", "SMALL":
             try need(2)
             let v = try numbers([args[0]], sheet: sheet, at: at).sorted(by: name == "LARGE" ? (>) : (<))
-            let k = Int(try n(1))
+            let k = try integer(1)
             guard k >= 1, k <= v.count else { throw XLError.num }
             return try r(v[k - 1])
         case "RANK", "RANK.EQ":
@@ -877,7 +932,7 @@ final class Calculator {
         case "ODD":
             let x = try n(0)
             var c = abs(x).rounded(.up)
-            if Int(c) % 2 == 0 { c += 1 }
+            if c.truncatingRemainder(dividingBy: 2) == 0 { c += 1 }
             return try r(x < 0 ? -c : c)
         case "MOD":
             let x = try n(0), d = try n(1)
@@ -906,9 +961,9 @@ final class Calculator {
         case "RANDBETWEEN":
             let lo = try n(0).rounded(.up), hi = try n(1).rounded(.down)
             guard lo <= hi else { throw XLError.num }
-            return try r(Double(Int.random(in: Int(lo)...Int(hi))))
+            return try r(Double(Int.random(in: try Self.integer(lo)...Self.integer(hi))))
         case "FACT":
-            let x = Int(try n(0))
+            let x = try integer(0)
             guard x >= 0, x <= 170 else { throw XLError.num }
             return try r((1...max(1, x)).reduce(1.0) { $0 * Double($1) })
         case "DEGREES": return try r(n(0) * 180 / .pi)
@@ -993,7 +1048,7 @@ final class Calculator {
             if i < args.count { return op(i) }
             throw XLError.na
         case "CHOOSE":
-            let i = Int(try n(0))
+            let i = try integer(0)
             guard i >= 1, i < args.count else { throw XLError.value }
             return op(i)
 
@@ -1002,7 +1057,7 @@ final class Calculator {
             try need(3)
             let needle = a(0)
             let table = matrix(op(1))
-            let index = Int(try n(2)) - 1
+            let index = try integer(2) - 1
             let approx = args.count > 3 ? try bool(a(3)) : true
             let vertical = name == "VLOOKUP"
             guard index >= 0, index < (vertical ? table.cols : table.rows) else { throw XLError.ref }
@@ -1012,7 +1067,7 @@ final class Calculator {
         case "MATCH":
             try need(2)
             let m = matrix(op(1))
-            let mode = Int(try n(2, 1))
+            let mode = try integer(2, 1)
             let needles = op(0)
             if needles.isMulti {
                 return elementwise([needles]) { v in
@@ -1024,12 +1079,31 @@ final class Calculator {
             return .value(.number(Double(pos + 1)))
         case "ROW", "COLUMN":
             if args.isEmpty { return .value(.number(Double((name == "ROW" ? at.row : at.col) + 1))) }
-            if case .ref(_, let p) = args[0] { return .value(.number(Double((name == "ROW" ? p.row : p.col) + 1))) }
-            if case .range(_, let p, _) = args[0] { return .value(.number(Double((name == "ROW" ? p.row : p.col) + 1))) }
-            if case .matrix(_, let o?) = op(0) { return .value(.number(Double((name == "ROW" ? o.row : o.col) + 1))) }
-            throw XLError.value
+            if case .ref(let sheetName, let p) = args[0] {
+                _ = try sheetIndex(sheetName, sheet)
+                return .value(.number(Double((name == "ROW" ? p.row : p.col) + 1)))
+            }
+            let origin: CellRef, rows: Int, cols: Int
+            if let (_, range) = try referencedRange(args[0], sheet: sheet) {
+                origin = range.start; rows = range.rows.count; cols = range.cols.count
+            } else {
+                let operand = op(0)
+                if case .value(.error(let code)) = operand { throw XLError(code: code) }
+                guard case .matrix(let matrix, let position?) = operand else { throw XLError.value }
+                origin = position; rows = matrix.rows; cols = matrix.cols
+            }
+            let count = name == "ROW" ? rows : cols
+            guard count <= Self.maximumMatrixCells else { throw XLError.num }
+            let start = name == "ROW" ? origin.row : origin.col
+            let values = (0..<count).map { Value.number(Double(start + $0 + 1)) }
+            return .matrix(Matrix(rows: name == "ROW" ? count : 1, cols: name == "ROW" ? 1 : count, values: values), origin: origin)
         case "ROWS", "COLUMNS":
-            let m = matrix(op(0))
+            if let first = args.first, let (_, range) = try referencedRange(first, sheet: sheet) {
+                return .value(.number(Double(name == "ROWS" ? range.rows.count : range.cols.count)))
+            }
+            let operand = op(0)
+            if case .value(.error(let code)) = operand { throw XLError(code: code) }
+            let m = matrix(operand)
             return .value(.number(Double(name == "ROWS" ? m.rows : m.cols)))
         case "INDIRECT":
             var refText = try t(0)
@@ -1044,33 +1118,33 @@ final class Calculator {
             try need(3)
             guard case .ref(let sn, let p) = args[0] else {
                 if case .range(let sn, let p, let q) = args[0] {
-                    let dr = Int(try n(1)), dc = Int(try n(2))
-                    let h = Int(try n(3, Double(abs(q.row - p.row) + 1))), w = Int(try n(4, Double(abs(q.col - p.col) + 1)))
+                    let dr = try integer(1), dc = try integer(2)
+                    let h = try integer(3, Double(abs(q.row - p.row) + 1)), w = try integer(4, Double(abs(q.col - p.col) + 1))
                     let s = try sheetIndex(sn, sheet)
                     let a1 = RefPart(row: p.row + dr, col: p.col + dc), b1 = RefPart(row: p.row + dr + h - 1, col: p.col + dc + w - 1)
-                    guard a1.row >= 0, a1.col >= 0 else { throw XLError.ref }
-                    let (m, o) = rangeMatrix(sheet: s, a1, b1)
+                    guard a1.row >= 0, a1.col >= 0, h > 0, w > 0 else { throw XLError.ref }
+                    let (m, o) = try rangeMatrix(sheet: s, a1, b1)
                     return .matrix(m, origin: o)
                 }
                 throw XLError.value
             }
-            let dr = Int(try n(1)), dc = Int(try n(2)), h = Int(try n(3, 1)), w = Int(try n(4, 1))
+            let dr = try integer(1), dc = try integer(2), h = try integer(3, 1), w = try integer(4, 1)
             let s = try sheetIndex(sn, sheet)
             let a1 = RefPart(row: p.row + dr, col: p.col + dc), b1 = RefPart(row: p.row + dr + h - 1, col: p.col + dc + w - 1)
             guard a1.row >= 0, a1.col >= 0, h > 0, w > 0 else { throw XLError.ref }
-            let (m, o) = rangeMatrix(sheet: s, a1, b1)
+            let (m, o) = try rangeMatrix(sheet: s, a1, b1)
             return .matrix(m, origin: o)
 
         // Text
         case "LEN": return .value(.number(Double(try t(0).count)))
         case "LEFT", "RIGHT":
             let s = try t(0)
-            let k = Int(try n(1, 1))
+            let k = try integer(1, 1)
             guard k >= 0 else { throw XLError.value }
             return .value(.string(String(name == "LEFT" ? s.prefix(k) : s.suffix(k))))
         case "MID":
             let s = Array(try t(0))
-            let start = Int(try n(1)) - 1, len = Int(try n(2))
+            let start = try integer(1) - 1, len = try integer(2)
             guard start >= 0, len >= 0 else { throw XLError.value }
             guard start < s.count else { return .value(.string("")) }
             return .value(.string(String(s[start..<min(s.count, start + len)])))
@@ -1103,7 +1177,7 @@ final class Calculator {
             let s = try t(0), old = try t(1), new = try t(2)
             guard !old.isEmpty else { return .value(.string(s)) }
             if args.count > 3 {
-                let k = Int(try n(3))
+                let k = try integer(3)
                 var count = 0
                 var result = ""
                 var rest = Substring(s)
@@ -1118,14 +1192,14 @@ final class Calculator {
             return .value(.string(s.replacingOccurrences(of: old, with: new)))
         case "REPLACE":
             var s = Array(try t(0))
-            let start = max(0, Int(try n(1)) - 1), len = max(0, Int(try n(2)))
+            let start = max(0, try integer(1) - 1), len = max(0, try integer(2))
             let new = Array(try t(3))
             let lo = min(start, s.count), hi = min(s.count, start + len)
             s.replaceSubrange(lo..<hi, with: new)
             return .value(.string(String(s)))
         case "FIND", "SEARCH":
             let needle = try t(0), hay = try t(1)
-            let start = Int(try n(2, 1)) - 1
+            let start = try integer(2, 1) - 1
             guard start >= 0, start <= hay.count else { throw XLError.value }
             let from = hay.index(hay.startIndex, offsetBy: start)
             let range: Range<String.Index>?
@@ -1142,13 +1216,14 @@ final class Calculator {
             guard let range else { throw XLError.value }
             return .value(.number(Double(hay.distance(from: hay.startIndex, to: range.lowerBound) + 1)))
         case "REPT":
-            let k = Int(try n(1))
-            guard k >= 0 else { throw XLError.value }
-            return .value(.string(String(repeating: try t(0), count: k)))
+            let k = try integer(1)
+            let string = try t(0)
+            guard k >= 0, string.isEmpty || k <= 32_767 / string.count else { throw XLError.value }
+            return .value(.string(String(repeating: string, count: string.isEmpty ? 0 : k)))
         case "EXACT": return .value(.bool(try t(0) == t(1)))
-        case "CHAR": return .value(.string(String(UnicodeScalar(UInt8(max(1, min(255, Int(try n(0)))))))))
+        case "CHAR": return .value(.string(String(UnicodeScalar(UInt8(max(1, min(255, try integer(0))))))))
         case "UNICHAR":
-            guard let u = UnicodeScalar(Int(try n(0))) else { throw XLError.value }
+            guard let u = UnicodeScalar(try integer(0)) else { throw XLError.value }
             return .value(.string(String(u)))
         case "CODE", "UNICODE":
             guard let u = try t(0).unicodeScalars.first else { throw XLError.value }
@@ -1169,23 +1244,26 @@ final class Calculator {
             return .value(.number(d))
 
         // Dates
-        case "TODAY": return .value(.number(floor(DateMath.serial(Date()))))
-        case "NOW": return .value(.number(DateMath.serial(Date())))
+        case "TODAY": return .value(.number(floor(DateMath.serial(Date())) - dateOffset))
+        case "NOW": return .value(.number(DateMath.serial(Date()) - dateOffset))
         case "DATE":
-            guard let s = DateMath.serial(year: Int(try n(0)), month: Int(try n(1)), day: Int(try n(2))) else { throw XLError.num }
-            return .value(.number(s))
+            guard let s = DateMath.serial(year: try integer(0), month: try integer(1), day: try integer(2)) else { throw XLError.num }
+            guard s >= dateOffset else { throw XLError.num }
+            return .value(.number(s - dateOffset))
         case "TIME":
-            return try r(((try n(0)) * 3600 + (try n(1)) * 60 + (try n(2))).truncatingRemainder(dividingBy: 86400) / 86400)
+            let hours = try integer(0), minutes = try integer(1), seconds = try integer(2)
+            guard hours >= 0, minutes >= 0, seconds >= 0, hours <= 32767, minutes <= 32767, seconds <= 32767 else { throw XLError.num }
+            return try r(Double((hours * 3600 + minutes * 60 + seconds) % 86400) / 86400)
         case "YEAR", "MONTH", "DAY", "WEEKDAY":
             let serial = try n(0)
-            guard serial >= 0, let c = DateMath.components(serial) else { throw XLError.num }
+            guard serial >= 0, let c = DateMath.components(serial + dateOffset) else { throw XLError.num }
             switch name {
             case "YEAR": return .value(.number(Double(c.year!)))
             case "MONTH": return .value(.number(Double(c.month!)))
             case "DAY": return .value(.number(Double(c.day!)))
             default:
                 let w = c.weekday!   // 1 = Sunday
-                let type = Int(try n(1, 1))
+                let type = try integer(1, 1)
                 switch type {
                 case 1, 17: return .value(.number(Double(w)))
                 case 2, 11: return .value(.number(Double((w + 5) % 7 + 1)))
@@ -1196,21 +1274,26 @@ final class Calculator {
             }
         case "HOUR", "MINUTE", "SECOND":
             let f = try n(0)
-            let secs = Int(((f - floor(f)) * 86400).rounded())
+            guard f >= 0, f < 3_000_000 else { throw XLError.num }
+            let secs = Int(((f - floor(f)) * 86400).rounded()) % 86400
             return .value(.number(Double(name == "HOUR" ? secs / 3600 : name == "MINUTE" ? secs / 60 % 60 : secs % 60)))
         case "EDATE", "EOMONTH":
-            guard let c = DateMath.components(try n(0)) else { throw XLError.num }
-            let months = Int(try n(1))
+            let start = try n(0)
+            guard start >= 0, let c = DateMath.components(start + dateOffset) else { throw XLError.num }
+            let months = try integer(1)
+            guard abs(months) <= 120_000 else { throw XLError.num }
             var y = c.year!, m = c.month! + months
             y += Int(floor(Double(m - 1) / 12)); m = ((m - 1) % 12 + 12) % 12 + 1
+            guard (1900...9999).contains(y) else { throw XLError.num }
             let lastDay = DateMath.daysInMonth(year: y, month: m)
             let day = name == "EOMONTH" ? lastDay : min(c.day!, lastDay)
             guard let s = DateMath.serial(year: y, month: m, day: day) else { throw XLError.num }
-            return .value(.number(s))
+            guard s >= dateOffset else { throw XLError.num }
+            return .value(.number(s - dateOffset))
         case "DAYS": return try r(floor(n(0)) - floor(n(1)))
         case "DATEDIF":
-            let s1 = try n(0), s2 = try n(1)
-            guard s2 >= s1, let a1 = DateMath.components(s1), let b1 = DateMath.components(s2) else { throw XLError.num }
+            let s1 = try n(0) + dateOffset, s2 = try n(1) + dateOffset
+            guard s1 >= dateOffset, s2 >= s1, let a1 = DateMath.components(s1), let b1 = DateMath.components(s2) else { throw XLError.num }
             var months = (b1.year! - a1.year!) * 12 + (b1.month! - a1.month!)
             if b1.day! < a1.day! { months -= 1 }
             switch try t(2).uppercased() {
@@ -1256,47 +1339,72 @@ enum DateMath {
 
     static func serial(_ date: Date) -> Double {
         let local = date.addingTimeInterval(TimeInterval(TimeZone.current.secondsFromGMT(for: date)))
-        return local.timeIntervalSince(base) / 86400
+        let serial = local.timeIntervalSince(base) / 86400
+        return serial < 61 ? serial - 1 : serial
     }
 
     static func serial(year: Int, month: Int, day: Int) -> Double? {
-        var y = year
-        if y < 1900 { y += 1900 }
-        guard let d = calendar.date(from: DateComponents(year: y, month: month, day: day)) else { return nil }
-        let s = (d.timeIntervalSince(base) / 86400).rounded()
-        return s >= 0 ? s : nil
+        guard year >= 0, year <= 9999, abs(month) <= 120_000, abs(day) <= 3_000_000 else { return nil }
+        let y = year < 1900 ? year + 1900 : year
+        // Normalize the month first, then add days in Excel's calendar so its
+        // fictitious 1900-02-29 also participates in DATE's overflow arithmetic.
+        guard let first = calendar.date(from: DateComponents(year: y, month: month, day: 1)) else { return nil }
+        var serial = (first.timeIntervalSince(base) / 86400).rounded()
+        if serial < 61 { serial -= 1 }
+        serial += Double(day) - 1
+        return serial >= 0 && serial <= 2_958_465 ? serial : nil
     }
 
-    static func date(_ serial: Double) -> Date { base.addingTimeInterval(serial * 86400) }
+    static func date(_ serial: Double) -> Date {
+        base.addingTimeInterval((serial < 60 ? serial + 1 : serial) * 86400)
+    }
 
     static func components(_ serial: Double) -> DateComponents? {
-        guard serial.isFinite, serial >= 0, serial < 3_000_000 else { return nil }
-        return calendar.dateComponents([.year, .month, .day, .weekday, .hour, .minute, .second], from: date(floor(serial) + 0.000001))
+        guard serial.isFinite, serial >= 0, serial < 2_958_466 else { return nil }
+        let day = floor(serial)
+        var result = calendar.dateComponents([.year, .month, .day, .weekday, .hour, .minute, .second], from: date(day + 0.000001))
+        if day == 0 { result.year = 1900; result.month = 1; result.day = 0 }
+        if day == 60 { result.year = 1900; result.month = 2; result.day = 29 }
+        if day < 61 { result.weekday = (Int(day) + 6) % 7 + 1 }
+        return result
     }
 
     static func daysInMonth(year: Int, month: Int) -> Int {
-        calendar.range(of: .day, in: .month, for: calendar.date(from: DateComponents(year: year, month: month, day: 1))!)!.count
+        if year == 1900, month == 2 { return 29 }
+        guard let date = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+              let days = calendar.range(of: .day, in: .month, for: date) else { return 0 }
+        return days.count
     }
 
     /// "31.12.2024", "2024-12-31", "12/31/2024", optional " 10:30".
-    static func parse(_ s: String) -> Double? {
+    static func parse(_ s: String, date1904: Bool = false) -> Double? {
         let parts = s.split(separator: " ")
         guard let datePart = parts.first else { return nil }
         var y = 0, m = 0, d = 0
-        let nums = datePart.split(whereSeparator: { ".-/".contains($0) }).compactMap { Int($0) }
-        guard nums.count == 3 else { return parseTime(s) }
+        let fields = datePart.split(omittingEmptySubsequences: false, whereSeparator: { ".-/".contains($0) })
+        let nums = fields.compactMap { Int($0) }
+        guard fields.count == 3, nums.count == 3 else { return parseTime(s) }
         if datePart.contains("-"), nums[0] > 31 { (y, m, d) = (nums[0], nums[1], nums[2]) }
         else if datePart.contains("/") { (m, d, y) = (nums[0], nums[1], nums[2]) }
         else { (d, m, y) = (nums[0], nums[1], nums[2]) }
         if y < 100 { y += y < 30 ? 2000 : 1900 }
-        guard (1...12).contains(m), (1...31).contains(d), let base = serial(year: y, month: m, day: d) else { return nil }
-        if parts.count > 1, let t = parseTime(String(parts[1])) { return base + t }
-        return base
+        guard (1900...9999).contains(y), (1...12).contains(m), d >= 1, d <= daysInMonth(year: y, month: m),
+              let serial = serial(year: y, month: m, day: d), parts.count <= 2 else { return nil }
+        let value = serial - (date1904 ? 1462 : 0)
+        guard value >= 0 else { return nil }
+        if parts.count == 2 {
+            guard let time = parseTime(String(parts[1])) else { return nil }
+            return value + time
+        }
+        return value
     }
 
     static func parseTime(_ s: String) -> Double? {
-        let p = s.split(separator: ":").compactMap { Double($0) }
-        guard p.count >= 2, p.count <= 3, p[0] < 24, p[1] < 60 else { return nil }
+        let parts = s.split(separator: ":", omittingEmptySubsequences: false)
+        let p = parts.compactMap { Double($0) }
+        guard parts.count == p.count, (2...3).contains(p.count), p.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              p[0] < 24, p[1] < 60, p[0].rounded(.towardZero) == p[0], p[1].rounded(.towardZero) == p[1],
+              p.count < 3 || p[2] < 60 else { return nil }
         return (p[0] * 3600 + p[1] * 60 + (p.count > 2 ? p[2] : 0)) / 86400
     }
 }

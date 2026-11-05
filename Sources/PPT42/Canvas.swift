@@ -621,13 +621,17 @@ final class SlideCanvas: NSView {
             case NSDeleteCharacter, NSBackspaceCharacter, NSDeleteFunctionKey:
                 owner.deleteAction(nil); return
             case 27:
-                if insertTool != nil { insertTool = nil } else { owner.selection = [] }
+                if let drag {
+                    if case .rubber(_, let base) = drag { owner.selection = base }
+                    self.drag = nil; live = nil; guides = []; rubber = nil; creating = nil; moved = false
+                    needsDisplay = true
+                } else if insertTool != nil { insertTool = nil } else { owner.selection = [] }
                 return
             case 9:
                 let ids = slide.objects.map(\.id)
                 guard !ids.isEmpty else { return }
-                let i = owner.selection.first.flatMap { ids.firstIndex(of: $0) } ?? -1
                 let back = event.modifierFlags.contains(.shift)
+                let i = owner.selection.first.flatMap { ids.firstIndex(of: $0) } ?? (back ? 0 : -1)
                 owner.selection = [ids[(i + (back ? -1 : 1) + ids.count) % ids.count]]
                 return
             case 13, 3:

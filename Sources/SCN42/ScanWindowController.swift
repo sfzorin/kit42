@@ -323,6 +323,10 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? { doc.undo }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard !isScanning, pendingProcessing == 0 else {
+            banner.show(.info, L("Wait for scanning and processing to finish before closing."))
+            return false
+        }
         guard doc.isDirty, !pages.isEmpty, ProcessInfo.processInfo.environment["K42_SNAPSHOT"] == nil else { return true }
         let alert = NSAlert()
         alert.messageText = L("Save the scanned pages?")
@@ -331,7 +335,12 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         alert.addButton(withTitle: L("Don't Save"))
         alert.addButton(withTitle: L("Cancel"))
         alert.beginSheetModal(for: sender) { [weak self] r in
-            if r == .alertFirstButtonReturn { self?.saveDocument(nil) }
+            if r == .alertFirstButtonReturn {
+                self?.presentSaveSheet { [weak self] url in
+                    guard url != nil, let self, !self.doc.isDirty, !self.isScanning, self.pendingProcessing == 0 else { return }
+                    sender.close()
+                }
+            }
             else if r == .alertSecondButtonReturn { self?.doc.isDirty = false; sender.close() }
         }
         return false
@@ -397,7 +406,7 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return hasTarget && busyText == nil
         case #selector(copy(_:)): return hasTarget
         case #selector(selectAll(_:)): return hasPages
-        case #selector(rescanPageAction(_:)): return hasTarget && canScan && targetPages.count == 1
+        case #selector(rescanPageAction(_:)): return hasTarget && canScan && pendingProcessing == 0 && targetPages.count == 1
         case #selector(insertHereAction(_:)): return hasTarget || insertionIndex != nil
         case #selector(splitAction(_:)): return pages.count > 1 && (pageList.selection.first ?? 0) > 0
         case #selector(movePageUpAction(_:)): return pageList.selection.first.map { $0 > 0 } ?? false

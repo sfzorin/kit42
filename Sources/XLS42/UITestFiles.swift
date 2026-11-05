@@ -3,6 +3,113 @@ import Kit42
 
 /// UI tests of ⌘⇧Return array formulas, the Solver model and split window kept in the document, and document cell styles.
 extension UITest {
+    /// Explicit blank selections and pending editors must survive toolbar/menu actions.
+    static func interactions(_ w: SheetWindowController, _ doc: SheetDocument) -> Int {
+        var failed = 0
+        func check(_ name: String, _ ok: Bool) {
+            print(ok ? "ok  " : "FAIL", name)
+            if !ok { failed += 1 }
+        }
+        func ref(_ a1: String) -> CellRef { CellRef(a1)! }
+        func select(_ a1: String, _ end: String? = nil) {
+            w.grid.select(ref(a1))
+            if let end { w.grid.select(ref(end), extend: true) }
+        }
+
+        w.addSheet(nil)
+        select("B2", "D4")
+        check("blank selection keeps its full range", w.clampedSelection == CellRange("B2:D4"))
+        w.toggleBold(nil)
+        check("formatting applies to every selected blank cell", CellRange("B2:D4")!.cells.allSatisfy { w.sheet[$0].style.bold })
+        doc.undoManager?.undo()
+        check("undo blank range formatting", CellRange("B2:D4")!.cells.allSatisfy { !w.sheet[$0].style.bold })
+        w.setInput("5", at: ref("A1"))
+        select("A1", "A5")
+        w.fillDown(nil)
+        check("fill down reaches selected empty rows", (0..<5).allSatisfy { w.sheet[CellRef(row: $0, col: 0)].value == .number(5) })
+        w.grid.selectColumns(0, 2)
+        check("column header selection bounds rows but keeps empty columns", w.clampedSelection == CellRange("A1:C5"))
+        w.grid.selectRows(1, 3)
+        check("row header selection bounds columns but keeps selected rows", w.clampedSelection == CellRange("A2:A4"))
+        select("E6", "F7")
+        check("cell selection clears header-selection mode", w.clampedSelection == CellRange("E6:F7"))
+
+        let original = w.sheetIndex
+        select("G1")
+        w.grid.beginEdit(initial: "before new sheet")
+        w.addSheet(nil)
+        check("new sheet commits pending text to its original sheet", doc.workbook.sheets[original][ref("G1")].input == "before new sheet"
+              && w.sheet[ref("G1")].input.isEmpty && !w.grid.isEditing)
+        w.selectSheet(original)
+        select("G2")
+        w.grid.beginEdit(initial: "before copy")
+        w.moveSheet(original, before: doc.workbook.sheets.count, copy: true)
+        check("copy sheet includes pending text", doc.workbook.sheets[original][ref("G2")].input == "before copy"
+              && w.sheet[ref("G2")].input == "before copy" && !w.grid.isEditing)
+        select("G3")
+        w.grid.beginEdit(initial: "before move")
+        w.moveSheet(w.sheetIndex, before: 0, copy: false)
+        check("move sheet retains pending text", w.sheetIndex == 0 && w.sheet[ref("G3")].input == "before move" && !w.grid.isEditing)
+        select("G4")
+        w.grid.beginEdit(initial: "before duplicate")
+        let duplicate = NSButton(); duplicate.tag = w.sheetIndex
+        NSApp.sendAction(NSSelectorFromString("duplicateSheet:"), to: w, from: duplicate)
+        check("duplicate sheet includes pending text", doc.workbook.sheets[0][ref("G4")].input == "before duplicate"
+              && w.sheetIndex == 1 && w.sheet[ref("G4")].input == "before duplicate" && !w.grid.isEditing)
+
+        let decimalField = NSTextField(string: "4"), decimalStepper = NSStepper(), code = NSTextField(string: "0.00")
+        decimalStepper.minValue = 0; decimalStepper.maxValue = 10; decimalStepper.integerValue = 2
+        let actions = NumberDialogActions(category: {}, format: {}, options: {
+            decimalField.integerValue = decimalStepper.integerValue
+            code.stringValue = SheetWindowController.numberCode(category: 1, decimals: decimalStepper.integerValue, thousands: false, redNegative: false) ?? ""
+        }, code: {})
+        actions.decimalField = decimalField; actions.decimalStepper = decimalStepper
+        decimalField.delegate = actions
+        actions.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: decimalField))
+        check("decimal places text entry updates the number format", code.stringValue == "0.0000" && decimalStepper.integerValue == 4)
+        decimalField.stringValue = "99"
+        actions.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: decimalField))
+        actions.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: decimalField))
+        check("decimal places rejects an invalid value", decimalField.integerValue == 4 && code.stringValue == "0.0000")
+        decimalStepper.integerValue = 3
+        actions.optionsChanged()
+        check("decimal stepper and text field remain synchronized", decimalField.integerValue == 3 && code.stringValue == "0.000")
+
+        w.addSheet(nil)
+        let suppressAlerts = w.suppressAlerts
+        w.suppressAlerts = true
+        defer { w.suppressAlerts = suppressAlerts }
+        select("A1"); w.setInput("5", at: ref("A1")); w.toggleBold(nil)
+        select("A10001"); w.setInput("keep", at: ref("A10001")); w.toggleBold(nil)
+        _ = w.enterArrayFormula("=ROW(A1:A2)", range: CellRange("B2:B3")!)
+        let stored = w.sheet.cells, arrays = w.sheet.arrays
+        // 100 million positions, but only four stored cells: clearing must remain sparse.
+        let huge = CellRange(ref("A1"), CellRef(row: 9_999, col: 9_999))
+        select("A1")
+        w.grid.selection = huge
+        w.clearContents(nil)
+        check("huge range clears stored contents and arrays while preserving formats and outside cells",
+              w.sheet.arrays.isEmpty && w.sheet.cells.allSatisfy { !huge.contains($0.key) || $0.value.input.isEmpty }
+              && w.sheet[ref("A1")].style.bold && w.sheet[ref("A10001")].input == "keep" && w.sheet.cells.count <= stored.count)
+        doc.undoManager?.undo()
+        check("undo huge range clear restores contents and arrays", w.sheet.cells == stored && w.sheet.arrays == arrays)
+        w.clearFormats(nil)
+        check("huge range clears only stored formats", w.sheet[ref("A1")].input == "5" && !w.sheet[ref("A1")].style.bold
+              && w.sheet[ref("A10001")].style.bold && w.sheet.cells.count <= stored.count)
+        doc.undoManager?.undo()
+        let limitMessage = L("This operation supports up to %d cells. Select a smaller range.", SheetWindowController.maximumCellOperationCount)
+        for (name, action) in [("format", { w.toggleBold(nil) }), ("fill", { w.fillDown(nil) }),
+                                ("copy", { w.copy(nil) }), ("cut", { w.cut(nil) })] {
+            let clipboardVersion = SheetWindowController.pasteboard.changeCount
+            w.lastAlertMessage = nil
+            action()
+            check("huge range \(name) is refused without changing data or clipboard", w.lastAlertMessage == limitMessage
+                  && w.sheet.cells == stored && w.sheet.arrays == arrays && SheetWindowController.pasteboard.changeCount == clipboardVersion)
+        }
+        select("A1")
+        return failed
+    }
+
     static func filesAndArrays(_ w: SheetWindowController, _ doc: SheetDocument) -> Int {
         var failed = 0
         func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String = "") {

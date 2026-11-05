@@ -1,5 +1,6 @@
 // XLS42 UI strings: [English, Русский, Türkçe].
 let xls42Strings: [[String]] = [
+    ["CSV export supports up to %d cells, including empty cells before the last used cell.", "Экспорт CSV поддерживает до %d ячеек, включая пустые ячейки до последней используемой.", "CSV dışa aktarma, son kullanılan hücreden önceki boş hücreler dahil en fazla %d hücreyi destekler."],
     ["Spreadsheets with formulas", "Таблицы с формулами", "Formüllü tablolar"],
     ["Open Spreadsheet…", "Открыть таблицу…", "Tablo Aç…"],
     ["New Spreadsheet", "Новая таблица", "Yeni Tablo"],
@@ -7,6 +8,7 @@ let xls42Strings: [[String]] = [
     ["Russian function names (СУММ, ЕСЛИ, ВПР…) are accepted too.", "Можно писать и русские имена функций (СУММ, ЕСЛИ, ВПР…).", "Rusça işlev adları (СУММ, ЕСЛИ, ВПР…) da kabul edilir."],
     ["Clear Contents", "Очистить содержимое", "İçeriği Temizle"],
     ["Clear Formats", "Очистить форматы", "Biçimleri Temizle"],
+    ["This operation supports up to %d cells. Select a smaller range.", "Эта операция поддерживает до %d ячеек. Выберите меньший диапазон.", "Bu işlem en fazla %d hücreyi destekler. Daha küçük bir aralık seçin."],
     ["Fill Down", "Заполнить вниз", "Aşağı Doldur"],
     ["Fill Right", "Заполнить вправо", "Sağa Doldur"],
     ["Find…", "Найти…", "Bul…"],
@@ -31,7 +33,7 @@ let xls42Strings: [[String]] = [
     ["Underline", "Подчёркнутый", "Altı Çizili"],
     ["Strikethrough", "Зачёркнутый", "Üstü Çizili"],
     ["Align Left", "По левому краю", "Sola Hizala"],
-    ["Align Center", "По центру", "Ortala"],
+    ["Align Centre", "По центру", "Ortala"],
     ["Align Right", "По правому краю", "Sağa Hizala"],
     ["Wrap Text", "Переносить текст", "Metni Kaydır"],
     ["Merge Cells", "Объединить ячейки", "Hücreleri Birleştir"],
@@ -700,7 +702,7 @@ let xls42Strings: [[String]] = [
     ["Cell Style", "Стиль ячейки", "Hücre Stili"],
     ["Cell Styles", "Стили ячеек", "Hücre Stilleri"],
     ["Cells…", "Ячейки…", "Hücreler…"],
-    ["Center", "По центру", "Orta"],
+    ["Centre", "По центру", "Orta"],
     ["Colour:", "Цвет:", "Renk:"],
     ["Column starts:", "Начала столбцов:", "Sütun başlangıçları:"],
     ["Column types:", "Типы столбцов:", "Sütun türleri:"],

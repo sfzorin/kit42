@@ -26,7 +26,7 @@ enum Cmd {
     static let insertImage = Command(L("Image…"), #selector(W.insertImageAction(_:)), symbol: "photo", shortcut: Shortcut("i", [.command, .shift]))
     static let insertTable = Command(L("Table…"), #selector(W.insertTableAction(_:)), symbol: "tablecells", shortcut: Shortcut("t", [.command, .option]))
     static let stamps = Command(L("Signature or Stamp…"), #selector(W.showStampsAction(_:)), symbol: "signature",
-                                shortcut: Shortcut("k", [.command, .shift]), toolTip: L("Insert a signature or stamp"), label: L("Signature"))
+                                shortcut: Shortcut("k", [.command, .shift]), toolTip: L("Insert a signature or stamp"), label: L("Stamp"))
     static let pageBreak = Command(L("Page Break"), #selector(W.insertPageBreakAction(_:)), shortcut: Shortcut("\r", [.command, .shift]))
     static let date = Command(L("Date"), #selector(W.insertDateAction(_:)))
     static let sectionBreak = Command(L("Section Break (Next Page)"), #selector(W.insertSectionBreakAction(_:)))
@@ -72,7 +72,7 @@ enum Cmd {
     static let bigger = Command(L("Bigger"), #selector(W.biggerAction(_:)), shortcut: Shortcut(".", [.command, .shift]))
     static let smaller = Command(L("Smaller"), #selector(W.smallerAction(_:)), shortcut: Shortcut(",", [.command, .shift]))
     static let alignLeft = Command(L("Align Left"), #selector(W.alignAction(_:)), symbol: "text.alignleft", shortcut: Shortcut("{"), tag: 0)
-    static let alignCenter = Command(L("Align Center"), #selector(W.alignAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
+    static let alignCenter = Command(L("Align Centre"), #selector(W.alignAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
     static let alignRight = Command(L("Align Right"), #selector(W.alignAction(_:)), symbol: "text.alignright", shortcut: Shortcut("}"), tag: 2)
     static let justify = Command(L("Justify"), #selector(W.alignAction(_:)), symbol: "text.justify", tag: 3)
     static let bulletList = Command(L("Bulleted List"), #selector(W.bulletListAction(_:)), symbol: "list.bullet", shortcut: Shortcut("7", [.command, .shift]))
@@ -218,13 +218,19 @@ enum Cmd {
         return spec
     }
 
+    /// Default toolbar: insert actions, panels and search. Zoom lives in the status bar slider;
+    /// print/export are in the File menu. The rest stays available in Customize Toolbar.
     static var toolbar: [ToolbarElement] {
         [
-            .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(footnote), .command(comment), .command(trackChanges),
+            .command(insertImage), .command(insertTable), .command(stamps), .command(link), .command(comment),
             .flexibleSpace,
-            .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
-            .command(stylesPanel), .command(navigator), .command(formatBar), .command(print), .command(exportPDF),
+            .command(stylesPanel), .command(navigator), .command(formatBar),
             .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
         ]
+    }
+
+    static var toolbarOptional: [ToolbarElement] {
+        [.command(footnote), .command(trackChanges), .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
+         .command(print), .command(exportPDF)]
     }
 }

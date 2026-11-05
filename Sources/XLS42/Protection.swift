@@ -62,11 +62,10 @@ extension SheetProtection {
 extension SheetWindowController {
     /// Data › Protect Sheet… / Unprotect Sheet…
     @objc func protectSheetAction(_ sender: Any?) {
-        guard doc != nil else { return }
-        grid.commitEdit(move: nil)
+        guard doc != nil, grid.commitEdit(move: nil) else { return }
         if let p = sheet.protection {
             var password = ""
-            if p.passwordHash != nil || p.odsKey != nil {
+            if p.passwordHash != nil || p.odsKey != nil || p.sha512Hash != nil {
                 let field = NSSecureTextField(string: "")
                 let alert = NSAlert.form(L("Unprotect Sheet"), ok: L("Unprotect"), rows: [(L("Password:"), field)])
                 alert.window.initialFirstResponder = field
@@ -108,9 +107,10 @@ extension SheetWindowController {
 
     /// Format › Protection › Locked: toggles the Locked flag of the selected cells.
     @objc func toggleLockedAction(_ sender: Any?) {
-        guard guardEditable(nil) else { return }
+        guard grid.commitEdit(move: nil), guardEditable(nil) else { return }
         let locked = !sheet[grid.active].style.locked
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         doc?.change(L("Locked"), recalc: false) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]

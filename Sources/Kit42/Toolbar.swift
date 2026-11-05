@@ -27,12 +27,15 @@ public final class ToolbarController: NSObject, NSToolbarDelegate {
     public let toolbar: NSToolbar
     public private(set) var searchItem: NSSearchToolbarItem?
     private let elements: [ToolbarElement]
+    /// Items offered in Customize Toolbar but not placed by default.
+    private let optional: [ToolbarElement]
     private var built: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
 
-    public init(identifier: String, elements: [ToolbarElement]) {
+    public init(identifier: String, elements: [ToolbarElement], optional: [ToolbarElement] = []) {
         self.elements = elements
-        // ".3": saved layouts start over once (labels shown; a test once saved the toolbar hidden).
-        toolbar = NSToolbar(identifier: identifier + ".3")
+        self.optional = optional
+        // ".4": saved layouts start over once (the default sets were trimmed; rarely used items moved to `optional`).
+        toolbar = NSToolbar(identifier: identifier + ".4")
         super.init()
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
@@ -47,12 +50,12 @@ public final class ToolbarController: NSObject, NSToolbarDelegate {
     }
 
     public func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        elements.map(\.identifier) + [.space, .flexibleSpace]
+        (elements + optional).map(\.identifier) + [.space, .flexibleSpace]
     }
 
     public func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                         willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard let element = elements.first(where: { $0.identifier == id }) else { return nil }
+        guard let element = (elements + optional).first(where: { $0.identifier == id }) else { return nil }
         let item: NSToolbarItem
         switch element {
         case .command(let command):

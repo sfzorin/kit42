@@ -14,6 +14,12 @@ final class SheetDocument: NSDocument {
 
     var editor: SheetWindowController? { windowControllers.first as? SheetWindowController }
 
+    override var isDocumentEdited: Bool {
+        if super.isDocumentEdited { return true }
+        guard let editor, let pending = editor.grid.pendingEdit else { return false }
+        return pending.text != editor.editText(at: pending.cell)
+    }
+
     override func makeWindowControllers() {
         addWindowController(SheetWindowController())
     }
@@ -24,15 +30,25 @@ final class SheetDocument: NSDocument {
     }
 
     override func read(from data: Data, ofType typeName: String) throws {
-        workbook = try SpreadsheetFile.read(data, typeName: typeName)
-        workbook = Calculator.recalculate(workbook)
+        let restored = Calculator.recalculate(try SpreadsheetFile.read(data, typeName: typeName))
+        // Failed reads leave the live editor intact; successful Revert discards its draft.
+        editor?.grid.cancelEdit()
+        workbook = restored
+        if let editor {
+            editor.workbookDidChange()
+            editor.grid.select(CellRef(row: 0, col: 0))
+            editor.restoreSplit()
+        }
     }
 
     override func data(ofType typeName: String) throws -> Data {
         editor?.grid.commitEdit(move: nil)
+        if editor?.grid.isEditing == true {
+            throw NSError(domain: "XLS42", code: 1, userInfo: [NSLocalizedDescriptionKey: editor?.lastAlertMessage ?? L("Invalid value")])
+        }
         editor?.storeSplit()
         if Self.isCSV(typeName) {
-            return XLSX.writeCSV(workbook.sheets[editor?.sheetIndex ?? 0])
+            return try XLSX.writeCSV(workbook.sheets[editor?.sheetIndex ?? 0], date1904: workbook.date1904)
         }
         if typeName.contains("opendocument") || typeName.lowercased().hasSuffix("ods") { return ODS.write(workbook) }
         return XLSX.write(workbook)
@@ -67,6 +83,7 @@ final class SheetDocument: NSDocument {
 
     override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
         editor?.grid.commitEdit(move: nil)
+        if editor?.grid.isEditing == true { throw NSError(domain: "XLS42", code: 1, userInfo: [NSLocalizedDescriptionKey: editor?.lastAlertMessage ?? L("Invalid value")]) }
         let options = SheetExport.Options.saved
         if options.scope == .selection, editor == nil { options.scope = .sheet }
         let info = SheetExport.printInfo(from: printInfo)

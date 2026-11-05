@@ -51,6 +51,7 @@ let pdf42Strings: [[String]] = [
     ["Sign Document…", "Подписать документ…", "Belgeyi İmzala…"],
     ["Add a digital signature", "Поставить цифровую подпись", "Dijital imza ekle"],
     ["Sign", "Подписать", "İmzala"],
+    ["Sign Digitally", "Подписать ЭП", "E-İmzala"],
     ["Verify Signatures", "Проверить подписи", "İmzaları Doğrula"],
     ["Import Certificate (.p12)…", "Импортировать сертификат (.p12)…", "Sertifika İçe Aktar (.p12)…"],
     ["Create Self-Signed Certificate…", "Создать самоподписанный сертификат…", "Kendinden İmzalı Sertifika Oluştur…"],

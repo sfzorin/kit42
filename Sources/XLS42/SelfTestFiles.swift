@@ -17,6 +17,33 @@ extension SelfTest {
         }
         func formats(_ wb: Workbook) -> [(String, Data)] { [("xlsx", XLSX.write(wb)), ("ods", ODS.write(wb))] }
 
+        // Saving must preserve formula literals, including small numbers in scientific notation.
+        var precise = Workbook()
+        for (i, literal) in ["1.23456789012345", "0.000000123456789012345", "1234567890123456"].enumerated() {
+            put(&precise, 0, "A\(i + 1)", "=\(literal)+0")
+            put(&precise, 0, "B\(i + 1)", "=SUM({\(literal),0})")
+            put(&precise, 0, "C\(i + 1)", literal)
+        }
+        precise = Calculator.recalculate(precise)
+        for (kind, data) in formats(precise) {
+            let back = (try? SpreadsheetFile.read(data)).map(Calculator.recalculate)
+            for r in 0..<3 { for c in 0..<3 {
+                let ref = CellRef(row: r, col: c)
+                check("\(kind): numeric precision round trip \(ref.a1)", back?.sheets[0][ref].value == precise.sheets[0][ref].value)
+                if c == 2, let cell = back?.sheets[0][ref] {
+                    check("\(kind): numeric edit text preserves precision \(ref.a1)", XLSX.constant(cell.input) == cell.value)
+                }
+            } }
+        }
+        for (kind, data) in [("save CSV", try! XLSX.writeCSV(precise.sheets[0])),
+                             ("export CSV", try! SheetExport.csv(precise.sheets[0], delimiter: ",", bom: true))] {
+            let back = XLSX.readCSV(data)
+            for r in 0..<3 { for c in 0..<3 {
+                let ref = CellRef(row: r, col: c)
+                check("\(kind): numeric precision round trip \(ref.a1)", back.sheets[0][ref].value == precise.sheets[0][ref].value)
+            } }
+        }
+
         // MARK: Solver model
         var wb = Workbook()
         wb.sheets = [Sheet(name: "Data"), Sheet(name: "Plan 1")]

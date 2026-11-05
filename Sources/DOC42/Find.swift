@@ -77,6 +77,14 @@ enum TextSearch {
         o.regex ? re.replacementString(for: m, in: s, offset: 0, template: template) : template
     }
 
+    /// A selected match still obeys boundaries and lookarounds in the surrounding document.
+    static func selectedMatch(in string: String, range: NSRange, expression: NSRegularExpression) -> NSTextCheckingResult? {
+        guard range.length > 0,
+              let match = expression.firstMatch(in: string, options: [.anchored, .withTransparentBounds, .withoutAnchoringBounds], range: range),
+              match.range == range else { return nil }
+        return match
+    }
+
     /// Replaces every match in one undoable change (through `textView` when given). Returns the count.
     @discardableResult
     static func replaceAll(_ storage: NSTextStorage, find: String, with template: String, _ o: FindOptions, in scope: NSRange? = nil,
@@ -194,7 +202,7 @@ final class FindReplacePanel: NSWindowController, NSWindowDelegate {
         let tv = editor.textView
         let sel = tv.selectedRange()
         // Replace the selection when it is a match, then go to the next one.
-        if sel.length > 0, let m = re.firstMatch(in: tv.string, options: [.anchored], range: sel), m.range == sel {
+        if let m = TextSearch.selectedMatch(in: tv.string, range: sel, expression: re) {
             let r = TextSearch.replacement(m, in: tv.string, template: replaceField.stringValue, re, options)
             if tv.shouldChangeText(in: sel, replacementString: r) {
                 storage.replaceCharacters(in: sel, with: r)

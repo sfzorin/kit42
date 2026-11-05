@@ -94,19 +94,32 @@ enum Orientation {
         return replace(url, with: tmp)
     }
 
-    /// Writes the image description (IPTC caption, XMP dc:description, TIFF ImageDescription) without re-encoding.
-    static func writeDescription(_ text: String?, to url: URL) -> Bool {
+    /// Writes description and optional print resolution without re-encoding.
+    static func writeMetadata(description text: String?, resolution: CGFloat? = nil, to url: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let type = CGImageSourceGetType(source) else { return false }
         let meta = CGImageMetadataCreateMutable()
         let value = (text ?? "") as CFString
         _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyIPTCDictionary, kCGImagePropertyIPTCCaptionAbstract, value)
         _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFImageDescription, value)
+        if let resolution {
+            let value = NSNumber(value: Double(resolution))
+            _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFXResolution, value)
+            _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFYResolution, value)
+            _ = CGImageMetadataSetValueMatchingImageProperty(meta, kCGImagePropertyTIFFDictionary, kCGImagePropertyTIFFResolutionUnit, NSNumber(value: 2))
+        }
         let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).\(url.pathExtension)")
         guard let dest = CGImageDestinationCreateWithURL(tmp as CFURL, type, CGImageSourceGetCount(source), nil) else { return false }
         let options: [CFString: Any] = [kCGImageDestinationMetadata: meta, kCGImageDestinationMergeMetadata: true]
         guard CGImageDestinationCopyImageSource(dest, source, options as CFDictionary, nil) else {
             try? FileManager.default.removeItem(at: tmp)
             return false
+        }
+        if let resolution {
+            let actual = ImageLoader.properties(tmp)[kCGImagePropertyDPIWidth] as? CGFloat
+            guard let actual, abs(actual - resolution) < 0.05 else {
+                try? FileManager.default.removeItem(at: tmp)
+                return false
+            }
         }
         return replace(url, with: tmp)
     }
@@ -139,7 +152,7 @@ enum ImageWriter {
             tiff[kCGImagePropertyTIFFOrientation] = 1
             p[kCGImagePropertyTIFFDictionary] = tiff
         }
-        for key in [kCGImagePropertyPixelWidth, kCGImagePropertyPixelHeight, kCGImagePropertyDPIWidth, kCGImagePropertyDPIHeight] {
+        for key in [kCGImagePropertyPixelWidth, kCGImagePropertyPixelHeight] {
             p.removeValue(forKey: key)
         }
         if var exif = p[kCGImagePropertyExifDictionary] as? [CFString: Any] {
@@ -152,8 +165,17 @@ enum ImageWriter {
 
     /// Writes `image` atomically. `quality` applies to lossy formats.
     static func write(_ image: CGImage, to url: URL, type: String, quality: Double = 0.92, metadataFrom source: URL? = nil,
-                      description: String?? = .none) throws {
+                      description: String?? = .none, dpi: CGFloat? = nil) throws {
         var props = metadata(from: source)
+        if let dpi, dpi.isFinite, dpi > 0 {
+            props[kCGImagePropertyDPIWidth] = dpi
+            props[kCGImagePropertyDPIHeight] = dpi
+            var tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+            tiff[kCGImagePropertyTIFFXResolution] = dpi
+            tiff[kCGImagePropertyTIFFYResolution] = dpi
+            tiff[kCGImagePropertyTIFFResolutionUnit] = 2
+            props[kCGImagePropertyTIFFDictionary] = tiff
+        }
         if case .some(let text) = description {
             var iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
             var tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]

@@ -26,6 +26,29 @@ extension SheetWindowController {
         return false
     }
 
+    /// Non-rectangular writes (Skip blanks and fill destinations) must cover every
+    /// cell of an intersected legacy array, not merely its bounding rectangle.
+    func guardArrayEdits(_ refs: Set<CellRef>, in target: Sheet? = nil) -> Bool {
+        let target = target ?? sheet
+        for range in target.arrays.values where range.count > 1 {
+            let touched = refs.reduce(0) { $0 + (range.contains($1) ? 1 : 0) }
+            if touched > 0 && touched != range.count {
+                report(Self.partOfArrayMessage)
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Called only after guardArrayEdits accepted the exact write footprint.
+    func dropArrays(replacedBy refs: Set<CellRef>, of wb: inout Workbook, sheet target: Int? = nil) {
+        let si = target ?? sheetIndex
+        for anchor in Array(wb.sheets[si].arrays.keys) where refs.contains(anchor) {
+            wb.sheets[si].arrays[anchor] = nil
+            wb.sheets[si].cells[anchor]?.array = false
+        }
+    }
+
     /// ⌘⇧Return: enters the edited (or the active cell's) formula as an array formula over the selection.
     @objc func enterArrayAction(_ sender: Any?) {
         var text: String

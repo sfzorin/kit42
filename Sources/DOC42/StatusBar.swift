@@ -2,10 +2,10 @@ import AppKit
 import Kit42
 import NaturalLanguage
 
-/// Bottom bar like Writer's: page X of Y, words (of the selection), language, view layout, zoom slider.
+/// Bottom bar: words (of the selection), language, view layout, zoom slider.
+/// The page position is the window subtitle (DocWindowController.updateStatus), so it is not repeated here.
 final class DocStatusBar: NSView {
     static let height: CGFloat = 24
-    let page = NSTextField(labelWithString: "")
     let words = NSTextField(labelWithString: "")
     let language = NSTextField(labelWithString: "")
     let layout = NSSegmentedControl()
@@ -16,12 +16,11 @@ final class DocStatusBar: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for f in [page, words, language, zoomLabel] {
+        for f in [words, language, zoomLabel] {
             f.font = .systemFont(ofSize: 11)
             f.textColor = .secondaryLabelColor
             f.lineBreakMode = .byTruncatingTail
         }
-        page.toolTip = L("Page")
         words.toolTip = L("Word count")
         language.toolTip = L("Language")
         layout.segmentCount = 4
@@ -43,7 +42,7 @@ final class DocStatusBar: NSView {
         zoom.action = #selector(zoomChanged(_:))
         zoom.toolTip = L("Zoom")
         zoomLabel.alignment = .right
-        let left = NSStackView(views: [page, words, language])
+        let left = NSStackView(views: [words, language])
         left.spacing = 18
         let right = NSStackView(views: [layout, zoom, zoomLabel])
         right.spacing = 8
@@ -100,10 +99,9 @@ final class DocStatusBar: NSView {
 
 extension DocWindowController {
     func updateStatusBar() {
+        updateStatus()
         guard !statusBar.isHidden, let storage = textView.textStorage else { return }
         let sel = textView.selectedRange()
-        let pageNumber = paged.viewMode == .web ? 1 : paged.pageNumber(at: sel.location)
-        statusBar.page.stringValue = L("Page %d of %d", pageNumber, paged.cards.count)
         let all = TextStats.of(storage, NSRange(location: 0, length: storage.length), layout: nil)
         if sel.length > 0 {
             let part = TextStats.of(storage, sel, layout: nil)
@@ -135,11 +133,12 @@ extension DocWindowController {
     }
 
     func setViewMode(_ m: PagedView.ViewMode) {
+        if paged.viewMode != m { headerEditor?.commit() }
         paged.viewMode = m
         if m == .multi, scroller.magnification > 0.6 { scroller.magnification = 0.5 }
         if m == .book, scroller.magnification > 0.8 { scroller.magnification = 0.7 }
         if m == .single || m == .web { scroller.magnification = max(scroller.magnification, 1) }
-        ruler.needsDisplay = true
+        syncRulerSetup()
         updateStatusBar()
     }
 }

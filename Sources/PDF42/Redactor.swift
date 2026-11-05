@@ -925,7 +925,7 @@ enum PDFCompactor {
                 default: break
                 }
                 var found: Int?
-                if let length, start + length <= bytes.count {
+                if let length, length >= 0, length <= bytes.count - start {
                     var l = PDFLexer(bytes: bytes, pos: start + length)
                     l.skipWhitespace()
                     if l.peek("endstream") { found = l.pos }

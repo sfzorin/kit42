@@ -10,29 +10,42 @@ struct PDFOptions {
     var bookmarks = true
     var comments = false
 
-    /// Page indices (from 0) to keep, nil: all.
-    func pageSet(count: Int) -> Set<Int>? {
-        let spec = pages.trimmingCharacters(in: .whitespaces)
+    enum PageRangeError: LocalizedError {
+        case invalid
+        var errorDescription: String? { L("Enter a valid page range containing at least one document page.") }
+    }
+
+    /// Page indices (from 0) to keep, nil only for an empty specification (all pages).
+    /// Clip numeric bounds before expanding them; a typo must not export the whole document.
+    func pageSet(count: Int) throws -> Set<Int>? {
+        let spec = pages.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spec.isEmpty else { return nil }
         var out = Set<Int>()
-        for part in spec.split(whereSeparator: { $0 == "," || $0 == ";" }) {
-            let bounds = part.split(separator: "-", omittingEmptySubsequences: false).map { Int($0.trimmingCharacters(in: .whitespaces)) }
-            if bounds.count == 1, let a = bounds[0] { out.insert(a - 1) } else if bounds.count == 2 {
-                let a = bounds[0] ?? 1, b = bounds[1] ?? count
-                if a <= b { for k in a...b { out.insert(k - 1) } }
+        for part in spec.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "," || $0 == ";" }) {
+            let bounds = part.split(separator: "-", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if bounds.count == 1, let page = Int(bounds[0]), page > 0 {
+                if page <= count { out.insert(page - 1) }
+            } else if bounds.count == 2, !bounds.allSatisfy(\.isEmpty) {
+                guard let a = bounds[0].isEmpty ? 1 : Int(bounds[0]),
+                      let b = bounds[1].isEmpty ? count : Int(bounds[1]), a > 0, b > 0, a <= b else { throw PageRangeError.invalid }
+                let low = max(1, a), high = min(count, b)
+                if low <= high { for page in low...high { out.insert(page - 1) } }
+            } else {
+                throw PageRangeError.invalid
             }
         }
-        let valid = out.filter { $0 >= 0 && $0 < count }
-        return valid.isEmpty ? nil : valid
+        guard !out.isEmpty else { throw PageRangeError.invalid }
+        return out
     }
 }
 
 extension TextDocument {
     /// Paginated PDF like Writer's export: headings as bookmarks, clickable links (web and inside the document),
     /// comments as notes, title and author in the PDF's properties, a page range and picture quality.
-    func pdfData(_ o: PDFOptions) -> Data {
+    func pdfData(_ o: PDFOptions) throws -> Data {
         let view = offscreenPages(accepted: true)
         defer { view.detach() }
+        let selectedPages = try o.pageSet(count: view.cards.count)
         ImageCell.exportQuality = o.quality
         defer { ImageCell.exportQuality = 1; ImageCell.clearReduced() }
         let raw = view.hasMixedPageSizes ? view.pdfData() : PaginatedPDF.render(view, info: pageInfo())
@@ -93,7 +106,7 @@ extension TextDocument {
             }
         }
         return PaginatedPDF.finish(raw, title: docInfo.title, author: docInfo.author, creator: "DOC42", outline: outline, links: links, notes: notes,
-                                   pages: o.pageSet(count: view.cards.count))
+                                   pages: selectedPages)
     }
 }
 
@@ -124,13 +137,18 @@ extension DocWindowController {
         o.quality = qualities[max(0, quality.indexOfSelectedItem)]
         o.bookmarks = bookmarks.state == .on
         o.comments = comments.state == .on
+        do {
+            let view = doc.offscreenPages(accepted: true)
+            defer { view.detach() }
+            _ = try o.pageSet(count: view.cards.count)
+        } catch { NSApp.presentError(error); return }
         Self.lastPDFOptions = o
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = (doc.fileURL?.deletingPathExtension().lastPathComponent ?? doc.displayName ?? L("Document")) + ".pdf"
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
-            do { try doc.pdfData(o).write(to: url) } catch { NSApp.presentError(error) }
+            do { try doc.pdfData(o).write(to: url, options: .atomic) } catch { NSApp.presentError(error) }
         }
     }
 

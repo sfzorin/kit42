@@ -5,6 +5,8 @@ import Kit42
 /// Values, formulas (OpenFormula ↔ Excel syntax), cell styles, number formats, column widths,
 /// row heights, merges, freeze panes, comments, print ranges and named ranges.
 enum ODS {
+    static func xmlEscape(_ text: String) -> String { XLSX.xmlEscape(text) }
+
     // MARK: - Reading
 
     struct StyleInfo {
@@ -13,6 +15,7 @@ enum ODS {
         var rowHeight: CGFloat?
         var dataStyle: String?
         var parent: String?
+        var element: XMLElement?
     }
 
     static func read(_ data: Data) throws -> Workbook {
@@ -23,6 +26,17 @@ enum ODS {
         }
         guard let content = xml("content.xml"), let spreadsheet = content.child("body")?.child("spreadsheet") else { throw ZipError.corrupt }
         let stylesRoot = xml("styles.xml")
+
+        // Repetition counts are dimensions, never signed offsets. Reject invalid
+        // documents before constructing Swift ranges or overflowing coordinates.
+        func count(_ element: XMLElement, _ attribute: String, maximum: Int) throws -> Int {
+            guard maximum > 0 else { throw ZipError.corrupt }
+            guard let raw = element.attr(attribute) else { return 1 }
+            guard let value = Int(raw), value > 0, value <= maximum else { throw ZipError.corrupt }
+            return value
+        }
+        let maxRows = 1_048_576, maxCols = 16_384
+        var expandedCells = 0
 
         // Styles: common (styles.xml) then automatic (content.xml); number styles from both.
         var numberFormats: [String: String] = [:]
@@ -58,7 +72,10 @@ enum ODS {
             var seen = Set<String>()
             while let k = n, let s = styles[k], !seen.contains(k) { seen.insert(k); chain.insert(s, at: 0); n = s.parent }
             var out = styles["__default"]?.style ?? CellStyle()
-            for s in chain { out = merge(out, s.style) }
+            for s in chain {
+                if let element = s.element { out = styleInfo(element, base: out).style }
+                if let name = s.style.styleName { out.styleName = name }
+            }
             if let ds = chain.last(where: { $0.dataStyle != nil })?.dataStyle, let code = numberFormats[ds] { out.numberFormat = code }
             return out
         }
@@ -73,6 +90,7 @@ enum ODS {
 
         var wb = Workbook()
         wb.sheets = []
+        wb.date1904 = spreadsheet.child("calculation-settings")?.child("null-date")?.attr("date-value") == "1904-01-01"
         for name in commonCellStyles {
             let s = cellStyle(name)
             if let n = s.styleName, wb.cellStyles[n] == nil { wb.cellStyles[n] = s }
@@ -98,74 +116,94 @@ enum ODS {
             var col = 0
             var columnDefault: [Int: String] = [:]
             for (c, level) in outlined(table, "table-column", group: "table-column-group") {
-                let n = min(Int(c.attr("number-columns-repeated") ?? "1") ?? 1, 1024)
+                let n = try count(c, "number-columns-repeated", maximum: maxCols - col)
                 let w = c.attr("style-name").flatMap { styles[$0]?.columnWidth }
                 let hidden = c.attr("visibility") == "collapse"
                 let defaultStyle = c.attr("default-cell-style-name").flatMap { $0 == "Default" ? nil : $0 }
-                for k in 0..<n where col + k < 1024 {
+                for k in 0..<n {
                     if level > 0 { sheet.colLevels[col + k] = min(level, Sheet.maxOutlineLevel) }
                     if hidden && level > 0 {
                         sheet.outlineHiddenCols.insert(col + k)
                         if let w, abs(w - sheet.defaultColumnWidth) > 0.5 { sheet.columnWidths[col + k] = w }
                     }
                     else if hidden { sheet.columnWidths[col + k] = 0 }
-                    else if let w, abs(w - sheet.defaultColumnWidth) > 0.5, n < 1024 { sheet.columnWidths[col + k] = w }
+                    else if let w, abs(w - sheet.defaultColumnWidth) > 0.5 { sheet.columnWidths[col + k] = w }
                     if let defaultStyle { columnDefault[col + k] = defaultStyle }
                 }
                 col += n
             }
             var row = 0
             for (r, level) in outlined(table, "table-row", group: "table-row-group") {
-                let repeatRows = Int(r.attr("number-rows-repeated") ?? "1") ?? 1
+                let repeatRows = try count(r, "number-rows-repeated", maximum: maxRows - row)
                 let cells = r.children ?? []
+                // Even an otherwise empty row can contain invalid repetition
+                // counts. Validate before skipping it, including covered cells.
+                var declaredCol = 0
+                for case let cell as XMLElement in cells where cell.localName == "table-cell" || cell.localName == "covered-table-cell" {
+                    let n = try count(cell, "number-columns-repeated", maximum: maxCols - declaredCol)
+                    if cell.localName == "table-cell" {
+                        for attribute in ["number-columns-spanned", "number-matrix-columns-spanned"] {
+                            _ = try count(cell, attribute, maximum: maxCols - declaredCol - n + 1)
+                        }
+                        for attribute in ["number-rows-spanned", "number-matrix-rows-spanned"] {
+                            _ = try count(cell, attribute, maximum: maxRows - row - repeatRows + 1)
+                        }
+                    }
+                    declaredCol += n
+                }
                 let rowHeight = r.attr("style-name").flatMap { styles[$0]?.rowHeight }
                 let collapsed = r.attr("visibility") == "collapse"
-                if r.attr("visibility") == "filter" { for k in 0..<min(repeatRows, 100_000) { sheet.filterHidden.insert(row + k) } }
+                if r.attr("visibility") == "filter" { for k in 0..<repeatRows { sheet.filterHidden.insert(row + k) } }
                 if level > 0 {
-                    for k in 0..<min(repeatRows, 1000) {
+                    for k in 0..<repeatRows {
                         sheet.rowLevels[row + k] = min(level, Sheet.maxOutlineLevel)
                         if collapsed { sheet.outlineHiddenRows.insert(row + k) }
                     }
                 }
                 let hasContent = cells.contains { ($0 as? XMLElement).map {
-                    $0.attr("value-type") != nil || $0.attr("formula") != nil || $0.attr("content-validation-name") != nil || !($0.children ?? []).isEmpty } ?? false }
+                    $0.attr("value-type") != nil || $0.attr("formula") != nil || $0.attr("style-name") != nil || $0.attr("number-columns-spanned") != nil || $0.attr("number-rows-spanned") != nil || $0.attr("content-validation-name") != nil || !($0.children ?? []).isEmpty } ?? false }
                 if !hasContent {
-                    if collapsed && level == 0 { for k in 0..<min(repeatRows, 1000) { sheet.rowHeights[row + k] = 0 } }
+                    if collapsed && level == 0 { for k in 0..<repeatRows { sheet.rowHeights[row + k] = 0 } }
+                    else if let rowHeight, abs(rowHeight - sheet.defaultRowHeight) > 0.6 {
+                        for k in 0..<repeatRows { sheet.rowHeights[row + k] = rowHeight }
+                    }
                     row += repeatRows
                     continue
                 }
-                for k in 0..<min(repeatRows, 1000) {
+                for k in 0..<repeatRows {
                     let rr = row + k
                     if collapsed && level == 0 { sheet.rowHeights[rr] = 0 }
                     else if let rowHeight, abs(rowHeight - sheet.defaultRowHeight) > 0.6 { sheet.rowHeights[rr] = rowHeight }
                     var c = 0
                     for case let cellXML as XMLElement in cells {
-                        let repeatCols = Int(cellXML.attr("number-columns-repeated") ?? "1") ?? 1
+                        guard cellXML.localName == "table-cell" || cellXML.localName == "covered-table-cell" else { continue }
+                        let repeatCols = try count(cellXML, "number-columns-repeated", maximum: maxCols - c)
                         guard cellXML.localName == "table-cell" else { c += repeatCols; continue }
                         if let name = cellXML.attr("content-validation-name"), validationRules[name] != nil {
-                            for kc in 0..<min(repeatCols, 1024) { validationCells[name, default: []].append(CellRef(row: rr, col: c + kc)) }
+                            for kc in 0..<repeatCols { validationCells[name, default: []].append(CellRef(row: rr, col: c + kc)) }
                         }
-                        let (value, formula) = cellValue(cellXML)
+                        let (value, formula) = cellValue(cellXML, date1904: wb.date1904)
                         let comment = cellXML.child("annotation").map { a in
                             a.children("p").map(\.allTextODF).joined(separator: "\n")
                         }
                         let explicit = cellXML.attr("style-name") ?? r.attr("default-cell-style-name")
-                        // Empty cells only matter when their style is visible (fill or borders).
+                        // Blank formatted cells are meaningful: number formats and
+                        // unlocked input areas must survive a save/reopen too.
                         let isEmpty = value.isEmpty && formula == nil && comment == nil
-                        if isEmpty {
-                            let st = cellStyle(explicit ?? columnDefault[c])
-                            if st.fill == nil && st.left == nil && st.right == nil && st.top == nil && st.bottom == nil { c += repeatCols; continue }
-                        }
-                        for kc in 0..<min(repeatCols, isEmpty ? 256 : 1024) {
+                        for kc in 0..<repeatCols {
                             let ref = CellRef(row: rr, col: c + kc)
                             let style = cellStyle(explicit ?? columnDefault[c + kc])
+                            if isEmpty && style == cellStyle(nil) { continue }
+                            expandedCells += 1
+                            guard expandedCells <= 1_000_000 else { throw ZipError.corrupt }
                             var cell = Cell()
                             cell.style = style
                             cell.value = value
                             if let formula {
                                 cell.input = formula
-                                if let cs = cellXML.attr("number-matrix-columns-spanned").flatMap(Int.init),
-                                   let rs = cellXML.attr("number-matrix-rows-spanned").flatMap(Int.init) {
+                                if cellXML.attr("number-matrix-columns-spanned") != nil || cellXML.attr("number-matrix-rows-spanned") != nil {
+                                    let cs = try count(cellXML, "number-matrix-columns-spanned", maximum: maxCols - ref.col)
+                                    let rs = try count(cellXML, "number-matrix-rows-spanned", maximum: maxRows - ref.row)
                                     cell.array = true
                                     let range = CellRange(ref, CellRef(row: ref.row + max(1, rs) - 1, col: ref.col + max(1, cs) - 1))
                                     if cs * rs > 1 { matrixRanges.append(range) }
@@ -174,7 +212,7 @@ enum ODS {
                                     if !Calculator.isDynamic(formula) { sheet.arrays[ref] = range }
                                 }
                             } else {
-                                cell.input = XLSX.inputText(for: value, style: style)
+                                cell.input = XLSX.inputText(for: value, style: style, date1904: wb.date1904)
                                 if case .string(let s) = value, XLSX.constant(s) != .string(s) || s.hasPrefix("=") { cell.input = "'" + s }
                             }
                             sheet[ref] = cell
@@ -184,8 +222,8 @@ enum ODS {
                                 sheet.hyperlinks[ref] = href
                             }
                         }
-                        let colSpan = Int(cellXML.attr("number-columns-spanned") ?? "1") ?? 1
-                        let rowSpan = Int(cellXML.attr("number-rows-spanned") ?? "1") ?? 1
+                        let colSpan = try count(cellXML, "number-columns-spanned", maximum: maxCols - c)
+                        let rowSpan = try count(cellXML, "number-rows-spanned", maximum: maxRows - rr)
                         if colSpan > 1 || rowSpan > 1 {
                             sheet.merges.append(CellRange(CellRef(row: rr, col: c), CellRef(row: rr + rowSpan - 1, col: c + colSpan - 1)))
                         }
@@ -195,7 +233,7 @@ enum ODS {
                 row += repeatRows
             }
             for r in matrixRanges {
-                for ref in r.cells where ref != r.start {
+                for ref in sheet.cells.keys.filter({ $0 != r.start && r.contains($0) }) {
                     if var c = sheet.cells[ref], !c.isFormula { c.input = ""; sheet.cells[ref] = c }
                 }
             }
@@ -213,7 +251,7 @@ enum ODS {
             }
             if !solverNames.isEmpty { sheet.solver = SolverFiles.model(solverNames, sheet: sheet.name) }
             if let ranges = table.attr("print-ranges") {
-                sheet.printArea = rangeFromODF(String(ranges.split(separator: " ").first ?? "")).flatMap { CellRange($0.range.replacingOccurrences(of: "$", with: "")) }
+                sheet.printArea = rangeFromODF(addresses(ranges).first ?? "").flatMap { CellRange($0.range.replacingOccurrences(of: "$", with: "")) }
             }
             wb.sheets.append(sheet)
         }
@@ -221,9 +259,11 @@ enum ODS {
         var globalSolver: [String: String] = [:]
         for case let n as XMLElement in spreadsheet.child("named-expressions")?.children ?? [] {
             if let name = n.attr("name"), SolverFiles.isSolverName(name) { if let t = solverText(n) { globalSolver[name] = t }; continue }
-            guard n.localName == "named-range" else { continue }
-            if let name = n.attr("name"), let addr = n.attr("cell-range-address"), let r = rangeFromODF(addr) {
+            guard let name = n.attr("name") else { continue }
+            if n.localName == "named-range", let addr = n.attr("cell-range-address"), let r = rangeFromODF(addr) {
                 wb.names[name] = (r.sheet.map { Formula.sheetPrefix($0) } ?? "") + r.range
+            } else if n.localName == "named-expression", let expression = n.attr("expression") {
+                wb.names[name] = String(excelFormula(expression).dropFirst())
             }
         }
         if let opt = globalSolver["solver_opt"], let bang = opt.lastIndex(of: "!") {
@@ -273,6 +313,19 @@ enum ODS {
         return out
     }
 
+    /// ODF space-separated address lists allow spaces inside quoted sheet names.
+    static func addresses(_ text: String) -> [String] {
+        var parts: [String] = [], part = "", quoted = false
+        for character in text {
+            if character == "'" { quoted.toggle() }
+            if character == " " && !quoted {
+                if !part.isEmpty { parts.append(part); part = "" }
+            } else { part.append(character) }
+        }
+        if !part.isEmpty { parts.append(part) }
+        return parts
+    }
+
     /// A solver_… name as Excel text: "Sheet1!$A$1:$B$2" for named ranges (several joined by ","), the expression otherwise.
     static func solverText(_ e: XMLElement) -> String? {
         if e.localName == "named-range", let addr = e.attr("cell-range-address") {
@@ -305,7 +358,7 @@ enum ODS {
         return out
     }
 
-    static func cellValue(_ c: XMLElement) -> (Value, String?) {
+    static func cellValue(_ c: XMLElement, date1904: Bool = false) -> (Value, String?) {
         var formula: String? = nil
         if let f = c.attr("formula") { formula = excelFormula(f) }
         let text = c.children("p").map(\.allTextODF).joined(separator: "\n")
@@ -318,6 +371,7 @@ enum ODS {
             let d = parts.first.map(String.init) ?? ""
             let nums = d.split(separator: "-").compactMap { Int($0) }
             var serial = nums.count == 3 ? DateMath.serial(year: nums[0], month: nums[1], day: nums[2]) ?? 0 : 0
+            if date1904 { serial -= 1462 }
             if parts.count > 1, let t = DateMath.parseTime(String(parts[1].prefix(8))) { serial += t }
             return (.number(serial), formula)
         case "time":
@@ -428,40 +482,42 @@ enum ODS {
         let parts = s.split(separator: " ")
         let width = parts.first.flatMap { length(String($0)) } ?? 0.75
         let style = parts.contains("dashed") ? "dashed" : parts.contains("dotted") ? "dotted" : parts.contains("double") ? "double"
-            : width >= 2 ? "thick" : width >= 1.2 ? "medium" : "thin"
+            : width >= 2 ? "thick" : width >= 1.2 ? "medium" : width <= 0.5 ? "hair" : "thin"
         return BorderSide(style: style, color: parts.last.flatMap { color(String($0)) } ?? .black)
     }
 
-    static func styleInfo(_ e: XMLElement) -> StyleInfo {
+    static func styleInfo(_ e: XMLElement, base: CellStyle = .default) -> StyleInfo {
         var info = StyleInfo()
+        info.style = base
+        info.element = e
         info.parent = e.attr("parent-style-name")
         info.dataStyle = e.attr("data-style-name")
         if let t = e.child("text-properties") {
             if let w = t.attr("font-weight") { info.style.bold = w == "bold" || (Int(w) ?? 400) >= 600 }
             if let i = t.attr("font-style") { info.style.italic = i == "italic" || i == "oblique" }
-            if let c = color(t.attr("color")) { info.style.textColor = c }
+            if let c = t.attr("color") { info.style.textColor = color(c) }
             if let size = length(t.attr("font-size")) { info.style.fontSize = size }
             if let name = t.attr("font-name") ?? t.attr("font-family") { info.style.fontName = name.trimmingCharacters(in: CharacterSet(charactersIn: "'")) }
-            if let u = t.attr("text-underline-style"), u != "none" { info.style.underline = true }
-            if t.attr("text-underline-type") == "double" { info.style.doubleUnderline = true; info.style.underline = true }
-            if let l = t.attr("text-line-through-style"), l != "none" { info.style.strike = true }
+            if let u = t.attr("text-underline-style") { info.style.underline = u != "none"; if u == "none" { info.style.doubleUnderline = false } }
+            if let u = t.attr("text-underline-type") { info.style.doubleUnderline = u == "double"; if u == "double" { info.style.underline = true } }
+            if let l = t.attr("text-line-through-style") { info.style.strike = l != "none" }
         }
         if let p = e.child("table-cell-properties") {
-            if let bg = color(p.attr("background-color")) { info.style.fill = bg }
-            if let all = border(p.attr("border")) { (info.style.left, info.style.right, info.style.top, info.style.bottom) = (all, all, all, all) }
+            if let bg = p.attr("background-color") { info.style.fill = color(bg) }
+            if let text = p.attr("border") { let all = border(text); (info.style.left, info.style.right, info.style.top, info.style.bottom) = (all, all, all, all) }
             if let b = p.attr("border-left") { info.style.left = border(b) }
             if let b = p.attr("border-right") { info.style.right = border(b) }
             if let b = p.attr("border-top") { info.style.top = border(b) }
             if let b = p.attr("border-bottom") { info.style.bottom = border(b) }
-            switch p.attr("vertical-align") { case "top": info.style.vAlign = "top"; case "middle": info.style.vAlign = "center"; default: break }
-            if p.attr("wrap-option") == "wrap" { info.style.wrap = true }
+            switch p.attr("vertical-align") { case "top": info.style.vAlign = "top"; case "middle": info.style.vAlign = "center"; case "bottom": info.style.vAlign = "bottom"; default: break }
+            if let wrap = p.attr("wrap-option") { info.style.wrap = wrap == "wrap" }
             if let protect = p.attr("cell-protect") {
                 info.style.locked = protect != "none" && protect != "hidden-and-printable" && protect != "formula-hidden"
                 info.style.hiddenFormula = protect.contains("formula-hidden")
             }
-            if let a = p.attr("rotation-angle").flatMap(Double.init), a != 0 { let r = Int(a.rounded()) % 360; info.style.rotation = r > 90 ? (r >= 270 ? r - 360 : 90) : r }
+            if let a = p.attr("rotation-angle").flatMap(Double.init), a.isFinite { let r = Int(a.truncatingRemainder(dividingBy: 360).rounded()) % 360; info.style.rotation = r > 90 ? (r >= 270 ? r - 360 : 90) : r }
             if p.attr("direction") == "ttb" { info.style.rotation = 255 }
-            if p.attr("shrink-to-fit") == "true" { info.style.shrink = true }
+            if let shrink = p.attr("shrink-to-fit") { info.style.shrink = shrink == "true" }
         }
         if let p = e.child("paragraph-properties") {
             switch p.attr("text-align") {
@@ -477,33 +533,6 @@ enum ODS {
         return info
     }
 
-    /// Only properties set in `b` override `a`.
-    static func merge(_ a: CellStyle, _ b: CellStyle) -> CellStyle {
-        var s = a
-        let d = CellStyle.default
-        if b.fontName != d.fontName { s.fontName = b.fontName }
-        if b.fontSize != d.fontSize { s.fontSize = b.fontSize }
-        if b.bold != d.bold { s.bold = b.bold }
-        if b.italic != d.italic { s.italic = b.italic }
-        if b.underline != d.underline { s.underline = b.underline }
-        if b.strike != d.strike { s.strike = b.strike }
-        if b.textColor != nil { s.textColor = b.textColor }
-        if b.fill != nil { s.fill = b.fill }
-        if b.hAlign != nil { s.hAlign = b.hAlign }
-        if b.vAlign != d.vAlign { s.vAlign = b.vAlign }
-        if b.wrap { s.wrap = true }
-        if b.locked != d.locked { s.locked = b.locked }
-        if b.hiddenFormula { s.hiddenFormula = true }
-        if b.rotation != 0 { s.rotation = b.rotation }
-        if b.shrink { s.shrink = true }
-        if b.doubleUnderline { s.doubleUnderline = true }
-        if b.styleName != nil { s.styleName = b.styleName }
-        for (k, v) in [(\CellStyle.left, b.left), (\CellStyle.right, b.right), (\CellStyle.top, b.top), (\CellStyle.bottom, b.bottom)] where v != nil {
-            s[keyPath: k] = v
-        }
-        return s
-    }
-
     /// number:number-style / percentage / currency / date / time → Excel format code.
     static func numberFormat(_ e: XMLElement) -> String? {
         guard let kind = e.localName, kind.hasSuffix("-style"), e.prefix == "number" || e.uri?.contains("datastyle") == true else { return nil }
@@ -511,15 +540,15 @@ enum ODS {
         for case let p as XMLElement in e.children ?? [] {
             switch p.localName {
             case "number":
-                let decimals = Int(p.attr("decimal-places") ?? "0") ?? 0
-                let minInt = max(1, Int(p.attr("min-integer-digits") ?? "1") ?? 1)
+                let decimals = min(1000, max(0, Int(p.attr("decimal-places") ?? "0") ?? 0))
+                let minInt = min(1000, max(1, Int(p.attr("min-integer-digits") ?? "1") ?? 1))
                 var n = p.attr("grouping") == "true" ? "#,##" + String(repeating: "0", count: minInt) : String(repeating: "0", count: minInt)
                 if p.attr("grouping") == "true", minInt > 1 { n = "#,##0" }
                 if decimals > 0 { n += "." + String(repeating: "0", count: decimals) }
                 code += n
             case "scientific-number":
-                let decimals = Int(p.attr("decimal-places") ?? "2") ?? 2
-                code += "0." + String(repeating: "0", count: decimals) + "E+00"
+                let decimals = min(1000, max(0, Int(p.attr("decimal-places") ?? "2") ?? 2))
+                code += "0" + (decimals > 0 ? "." + String(repeating: "0", count: decimals) : "") + "E+00"
             case "fraction": code += "# ?/?"
             case "text":
                 // Whitespace-only text nodes can be dropped by the XML parser: an empty <number:text/> is a space.
@@ -591,24 +620,29 @@ enum ODS {
         }
         func cellProperties(_ s: CellStyle) -> String {
             var x = "<style:table-cell-properties"
-            if let f = s.fill { x += " fo:background-color=\"#\(hex(f))\"" }
-            func b(_ side: BorderSide?) -> String { side.map { "\($0.width * 0.75)pt \($0.style == "double" ? "double" : "solid") #\(hex($0.color))" } ?? "none" }
-            if s.left != nil || s.right != nil || s.top != nil || s.bottom != nil {
+            if s.fill != nil || s.styleName != nil { x += " fo:background-color=\"\(s.fill.map { "#" + hex($0) } ?? "transparent")\"" }
+            func b(_ side: BorderSide?) -> String {
+                side.map {
+                    let pattern = ["double", "dashed", "dotted"].contains($0.style) ? $0.style : "solid"
+                    return "\($0.width)pt \(pattern) #\(hex($0.color))"
+                } ?? "none"
+            }
+            if s.left != nil || s.right != nil || s.top != nil || s.bottom != nil || s.styleName != nil {
                 x += " fo:border-left=\"\(b(s.left))\" fo:border-right=\"\(b(s.right))\" fo:border-top=\"\(b(s.top))\" fo:border-bottom=\"\(b(s.bottom))\""
             }
-            if s.wrap { x += " fo:wrap-option=\"wrap\"" }
-            if !s.locked || s.hiddenFormula { x += " style:cell-protect=\"\(s.hiddenFormula ? (s.locked ? "protected formula-hidden" : "formula-hidden") : "none")\"" }
-            if s.rotation == 255 { x += " style:direction=\"ttb\"" } else if s.rotation != 0 { x += " style:rotation-angle=\"\((s.rotation + 360) % 360)\"" }
-            if s.shrink { x += " style:shrink-to-fit=\"true\"" }
+            if s.wrap || s.styleName != nil { x += " fo:wrap-option=\"\(s.wrap ? "wrap" : "no-wrap")\"" }
+            if !s.locked || s.hiddenFormula || s.styleName != nil { x += " style:cell-protect=\"\(s.hiddenFormula ? (s.locked ? "protected formula-hidden" : "formula-hidden") : (s.locked ? "protected" : "none"))\"" }
+            if s.rotation == 255 { x += " style:direction=\"ttb\"" } else if s.rotation != 0 || s.styleName != nil { x += " style:rotation-angle=\"\((s.rotation + 360) % 360)\"" }
+            if s.shrink || s.styleName != nil { x += " style:shrink-to-fit=\"\(s.shrink)\"" }
             x += " style:vertical-align=\"\(s.vAlign == "center" ? "middle" : s.vAlign == "top" ? "top" : "bottom")\"/>"
             if let h = s.hAlign { x += "<style:paragraph-properties fo:text-align=\"\(h == "center" ? "center" : h == "right" ? "end" : h == "justify" ? "justify" : "start")\"/>" }
             x += "<style:text-properties fo:font-size=\"\(Value.formatGeneral(Double(s.fontSize)))pt\""
             if let fn = s.fontName { x += " style:font-name=\"\(xmlEscape(fn))\" fo:font-family=\"\(xmlEscape(fn))\"" }
-            if s.bold { x += " fo:font-weight=\"bold\"" }
-            if s.italic { x += " fo:font-style=\"italic\"" }
-            if s.underline || s.doubleUnderline { x += " style:text-underline-style=\"solid\" style:text-underline-width=\"auto\" style:text-underline-color=\"font-color\"" }
-            if s.doubleUnderline { x += " style:text-underline-type=\"double\"" }
-            if s.strike { x += " style:text-line-through-style=\"solid\"" }
+            if s.bold || s.styleName != nil { x += " fo:font-weight=\"\(s.bold ? "bold" : "normal")\"" }
+            if s.italic || s.styleName != nil { x += " fo:font-style=\"\(s.italic ? "italic" : "normal")\"" }
+            if s.underline || s.doubleUnderline || s.styleName != nil { x += " style:text-underline-style=\"\(s.underline || s.doubleUnderline ? "solid" : "none")\" style:text-underline-width=\"auto\" style:text-underline-color=\"font-color\"" }
+            if s.doubleUnderline || s.styleName != nil { x += " style:text-underline-type=\"\(s.doubleUnderline ? "double" : "single")\"" }
+            if s.strike || s.styleName != nil { x += " style:text-line-through-style=\"\(s.strike ? "solid" : "none")\"" }
             if let c = s.textColor { x += " fo:color=\"#\(hex(c))\"" }
             return x + "/>"
         }
@@ -661,7 +695,7 @@ enum ODS {
                 }
             }
             let used = sheet.usedRange
-            let lastCol = max(used?.end.col ?? 0, sheet.columnWidths.keys.max() ?? 0, sheet.colLevels.keys.max() ?? 0, validationAt.keys.map(\.col).max() ?? 0)
+            let lastCol = max(used?.end.col ?? 0, sheet.columnWidths.keys.max() ?? 0, sheet.colLevels.keys.max() ?? 0, sheet.merges.map { $0.end.col }.max() ?? 0, validationAt.keys.map(\.col).max() ?? 0)
             var openCols = 0
             for c in 0...lastCol {
                 t += groupTags(sheet, c, rows: false, open: &openCols)
@@ -670,8 +704,7 @@ enum ODS {
                 t += "<table:table-column table:style-name=\"\(style)\"\(w == 0 ? " table:visibility=\"collapse\"" : "")/>"
             }
             t += String(repeating: "</table:table-column-group>", count: openCols)
-            let merged = Set(sheet.merges.flatMap { m in m.cells.filter { $0 != m.start } })
-            let lastRow = max(used?.end.row ?? 0, sheet.rowHeights.keys.max() ?? 0, sheet.rowLevels.keys.max() ?? 0, validationAt.keys.map(\.row).max() ?? 0)
+            let lastRow = max(used?.end.row ?? 0, sheet.rowHeights.keys.max() ?? 0, sheet.rowLevels.keys.max() ?? 0, sheet.merges.map { $0.end.row }.max() ?? 0, validationAt.keys.map(\.row).max() ?? 0)
             var openRows = 0
             for r in 0...lastRow {
                 t += groupTags(sheet, r, rows: true, open: &openRows)
@@ -683,13 +716,13 @@ enum ODS {
                 func flushEmpty() { if empty > 0 { t += "<table:table-cell\(empty > 1 ? " table:number-columns-repeated=\"\(empty)\"" : "")/>"; empty = 0 } }
                 for c in 0...lastCol {
                     let ref = CellRef(row: r, col: c)
-                    if merged.contains(ref) { flushEmpty(); t += "<table:covered-table-cell/>"; continue }
-                    guard let cell = sheet.cells[ref] else {
+                    if sheet.merges.contains(where: { $0.start != ref && $0.contains(ref) }) { flushEmpty(); t += "<table:covered-table-cell/>"; continue }
+                    guard let cell = sheet.cells[ref] ?? (sheet.merges.contains(where: { $0.start == ref }) ? Cell() : nil) else {
                         if let v = validationAt[ref] { flushEmpty(); t += "<table:table-cell table:content-validation-name=\"\(v)\"/>" } else { empty += 1 }
                         continue
                     }
                     flushEmpty()
-                    t += cellXML(cell, ref: ref, sheet: sheet, style: styleName(cell.style), validation: validationAt[ref])
+                    t += cellXML(cell, ref: ref, sheet: sheet, style: styleName(cell.style), validation: validationAt[ref], date1904: wb.date1904)
                 }
                 t += "</table:table-row>"
             }
@@ -706,6 +739,8 @@ enum ODS {
                     body += "<table:named-range table:name=\"\(xmlEscape(name))\" table:cell-range-address=\"\(xmlEscape(odfRef(s, a, b, absoluteSheet: true)))\"/>"
                 } else if let e = try? Formula.parse("=" + def), case .ref(let s, let a) = e {
                     body += "<table:named-range table:name=\"\(xmlEscape(name))\" table:cell-range-address=\"\(xmlEscape(odfRef(s, a, nil, absoluteSheet: true)))\"/>"
+                } else if let e = try? Formula.parse(def.hasPrefix("=") ? def : "=" + def) {
+                    body += "<table:named-expression table:name=\"\(xmlEscape(name))\" table:expression=\"\(xmlEscape("of:=" + odfFormula(e)))\"/>"
                 }
             }
             body += "</table:named-expressions>"
@@ -721,7 +756,7 @@ enum ODS {
         xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0" xmlns:ooo="http://openoffice.org/2004/office" \
         xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" office:version="1.3"
         """
-        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"/>\(body)</office:spreadsheet></office:body></office:document-content>"
+        let content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-content \(ns)><office:automatic-styles>\(auto)</office:automatic-styles><office:body><office:spreadsheet\(wb.structureProtected ? " table:structure-protected=\"true\"" : "")><table:calculation-settings table:case-sensitive=\"false\" table:use-regular-expressions=\"false\" table:use-wildcards=\"true\"><table:null-date table:date-value=\"\(wb.date1904 ? "1904-01-01" : "1899-12-30")\"/></table:calculation-settings>\(body)</office:spreadsheet></office:body></office:document-content>"
         let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles \(ns)><office:styles><style:default-style style:family=\"table-cell\"><style:text-properties fo:font-size=\"11pt\" style:font-name=\"Calibri\" fo:font-family=\"Calibri\"/></style:default-style><style:style style:name=\"Default\" style:family=\"table-cell\"/>\(commonStyles)</office:styles></office:document-styles>"
         var tables = ""
         for s in wb.sheets {
@@ -762,7 +797,7 @@ enum ODS {
         return zip.data()
     }
 
-    private static func cellXML(_ cell: Cell, ref: CellRef, sheet: Sheet, style: String?, validation: String? = nil) -> String {
+    private static func cellXML(_ cell: Cell, ref: CellRef, sheet: Sheet, style: String?, validation: String? = nil, date1904: Bool = false) -> String {
         var x = "<table:table-cell"
         if let style { x += " table:style-name=\"\(style)\"" }
         if let validation { x += " table:content-validation-name=\"\(validation)\"" }
@@ -771,26 +806,26 @@ enum ODS {
         }
         if cell.isFormula, let e = Calculator.expression(cell.input) {
             x += " table:formula=\"\(xmlEscape("of:=" + odfFormula(e)))\""
-            if let spill = sheet.spills[ref] {
+            if let spill = sheet.arrays[ref] ?? sheet.spills[ref] {
                 x += " table:number-matrix-columns-spanned=\"\(spill.cols.count)\" table:number-matrix-rows-spanned=\"\(spill.rows.count)\""
             } else if cell.array {
                 x += " table:number-matrix-columns-spanned=\"1\" table:number-matrix-rows-spanned=\"1\""
             }
         }
-        var text = NumberFormat.format(cell.value, cell.style.numberFormat).text
+        var text = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: date1904).text
         switch cell.value {
         case .number(let d):
             if NumberFormat.isDateFormat(cell.style.numberFormat) {
-                let date = DateMath.date(d)
+                let date = DateMath.date(d + (date1904 ? 1462 : 0))
                 let f = DateFormatter()
                 f.locale = Locale(identifier: "en_US_POSIX")
                 f.timeZone = TimeZone(identifier: "UTC")
                 f.dateFormat = d == floor(d) ? "yyyy-MM-dd" : "yyyy-MM-dd'T'HH:mm:ss"
                 x += " office:value-type=\"date\" office:date-value=\"\(f.string(from: date))\""
             } else if cell.style.numberFormat.contains("%") {
-                x += " office:value-type=\"percentage\" office:value=\"\(String(format: "%.15g", d))\""
+                x += " office:value-type=\"percentage\" office:value=\"\(Value.numberLiteral(d))\""
             } else {
-                x += " office:value-type=\"float\" office:value=\"\(String(format: "%.15g", d))\""
+                x += " office:value-type=\"float\" office:value=\"\(Value.numberLiteral(d))\""
             }
         case .bool(let b): x += " office:value-type=\"boolean\" office:boolean-value=\"\(b)\""; text = b ? "TRUE" : "FALSE"
         case .string: x += " office:value-type=\"string\""
@@ -942,7 +977,7 @@ extension XMLElement {
             if node.kind == .text { out += node.stringValue ?? ""; continue }
             guard let e = node as? XMLElement else { continue }
             switch e.localName {
-            case "s": out += String(repeating: " ", count: Int(e.attr("c") ?? "1") ?? 1)
+            case "s": out += String(repeating: " ", count: min(100_000, max(1, Int(e.attr("c") ?? "1") ?? 1)))
             case "tab": out += "\t"
             case "line-break": out += "\n"
             case "annotation": break

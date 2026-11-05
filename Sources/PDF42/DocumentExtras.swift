@@ -522,7 +522,7 @@ final class Writer {
         case .ref(let n, _)?: length = object(n)?.int
         default: break
         }
-        if let length, start + length <= file.bytes.count { return (dict, Array(file.bytes[start..<start + length])) }
+        if let length, length >= 0, length <= file.bytes.count - start { return (dict, Array(file.bytes[start..<start + length])) }
         guard let end = AcroFormFixer.find("endstream", in: file.bytes, from: start) else { return nil }
         var stop = end
         if stop > start, file.bytes[stop - 1] == 0x0A { stop -= 1 }

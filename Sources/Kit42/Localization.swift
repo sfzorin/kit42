@@ -26,7 +26,7 @@ public enum Language: String, CaseIterable {
         let path = Bundle.main.bundlePath
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"\(path)\""]
+        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$1\"", "sh", path]
         try? task.run()
         NSApp.terminate(nil)
     }

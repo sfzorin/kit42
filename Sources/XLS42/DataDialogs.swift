@@ -110,8 +110,9 @@ extension SheetWindowController {
     // MARK: - Sort
 
     @objc func sortDialogAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = currentRegion()
+        guard guardCellOperation(range) else { return }
         let header = checkbox(L("Range contains column labels"), DataTools.detectHeader(sheet, range))
         let direction = popup([L("Top to bottom (sort rows)"), L("Left to right (sort columns)")])
         let lists = DataTools.builtinLists + DataTools.userLists
@@ -161,7 +162,8 @@ extension SheetWindowController {
     }
 
     func applySort(_ range: CellRange, keys: [DataTools.SortKey], options: DataTools.SortOptions) {
-        guard let doc, guardEditable(range) else { return }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range), guardEditable(range) else { return }
+        guard !sheet.arrays.values.contains(where: { $0.intersects(range) }) else { report(Self.partOfArrayMessage); return }
         doc.change(L("Sort")) { DataTools.sort(&$0, sheet: sheetIndex, range: range, keys: keys, options: options) }
     }
 
@@ -194,8 +196,9 @@ extension SheetWindowController {
     ]
 
     @objc func standardFilterAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = sheet.autoFilter ?? currentRegion()
+        guard guardCellOperation(range) else { return }
         let header = checkbox(L("Range contains column labels"), true)
         let titles = columnTitles(range, header: true)
         var rows: [[NSView]] = []
@@ -236,16 +239,24 @@ extension SheetWindowController {
 
     func applyStandardFilter(_ range: CellRange, criteria: [DataTools.Criterion], caseSensitive: Bool, unique: Bool, header: Bool,
                              copyTo: (sheet: Int, ref: CellRef)?) {
-        guard let doc else { return }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range) else { return }
+        var output = Set<CellRef>()
+        if let copyTo {
+            guard let target = pasteTarget(rows: range.rows.count, cols: range.cols.count, at: copyTo.ref) else { return }
+            output = Set(target.cells)
+            guard guardDataWrites(output, sheet: copyTo.sheet) else { return }
+        } else if !guardEditable(nil) { return }
         doc.change(L("Standard Filter"), recalc: copyTo != nil) { wb in
+            if let copyTo { dropArrays(replacedBy: output, of: &wb, sheet: copyTo.sheet) }
             DataTools.standardFilter(&wb, sheet: sheetIndex, range: range, criteria: criteria, caseSensitive: caseSensitive,
                                      unique: unique, header: header, copyTo: copyTo)
         }
     }
 
     @objc func advancedFilterAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = currentRegion()
+        guard guardCellOperation(range) else { return }
         let criteria = field("", width: 180, placeholder: "$H$1:$I$3")
         let copy = checkbox(L("Copy results to:"), false)
         let copyTo = field("", width: 180, placeholder: "$K$1")
@@ -266,8 +277,16 @@ extension SheetWindowController {
 
     @discardableResult
     func applyAdvancedFilter(_ range: CellRange, criteria: (sheet: Int, range: CellRange), unique: Bool, copyTo: (sheet: Int, ref: CellRef)?) -> Bool {
-        guard let doc else { return false }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range), guardCellOperation(criteria.range),
+              doc.workbook.sheets.indices.contains(criteria.sheet) else { return false }
+        var output = Set<CellRef>()
+        if let copyTo {
+            guard let target = pasteTarget(rows: range.rows.count, cols: range.cols.count, at: copyTo.ref) else { return false }
+            output = Set(target.cells)
+            guard guardDataWrites(output, sheet: copyTo.sheet) else { return false }
+        } else if !guardEditable(nil) { return false }
         var test = doc.workbook
+        if let copyTo { dropArrays(replacedBy: output, of: &test, sheet: copyTo.sheet) }
         guard DataTools.advancedFilter(&test, sheet: sheetIndex, list: range, criteria: criteria, unique: unique, copyTo: copyTo) else { return false }
         doc.change(L("Advanced Filter"), recalc: copyTo != nil) { $0 = test }
         return true
@@ -284,8 +303,9 @@ extension SheetWindowController {
     // MARK: - Subtotals
 
     @objc func subtotalsAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = currentRegion()
+        guard guardCellOperation(range) else { return }
         let titles = columnTitles(range, header: true)
         let groupBy = popup(titles)
         let function = popup(DataTools.subtotalFunctions.map { L($0.name) })
@@ -321,7 +341,7 @@ extension SheetWindowController {
     }
 
     func applySubtotals(_ range: CellRange, groupBy: Int, function: Int, columns: [Int], replace: Bool, pageBreaks: Bool) {
-        guard let doc, guardEditable(nil) else { return }
+        guard let doc, guardCellOperation(range), guardEditable(nil) else { return }
         var result = range
         doc.change(L("Subtotals")) { wb in
             result = DataTools.subtotals(&wb, sheet: sheetIndex, range: range, groupBy: groupBy, function: function, columns: columns,
@@ -341,8 +361,9 @@ extension SheetWindowController {
     // MARK: - Remove duplicates, text to columns
 
     @objc func removeDuplicatesAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = currentRegion()
+        guard guardCellOperation(range) else { return }
         let header = checkbox(L("Data has headers"), DataTools.detectHeader(sheet, range))
         let checks = columnTitles(range, header: true).map { checkbox($0, true) }
         let stack = NSStackView(views: checks)
@@ -358,7 +379,8 @@ extension SheetWindowController {
 
     @discardableResult
     func applyRemoveDuplicates(_ range: CellRange, columns: [Int], header: Bool) -> Int {
-        guard let doc, guardEditable(range) else { return 0 }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range), guardEditable(range) else { return 0 }
+        guard !sheet.arrays.values.contains(where: { $0.intersects(range) }) else { report(Self.partOfArrayMessage); return 0 }
         var test = doc.workbook
         let n = DataTools.removeDuplicates(&test, sheet: sheetIndex, range: range, columns: columns, header: header)
         if n > 0 { doc.change(L("Remove Duplicates")) { $0 = test } }
@@ -366,7 +388,7 @@ extension SheetWindowController {
     }
 
     @objc func textToColumnsAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         var range = clampedSelection
         range = CellRange(range.start, CellRef(row: range.end.row, col: range.start.col))
         if range.count == 1, let used = sheet.usedRange {
@@ -410,8 +432,37 @@ extension SheetWindowController {
     }
 
     func applyTextToColumns(_ range: CellRange, options: DataTools.SplitOptions) {
-        guard let doc, guardEditable(nil) else { return }
-        doc.change(L("Text to Columns")) { DataTools.textToColumns(&$0, sheet: sheetIndex, range: range, options: options) }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range) else { return }
+        let calc = Calculator(doc.workbook)
+        var output = Set<CellRef>()
+        for row in range.rows {
+            let source = sheet[CellRef(row: row, col: range.start.col)]
+            guard !source.isFormula else { continue }
+            let text = calc.text(source.value)
+            guard !text.isEmpty else { continue }
+            let parts = DataTools.split(text, options)
+            let count = parts.indices.filter { $0 >= options.types.count || options.types[$0] != .skip }.count
+            guard count > 0 else { continue }
+            guard let target = pasteTarget(rows: 1, cols: count, at: CellRef(row: row, col: range.start.col)),
+                  output.count <= Self.maximumCellOperationCount - count else {
+                if output.count > Self.maximumCellOperationCount - count { report(L("This operation supports up to %d cells. Select a smaller range.", Self.maximumCellOperationCount)) }
+                return
+            }
+            output.formUnion(target.cells)
+        }
+        guard !output.isEmpty, guardDataWrites(output, sheet: sheetIndex) else { return }
+        doc.change(L("Text to Columns")) { wb in
+            dropArrays(replacedBy: output, of: &wb)
+            DataTools.textToColumns(&wb, sheet: sheetIndex, range: range, options: options)
+        }
+    }
+
+    /// Data commands may copy to another sheet or write a ragged set of columns.
+    private func guardDataWrites(_ refs: Set<CellRef>, sheet si: Int) -> Bool {
+        guard let doc, doc.workbook.sheets.indices.contains(si) else { return false }
+        let target = doc.workbook.sheets[si]
+        if target.isProtected, refs.contains(where: { target[$0].style.locked }) { refuseProtected(); return false }
+        return guardArrayEdits(refs, in: target)
     }
 
     // MARK: - Fill
@@ -420,14 +471,40 @@ extension SheetWindowController {
     @objc func fillLeftAction(_ sender: Any?) { applyFill(clampedSelection, .left) }
 
     func applyFill(_ range: CellRange, _ direction: DataTools.Direction) {
-        guard let doc, guardEditable(range) else { return }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range) else { return }
+        let vertical = direction == .down || direction == .up
+        guard vertical ? range.rows.count > 1 : range.cols.count > 1 else { return }
+        let forward = direction == .down || direction == .right
+        let target: CellRange
+        if vertical {
+            target = forward ? CellRange(CellRef(row: range.start.row + 1, col: range.start.col), range.end)
+                : CellRange(range.start, CellRef(row: range.end.row - 1, col: range.end.col))
+        } else {
+            target = forward ? CellRange(CellRef(row: range.start.row, col: range.start.col + 1), range.end)
+                : CellRange(range.start, CellRef(row: range.end.row, col: range.end.col - 1))
+        }
+        guard guardEditable(target), guardArrays(target) else { return }
         let names: [DataTools.Direction: String] = [.down: L("Fill Down"), .right: L("Fill Right"), .up: L("Fill Up"), .left: L("Fill Left")]
-        doc.change(names[direction] ?? L("Fill")) { DataTools.fill(&$0, sheet: sheetIndex, range: range, direction: direction) }
+        doc.change(names[direction] ?? L("Fill")) { wb in
+            let original = wb.sheets[sheetIndex]
+            dropArrays(in: target, of: &wb)
+            for ref in target.cells {
+                let source = vertical ? CellRef(row: forward ? range.start.row : range.end.row, col: ref.col)
+                    : CellRef(row: ref.row, col: forward ? range.start.col : range.end.col)
+                var cell = original[source]
+                if original.array(containing: source) != nil || (cell.input.isEmpty && !cell.value.isEmpty) {
+                    cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: wb.date1904)
+                } else if cell.isFormula { cell.input = Formula.shifted(cell.input, rows: ref.row - source.row, cols: ref.col - source.col) }
+                cell.array = false
+                wb.sheets[sheetIndex][ref] = cell
+            }
+        }
     }
 
     @objc func fillSeriesAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         let direction = popup([L("Down"), L("Right"), L("Up"), L("Left")], selected: range.cols.count > range.rows.count ? 1 : 0)
         let type = popup([L("Linear"), L("Growth"), L("Date"), L("AutoFill")])
         let unit = popup([L("Day"), L("Weekday"), L("Month"), L("Year")])
@@ -454,14 +531,27 @@ extension SheetWindowController {
     }
 
     func applySeries(_ range: CellRange, direction: DataTools.Direction, type: DataTools.SeriesType, unit: DataTools.DateUnit, step: Double, stop: Double?) {
-        guard let doc, guardEditable(range) else { return }
-        doc.change(L("Fill Series")) { DataTools.fillSeries(&$0, sheet: sheetIndex, range: range, direction: direction, type: type, unit: unit, step: step, stop: stop) }
+        guard grid.commitEdit(move: nil), let doc, guardCellOperation(range), step.isFinite, stop?.isFinite != false else { return }
+        // Calculate the intended writes first: a stop value can shorten the destination.
+        var proposed = doc.workbook
+        DataTools.fillSeries(&proposed, sheet: sheetIndex, range: range, direction: direction, type: type, unit: unit, step: step, stop: stop)
+        let writes = Set(range.cells.filter { proposed.sheets[sheetIndex][$0] != sheet[$0] })
+        guard !writes.isEmpty, guardArrayEdits(writes) else { return }
+        guard writes.allSatisfy({ !sheet.isProtected || !sheet[$0].style.locked }) else { refuseProtected(); return }
+        doc.change(L("Fill Series")) { wb in
+            dropArrays(replacedBy: writes, of: &wb)
+            for ref in writes {
+                var cell = proposed.sheets[sheetIndex][ref]
+                cell.array = false
+                wb.sheets[sheetIndex][ref] = cell
+            }
+        }
     }
 
     // MARK: - Goal Seek, Solver
 
     @objc func goalSeekAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let formula = field(sheet[grid.active].isFormula ? grid.active.a1 : "", width: 120)
         let target = field("", width: 120)
         let variable = field("", width: 120)
@@ -504,7 +594,7 @@ extension SheetWindowController {
     }
 
     @objc func solverAction(_ sender: Any?) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         // The sheet's saved model (from the file or the last run) fills the dialog, as in Excel and Calc.
         let saved = sheet.solver
         func absolute(_ r: CellRange) -> String {
@@ -591,7 +681,7 @@ extension SheetWindowController {
     @objc func correlationAction(_ sender: Any?) { statisticsDialog(correlation: true) }
 
     private func statisticsDialog(correlation: Bool) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let range = currentRegion()
         let input = field(Formula.sheetPrefix(sheet.name) + range.a1, width: 200)
         let grouped = popup([L("Columns"), L("Rows")])
@@ -625,7 +715,7 @@ extension SheetWindowController {
         func put(_ row: Int, _ col: Int, _ input: String, bold: Bool = false) {
             var c = Cell()
             c.input = input
-            c.value = input.hasPrefix("=") ? .empty : XLSX.constant(input)
+            c.value = input.hasPrefix("=") ? .empty : XLSX.constant(input, date1904: doc.workbook.date1904)
             c.style.bold = bold
             out[CellRef(row: row, col: col)] = c
         }

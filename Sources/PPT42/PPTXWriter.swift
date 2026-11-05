@@ -1,6 +1,12 @@
 import AppKit
 import Kit42
 
+/// XML line-end and attribute whitespace normalization must not alter stored text.
+func presentationXMLEscape(_ text: String) -> String {
+    Kit42.xmlEscape(text).replacingOccurrences(of: "\r", with: "&#13;")
+        .replacingOccurrences(of: "\n", with: "&#10;").replacingOccurrences(of: "\t", with: "&#9;")
+}
+
 /// Writes a Deck as PresentationML (.pptx): master, layouts, theme, slides, notes, media.
 struct PPTXWriter {
     let deck: Deck
@@ -47,7 +53,7 @@ struct PPTXWriter {
             add(path, p.data, type: p.contentType)
             if !rels.isEmpty {
                 var x = PPTXWriter.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-                for r in rels { x += "<Relationship Id=\"\(r.0)\" Type=\"\(r.1)\" Target=\"\(xmlEscape(r.2))\"\(r.3 ? " TargetMode=\"External\"" : "")/>" }
+                for r in rels { x += "<Relationship Id=\"\(r.0)\" Type=\"\(r.1)\" Target=\"\(presentationXMLEscape(r.2))\"\(r.3 ? " TargetMode=\"External\"" : "")/>" }
                 files[relsPath(path)] = Data((x + "</Relationships>").utf8)
             }
             return path
@@ -101,7 +107,7 @@ struct PPTXWriter {
         var xml: String {
             var s = PPTXWriter.head + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
             for r in items {
-                s += "<Relationship Id=\"\(r.id)\" Type=\"\(r.type)\" Target=\"\(xmlEscape(r.target))\"\(r.external ? " TargetMode=\"External\"" : "")/>"
+                s += "<Relationship Id=\"\(r.id)\" Type=\"\(r.type)\" Target=\"\(presentationXMLEscape(r.target))\"\(r.external ? " TargetMode=\"External\"" : "")/>"
             }
             return s + "</Relationships>"
         }
@@ -128,7 +134,7 @@ struct PPTXWriter {
         for (ext, mime) in sink.defaults.sorted(by: { $0.key < $1.key }) where !["png", "jpeg", "jpg", "gif", "bmp", "tiff", "svg", "xml", "rels"].contains(ext) {
             types += "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>"
         }
-        for (part, mime) in sink.overrides.sorted(by: { $0.key < $1.key }) { types += "<Override PartName=\"\(xmlEscape(part))\" ContentType=\"\(mime)\"/>" }
+        for (part, mime) in sink.overrides.sorted(by: { $0.key < $1.key }) { types += "<Override PartName=\"\(presentationXMLEscape(part))\" ContentType=\"\(mime)\"/>" }
         let pml = "application/vnd.openxmlformats-officedocument.presentationml"
         types += "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"\(pml).\(template ? "template" : "presentation").main+xml\"/>"
         types += "<Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"\(pml).slideMaster+xml\"/>"
@@ -157,7 +163,7 @@ struct PPTXWriter {
             + "<Relationship Id=\"rId3\" Type=\"\(Self.relBase)/extended-properties\" Target=\"docProps/app.xml\"/></Relationships>")
         let now = ISO8601DateFormatter().string(from: Date())
         put("docProps/core.xml", Self.head + "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
-            + "<dc:title>\(xmlEscape(deck.slides.first?.title ?? ""))</dc:title><dc:creator>PPT42</dc:creator>"
+            + "<dc:title>\(presentationXMLEscape(deck.slides.first?.title ?? ""))</dc:title><dc:creator>PPT42</dc:creator>"
             + "<dcterms:created xsi:type=\"dcterms:W3CDTF\">\(now)</dcterms:created><dcterms:modified xsi:type=\"dcterms:W3CDTF\">\(now)</dcterms:modified></cp:coreProperties>")
         put("docProps/app.xml", Self.head + "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><Application>PPT42</Application><Slides>\(n)</Slides><PresentationFormat>On-screen Show</PresentationFormat></Properties>")
 
@@ -180,7 +186,7 @@ struct PPTXWriter {
             var x = Self.head + "<p:cmAuthorLst \(Self.ns)>"
             for (i, a) in commentAuthors.enumerated() {
                 let last = deck.slides.flatMap { $0.comments.flatMap { [$0] + $0.replies } }.filter { $0.author == a.0 }.count
-                x += "<p:cmAuthor id=\"\(i)\" name=\"\(xmlEscape(a.0))\" initials=\"\(xmlEscape(a.1))\" lastIdx=\"\(last)\" clrIdx=\"\(i % 8)\"/>"
+                x += "<p:cmAuthor id=\"\(i)\" name=\"\(presentationXMLEscape(a.0))\" initials=\"\(presentationXMLEscape(a.1))\" lastIdx=\"\(last)\" clrIdx=\"\(i % 8)\"/>"
             }
             put("ppt/commentAuthors.xml", x + "</p:cmAuthorLst>")
         }
@@ -228,8 +234,8 @@ struct PPTXWriter {
         let l = deck.layouts[i]
         let rels = Rels()
         _ = rels.add("\(Self.relBase)/slideMaster", "../slideMasters/slideMaster1.xml")
-        var x = Self.head + "<p:sldLayout \(Self.ns) type=\"\(xmlEscape(l.type))\" preserve=\"1\"\(l.showMasterShapes ? "" : " showMasterSp=\"0\"")>"
-        x += "<p:cSld name=\"\(xmlEscape(l.name))\">"
+        var x = Self.head + "<p:sldLayout \(Self.ns) type=\"\(presentationXMLEscape(l.type))\" preserve=\"1\"\(l.showMasterShapes ? "" : " showMasterSp=\"0\"")>"
+        x += "<p:cSld name=\"\(presentationXMLEscape(l.name))\">"
         if let bg = l.background { x += background(bg, rels: rels) }
         x += tree(l.placeholders + l.objects, rels: rels, slide: nil, master: true)
         x += "</p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"
@@ -286,7 +292,7 @@ struct PPTXWriter {
             let idx = counters[c.author]!
             var date = df.string(from: c.date)
             if date.hasSuffix("Z") { date.removeLast() }
-            x += "<p:cm authorId=\"\(aid)\" dt=\"\(date)\" idx=\"\(idx)\"><p:pos x=\"\(Int(c.position.x * 8))\" y=\"\(Int(c.position.y * 8))\"/><p:text>\(xmlEscape(c.text))</p:text>"
+            x += "<p:cm authorId=\"\(aid)\" dt=\"\(date)\" idx=\"\(idx)\"><p:pos x=\"\(Int(c.position.x * 8))\" y=\"\(Int(c.position.y * 8))\"/><p:text>\(presentationXMLEscape(c.text))</p:text>"
             var ext = ""
             if let parent {
                 ext += "<p:ext uri=\"{C676402C-5697-4E1C-873F-D02D1690AC5C}\"><p15:threadingInfo xmlns:p15=\"http://schemas.microsoft.com/office/powerpoint/2012/main\" timeZoneBias=\"0\"><p15:parentCm authorId=\"\(parent.0)\" idx=\"\(parent.1)\"/></p15:threadingInfo></p:ext>"
@@ -310,7 +316,7 @@ struct PPTXWriter {
         _ = rels.add("\(Self.relBase)/notesMaster", "../notesMasters/notesMaster1.xml")
         _ = rels.add("\(Self.relBase)/slide", "../slides/slide\(i + 1).xml")
         let paras = deck.slides[i].notes.components(separatedBy: "\n").map {
-            $0.isEmpty ? "<a:p><a:endParaRPr lang=\"en-US\" dirty=\"0\"/></a:p>" : "<a:p><a:r><a:rPr lang=\"en-US\" dirty=\"0\"/><a:t>\(xmlEscape($0))</a:t></a:r></a:p>"
+            $0.isEmpty ? "<a:p><a:endParaRPr lang=\"en-US\" dirty=\"0\"/></a:p>" : "<a:p><a:r><a:rPr lang=\"en-US\" dirty=\"0\"/><a:t>\(presentationXMLEscape($0))</a:t></a:r></a:p>"
         }.joined()
         var x = Self.head + "<p:notes \(Self.ns)><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>"
         x += "<p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Slide Image Placeholder 1\"/><p:cNvSpPr><a:spLocks noGrp=\"1\" noRot=\"1\" noChangeAspect=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"sldImg\"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp>"
@@ -339,14 +345,14 @@ struct PPTXWriter {
     // MARK: - Theme
 
     func themeXML(_ t: Theme) -> String {
-        var x = Self.head + "<a:theme xmlns:a=\"\(Self.nsA)\" name=\"\(xmlEscape(t.name))\"><a:themeElements><a:clrScheme name=\"\(xmlEscape(t.name))\">"
+        var x = Self.head + "<a:theme xmlns:a=\"\(Self.nsA)\" name=\"\(presentationXMLEscape(t.name))\"><a:themeElements><a:clrScheme name=\"\(presentationXMLEscape(t.name))\">"
         for slot in Theme.slots {
             let v = t.colors[slot] ?? t.color(slot)
             x += "<a:\(slot)><a:srgbClr val=\"\(String(format: "%06X", v))\"/></a:\(slot)>"
         }
-        x += "</a:clrScheme><a:fontScheme name=\"\(xmlEscape(t.name))\">"
-        x += "<a:majorFont><a:latin typeface=\"\(xmlEscape(t.majorFont))\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:majorFont>"
-        x += "<a:minorFont><a:latin typeface=\"\(xmlEscape(t.minorFont))\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:minorFont></a:fontScheme>"
+        x += "</a:clrScheme><a:fontScheme name=\"\(presentationXMLEscape(t.name))\">"
+        x += "<a:majorFont><a:latin typeface=\"\(presentationXMLEscape(t.majorFont))\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:majorFont>"
+        x += "<a:minorFont><a:latin typeface=\"\(presentationXMLEscape(t.minorFont))\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:minorFont></a:fontScheme>"
         x += """
         <a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:lumMod val="110000"/><a:satMod val="105000"/><a:tint val="67000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:lumMod val="105000"/><a:satMod val="109000"/><a:tint val="81000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:satMod val="103000"/><a:lumMod val="102000"/><a:tint val="94000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:lumMod val="99000"/><a:satMod val="120000"/><a:shade val="78000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln><a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln><a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst><a:outerShdw blurRad="57150" dist="19050" dir="5400000" algn="ctr" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="63000"/></a:srgbClr></a:outerShdw></a:effectLst></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:tint val="93000"/><a:satMod val="150000"/><a:shade val="98000"/><a:lumMod val="102000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:shade val="63000"/><a:satMod val="120000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements><a:objectDefaults/><a:extraClrSchemeLst/></a:theme>
         """
@@ -382,7 +388,7 @@ struct PPTXWriter {
     }
 
     func custGeom(_ c: CustomGeometry) -> String {
-        func gds(_ l: [GeoGuide]) -> String { l.map { "<a:gd name=\"\(xmlEscape($0.name))\" fmla=\"\(xmlEscape($0.fmla))\"/>" }.joined() }
+        func gds(_ l: [GeoGuide]) -> String { l.map { "<a:gd name=\"\(presentationXMLEscape($0.name))\" fmla=\"\(presentationXMLEscape($0.fmla))\"/>" }.joined() }
         var x = "<a:custGeom><a:avLst>\(gds(c.adjust))</a:avLst><a:gdLst>\(gds(c.guides))</a:gdLst><a:ahLst/><a:cxnLst/>"
         let r = c.rect ?? ["l", "t", "r", "b"]
         x += "<a:rect l=\"\(r[0])\" t=\"\(r[1])\" r=\"\(r[2])\" b=\"\(r[3])\"/><a:pathLst>"
@@ -410,7 +416,7 @@ struct PPTXWriter {
     }
 
     func nv(_ o: SlideObject, kind: String, extra: String = "", ph: Bool = true) -> String {
-        var x = "<p:nv\(kind)Pr><p:cNvPr id=\"\(o.id)\" name=\"\(xmlEscape(o.name.isEmpty ? defaultName(o) : o.name))\"\(o.descr.isEmpty ? "" : " descr=\"\(xmlEscape(o.descr))\"")/>"
+        var x = "<p:nv\(kind)Pr><p:cNvPr id=\"\(o.id)\" name=\"\(presentationXMLEscape(o.name.isEmpty ? defaultName(o) : o.name))\"\(o.descr.isEmpty ? "" : " descr=\"\(presentationXMLEscape(o.descr))\"")/>"
         x += extra
         if ph, let p = o.placeholder {
             x += "<p:nvPr><p:ph" + (p.type == "obj" ? "" : " type=\"\(p.type)\"") + (p.idx.map { " idx=\"\($0)\"" } ?? "") + "/></p:nvPr>"
@@ -487,7 +493,7 @@ struct PPTXWriter {
                 let embed = rels.add("http://schemas.microsoft.com/office/2007/relationships/media", target)
                 let link = rels.add("\(Self.relBase)/\(clip.audio ? "audio" : "video")", target)
                 sink.defaults[clip.ext] = MediaClip.mime(clip.ext)
-                x += "<p:nvPicPr><p:cNvPr id=\"\(o.id)\" name=\"\(xmlEscape(o.name.isEmpty ? defaultName(o) : o.name))\"><a:hlinkClick r:id=\"\" action=\"ppaction://media\"/></p:cNvPr>"
+                x += "<p:nvPicPr><p:cNvPr id=\"\(o.id)\" name=\"\(presentationXMLEscape(o.name.isEmpty ? defaultName(o) : o.name))\"><a:hlinkClick r:id=\"\" action=\"ppaction://media\"/></p:cNvPr>"
                 x += "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr><a:\(clip.audio ? "audioFile" : "videoFile") r:link=\"\(link)\"/>"
                 x += "<p:extLst><p:ext uri=\"{DAA4B4D4-6D71-4841-9C94-3DE04A35F2DA}\"><p14:media xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\" r:embed=\"\(embed)\"/></p:ext>"
                 x += "<p:ext uri=\"{6C1E4F2B-7A3D-4B8E-9F42-0C11A5E0FF42}\"><ppt42:clip xmlns:ppt42=\"urn:sfzorin:ppt42\" autoplay=\"\(clip.autoplay ? 1 : 0)\" loop=\"\(clip.loop ? 1 : 0)\"/></p:ext></p:extLst></p:nvPr></p:nvPicPr>"
@@ -593,7 +599,7 @@ struct PPTXWriter {
         if tag == "a:rPr" || tag == "a:endParaRPr" { attrs += " dirty=\"0\"" }
         var kids = ""
         if let c = r.color { kids += "<a:solidFill>\(color(c))</a:solidFill>" }
-        if let f = r.font { kids += "<a:latin typeface=\"\(xmlEscape(f))\"/>" + (f.hasPrefix("+mj") ? "<a:ea typeface=\"+mj-ea\"/><a:cs typeface=\"+mj-cs\"/>" : f.hasPrefix("+mn") ? "<a:ea typeface=\"+mn-ea\"/><a:cs typeface=\"+mn-cs\"/>" : "<a:cs typeface=\"\(xmlEscape(f))\"/>") }
+        if let f = r.font { kids += "<a:latin typeface=\"\(presentationXMLEscape(f))\"/>" + (f.hasPrefix("+mj") ? "<a:ea typeface=\"+mj-ea\"/><a:cs typeface=\"+mj-cs\"/>" : f.hasPrefix("+mn") ? "<a:ea typeface=\"+mn-ea\"/><a:cs typeface=\"+mn-cs\"/>" : "<a:cs typeface=\"\(presentationXMLEscape(f))\"/>") }
         if let link { kids += "<a:hlinkClick r:id=\"\(rels.add("\(Self.relBase)/hyperlink", link, external: true))\"/>" }
         return kids.isEmpty ? "<\(tag)\(attrs)/>" : "<\(tag)\(attrs)>\(kids)</\(tag)>"
     }
@@ -618,11 +624,11 @@ struct PPTXWriter {
             case .char:
                 if let c = b.color { kids += "<a:buClr>\(color(c))</a:buClr>" }
                 if let p = b.sizePercent { kids += "<a:buSzPct val=\"\(Int(p * 100000))\"/>" }
-                kids += "<a:buFont typeface=\"\(xmlEscape(b.font ?? "Arial"))\"/><a:buChar char=\"\(xmlEscape(b.char))\"/>"
+                kids += "<a:buFont typeface=\"\(presentationXMLEscape(b.font ?? "Arial"))\"/><a:buChar char=\"\(presentationXMLEscape(b.char))\"/>"
             case .number:
                 if let c = b.color { kids += "<a:buClr>\(color(c))</a:buClr>" }
                 if let p = b.sizePercent { kids += "<a:buSzPct val=\"\(Int(p * 100000))\"/>" }
-                if let f = b.font { kids += "<a:buFont typeface=\"\(xmlEscape(f))\"/>" }
+                if let f = b.font { kids += "<a:buFont typeface=\"\(presentationXMLEscape(f))\"/>" }
                 kids += "<a:buAutoNum type=\"\(b.scheme)\"\(b.startAt != 1 ? " startAt=\"\(b.startAt)\"" : "")/>"
             }
         }
@@ -664,13 +670,13 @@ struct PPTXWriter {
         for r in p.runs {
             let rp = defaults.map { r.props.over($0) } ?? r.props
             if let f = r.field {
-                x += "<a:fld id=\"{\(UUID().uuidString)}\" type=\"\(f == "slidenum" ? "slidenum" : "datetime1")\">\(runProps(rp, rels: rels))<a:t>\(xmlEscape(r.text.isEmpty ? "‹#›" : r.text))</a:t></a:fld>"
+                x += "<a:fld id=\"{\(UUID().uuidString)}\" type=\"\(f == "slidenum" ? "slidenum" : "datetime1")\">\(runProps(rp, rels: rels))<a:t>\(presentationXMLEscape(r.text.isEmpty ? "‹#›" : r.text))</a:t></a:fld>"
                 continue
             }
             let pieces = r.text.components(separatedBy: "\u{0B}")
             for (k, piece) in pieces.enumerated() {
                 if k > 0 { x += "<a:br>\(runProps(rp, rels: rels))</a:br>" }
-                if !piece.isEmpty { x += "<a:r>\(runProps(rp, rels: rels, link: r.link))<a:t>\(xmlEscape(piece))</a:t></a:r>" }
+                if !piece.isEmpty { x += "<a:r>\(runProps(rp, rels: rels, link: r.link))<a:t>\(presentationXMLEscape(piece))</a:t></a:r>" }
             }
         }
         let end = defaults.map { p.endProps.over($0) } ?? p.endProps

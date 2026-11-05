@@ -57,8 +57,7 @@ public enum MenuBar {
         main.addItem(top(app, appItems))
 
         let recent = NSMenuItem(title: L("Open Recent"), action: nil, keyEquivalent: "")
-        recent.submenu = NSMenu(title: L("Open Recent"))
-        recent.submenu?.addItem(item(L("Clear Menu"), #selector(NSDocumentController.clearRecentDocuments(_:))))
+        recent.submenu = RecentDocumentsMenu.shared.makeMenu()
 
         var file: [MenuElement] = [
             .item(item(L("New"), #selector(NSDocumentController.newDocument(_:)), "n")),

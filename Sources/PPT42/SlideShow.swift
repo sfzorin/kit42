@@ -75,6 +75,7 @@ final class SlideShowController: NSObject {
     private let rehearse: Bool
     private var typed = ""
     private var autoTimer: Timer?
+    private var navigationGeneration = 0
     private var transitionLayer: CALayer?
     let startedAt = Date()
     private var savedOptions: NSApplication.PresentationOptions = []
@@ -157,9 +158,11 @@ final class SlideShowController: NSObject {
             if rehearse { p.window?.makeKeyAndOrderFront(nil) }
         }
         render(animated: false)
+        playAutomaticGroup()
     }
 
     func end() {
+        navigationGeneration += 1
         autoTimer?.invalidate()
         media.clear()
         MediaFiles.cleanUp()
@@ -404,6 +407,7 @@ final class SlideShowController: NSObject {
     // MARK: - Navigation
 
     func next() {
+        guard !order.isEmpty else { return }
         if view.blank != nil { view.blank = nil; return }
         if step < groupCount {
             step += 1
@@ -415,13 +419,20 @@ final class SlideShowController: NSObject {
             return
         }
         position += 1
+        navigationGeneration += 1
         step = 0
         render(animated: true, transition: slide.transition)
         let delay = slide.transition.kind == .none ? 0 : slide.transition.duration
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.playAutomaticGroup() }
+        let generation = navigationGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.navigationGeneration == generation else { return }
+            self.playAutomaticGroup()
+        }
     }
 
     func previous() {
+        guard !order.isEmpty else { return }
+        navigationGeneration += 1
         if view.blank != nil { view.blank = nil; return }
         let first = timeline.groups.first?.automatic == true ? 1 : 0
         if step > first { step -= 1; render(animated: false); return }
@@ -432,6 +443,8 @@ final class SlideShowController: NSObject {
     }
 
     func go(to p: Int) {
+        guard !order.isEmpty else { return }
+        navigationGeneration += 1
         position = min(max(0, p), order.count - 1)
         step = 0
         render(animated: true, transition: slide.transition)

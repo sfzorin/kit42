@@ -63,7 +63,7 @@ final class SettingsPanelController: NSViewController {
 
         color.segmentCount = ColorMode.allCases.count
         for m in ColorMode.allCases {
-            color.setLabel([L("Color"), L("Gray"), L("B&W")][m.rawValue], forSegment: m.rawValue)
+            color.setLabel([L("In colour"), L("Grey"), L("B&W")][m.rawValue], forSegment: m.rawValue)
             color.setToolTip(m.title, forSegment: m.rawValue)
         }
         color.trackingMode = .selectOne
@@ -184,7 +184,7 @@ final class SettingsPanelController: NSViewController {
         scanButton.font = .systemFont(ofSize: 15, weight: .semibold)
         scanButton.image = Theme42.symbol("scanner", size: 15, weight: .semibold)
         scanButton.imagePosition = .imageLeading
-        scanButton.bezelColor = Theme42.App.scn.accent
+        // Default button in the system accent, like the segmented controls next to it; the app colour stays on the icon.
         scanButton.toolTip = Cmd.scan.fullToolTip
         overviewButton.bezelStyle = .push
         overviewButton.controlSize = .large

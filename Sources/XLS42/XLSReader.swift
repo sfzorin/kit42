@@ -417,7 +417,7 @@ enum XLSReader {
             var cell = Cell()
             if xf < g.styles.count { cell.style = g.styles[xf] }
             cell.value = value
-            cell.input = XLSX.inputText(for: value, style: cell.style)
+            cell.input = XLSX.inputText(for: value, style: cell.style, date1904: g.date1904)
             if case .string(let str) = value, XLSX.constant(str) != .string(str) || str.hasPrefix("=") { cell.input = "'" + str }
             sheet[ref] = cell
         }

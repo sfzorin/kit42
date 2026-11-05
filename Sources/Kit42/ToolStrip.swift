@@ -171,7 +171,9 @@ final class StripGroup: NSView {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
         NSColor.labelColor.withAlphaComponent(0.045).setFill()
         path.fill()
-        NSColor.separatorColor.withAlphaComponent(0.6).setStroke()
+        // labelColor-based hairline: separatorColor resolves much darker on non-vibrant backgrounds
+        // (DOC42's strip showed heavy outlines while PDF42's were faint).
+        NSColor.labelColor.withAlphaComponent(0.08).setStroke()
         path.lineWidth = 0.5
         path.stroke()
     }

@@ -3,6 +3,8 @@ import Kit42
 
 Localization.register(rows: ppt42Strings)
 
+if CommandLine.arguments.contains("--selftest") { exit(Int32(PPTFilesAudit.run() == 0 ? 0 : 1)) }
+
 // Command-line checks (no UI): --info, --export, --convert, --demo. See CLI.swift.
 if CLI.run(CommandLine.arguments) { exit(CLI.status) }
 

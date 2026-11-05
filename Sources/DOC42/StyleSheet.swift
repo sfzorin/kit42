@@ -222,7 +222,7 @@ final class StyleSheet {
         let ns = storage.string as NSString
         storage.enumerateAttributes(in: range) { a, r, _ in
             let oldStyle = (old ?? self).resolved(a[Styles.styleKey] as? String)
-            let charStyle = self[a[.docCharStyle] as? String]
+            let charStyle = (a[.docCharStyle] as? String).flatMap { self[$0] == nil ? nil : resolved($0) }
             var font = a[.font] as? NSFont ?? Styles.normal.font
             let traits = fm.traits(of: font)
             let para = ns.paragraphRange(for: r)
@@ -234,9 +234,19 @@ final class StyleSheet {
             let directItalic = isItalic != (oldStyle.italic ?? false) && (update || part)
             let bold = charStyle?.isBold ?? (directBold ? isBold : (new.isBold ?? false))
             let italic = charStyle?.italic ?? (directItalic ? isItalic : (new.italic ?? false))
+            let existingUnderline = a[.underlineStyle] as? Int ?? 0
+            let oldUnderline = oldStyle.underline == true ? NSUnderlineStyle.single.rawValue : 0
+            let directUnderline = existingUnderline != oldUnderline && (update || part)
+            let underline = (charStyle?.underline).map { $0 ? NSUnderlineStyle.single.rawValue : 0 }
+                ?? (directUnderline ? existingUnderline : (new.underline == true ? NSUnderlineStyle.single.rawValue : 0))
             font = Self.font(family: family, size: size, weight: bold ? max(new.weight ?? 9, 8) : 5, italic: italic)
             if fm.traits(of: font).contains(.boldFontMask) != bold { font = bold ? fm.convert(font, toHaveTrait: .boldFontMask) : fm.convert(font, toNotHaveTrait: .boldFontMask) }
             storage.addAttribute(.font, value: font, range: r)
+            // Keep direct underline variants (double, dotted, etc.) and hyperlink appearance.
+            if a[.link] == nil {
+                if underline == 0 { storage.removeAttribute(.underlineStyle, range: r) }
+                else { storage.addAttribute(.underlineStyle, value: underline, range: r) }
+            }
             let color = a[.foregroundColor] as? NSColor ?? .black
             if a[.link] != nil {
                 storage.addAttribute(.foregroundColor, value: DocWindowController.linkColor, range: r)
@@ -251,11 +261,16 @@ final class StyleSheet {
     func apply(characterStyle id: String?, to storage: NSMutableAttributedString, range: NSRange) {
         storage.enumerateAttributes(in: range) { a, r, _ in
             let para = resolved(a[Styles.styleKey] as? String)
-            let s = self[id]
+            let s = id.flatMap { self[$0] == nil ? nil : resolved($0) }
             let font = Self.font(family: s?.family ?? para.family, size: s?.size ?? para.size ?? 12,
                                  weight: s?.weight ?? para.weight ?? 5, italic: s?.italic ?? para.italic ?? false)
             storage.addAttribute(.font, value: font, range: r)
             if a[.link] == nil { storage.addAttribute(.foregroundColor, value: s?.color ?? para.color ?? NSColor.black, range: r) }
+            if (s?.underline ?? para.underline) == true {
+                storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+            } else if a[.link] == nil {
+                storage.removeAttribute(.underlineStyle, range: r)
+            }
         }
         if let id { storage.addAttribute(.docCharStyle, value: id, range: range) } else { storage.removeAttribute(.docCharStyle, range: range) }
     }

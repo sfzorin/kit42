@@ -99,6 +99,8 @@ final class ScanDocument {
     var onChange: (() -> Void)?
     /// Changed since the last save.
     var isDirty = false
+    /// Identifies the exact state captured by a background save.
+    private(set) var revision = 0
 
     var isEmpty: Bool { pages.isEmpty }
 
@@ -113,6 +115,7 @@ final class ScanDocument {
     }
 
     private func changed(_ name: String) {
+        revision += 1
         isDirty = true
         undo.setActionName(name)
         onChange?()
@@ -194,7 +197,17 @@ final class ScanDocument {
 
     /// OCR results are not an edit (no undo), but the document must be saved again to keep them.
     func setText(_ page: ScanPage, _ lines: [TextLine]) {
+        guard pages.contains(where: { $0 === page }) else { return }
         page.text = lines
+        revision += 1
+        isDirty = true
+        onChange?()
+    }
+
+    /// A save of an older snapshot must not mark newly scanned/reordered pages as saved.
+    func markSaved(revision savedRevision: Int) {
+        guard revision == savedRevision else { return }
+        isDirty = false
         onChange?()
     }
 }

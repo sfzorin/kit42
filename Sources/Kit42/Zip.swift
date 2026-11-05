@@ -16,29 +16,47 @@ public struct ZipArchive {
         func u32(_ i: Int) -> Int { u16(i) | u16(i + 2) << 16 }
 
         var eocd = b.count - 22
-        while eocd >= 0, !(b[eocd] == 0x50 && b[eocd + 1] == 0x4B && b[eocd + 2] == 0x05 && b[eocd + 3] == 0x06) { eocd -= 1 }
-        guard eocd >= 0 else { throw ZipError.notZip }
+        let firstEOCD = max(0, b.count - 22 - 65535)
+        // A signature may also occur inside the comment. Only accept a record whose comment ends at EOF.
+        while eocd >= firstEOCD {
+            if u32(eocd) == 0x06054B50, eocd + 22 + u16(eocd + 20) == b.count { break }
+            eocd -= 1
+        }
+        guard eocd >= firstEOCD else { throw ZipError.notZip }
         let count = u16(eocd + 10)
         var p = u32(eocd + 16)
+        let centralStart = p, centralEnd = p + u32(eocd + 12)
+        guard u16(eocd + 4) == 0, u16(eocd + 6) == 0, u16(eocd + 8) == count,
+              centralEnd <= eocd else { throw ZipError.corrupt }
         for _ in 0..<count {
-            guard p + 46 <= b.count, u32(p) == 0x02014B50 else { throw ZipError.corrupt }
+            guard p + 46 <= centralEnd, u32(p) == 0x02014B50 else { throw ZipError.corrupt }
+            let flags = u16(p + 8)
             let method = u16(p + 10)
+            let crc = UInt32(u32(p + 16))
             let compressed = u32(p + 20), size = u32(p + 24)
             let nameLen = u16(p + 28), extraLen = u16(p + 30), commentLen = u16(p + 32)
             let local = u32(p + 42)
+            guard p + 46 + nameLen + extraLen + commentLen <= centralEnd,
+                  flags & 0x0041 == 0, u16(p + 34) == 0 else { throw ZipError.corrupt }
             let name = String(decoding: b[(p + 46)..<(p + 46 + nameLen)], as: UTF8.self)
             p += 46 + nameLen + extraLen + commentLen
 
-            guard local + 30 <= b.count, u32(local) == 0x04034B50 else { throw ZipError.corrupt }
+            guard local + 30 <= centralStart, u32(local) == 0x04034B50,
+                  u16(local + 8) == method, u16(local + 6) & 0x0041 == 0 else { throw ZipError.corrupt }
             let start = local + 30 + u16(local + 26) + u16(local + 28)
-            guard start + compressed <= b.count else { throw ZipError.corrupt }
+            guard start + compressed <= centralStart else { throw ZipError.corrupt }
             let raw = Data(b[start..<(start + compressed)])
+            let content: Data
             switch method {
-            case 0: entries[name] = raw
-            case 8: entries[name] = try Self.inflate(raw, size: size)
+            case 0:
+                guard compressed == size else { throw ZipError.corrupt }
+                content = raw
+            case 8: content = try Self.inflate(raw, size: size)
             default: throw ZipError.unsupported(method)
             }
-            order.append(name)
+            guard CRC32.checksum(content) == crc else { throw ZipError.corrupt }
+            self[name] = content
+            if method == 0 { storedUncompressed.insert(name) }
         }
     }
 
@@ -91,15 +109,34 @@ public struct ZipArchive {
     }
 
     static func inflate(_ data: Data, size: Int) throws -> Data {
-        if size == 0 { return Data() }
-        var out = Data(count: size)
-        let written = out.withUnsafeMutableBytes { dst in
-            data.withUnsafeBytes { src in
-                compression_decode_buffer(dst.bindMemory(to: UInt8.self).baseAddress!, size,
-                                          src.bindMemory(to: UInt8.self).baseAddress!, data.count, nil, COMPRESSION_ZLIB)
+        guard !data.isEmpty else { throw ZipError.corrupt }
+        var out = Data()
+        // The size in an untrusted header must not dictate a potentially multi-gigabyte allocation.
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        try data.withUnsafeBytes { source in
+            try buffer.withUnsafeMutableBufferPointer { destination in
+                var stream = compression_stream(dst_ptr: destination.baseAddress!, dst_size: destination.count,
+                                                src_ptr: source.bindMemory(to: UInt8.self).baseAddress!, src_size: data.count, state: nil)
+                guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else { throw ZipError.corrupt }
+                defer { compression_stream_destroy(&stream) }
+                stream.src_ptr = source.bindMemory(to: UInt8.self).baseAddress!
+                stream.src_size = data.count
+                while true {
+                    stream.dst_ptr = destination.baseAddress!
+                    stream.dst_size = destination.count
+                    let before = stream.src_size
+                    let status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                    let written = destination.count - stream.dst_size
+                    guard status != COMPRESSION_STATUS_ERROR, written <= size - out.count else { throw ZipError.corrupt }
+                    out.append(destination.baseAddress!, count: written)
+                    if status == COMPRESSION_STATUS_END {
+                        guard out.count == size, stream.src_size == 0 else { throw ZipError.corrupt }
+                        break
+                    }
+                    guard written > 0 || stream.src_size < before else { throw ZipError.corrupt }
+                }
             }
         }
-        guard written == size else { throw ZipError.corrupt }
         return out
     }
 

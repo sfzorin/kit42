@@ -28,12 +28,23 @@ public enum DebugSnapshot {
         guard let path = env["K42_SNAPSHOT"] else { return }
         let delay = Double(env["K42_SNAPSHOT_DELAY"] ?? "") ?? 2
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            // Directly launched test bundles may still be inactive. Capture enabled toolbar and
+            // focus states instead of the greyed-out appearance of a background application.
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.orderedWindows.first { $0.isVisible && !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
+            // K42_AUDIT_RECENT=1 checks menu population, actions, and custom-controller routing.
+            if env["K42_AUDIT_RECENT"] != nil, !auditRecentMenu() { exit(1) }
             // K42_SIZE=900x700 resizes the front window first (layout checks).
             if let size = env["K42_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2,
                let window = NSApp.orderedWindows.first(where: { $0.isVisible }) {
                 window.setContentSize(NSSize(width: size[0], height: size[1]))
             }
             prepare?()
+            // K42_OPEN_GENERATOR=signature|seal opens the signature/stamp generator (use with K42_SNAPSHOT_SHEET=1).
+            if let mode = env["K42_OPEN_GENERATOR"] {
+                MarkGeneratorController.show(mode == "seal" ? .seal : .signature,
+                                             over: NSApp.orderedWindows.first { $0.isVisible }, onInsert: { _ in })
+            }
             // K42_HIDE_PANELS=1 runs View › Hide All Panels first.
             if env["K42_HIDE_PANELS"] != nil,
                let controller = NSApp.orderedWindows.first(where: { $0.isVisible })?.windowController as? PanelHiding {

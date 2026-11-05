@@ -24,7 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
-            if NSDocumentController.shared.documents.isEmpty { welcome.showWindow(nil) }
+            guard NSDocumentController.shared.documents.isEmpty else { return }
+            if ProcessInfo.processInfo.environment["K42_NEW"] != nil {
+                NSDocumentController.shared.newDocument(nil)
+            } else {
+                welcome.showWindow(nil)
+            }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] note in
             if (note.object as? NSWindow)?.windowController is DocWindowController { self?.welcome.close() }

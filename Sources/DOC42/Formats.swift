@@ -391,8 +391,20 @@ enum RtfFormat {
             let page = number ? (text.isEmpty ? "" : " ") + "{\\field{\\*\\fldinst PAGE}{\\fldrslt 1}}" : ""
             return "{\\\(tag)\\pard\\qc\\fs18\\cf0\\uc1 \(rtfEscape(text))\(page)\\par}\n"
         }
+        // AppKit omits paper size and margins equal to its defaults. State every value explicitly:
+        // DOC42's default paper differs, and missing fields must not change a saved document on reopening.
+        func twips(_ points: CGFloat) -> Int {
+            let value = points * 20
+            guard value.isFinite else { return 0 }
+            return Int(min(max(0, value), CGFloat(Int32.max)).rounded())
+        }
+        let m = setup.margins
+        let geometry = "\\paperw\(twips(setup.size.width))\\paperh\(twips(setup.size.height))" +
+            "\\margl\(twips(m.left))\\margr\(twips(m.right))\\margt\(twips(m.top))\\margb\(twips(m.bottom))\n"
+        if let start = s.range(of: "^\\{\\\\rtf\\d+\\s*", options: .regularExpression) { s.insert(contentsOf: geometry, at: start.upperBound) }
         let headers = part("header", setup.header, number: false) + part("footer", setup.footer, number: setup.pageNumbers)
-        if !headers.isEmpty, let r = s.range(of: "\\pard") { s.insert(contentsOf: headers, at: r.lowerBound) }
+        if let r = s.range(of: "\\pard") { s.insert(contentsOf: headers, at: r.lowerBound) }
+        else if let end = s.lastIndex(of: "}") { s.insert(contentsOf: headers, at: end) }
         return Data(s.utf8)
     }
 

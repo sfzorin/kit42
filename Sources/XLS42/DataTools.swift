@@ -221,15 +221,15 @@ enum DataTools {
         case .empty: return blank
         case .notEmpty: return !blank
         case .top, .bottom, .topPercent, .bottomPercent:
-            guard case .number(let d) = v, let n = Double(c.value.replacingOccurrences(of: ",", with: ".")), n > 0 else { return false }
+            guard case .number(let d) = v, let n = Double(c.value.replacingOccurrences(of: ",", with: ".")), n.isFinite, n > 0 else { return false }
             let nums = column.compactMap { x -> Double? in if case .number(let d) = x { return d }; return nil }.sorted(by: c.op == .top || c.op == .topPercent ? (>) : (<))
             guard !nums.isEmpty else { return false }
-            let k = c.op == .top || c.op == .bottom ? Int(n) : max(1, Int(Double(nums.count) * n / 100))
+            let k = c.op == .top || c.op == .bottom ? Int(min(Double(nums.count), n)) : max(1, Int(Double(nums.count) * min(100, n) / 100))
             let threshold = nums[min(nums.count, max(1, k)) - 1]
             return c.op == .top || c.op == .topPercent ? d >= threshold : d <= threshold
         default: break
         }
-        let display = NumberFormat.format(v, format).text
+        let display = NumberFormat.format(v, format, date1904: calc.workbook.date1904).text
         let text = caseSensitive ? display : display.lowercased()
         let needle = caseSensitive ? c.value : c.value.lowercased()
         switch c.op {
@@ -240,7 +240,7 @@ enum DataTools {
         default: break
         }
         // Comparisons: numbers numerically (dates typed as dates too), text alphabetically; = and <> allow * and ?.
-        let operand: Value = XLSX.constant(c.value)
+        let operand: Value = XLSX.constant(c.value, date1904: calc.workbook.date1904)
         if c.op == .equal || c.op == .notEqual {
             var eq: Bool
             if case .string(let p) = operand, p.contains(where: { "*?".contains($0) }) {
@@ -285,7 +285,7 @@ enum DataTools {
         for r in rows {
             for (col, values) in s.filterValues {
                 let c = s[CellRef(row: r, col: col)]
-                if !values.contains(NumberFormat.format(c.value, c.style.numberFormat).text) { s.filterHidden.insert(r); break }
+                if !values.contains(NumberFormat.format(c.value, c.style.numberFormat, date1904: workbook.date1904).text) { s.filterHidden.insert(r); break }
             }
             if s.filterHidden.contains(r) { continue }
             for (col, filter) in s.customFilters {
@@ -320,12 +320,12 @@ enum DataTools {
     }
 
     /// Removes rows whose cells (in the range's columns) repeat an earlier row.
-    static func uniqueRows(_ s: Sheet, _ rows: [Int], cols: ClosedRange<Int>) -> [Int] {
+    static func uniqueRows(_ s: Sheet, _ rows: [Int], cols: ClosedRange<Int>, date1904: Bool = false) -> [Int] {
         var seen = Set<[String]>()
         return rows.filter { r in
             seen.insert(cols.map { c in
                 let cell = s[CellRef(row: r, col: c)]
-                return NumberFormat.format(cell.value, cell.style.numberFormat).text.lowercased()
+                return NumberFormat.format(cell.value, cell.style.numberFormat, date1904: date1904).text.lowercased()
             }).inserted
         }
     }
@@ -342,7 +342,7 @@ enum DataTools {
             for (j, c) in range.cols.enumerated() {
                 var cell = s[CellRef(row: r, col: c)]
                 if cell.isFormula || cell.input.isEmpty {
-                    cell.input = XLSX.inputText(for: cell.value, style: cell.style)
+                    cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: wb.date1904)
                     cell.array = false
                 }
                 wb.sheets[to.sheet][CellRef(row: to.ref.row + i, col: to.ref.col + j)] = cell
@@ -356,7 +356,7 @@ enum DataTools {
                                unique: Bool, header: Bool, copyTo: (sheet: Int, ref: CellRef)?) {
         let calc = Calculator(wb)
         var rows = passingRows(wb.sheets[si], range: range, criteria: criteria, caseSensitive: caseSensitive, header: header, calc: calc)
-        if unique { rows = uniqueRows(wb.sheets[si], rows, cols: range.cols) }
+        if unique { rows = uniqueRows(wb.sheets[si], rows, cols: range.cols, date1904: wb.date1904) }
         if let copyTo {
             copyRows(&wb, from: si, range: range, rows: rows, header: header, to: copyTo)
             return
@@ -403,7 +403,7 @@ enum DataTools {
         var rows = Array(list.rows.dropFirst()).filter { r in
             groups.isEmpty || groups.contains { g in g.allSatisfy { col, test in test(s[CellRef(row: r, col: col)].value) } }
         }
-        if unique { rows = uniqueRows(s, rows, cols: list.cols) }
+        if unique { rows = uniqueRows(s, rows, cols: list.cols, date1904: wb.date1904) }
         if let copyTo {
             copyRows(&wb, from: si, range: list, rows: rows, header: true, to: copyTo)
         } else {
@@ -458,7 +458,7 @@ enum DataTools {
         let first = range.start.row + 1
         func key(_ r: Int) -> String {
             let c = wb.sheets[si][CellRef(row: r, col: groupBy)]
-            return NumberFormat.format(c.value, c.style.numberFormat).text
+            return NumberFormat.format(c.value, c.style.numberFormat, date1904: wb.date1904).text
         }
         // Groups as (first row, last row, label) before inserting anything.
         var groups: [(Int, Int, String)] = []
@@ -523,7 +523,7 @@ enum DataTools {
         for r in rows {
             let key = columns.map { c -> String in
                 let cell = s[CellRef(row: r, col: c)]
-                return NumberFormat.format(cell.value, cell.style.numberFormat).text.lowercased()
+                return NumberFormat.format(cell.value, cell.style.numberFormat, date1904: wb.date1904).text.lowercased()
             }
             if seen.insert(key).inserted { keep.append(r) }
         }
@@ -573,28 +573,28 @@ enum DataTools {
         return parts
     }
 
-    static func typed(_ s: String, _ t: ColumnType) -> Cell? {
+    static func typed(_ s: String, _ t: ColumnType, date1904: Bool = false) -> Cell? {
         var c = Cell()
         switch t {
         case .skip: return nil
         case .text:
-            c.input = s.isEmpty ? "" : (XLSX.constant(s) == .string(s) ? s : "'" + s)
+            c.input = s.isEmpty ? "" : (XLSX.constant(s, date1904: date1904) == .string(s) ? s : "'" + s)
             c.value = .string(s)
             c.style.numberFormat = "@"
         case .general:
             c.input = s
-            c.value = XLSX.constant(s)
-            if case .number = c.value, Double(s.replacingOccurrences(of: ",", with: ".")) == nil, DateMath.parse(s) != nil {
+            c.value = XLSX.constant(s, date1904: date1904)
+            if case .number = c.value, Double(s.replacingOccurrences(of: ",", with: ".")) == nil, DateMath.parse(s, date1904: date1904) != nil {
                 c.style.numberFormat = s.contains(":") ? "dd.mm.yyyy hh:mm" : "dd.mm.yyyy"
             }
         case .dateDMY, .dateMDY, .dateYMD:
             let n = s.split(whereSeparator: { "./- ".contains($0) }).compactMap { Int($0) }
-            guard n.count >= 3 else { return typed(s, .general) }
+            guard n.count >= 3 else { return typed(s, .general, date1904: date1904) }
             let (d, m, y) = t == .dateDMY ? (n[0], n[1], n[2]) : t == .dateMDY ? (n[1], n[0], n[2]) : (n[2], n[1], n[0])
-            guard let serial = DateMath.serial(year: y < 100 ? y + (y < 30 ? 2000 : 1900) : y, month: m, day: d) else { return typed(s, .general) }
-            c.value = .number(serial)
+            guard let serial = DateMath.serial(year: y < 100 ? y + (y < 30 ? 2000 : 1900) : y, month: m, day: d) else { return typed(s, .general, date1904: date1904) }
+            c.value = .number(serial - (date1904 ? 1462 : 0))
             c.style.numberFormat = "dd.mm.yyyy"
-            c.input = XLSX.inputText(for: c.value, style: c.style)
+            c.input = XLSX.inputText(for: c.value, style: c.style, date1904: date1904)
         }
         return c
     }
@@ -610,7 +610,7 @@ enum DataTools {
             var out = col
             for (i, part) in split(text, options).enumerated() {
                 let t = i < options.types.count ? options.types[i] : .general
-                guard var cell = typed(part, t) else { continue }
+                guard var cell = typed(part, t, date1904: wb.date1904) else { continue }
                 if out == col { cell.style = mergeFormat(source.style, cell.style) }
                 wb.sheets[si][CellRef(row: r, col: out)] = cell
                 out += 1
@@ -631,6 +631,7 @@ enum DataTools {
     /// Fill › Series: each column (row) of the range continues from its first (last for up/left) cell.
     static func fillSeries(_ wb: inout Workbook, sheet si: Int, range: CellRange, direction: Direction, type: SeriesType,
                            unit: DateUnit, step: Double, stop: Double?) {
+        guard step.isFinite, stop?.isFinite != false, type != .date || abs(step) <= 3_000_000 else { return }
         let vertical = direction == .down || direction == .up
         let forward = direction == .down || direction == .right
         let lines = vertical ? Array(range.cols) : Array(range.rows)
@@ -638,7 +639,10 @@ enum DataTools {
             var refs: [CellRef] = vertical ? range.rows.map { CellRef(row: $0, col: line) } : range.cols.map { CellRef(row: line, col: $0) }
             if !forward { refs.reverse() }
             let startCell = wb.sheets[si][refs[0]]
-            guard case .number(let start) = startCell.value else { continue }
+            guard case .number(let start) = startCell.value, start.isFinite else { continue }
+            let dateOffset: Double = wb.date1904 ? 1462 : 0
+            if type == .date, !(0...2_958_465).contains(start + dateOffset) { continue }
+            let increasing = type == .growth ? start * step >= start : step >= 0
             var v = start
             for ref in refs.dropFirst() {
                 switch type {
@@ -648,23 +652,32 @@ enum DataTools {
                     switch unit {
                     case .day: v += step
                     case .weekday:
-                        var left = Int(step), d = v
-                        let s: Double = left < 0 ? -1 : 1
-                        while left != 0 { d += s; if Calculator.isoWeekday(d) < 5 { left -= Int(s) } }
-                        v = d
+                        var left = abs(Int(step)), d = v + dateOffset
+                        let sign: Double = step < 0 ? -1 : 1
+                        if left > 0, Calculator.isoWeekday(d) >= 5 {
+                            repeat { d += sign } while Calculator.isoWeekday(d) >= 5
+                            left -= 1
+                        }
+                        d += Double(left / 5) * 7 * sign
+                        left %= 5
+                        while left > 0 { d += sign; if Calculator.isoWeekday(d) < 5 { left -= 1 } }
+                        v = d - dateOffset
                     case .month, .year:
-                        guard let c = DateMath.components(start) else { break }
+                        guard let c = DateMath.components(start + dateOffset) else { break }
                         let k = Int(step) * (unit == .year ? 12 : 1) * ((vertical ? abs(ref.row - refs[0].row) : abs(ref.col - refs[0].col)))
                         var y = c.year!, m = c.month! + k
                         y += Int(floor(Double(m - 1) / 12)); m = ((m - 1) % 12 + 12) % 12 + 1
-                        v = (DateMath.serial(year: y, month: m, day: min(c.day!, DateMath.daysInMonth(year: y, month: m))) ?? v) + (start - floor(start))
+                        guard (1900...9999).contains(y) else { v = .nan; break }
+                        guard let date = DateMath.serial(year: y, month: m, day: min(c.day!, DateMath.daysInMonth(year: y, month: m))) else { v = .nan; break }
+                        v = date - dateOffset + (start - floor(start))
                     }
                 }
-                if let stop, step >= 0 ? v > stop + 1e-12 : v < stop - 1e-12 { break }
+                guard v.isFinite, type != .date || (0...2_958_465).contains(v + dateOffset) else { break }
+                if let stop, increasing ? v > stop + 1e-12 : v < stop - 1e-12 { break }
                 var cell = wb.sheets[si][ref]
                 cell.value = .number(v)
                 cell.style.numberFormat = startCell.style.numberFormat
-                cell.input = XLSX.inputText(for: cell.value, style: cell.style)
+                cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: wb.date1904)
                 wb.sheets[si][ref] = cell
             }
         }

@@ -226,8 +226,10 @@ extension ToolsCLI {
             for f in box.x.annotationFiles { print("p\(f.page + 1) \(f.name) \(f.data.count) bytes (annotation)") }
             if a.count > 1 {
                 let dir = URL(fileURLWithPath: a[1])
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                for f in box.x.files { try? f.data.write(to: dir.appendingPathComponent(f.name)) }
+                do {
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    for f in box.x.files { _ = try AttachmentExport.write(f.data, name: f.name, to: dir) }
+                } catch { fail("\(error)") }
             }
         case "--pdfa" where a.count >= 2:
             let pdf = open(a[0])

@@ -13,7 +13,15 @@ enum CLI {
         let url = URL(fileURLWithPath: path)
         let doc = TextDocument()
         let ext = url.pathExtension.lowercased()
-        try doc.read(from: url, ofType: ext == "md" ? "md" : (UTType(filenameExtension: ext)?.identifier ?? ext))
+        let type: String
+        switch ext {
+        // Headless binaries may receive a dynamic UTI until LaunchServices knows their bundle.
+        // The reader already understands these extensions; never interpret an OOXML ZIP as text.
+        case "docx", "doc", "odt", "rtf", "rtfd", "html", "md", "markdown", "txt": type = ext
+        case "htm": type = "html"
+        default: type = UTType(filenameExtension: ext)?.identifier ?? ext
+        }
+        try doc.read(from: url, ofType: type)
         return doc
     }
 
@@ -87,7 +95,7 @@ enum CLI {
             o.quality = arg("--quality", 1).flatMap { Double($0[0]) }.map { CGFloat($0) } ?? 1
             o.comments = args.contains("--comments")
             o.bookmarks = !args.contains("--no-bookmarks")
-            let data = doc.pdfData(o)
+            let data = try doc.pdfData(o)
             try data.write(to: URL(fileURLWithPath: a[1]))
             print("pdf: \(data.count) bytes")
             return true

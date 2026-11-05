@@ -59,6 +59,11 @@ extension DocWindowController {
             case "stats": print(TextStats.of(storage, NSRange(location: 0, length: storage.length), layout: paged.layoutManager), "pages", paged.cards.count)
             case "hidecomments": toggleCommentsAction(nil)
             case "ruler": toggleRulerAction(nil)
+            case "auditpanels": if !auditPanelPreferences() { exit(1) }
+            case "auditediting": if !auditEditing() { exit(1) }
+            case "auditrulers": if !auditRulers() { exit(1) }
+            case "auditdocument": if !auditDocumentLifecycle() { exit(1) }
+            case "auditpagination": if !auditPagination() { exit(1) }
             case "editnote": if let n = Notes.all(in: storage).first?.1 { editNote(n) }
             case "findbar": finder.performAction(.showReplaceInterface)
             case "findnext": finder.performAction(.nextMatch)
@@ -80,6 +85,50 @@ extension DocWindowController {
         if ProcessInfo.processInfo.environment["K42_SNAPSHOT_KEEP"] == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.doc?.updateChangeCount(.changeCleared) }   // after the undo group closes
         }
+    }
+}
+
+extension DocWindowController {
+    /// K42_SCRIPT=auditpanels: exercise the actual Hide All Panels action and a newly created editor.
+    /// Preferences and the original window's visibility are restored even when a check fails.
+    private func auditPanelPreferences() -> Bool {
+        guard !Panels.allHidden(in: window) else { print("FAIL DOC panels: start with panels restored"); return false }
+        let defaults = UserDefaults.standard
+        let keys = ["doc.ruler", "doc.comments"]
+        let savedPreferences = keys.map { ($0, defaults.object(forKey: $0)) }
+        let original = (!ruler.isHidden, comments.shown)
+        defer {
+            if Panels.allHidden(in: window) { toggleAllPanelsAction(nil) }
+            setRuler(shown: original.0)
+            setComments(shown: original.1)
+            for (key, value) in savedPreferences {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        var failures = 0
+        func check(_ condition: Bool, _ name: String) {
+            print("\(condition ? "PASS" : "FAIL") DOC panels: \(name)")
+            if !condition { failures += 1 }
+        }
+        for (rulerShown, commentsShown) in [(true, true), (true, false), (false, true), (false, false)] {
+            let label = "ruler=\(rulerShown), comments=\(commentsShown)"
+            defaults.set(rulerShown, forKey: keys[0])
+            defaults.set(commentsShown, forKey: keys[1])
+            setRuler(shown: rulerShown)
+            setComments(shown: commentsShown)
+            toggleAllPanelsAction(nil)
+            check(ruler.isHidden && !comments.shown && Panels.allHidden(in: window), "hidden (\(label))")
+            check(defaults.bool(forKey: keys[0]) == rulerShown && defaults.bool(forKey: keys[1]) == commentsShown,
+                  "preferences unchanged (\(label))")
+            let next = DocWindowController(storage: NSTextStorage())
+            check(!next.ruler.isHidden == rulerShown && next.comments.shown == commentsShown, "new editor preferences (\(label))")
+            next.close()
+            toggleAllPanelsAction(nil)
+            check(!ruler.isHidden == rulerShown && comments.shown == commentsShown && !Panels.allHidden(in: window),
+                  "restored (\(label))")
+        }
+        print("DOC panel UI regressions: \(16 - failures)/16 passed")
+        return failures == 0
     }
 }
 

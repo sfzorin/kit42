@@ -272,6 +272,11 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         thumbnails.syncSelection()
         canvas.slideChanged()
         notesView.load()
+        notesPage.reload()
+        sorter.needsDisplay = true
+        inspector.reload()
+        formatBar.sync()
+        updateTitle()
     }
 
     private func selectionChanged() {
@@ -283,6 +288,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     /// Commits the text being edited (before saving, switching slides…).
     func commitEditing() {
         canvas.editor.end()
+        if outline.hasPendingChanges { outline.apply() }
     }
 
     private func deckChanged(from old: Deck) {
@@ -532,6 +538,7 @@ final class NotesTextView: NSTextView, NSTextViewDelegate {
     weak var owner: DeckWindowController?
     private(set) var isEditing = false
     private var loading = false
+    private var loadedSlide: UUID?
 
     convenience init() {
         self.init(frame: NSRect(x: 0, y: 0, width: 400, height: 100))
@@ -558,10 +565,18 @@ final class NotesTextView: NSTextView, NSTextViewDelegate {
         guard let owner else { return }
         loading = true
         let text = owner.mode == .master ? "" : owner.currentSlide?.notes ?? ""
+        if loadedSlide != owner.currentSlide?.uid || string != text { resetUndoHistory() }
+        loadedSlide = owner.currentSlide?.uid
         if string != text { string = text }
         isEditable = owner.mode == .normal && owner.currentSlide != nil
         loading = false
         needsDisplay = true
+    }
+
+    /// Local text actions belong to the loaded slide and its current text, never to a replacement document.
+    func resetUndoHistory() {
+        breakUndoCoalescing()
+        privateUndo.removeAllActions()
     }
 
     func textDidBeginEditing(_ notification: Notification) { isEditing = true }

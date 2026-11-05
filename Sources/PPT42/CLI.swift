@@ -12,7 +12,7 @@ enum CLI {
 
     static func save(_ deck: Deck, _ path: String) throws {
         let url = URL(fileURLWithPath: path)
-        try DeckIO.write(deck, ext: url.pathExtension).write(to: url)
+        try DeckIO.write(deck, ext: url.pathExtension).write(to: url, options: .atomic)
     }
 
     /// Returns true when the arguments were a CLI command (then the app does not start).
@@ -40,21 +40,22 @@ enum CLI {
                 let notes = rest.contains("--notes")
                 let ext = (out as NSString).pathExtension.lowercased()
                 if ext == "pdf" {
-                    try Renderer.pdf(deck, notes: notes, includeHidden: rest.contains("--hidden")).write(to: URL(fileURLWithPath: out))
+                    try Renderer.pdf(deck, notes: notes, includeHidden: rest.contains("--hidden")).write(to: URL(fileURLWithPath: out), options: .atomic)
                     print("pdf: \(out)")
                 } else if ext == "mp4" || ext == "mov" {
                     var o = VideoExport.Options()
+                    o.includeHidden = rest.contains("--hidden")
                     if let i = rest.firstIndex(of: "--seconds"), rest.indices.contains(i + 1), let v = Double(rest[i + 1]) { o.secondsPerSlide = v }
                     if let i = rest.firstIndex(of: "--width"), rest.indices.contains(i + 1), let v = Int(rest[i + 1]) { o.width = v }
                     try VideoExport.export(deck, to: URL(fileURLWithPath: out), options: o)
                     print("movie: \(out)")
                 } else if ext == "rtf" || ext == "md" {
-                    try Outline.export(deck, format: ext).write(to: URL(fileURLWithPath: out))
+                    try Outline.export(deck, format: ext).write(to: URL(fileURLWithPath: out), options: .atomic)
                     print("\(ext): \(out)")
                 } else {
                     let jpeg = rest.contains("--jpeg")
                     let width = rest.firstIndex(of: "--width").flatMap { rest.indices.contains($0 + 1) ? Int(rest[$0 + 1]) : nil } ?? 1920
-                    let urls = try SlideImages.export(deck, to: URL(fileURLWithPath: out), jpeg: jpeg, width: width)
+                    let urls = try SlideImages.export(deck, to: URL(fileURLWithPath: out), jpeg: jpeg, width: width, includeHidden: rest.contains("--hidden"))
                     print("images: \(urls.count) in \(out)")
                 }
             default:
@@ -147,23 +148,25 @@ enum DeckIO {
     }
 
     static func isODF(_ data: Data) -> Bool {
-        data.count > 60 && String(decoding: data[30..<min(data.count, 90)], as: UTF8.self).contains("mimetypeapplication/vnd.oasis.opendocument")
+        guard let zip = try? ZipArchive(data: data), let mime = zip.string("mimetype") else { return false }
+        return mime.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("application/vnd.oasis.opendocument.presentation")
     }
 }
 
 /// Slides as PNG or JPEG files.
 enum SlideImages {
     static func export(_ deck: Deck, to dir: URL, jpeg: Bool, width: Int, includeHidden: Bool = false) throws -> [URL] {
+        guard Renderer.bitmapSize(deck: deck, pixelWidth: width) != nil else { throw DeckError.invalid(L("The image size is invalid")) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var out: [URL] = []
         for (i, slide) in deck.slides.enumerated() where includeHidden || !slide.hidden {
             var o = RenderOptions()
             o.number = Renderer.number(of: i, deck: deck)
-            guard let cg = Renderer.image(slide, deck: deck, pixelWidth: width, options: o) else { continue }
+            guard let cg = Renderer.image(slide, deck: deck, pixelWidth: width, options: o) else { throw DeckError.invalid(L("Could not render the slide")) }
             let rep = NSBitmapImageRep(cgImage: cg)
-            guard let data = rep.representation(using: jpeg ? .jpeg : .png, properties: jpeg ? [.compressionFactor: 0.9] : [:]) else { continue }
+            guard let data = rep.representation(using: jpeg ? .jpeg : .png, properties: jpeg ? [.compressionFactor: 0.9] : [:]) else { throw DeckError.invalid(L("Could not render the slide")) }
             let url = dir.appendingPathComponent(String(format: "Slide %02d.%@", i + 1, jpeg ? "jpg" : "png"))
-            try data.write(to: url)
+            try data.write(to: url, options: .atomic)
             out.append(url)
         }
         return out

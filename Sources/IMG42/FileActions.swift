@@ -10,16 +10,21 @@ extension ImageWindowController {
     @objc(saveDocumentAs:) func saveDocumentAs(_ sender: Any?) { runExportPanel(saveAs: true) }
 
     @objc(revertDocumentToSaved:) func revertDocumentToSaved(_ sender: Any?) {
+        // Revert owns the undo snapshot, including any field that has not yet committed.
+        undo.disableUndoRegistration()
+        canvas.markup.endTextEditing()
+        undo.enableUndoRegistration()
         guard isDirty else { return }
         registerUndo(state, L("Revert to Saved"))
-        restore(EditState(base: originalBase, marks: [], adjustments: Adjustments(), imageDescription: originalDescription))
+        restore(EditState(base: originalBase, marks: [], adjustments: Adjustments(), imageDescription: originalDescription, dpi: originalDPI))
     }
 
     /// Saves over the original (same format, metadata kept). Formats that cannot be written go to Save As.
     func save(confirmed: Bool, completion: ((Bool) -> Void)? = nil) {
-        guard let url, let l = loaded, isDirty, let window else { completion?(true); return }
         canvas.markup.endTextEditing()
-        if onlyDescriptionChanged, Orientation.writeDescription(imageDescription, to: url) {
+        guard let url, let l = loaded, isDirty, let window else { completion?(true); return }
+        if onlyMetadataChanged, Orientation.writeMetadata(description: imageDescription,
+            resolution: imageDPI != originalDPI ? imageDPI : nil, to: url) {
             didSave(url)
             completion?(true)
             return
@@ -37,7 +42,8 @@ extension ImageWindowController {
         let write = { [weak self] in
             guard let self else { return }
             do {
-                try ImageWriter.write(image, to: url, type: type!, quality: 0.92, metadataFrom: url, description: .some(self.imageDescription))
+                try ImageWriter.write(image, to: url, type: type!, quality: 0.92, metadataFrom: url,
+                                      description: .some(self.imageDescription), dpi: self.imageDPI)
                 self.didSave(url)
                 completion?(true)
             } catch {
@@ -81,8 +87,8 @@ extension ImageWindowController {
     @objc func exportAction(_ sender: Any?) { runExportPanel(saveAs: false) }
 
     func runExportPanel(saveAs: Bool, preferred: UTType? = nil, completion: ((Bool) -> Void)? = nil) {
-        guard let window, let image = finalImage() else { completion?(false); return }
         canvas.markup.endTextEditing()
+        guard let window, let image = finalImage() else { completion?(false); return }
         let panel = NSSavePanel()
         let options = ExportOptions(sourceType: preferred ?? loaded?.typeIdentifier.flatMap(UTType.init), hasAlpha: image.alphaInfo != .none, panel: panel)
         panel.accessoryView = options.view
@@ -99,7 +105,7 @@ extension ImageWindowController {
             do {
                 let out = options.resized(image)
                 try ImageWriter.write(out, to: dest, type: options.type.identifier, quality: options.quality, metadataFrom: self.url,
-                                      description: .some(self.imageDescription))
+                                      description: .some(self.imageDescription), dpi: self.imageDPI)
                 if dest.deletingLastPathComponent().standardizedFileURL == self.url?.deletingLastPathComponent().standardizedFileURL,
                    !self.urls.contains(dest) {
                     if saveAs {

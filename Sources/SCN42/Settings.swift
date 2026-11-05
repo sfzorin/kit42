@@ -26,8 +26,8 @@ enum ColorMode: Int, CaseIterable, Codable {
 
     var title: String {
         switch self {
-        case .color: return L("Color")
-        case .gray: return L("Grayscale")
+        case .color: return L("In colour")
+        case .gray: return L("Greyscale")
         case .bw: return L("Black & White")
         }
     }

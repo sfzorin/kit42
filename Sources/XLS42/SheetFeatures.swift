@@ -9,18 +9,40 @@ extension SheetWindowController {
     /// Extends `source` over `target`: numbers and dates continue a series, text with a trailing
     /// number increments, formulas shift their relative references.
     func autoFill(from source: CellRange, to target: CellRange) {
-        guard let doc, guardEditable(target) else { return }
+        guard grid.commitEdit(move: nil), let doc, source != target,
+              target.contains(source.start), target.contains(source.end),
+              guardCellOperation(source), guardCellOperation(target),
+              pasteTarget(rows: target.rows.count, cols: target.cols.count, at: target.start) != nil else { return }
         let vertical = target.cols == source.cols
+        guard vertical ? (target.start.row == source.start.row || target.end.row == source.end.row)
+            : (target.rows == source.rows && (target.start.col == source.start.col || target.end.col == source.end.col)) else { return }
         let forward = vertical ? target.end.row > source.end.row : target.end.col > source.end.col
+        let destination: CellRange
+        if vertical {
+            destination = forward ? CellRange(CellRef(row: source.end.row + 1, col: source.start.col), target.end)
+                : CellRange(target.start, CellRef(row: source.start.row - 1, col: source.end.col))
+        } else {
+            destination = forward ? CellRange(CellRef(row: source.start.row, col: source.end.col + 1), target.end)
+                : CellRange(target.start, CellRef(row: source.end.row, col: source.start.col - 1))
+        }
+        guard guardEditable(destination), guardArrays(destination) else { return }
         doc.change(L("Fill")) { wb in
             let sheet = wb.sheets[sheetIndex]
+            dropArrays(in: destination, of: &wb)
             let lines = vertical ? Array(source.cols) : Array(source.rows)
             for line in lines {
                 let src: [CellRef] = vertical ? source.rows.map { CellRef(row: $0, col: line) } : source.cols.map { CellRef(row: line, col: $0) }
                 let dst: [CellRef] = vertical
                     ? (forward ? Array(source.end.row + 1...target.end.row) : Array((target.start.row..<source.start.row).reversed())).map { CellRef(row: $0, col: line) }
                     : (forward ? Array(source.end.col + 1...target.end.col) : Array((target.start.col..<source.start.col).reversed())).map { CellRef(row: line, col: $0) }
-                let cells = src.map { sheet[$0] }
+                let cells = src.map { ref -> Cell in
+                    var cell = sheet[ref]
+                    if sheet.array(containing: ref) != nil || (cell.input.isEmpty && !cell.value.isEmpty) {
+                        cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: wb.date1904)
+                    }
+                    cell.array = false
+                    return cell
+                }
                 let numbers = cells.compactMap { c -> Double? in if !c.isFormula, case .number(let d) = c.value { return d }; return nil }
                 let isDate = cells.first.map { NumberFormat.isDateFormat($0.style.numberFormat) } ?? false
                 var step: Double? = nil
@@ -38,7 +60,7 @@ extension SheetWindowController {
                         let base = forward ? numbers.last! : numbers.first!
                         let v = base + step * Double(k + 1) * (forward ? 1 : -1)
                         c.value = .number(v)
-                        c.input = isDate ? XLSX.inputText(for: c.value, style: c.style) : Value.formatGeneral(v)
+                        c.input = isDate ? XLSX.inputText(for: c.value, style: c.style, date1904: wb.date1904) : Value.formatGeneral(v)
                     } else if case .string(let text) = c.value, let m = text.range(of: "\\d+$", options: .regularExpression), let n = Int(text[m]) {
                         let delta = (k / cells.count + 1) * (forward ? 1 : -1)
                         let next = String(text[..<m.lowerBound]) + String(max(0, n + delta))
@@ -66,6 +88,7 @@ extension SheetWindowController {
     }
 
     @objc func unhideRowsAction(_ sender: Any?) {
+        guard guardEditable(nil) else { return }
         let rows = grid.selection.rows.count > 1 ? Array(selectedRows) : [grid.active.row - 1, grid.active.row, grid.active.row + 1]
         doc?.change(L("Unhide Rows"), recalc: false) { wb in
             for r in rows where wb.sheets[sheetIndex].rowHeights[r] == 0 { wb.sheets[sheetIndex].rowHeights[r] = nil }
@@ -79,6 +102,7 @@ extension SheetWindowController {
     }
 
     @objc func unhideColumnsAction(_ sender: Any?) {
+        guard guardEditable(nil) else { return }
         let cols = grid.selection.cols.count > 1 ? Array(grid.selection.cols) : [grid.active.col - 1, grid.active.col, grid.active.col + 1]
         doc?.change(L("Unhide Columns"), recalc: false) { wb in
             for c in cols where wb.sheets[sheetIndex].columnWidths[c] == 0 { wb.sheets[sheetIndex].columnWidths[c] = nil }
@@ -111,7 +135,7 @@ extension SheetWindowController {
         var seen = Set<String>(), out: [String] = []
         for r in (f.start.row + 1)...max(f.start.row + 1, f.end.row) {
             let c = sheet[CellRef(row: r, col: col)]
-            let text = NumberFormat.format(c.value, c.style.numberFormat).text
+            let text = NumberFormat.format(c.value, c.style.numberFormat, date1904: doc?.workbook.date1904 ?? false).text
             if seen.insert(text).inserted { out.append(text) }
         }
         return out.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -127,7 +151,7 @@ extension SheetWindowController {
                 for r in (f.start.row + 1)...f.end.row {
                     for (col, values) in s.filterValues {
                         let c = s[CellRef(row: r, col: col)]
-                        if !values.contains(NumberFormat.format(c.value, c.style.numberFormat).text) { s.filterHidden.insert(r); break }
+                        if !values.contains(NumberFormat.format(c.value, c.style.numberFormat, date1904: wb.date1904).text) { s.filterHidden.insert(r); break }
                     }
                 }
             }
@@ -227,6 +251,7 @@ extension SheetWindowController {
         guard let doc else { return }
         let kind = commandTag(of: sender)   // 0 >, 1 <, 2 between, 3 equal, 4 text contains, 5 duplicates
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         let a = NSTextField(string: ""), b = NSTextField(string: "")
         let style = NSPopUpButton(frame: .zero, pullsDown: false)
         style.addItems(withTitles: Self.highlightStyles.map(\.title))
@@ -258,6 +283,7 @@ extension SheetWindowController {
 
     @objc func colorScaleAction(_ sender: Any?) {
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         let colors = [NSColor(srgbRed: 0.97, green: 0.41, blue: 0.42, alpha: 1), NSColor(srgbRed: 1, green: 0.92, blue: 0.52, alpha: 1),
                       NSColor(srgbRed: 0.39, green: 0.75, blue: 0.48, alpha: 1)]
         doc?.change(L("Conditional Formatting"), recalc: false) {
@@ -267,6 +293,7 @@ extension SheetWindowController {
 
     @objc func dataBarAction(_ sender: Any?) {
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         doc?.change(L("Conditional Formatting"), recalc: false) {
             $0.sheets[sheetIndex].conditionalFormats.append(ConditionalFormat(range: range, kind: .dataBar(NSColor(srgbRed: 0.39, green: 0.56, blue: 0.85, alpha: 1))))
         }
@@ -275,7 +302,7 @@ extension SheetWindowController {
     @objc func clearRulesAction(_ sender: Any?) {
         let range = clampedSelection
         doc?.change(L("Clear Rules"), recalc: false) { wb in
-            wb.sheets[sheetIndex].conditionalFormats.removeAll { rule in rule.range.cells.contains { range.contains($0) } }
+            wb.sheets[sheetIndex].conditionalFormats.removeAll { $0.range.intersects(range) }
         }
     }
 
@@ -316,6 +343,7 @@ extension SheetWindowController {
         let kind = kinds[max(0, min(kinds.count - 1, commandTag(of: sender)))]
         var range = clampedSelection
         if range.count == 1, let used = sheet.usedRange { range = used }
+        guard guardCellOperation(range) else { return }
         // First column with text → categories; first row with text → series names.
         let firstColText = range.rows.dropFirst().contains { r -> Bool in if case .string = sheet[CellRef(row: r, col: range.start.col)].value { return true }; return false }
         let firstRowText = range.cols.contains { c -> Bool in if case .string = sheet[CellRef(row: range.start.row, col: c)].value { return true }; return false }

@@ -183,6 +183,21 @@ final class OutlineEditor: NSTextView, NSTextViewDelegate {
     private var pending: DispatchWorkItem?
     private let privateUndo = UndoManager()
 
+    var hasPendingChanges: Bool { pending != nil }
+
+    func resetUndoHistory() {
+        breakUndoCoalescing()
+        privateUndo.removeAllActions()
+    }
+
+    /// Used only after a successful document read; ending focus must not apply the old draft.
+    func discardPendingEdits() {
+        pending?.cancel(); pending = nil
+        loading = true
+        isEditing = false
+        resetUndoHistory()
+    }
+
     convenience init(owner: DeckWindowController) {
         self.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         self.owner = owner
@@ -221,7 +236,11 @@ final class OutlineEditor: NSTextView, NSTextViewDelegate {
                 }
             }
         }
-        if string != s.string { textStorage?.setAttributedString(s) }
+        if string != s.string {
+            pending?.cancel(); pending = nil
+            resetUndoHistory()
+            textStorage?.setAttributedString(s)
+        }
         restyle()
         loading = false
         needsDisplay = true
@@ -303,6 +322,7 @@ final class OutlineEditor: NSTextView, NSTextViewDelegate {
     /// Writes titles and bullets back into the slides (new title lines add slides; formatting of existing paragraphs is kept).
     func apply() {
         pending?.cancel()
+        pending = nil
         guard let owner, !loading else { return }
         var groups: [(title: String, body: [(Int, String)])] = []
         for line in string.components(separatedBy: "\n") {
@@ -362,6 +382,12 @@ final class NotesPageView: NSView, NSTextViewDelegate {
     private let notes = NSTextView()
     private var loading = false
     private let privateUndo = UndoManager()
+    private var loadedSlide: UUID?
+
+    func resetUndoHistory() {
+        notes.breakUndoCoalescing()
+        privateUndo.removeAllActions()
+    }
 
     init(owner: DeckWindowController) {
         self.owner = owner
@@ -402,6 +428,8 @@ final class NotesPageView: NSView, NSTextViewDelegate {
         notes.frame = CGRect(x: s.minX - 4, y: s.maxY + 22, width: s.width + 8, height: p.maxY - m - s.maxY - 22)
         loading = true
         let text = owner.currentSlide?.notes ?? ""
+        if loadedSlide != owner.currentSlide?.uid || notes.string != text { resetUndoHistory() }
+        loadedSlide = owner.currentSlide?.uid
         if notes.string != text { notes.string = text }
         notes.isEditable = owner.currentSlide != nil
         loading = false

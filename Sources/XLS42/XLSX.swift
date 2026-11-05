@@ -3,6 +3,13 @@ import Kit42
 
 /// Reads and writes .xlsx (Office Open XML SpreadsheetML).
 enum XLSX {
+    /// XML normalizes literal CR in text and all whitespace in attributes.
+    /// Character references preserve the exact cell text and formula literals.
+    static func xmlEscape(_ text: String) -> String {
+        Kit42.xmlEscape(text).replacingOccurrences(of: "\r", with: "&#13;")
+            .replacingOccurrences(of: "\n", with: "&#10;").replacingOccurrences(of: "\t", with: "&#9;")
+    }
+
     // MARK: - Reading
 
     static func read(_ data: Data) throws -> Workbook {
@@ -11,7 +18,8 @@ enum XLSX {
             guard let d = zip[path] else { return nil }
             return (try? XMLDocument(data: d, options: [.nodePreserveWhitespace]))?.rootElement()
         }
-        guard let workbookXML = xml("xl/workbook.xml") else { throw ZipError.notZip }
+        guard let workbookXML = xml("xl/workbook.xml"), workbookXML.localName == "workbook",
+              workbookXML.child("sheets") != nil else { throw ZipError.corrupt }
         var wb = Workbook()
         wb.sheets = []
         wb.date1904 = workbookXML.child("workbookPr")?.attr("date1904").map { $0 == "1" || $0 == "true" } ?? false
@@ -36,14 +44,14 @@ enum XLSX {
         for s in workbookXML.child("sheets")?.children("sheet") ?? [] {
             let name = s.attr("name") ?? "Sheet\(wb.sheets.count + 1)"
             guard let rid = s.attr("id"), let path = rels[rid], let root = xml(path) else { continue }
-            var sheet = readSheet(root, name: name, styles: styles, shared: shared)
+            var sheet = readSheet(root, name: name, styles: styles, shared: shared, date1904: wb.date1904)
             sheet.hidden = s.attr("state") == "hidden" || s.attr("state") == "veryHidden"
             if let tab = root.child("sheetPr")?.child("tabColor") { sheet.tabColor = color(tab, theme: theme) }
             readExtras(&sheet, root: root, path: path, zip: zip, dxfs: dxfs, theme: theme)
             wb.sheets.append(sheet)
             sheetPaths.append(path)
         }
-        if wb.sheets.isEmpty { wb.sheets = [Sheet(name: "Sheet1")] }
+        guard !wb.sheets.isEmpty else { throw ZipError.corrupt }
         var solverNames: [Int: [String: String]] = [:]
         for d in workbookXML.child("definedNames")?.children("definedName") ?? [] {
             guard let name = d.attr("name"), let text = d.stringValue, !text.isEmpty else { continue }
@@ -52,8 +60,13 @@ enum XLSX {
                 solverNames[d.attr("localSheetId").flatMap(Int.init) ?? -1, default: [:]][name] = text
                 continue
             }
-            if name == "_xlnm.Print_Area", let i = d.attr("localSheetId").flatMap(Int.init), i < wb.sheets.count {
-                let first = String(text.split(separator: ",").first ?? "")
+            if name == "_xlnm.Print_Area", let i = d.attr("localSheetId").flatMap(Int.init), i >= 0, i < wb.sheets.count {
+                // Commas inside a quoted sheet name are not area separators.
+                var quoted = false
+                let first = String(text.prefix { character in
+                    if character == "'" { quoted.toggle() }
+                    return character != "," || quoted
+                })
                 let refPart = first.split(separator: "!").last.map(String.init) ?? first
                 wb.sheets[i].printArea = CellRange(refPart.replacingOccurrences(of: "$", with: ""))
             } else if !name.hasPrefix("_xlnm.") {
@@ -75,7 +88,7 @@ enum XLSX {
         return wb
     }
 
-    private static func readSheet(_ root: XMLElement, name: String, styles: [CellStyle], shared: [String]) -> Sheet {
+    private static func readSheet(_ root: XMLElement, name: String, styles: [CellStyle], shared: [String], date1904: Bool) -> Sheet {
         var sheet = Sheet(name: name)
         if let fmt = root.child("sheetFormatPr") {
             if let h = fmt.attr("defaultRowHeight").flatMap(Double.init) { sheet.defaultRowHeight = CGFloat(h) }
@@ -85,8 +98,8 @@ enum XLSX {
         if let view = root.child("sheetViews")?.child("sheetView") {
             sheet.showGridlines = view.attr("showGridLines") != "0"
             if let pane = view.child("pane"), pane.attr("state") == "frozen" || pane.attr("state") == "frozenSplit" {
-                sheet.frozenCols = Int(pane.attr("xSplit").flatMap(Double.init) ?? 0)
-                sheet.frozenRows = Int(pane.attr("ySplit").flatMap(Double.init) ?? 0)
+                sheet.frozenCols = boundedCount(pane.attr("xSplit"), maximum: 16_384)
+                sheet.frozenRows = boundedCount(pane.attr("ySplit"), maximum: 1_048_576)
             } else if let pane = view.child("pane") {
                 // Split window (state="split", the default): positions in twips, measured with the headers.
                 sheet.split = SheetSplit.fromTwips(x: pane.attr("xSplit").flatMap(Double.init) ?? 0, y: pane.attr("ySplit").flatMap(Double.init) ?? 0,
@@ -95,12 +108,13 @@ enum XLSX {
             }
         }
         for col in root.child("cols")?.children("col") ?? [] {
-            guard let min = col.attr("min").flatMap(Int.init), let max = col.attr("max").flatMap(Int.init) else { continue }
+            guard let min = col.attr("min").flatMap(Int.init), let max = col.attr("max").flatMap(Int.init),
+                  min >= 1, min <= max, max <= 16_384 else { continue }
             let hidden = col.attr("hidden") == "1" || col.attr("hidden") == "true"
             let level = col.attr("outlineLevel").flatMap(Int.init) ?? 0
             // Columns hidden by a collapsed group keep their width.
             let w = hidden && level == 0 ? 0 : columnPoints(col.attr("width").flatMap(Double.init) ?? 8.43)
-            for c in min...Swift.min(max, min + 1000) {
+            for c in min...max {
                 if col.attr("width") != nil || hidden { sheet.columnWidths[c - 1] = w }
                 if level > 0 { sheet.colLevels[c - 1] = Swift.min(level, Sheet.maxOutlineLevel) }
                 if level > 0 && hidden { sheet.outlineHiddenCols.insert(c - 1) }
@@ -110,7 +124,9 @@ enum XLSX {
         var sharedFormulas: [String: (String, CellRef)] = [:]
         var arrayRanges: [CellRange] = []
         for row in root.child("sheetData")?.children("row") ?? [] {
-            let r = (row.attr("r").flatMap(Int.init) ?? 1) - 1
+            let rowNumber = row.attr("r").flatMap(Int.init) ?? 1
+            guard (1...1_048_576).contains(rowNumber) else { continue }
+            let r = rowNumber - 1
             let level = row.attr("outlineLevel").flatMap(Int.init) ?? 0
             if level > 0 { sheet.rowLevels[r] = min(level, Sheet.maxOutlineLevel) }
             if row.attr("hidden") == "1" || row.attr("hidden") == "true" {
@@ -127,11 +143,11 @@ enum XLSX {
                 let ref = c.attr("r").flatMap(CellRef.init) ?? CellRef(row: r, col: nextCol)
                 nextCol = ref.col + 1
                 var cell = Cell()
-                if let s = c.attr("s").flatMap(Int.init), s < styles.count { cell.style = styles[s] }
+                if let s = c.attr("s").flatMap(Int.init), s >= 0, s < styles.count { cell.style = styles[s] }
                 let t = c.attr("t") ?? "n"
                 let v = c.child("v")?.stringValue
                 switch t {
-                case "s": cell.value = .string(v.flatMap(Int.init).flatMap { $0 < shared.count ? shared[$0] : nil } ?? "")
+                case "s": cell.value = .string(v.flatMap(Int.init).flatMap { $0 >= 0 && $0 < shared.count ? shared[$0] : nil } ?? "")
                 case "inlineStr": cell.value = .string(c.child("is")?.allText ?? "")
                 case "str": cell.value = .string(v ?? "")
                 case "b": cell.value = .bool(v == "1")
@@ -160,12 +176,18 @@ enum XLSX {
                         }
                     }
                 }
-                if cell.input.isEmpty { cell.input = inputText(for: cell.value, style: cell.style) }
+                if cell.input.isEmpty {
+                    cell.input = inputText(for: cell.value, style: cell.style, date1904: date1904)
+                    // String constants must not become formulas or change type when edited.
+                    if case .string(let text) = cell.value, constant(text) != .string(text) || text.hasPrefix("=") {
+                        cell.input = "'" + text
+                    }
+                }
                 sheet[ref] = cell
             }
         }
         for r in arrayRanges {
-            for ref in r.cells where ref != r.start {
+            for ref in sheet.cells.keys.filter({ $0 != r.start && r.contains($0) }) {
                 if var c = sheet.cells[ref], !c.isFormula { c.input = ""; sheet.cells[ref] = c }
             }
         }
@@ -182,14 +204,20 @@ enum XLSX {
     }
 
     /// Edit text of a constant (dates shown as dates, not serials).
-    static func inputText(for value: Value, style: CellStyle) -> String {
+    static func inputText(for value: Value, style: CellStyle, date1904: Bool = false) -> String {
         if case .number(let d) = value, NumberFormat.isDateFormat(style.numberFormat) {
             let hasTime = d != floor(d)
-            return NumberFormat.format(value, hasTime ? "dd.mm.yyyy hh:mm" : "dd.mm.yyyy").text
+            return NumberFormat.format(value, hasTime ? "dd.mm.yyyy hh:mm" : "dd.mm.yyyy", date1904: date1904).text
         }
-        if case .number(let d) = value { return Value.formatGeneral(d) }
+        if case .number(let d) = value { return Value.numberLiteral(d) }
         if case .bool(let b) = value { return b ? "TRUE" : "FALSE" }
+        if case .string(let text) = value, constant(text) != .string(text) || text.hasPrefix("=") { return "'" + text }
         return value.plain
+    }
+
+    private static func boundedCount(_ text: String?, maximum: Int) -> Int {
+        guard let value = text.flatMap(Double.init), value.isFinite, value > 0 else { return 0 }
+        return Int(min(value, Double(maximum)))
     }
 
     /// Excel column width (characters) → points at 100 %.
@@ -257,9 +285,9 @@ enum XLSX {
         return (cellXfs, named)
 
         func format(_ xf: XMLElement) -> CellStyle {
-            var s = xf.attr("fontId").flatMap(Int.init).flatMap { $0 < fonts.count ? fonts[$0] : nil } ?? CellStyle()
-            if let id = xf.attr("fillId").flatMap(Int.init), id < fills.count { s.fill = fills[id] }
-            if let id = xf.attr("borderId").flatMap(Int.init), id < borders.count {
+            var s = xf.attr("fontId").flatMap(Int.init).flatMap { $0 >= 0 && $0 < fonts.count ? fonts[$0] : nil } ?? CellStyle()
+            if let id = xf.attr("fillId").flatMap(Int.init), id >= 0, id < fills.count { s.fill = fills[id] }
+            if let id = xf.attr("borderId").flatMap(Int.init), id >= 0, id < borders.count {
                 (s.left, s.right, s.top, s.bottom) = (borders[id][0], borders[id][1], borders[id][2], borders[id][3])
             }
             if let id = xf.attr("numFmtId").flatMap(Int.init) { s.numberFormat = formats[id] ?? "General" }
@@ -291,10 +319,10 @@ enum XLSX {
     static func color(_ e: XMLElement, theme: [NSColor]) -> NSColor? {
         var c: NSColor?
         if let rgb = e.attr("rgb") { c = hexColor(rgb) }
-        else if let t = e.attr("theme").flatMap(Int.init), t < theme.count { c = theme[t] }
+        else if let t = e.attr("theme").flatMap(Int.init), t >= 0, t < theme.count { c = theme[t] }
         else if let i = e.attr("indexed").flatMap(Int.init) {
             if i == 64 || i == 65 { return nil }   // system foreground/background
-            c = i < indexedColors.count ? hexColor(indexedColors[i]) : nil
+            c = i >= 0 && i < indexedColors.count ? hexColor(indexedColors[i]) : nil
         }
         guard let base = c else { return nil }
         if let tint = e.attr("tint").flatMap(Double.init), tint != 0 { return tinted(base, tint) }
@@ -506,7 +534,7 @@ enum XLSX {
                     let text = Calculator.expression(cell.input).map { Formula.serialize($0, forFile: true) } ?? String(cell.input.dropFirst())
                     // Spilling results are written as an array formula over their range (dynamic arrays marked with cm="1").
                     var fOpen = "<f>"
-                    if let spill = sheet.spills[ref] {
+                    if let spill = sheet.arrays[ref] ?? sheet.spills[ref] {
                         fOpen = "<f t=\"array\" ref=\"\(spill.a1)\">"
                     } else if cell.array {
                         fOpen = "<f t=\"array\" ref=\"\(ref.a1)\">"
@@ -670,7 +698,7 @@ enum XLSX {
         func commit() {
             if !field.isEmpty {
                 var cell = Cell()
-                cell.input = field
+                cell.input = field.hasPrefix("=") ? "'" + field : field
                 cell.value = constant(field)
                 sheet[CellRef(row: row, col: col)] = cell
             }
@@ -734,16 +762,17 @@ enum XLSX {
         return candidates.max { score($0) < score($1) } ?? ","
     }
 
-    static func writeCSV(_ sheet: Sheet) -> Data {
+    static func writeCSV(_ sheet: Sheet, date1904: Bool = false) throws -> Data {
+        try SheetExport.validateCSVSize(sheet)
         guard let used = sheet.usedRange else { return Data() }
         var lines: [String] = []
         for r in 0...used.end.row {
             var fields: [String] = []
             for c in 0...used.end.col {
                 let cell = sheet[CellRef(row: r, col: c)]
-                var s = NumberFormat.format(cell.value, cell.style.numberFormat).text
-                if case .number(let d) = cell.value, cell.style.numberFormat == "General" { s = Value.formatGeneral(d) }
-                if s.contains(where: { ",;\"\n".contains($0) }) { s = "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+                var s = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: date1904).text
+                if case .number(let d) = cell.value, cell.style.numberFormat == "General" { s = Value.numberLiteral(d) }
+                if s.contains(where: { ",;\"\n\r".contains($0) }) { s = "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
                 fields.append(s)
             }
             lines.append(fields.joined(separator: ","))
@@ -752,7 +781,7 @@ enum XLSX {
     }
 
     /// Value of typed text: number, percent, date, boolean or text ("'" forces text).
-    static func constant(_ input: String) -> Value {
+    static func constant(_ input: String, date1904: Bool = false) -> Value {
         if input.isEmpty { return .empty }
         if input.hasPrefix("'") { return .string(String(input.dropFirst())) }
         let t = input.trimmingCharacters(in: .whitespaces)
@@ -765,7 +794,7 @@ enum XLSX {
         if let d = Double(normalized) { return .number(d) }
         if NumberFormat.decimal == ",", let d = Double(normalized.replacingOccurrences(of: ",", with: ".")) { return .number(d) }
         if normalized.hasSuffix("%"), case .number(let d) = constant(String(normalized.dropLast())) { return .number(d / 100) }
-        if let d = DateMath.parse(t) { return .number(d) }
+        if let d = DateMath.parse(t, date1904: date1904) { return .number(d) }
         return .string(input)
     }
 }

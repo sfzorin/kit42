@@ -7,6 +7,7 @@ extension DocWindowController {
     // MARK: Applying
 
     func applyParagraphStyle(_ id: String) {
+        let textView = activeTextView
         guard let storage = textView.textStorage, let sheet = doc?.styles, sheet[id] != nil else { return }
         let ranges = paragraphRanges.filter { $0.length > 0 }
         if ranges.isEmpty || storage.length == 0 {
@@ -28,6 +29,7 @@ extension DocWindowController {
 
     /// nil: Default Character Style (removes the character style).
     func applyCharacterStyle(_ id: String?) {
+        let textView = activeTextView
         guard let storage = textView.textStorage, let sheet = doc?.styles else { return }
         let ranges = textView.selectedRanges.map(\.rangeValue).filter { $0.length > 0 }
         if ranges.isEmpty {
@@ -118,6 +120,7 @@ extension DocWindowController {
 
     @discardableResult
     func newStyle(named raw: String, character: Bool) -> String? {
+        let textView = activeTextView
         guard let storage = textView.textStorage, let sheet = doc?.styles else { return nil }
         let name = raw.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { NSSound.beep(); return nil }
@@ -133,6 +136,7 @@ extension DocWindowController {
     }
 
     func updateStyleToMatchSelection(_ id: String) {
+        let textView = activeTextView
         guard let storage = textView.textStorage, let sheet = doc?.styles, let old = sheet[id] else { return }
         var s = StyleSheet.style(from: storage, at: textView.selectedRange().location, id: id, name: old.name, kind: old.kind, basedOn: old.basedOn)
         s.next = old.next
@@ -220,7 +224,7 @@ extension DocWindowController {
         if style.kind == .paragraph { rows.append((L("Next style:"), next)) }
         rows += [(L("Font:"), font), (L("Size (pt):"), size), ("", traits), (L("Colour:"), color)]
         let align = NSPopUpButton(frame: .zero, pullsDown: false)
-        align.addItems(withTitles: [L("Left"), L("Center"), L("Right"), L("Justify")])
+        align.addItems(withTitles: [L("Left"), L("Centre"), L("Right"), L("Justify")])
         align.selectItem(at: [NSTextAlignment.center: 1, .right: 2, .justified: 3][r.alignment ?? .left] ?? 0)
         let before = NSTextField(string: Self.num(r.spaceBefore ?? 0)), after = NSTextField(string: Self.num(r.spaceAfter ?? 0))
         let line = NSPopUpButton(frame: .zero, pullsDown: false)

@@ -17,7 +17,11 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     var active = CellRef(row: 0, col: 0)
     var anchor = CellRef(row: 0, col: 0)
-    var selection = CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0))
+    enum SelectionAxis { case rows, columns }
+    private(set) var selectionAxis: SelectionAxis?
+    var selection = CellRange(CellRef(row: 0, col: 0), CellRef(row: 0, col: 0)) {
+        didSet { selectionAxis = nil }
+    }
 
     private let editor = CellEditorField()
     private(set) var isEditing = false
@@ -58,8 +62,8 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     func rebuildLayout() {
         let used = sheet.usedRange
-        rowCount = max(rowCount, (used?.end.row ?? 0) + 100, selection.end.row + 50)
-        colCount = max(colCount, (used?.end.col ?? 0) + 20, selection.end.col + 10)
+        rowCount = min(RefPart.maxRow + 1, max(rowCount, (used?.end.row ?? 0) + 100, selection.end.row + 50))
+        colCount = min(RefPart.maxCol + 1, max(colCount, (used?.end.col ?? 0) + 20, selection.end.col + 10))
         if printMode {
             let range = printRange ?? used
             rowCount = (range?.end.row ?? 0) + 1
@@ -67,10 +71,16 @@ final class GridView: NSView, NSTextFieldDelegate {
         }
         colOffsets = [0]
         colOffsets.reserveCapacity(colCount + 1)
-        for c in 0..<colCount { colOffsets.append(colOffsets[c] + floor(sheet.width(c) * scale)) }
+        for c in 0..<colCount {
+            let width = sheet.width(c) * scale
+            colOffsets.append(colOffsets[c] + (printMode ? width : floor(width)))
+        }
         rowOffsets = [0]
         rowOffsets.reserveCapacity(rowCount + 1)
-        for r in 0..<rowCount { rowOffsets.append(rowOffsets[r] + floor(sheet.height(r) * scale)) }
+        for r in 0..<rowCount {
+            let height = sheet.height(r) * scale
+            rowOffsets.append(rowOffsets[r] + (printMode ? height : floor(height)))
+        }
         setFrameSize(NSSize(width: colOffsets[colCount] + 1, height: rowOffsets[rowCount] + 1))
         removeAllToolTips()
         if !printMode, !sheet.comments.isEmpty { addToolTip(bounds, owner: self, userData: nil) }
@@ -83,8 +93,8 @@ final class GridView: NSView, NSTextFieldDelegate {
     func extendIfNeeded() {
         let visible = visibleRect
         var changed = false
-        if visible.maxY > frame.height - 400 { rowCount += 300; changed = true }
-        if visible.maxX > frame.width - 300 { colCount += 20; changed = true }
+        if visible.maxY > frame.height - 400, rowCount <= RefPart.maxRow { rowCount = min(RefPart.maxRow + 1, rowCount + 300); changed = true }
+        if visible.maxX > frame.width - 300, colCount <= RefPart.maxCol { colCount = min(RefPart.maxCol + 1, colCount + 20); changed = true }
         if changed { rebuildLayout() }
     }
 
@@ -351,7 +361,7 @@ final class GridView: NSView, NSTextFieldDelegate {
     }
 
     private func drawText(_ cell: Cell, at ref: CellRef, row r: Int, visibleMaxCol: Int) {
-        let formatted = NumberFormat.format(cell.value, cell.style.numberFormat)
+        let formatted = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: workbook.date1904)
         var text = formatted.text
         guard !text.isEmpty else { return }
         var font = cell.style.font(scale: scale)
@@ -477,14 +487,23 @@ final class GridView: NSView, NSTextFieldDelegate {
     private func drawBorders(_ style: CellStyle, _ r: NSRect, _ palette: SheetPalette) {
         func line(_ side: BorderSide?, _ from: NSPoint, _ to: NSPoint) {
             guard let side else { return }
-            let path = NSBezierPath()
-            path.move(to: from)
-            path.line(to: to)
-            path.lineWidth = side.width * zoom
-            if side.style.lowercased().contains("dash") { path.setLineDash([3 * zoom, 2 * zoom], count: 2, phase: 0) }
-            if side.style == "dotted" { path.setLineDash([1 * zoom, 1 * zoom], count: 2, phase: 0) }
+            let horizontal = from.y == to.y
+            let width = side.width * zoom
+            let offsets: [CGFloat] = side.style == "double" ? [-width / 3, width / 3] : [0]
             palette.borderColor(side.color).setStroke()
-            path.stroke()
+            for offset in offsets {
+                let path = NSBezierPath()
+                let shift = horizontal ? NSPoint(x: 0, y: offset) : NSPoint(x: offset, y: 0)
+                path.move(to: NSPoint(x: from.x + shift.x, y: from.y + shift.y))
+                path.line(to: NSPoint(x: to.x + shift.x, y: to.y + shift.y))
+                path.lineWidth = side.style == "double" ? width / 3 : width
+                let kind = side.style.lowercased()
+                if kind.contains("dashdotdot") { path.setLineDash([4 * zoom, 2 * zoom, zoom, 2 * zoom, zoom, 2 * zoom], count: 6, phase: 0) }
+                else if kind.contains("dashdot") { path.setLineDash([4 * zoom, 2 * zoom, zoom, 2 * zoom], count: 4, phase: 0) }
+                else if kind.contains("dash") { path.setLineDash([3 * zoom, 2 * zoom], count: 2, phase: 0) }
+                else if kind == "dotted" { path.setLineDash([zoom, zoom], count: 2, phase: 0) }
+                path.stroke()
+            }
         }
         line(style.left, NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.minX, y: r.maxY))
         line(style.right, NSPoint(x: r.maxX, y: r.minY), NSPoint(x: r.maxX, y: r.maxY))
@@ -642,7 +661,7 @@ final class GridView: NSView, NSTextFieldDelegate {
     // MARK: - Selection
 
     func select(_ ref: CellRef, extend: Bool = false) {
-        let ref = CellRef(row: max(0, ref.row), col: max(0, ref.col))
+        let ref = CellRef(row: min(RefPart.maxRow, max(0, ref.row)), col: min(RefPart.maxCol, max(0, ref.col)))
         if extend {
             selection = CellRange(anchor, ref)
         } else {
@@ -667,6 +686,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         anchor = CellRef(row: 0, col: a)
         active = anchor
         selection = CellRange(CellRef(row: 0, col: min(a, b)), CellRef(row: rowCount - 1, col: max(a, b)))
+        selectionAxis = .columns
         needsDisplay = true
         controller?.selectionDidChange()
     }
@@ -675,6 +695,7 @@ final class GridView: NSView, NSTextFieldDelegate {
         anchor = CellRef(row: a, col: 0)
         active = anchor
         selection = CellRange(CellRef(row: min(a, b), col: 0), CellRef(row: max(a, b), col: colCount - 1))
+        selectionAxis = .rows
         needsDisplay = true
         controller?.selectionDidChange()
     }
@@ -733,7 +754,7 @@ final class GridView: NSView, NSTextFieldDelegate {
             dragging = true
             return
         }
-        if isEditing { commitEdit(move: nil) }
+        if isEditing, !commitEdit(move: nil) { return }
         window?.makeFirstResponder(self)
         if event.clickCount == 2 {
             select(ref)
@@ -801,7 +822,7 @@ final class GridView: NSView, NSTextFieldDelegate {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let ref = cell(at: gridPoint(event))
-        if isEditing { commitEdit(move: nil) }
+        if isEditing, !commitEdit(move: nil) { return nil }
         if !expandedSelection.contains(ref) { select(ref) }
         window?.makeFirstResponder(self)
         return Cmd.contextMenu
@@ -856,6 +877,8 @@ final class GridView: NSView, NSTextFieldDelegate {
             var next = CellRef(row: active.row + dr, col: active.col + dc)
             if dr != 0, next.row > selection.end.row { next = CellRef(row: selection.start.row, col: active.col + 1) }
             if dc != 0, next.col > selection.end.col { next = CellRef(row: active.row + 1, col: selection.start.col) }
+            if dr != 0, next.row < selection.start.row { next = CellRef(row: selection.end.row, col: active.col - 1) }
+            if dc != 0, next.col < selection.start.col { next = CellRef(row: active.row - 1, col: selection.end.col) }
             if next.row > selection.end.row || next.col > selection.end.col { next = selection.start }
             if next.row < selection.start.row || next.col < selection.start.col { next = selection.end }
             active = next
@@ -924,12 +947,15 @@ final class GridView: NSView, NSTextFieldDelegate {
         editor.frame = r
     }
 
-    func commitEdit(move: (Int, Int)?) {
-        guard isEditing, let ref = editingCell else { return }
+    @discardableResult
+    func commitEdit(move: (Int, Int)?) -> Bool {
+        guard isEditing, let ref = editingCell else { return true }
         let text = editor.stringValue
+        guard controller?.setInput(text, at: ref) != false else { return false }
         endEditing()
-        controller?.setInput(text, at: ref)
+        controller?.selectionDidChange()
         if let (dr, dc) = move { advance(rows: dr, cols: dc) }
+        return true
     }
 
     func cancelEdit() {
@@ -947,6 +973,10 @@ final class GridView: NSView, NSTextFieldDelegate {
     }
 
     var editorText: String { editor.stringValue }
+    var pendingEdit: (cell: CellRef, text: String)? {
+        guard isEditing, let editingCell else { return nil }
+        return (editingCell, editor.stringValue)
+    }
     /// Caret in the cell editor (or the formula bar) when a dialog took the focus.
     var savedCaret: NSRange?
     var editorCaret: NSRange? { editor.currentEditor()?.selectedRange }
@@ -1180,6 +1210,7 @@ final class HeaderView: NSView {
         guard let grid else { return }
         let p = convert(event.locationInWindow, from: nil)
         if let b = boundary(at: p) {
+            guard grid.commitEdit(move: nil), grid.controller?.guardEditable(nil) == true else { return }
             if event.clickCount == 2 {
                 grid.controller?.autofit(isColumns ? .column(b) : .row(b))
                 return
@@ -1191,7 +1222,7 @@ final class HeaderView: NSView {
         }
         let v = gridValue(p)
         let i = isColumns ? grid.col(at: v) : grid.row(at: v)
-        if grid.isEditing { grid.commitEdit(move: nil) }
+        if grid.isEditing, !grid.commitEdit(move: nil) { return }
         let from = event.modifierFlags.contains(.shift) ? (isColumns ? grid.anchor.col : grid.anchor.row) : i
         selectingFrom = from
         if isColumns { grid.selectColumns(from, i) } else { grid.selectRows(from, i) }

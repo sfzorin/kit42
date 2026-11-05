@@ -7,7 +7,7 @@ enum Cmd {
 
     // File
     static let exportPDF = Command(L("Export as PDF…"), #selector(W.exportPDFAction(_:)), symbol: "doc.richtext",
-                                   shortcut: Shortcut("e", [.command, .option]), toolTip: L("Export as PDF"), label: L("PDF"))
+                                   shortcut: Shortcut("e", [.command, .option]), toolTip: L("Export as PDF"), label: L("Export as PDF"))
     static let exportCSV = Command(L("Export Sheet as CSV…"), #selector(W.exportCSVAction(_:)))
     static let importCSV = Command(L("Import CSV as Sheet…"), #selector(W.importCSVAction(_:)))
 
@@ -148,7 +148,7 @@ enum Cmd {
     static let underline = Command(L("Underline"), #selector(W.toggleUnderline(_:)), symbol: "underline", shortcut: Shortcut("u"))
     static let strike = Command(L("Strikethrough"), #selector(W.toggleStrike(_:)), symbol: "strikethrough", shortcut: Shortcut("x", [.command, .shift]))
     static let alignLeft = Command(L("Align Left"), #selector(W.alignAction(_:)), symbol: "text.alignleft", shortcut: Shortcut("{"), tag: 0)
-    static let alignCenter = Command(L("Align Center"), #selector(W.alignAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
+    static let alignCenter = Command(L("Align Centre"), #selector(W.alignAction(_:)), symbol: "text.aligncenter", shortcut: Shortcut("|"), tag: 1)
     static let alignRight = Command(L("Align Right"), #selector(W.alignAction(_:)), symbol: "text.alignright", shortcut: Shortcut("}"), tag: 2)
     static let wrap = Command(L("Wrap Text"), #selector(W.toggleWrap(_:)), symbol: "text.word.spacing")
     static let merge = Command(L("Merge Cells"), #selector(W.mergeAction(_:)), symbol: "rectangle.compress.vertical")
@@ -221,11 +221,15 @@ enum Cmd {
     static var toolbar: [ToolbarElement] {
         [
             .command(autoSum), .command(insertFunction), .command(sortAscending), .command(filter), .command(freeze),
-            .command(validation), .command(pivot), .command(group),
             .flexibleSpace,
-            .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
-            .command(formatBar), .command(print), .command(exportPDF),
+            .command(formatBar),
             .search(id: "search", placeholder: L("Search"), action: #selector(W.searchChanged(_:))),
         ]
+    }
+
+    /// In Customize Toolbar only: data tools live in the Data menu, zoom in the status bar slider, print/export in File.
+    static var toolbarOptional: [ToolbarElement] {
+        [.command(validation), .command(pivot), .command(group), .group(id: "zoom", label: L("Zoom"), [zoomOut, zoomIn]),
+         .command(print), .command(exportPDF)]
     }
 }

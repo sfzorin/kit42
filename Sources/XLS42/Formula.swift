@@ -120,8 +120,10 @@ enum Formula {
                         while j < chars.count, chars[j].isNumber { j += 1 }
                     }
                     let text = String(chars[i..<j])
-                    if j < chars.count, chars[j] == ":" , Int(text) != nil {
-                        tokens.append(.word(text))   // row range 1:3
+                    var next = j
+                    while next < chars.count, chars[next].isWhitespace { next += 1 }
+                    if Int(text) != nil, (next < chars.count && chars[next] == ":") || tokens.last == .colon {
+                        tokens.append(.word(text))   // both ends of a row range, including 1 : 3
                     } else {
                         guard let d = Double(text) else { throw FormulaError(message: "Неверное число \(text)") }
                         tokens.append(.number(d))
@@ -289,7 +291,8 @@ enum Formula {
             }
             if peek == .colon {
                 pos += 1
-                guard case .word(let w2)? = next(), let b = Formula.refPart(w2) else { throw FormulaError(message: "Неверный диапазон") }
+                guard case .word(let w2)? = next(), let b = Formula.refPart(w2),
+                      a.wholeRow == b.wholeRow, a.wholeColumn == b.wholeColumn else { throw FormulaError(message: "Неверный диапазон") }
                 return .range(sheet: sheet, a, b)
             }
             guard !a.wholeColumn, !a.wholeRow else {
@@ -310,7 +313,7 @@ enum Formula {
         var rest = s.dropFirst(letters.count)
         if rest.hasPrefix("$") { absRow = true; rest = rest.dropFirst() }
         if letters.isEmpty {
-            guard let r = Int(rest), r > 0 else { return nil }
+            guard let r = Int(rest), r > 0, r - 1 <= RefPart.maxRow else { return nil }
             return RefPart(row: r - 1, col: 0, absRow: absCol || absRow, wholeRow: true)
         }
         guard letters.count <= 3, let col = CellRef.columnIndex(letters), col <= RefPart.maxCol else { return nil }
@@ -445,7 +448,7 @@ enum Formula {
     static func serialize(_ e: Expr, forFile: Bool = false) -> String {
         func s(_ e: Expr, _ parentPrec: Int) -> String {
             switch e {
-            case .number(let d): return Value.formatGeneral(d)
+            case .number(let d): return Value.numberLiteral(d)
             case .string(let str): return "\"" + str.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             case .bool(let b): return b ? "TRUE" : "FALSE"
             case .error(let err): return err
@@ -472,7 +475,7 @@ enum Formula {
     static func arrayText(_ m: Matrix, col: String, row: String) -> String {
         func item(_ v: Value) -> String {
             switch v {
-            case .number(let d): return Value.formatGeneral(d)
+            case .number(let d): return Value.numberLiteral(d)
             case .string(let s): return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             case .bool(let b): return b ? "TRUE" : "FALSE"
             case .error(let e): return e
@@ -531,27 +534,49 @@ enum Formula {
     /// on `sheet`. `formulaSheet` is the sheet that holds the formula (for unqualified refs).
     static func adjusted(_ formula: String, sheet: String, formulaSheet: String, rows: Bool, at index: Int, count: Int) -> String {
         guard let e = try? parse(formula) else { return formula }
-        let out = mapRefs(e) { refSheet, p, isEnd in
-            let target = refSheet ?? formulaSheet
-            guard target.caseInsensitiveCompare(sheet) == .orderedSame else { return p }
+        func affected(_ refSheet: String?, _ p: RefPart) -> Bool {
+            (refSheet ?? formulaSheet).caseInsensitiveCompare(sheet) == .orderedSame && !(rows ? p.wholeColumn : p.wholeRow)
+        }
+        func coordinate(_ p: RefPart) -> Int { rows ? p.row : p.col }
+        func moved(_ p: RefPart, rangeEnd: Bool? = nil) -> RefPart? {
             var p = p
-            if rows ? p.wholeColumn : p.wholeRow { return p }
-            var v = rows ? p.row : p.col
+            var v = coordinate(p)
             if count > 0 {
                 if v >= index { v += count }
-            } else {
+            } else if count < 0 {
                 let delEnd = index - count   // exclusive
                 if v >= delEnd { v += count }
                 else if v >= index {
-                    // Inside the deleted block: single refs break, range ends clamp.
-                    if isEnd { v = index - 1 } else { v = index }
-                    if !isEnd, v < 0 { return nil }
+                    // A deleted cell is gone; only the surviving part of a range may clamp.
+                    guard let rangeEnd else { return nil }
+                    v = rangeEnd ? index - 1 : index
                 }
             }
-            if v < 0 { return nil }
+            guard v >= 0, v <= (rows ? RefPart.maxRow : RefPart.maxCol) else { return nil }
             if rows { p.row = v } else { p.col = v }
             return p
         }
-        return "=" + serialize(out)
+        func adjust(_ e: Expr) -> Expr {
+            switch e {
+            case .ref(let refSheet, let p):
+                guard affected(refSheet, p) else { return e }
+                guard let p = moved(p) else { return .error("#REF!") }
+                return .ref(sheet: refSheet, p)
+            case .range(let refSheet, let a, let b):
+                guard affected(refSheet, a) else { return e }
+                let low = min(coordinate(a), coordinate(b)), high = max(coordinate(a), coordinate(b))
+                if count < 0, low >= index, high < index - count { return .error("#REF!") }
+                // References may be written in reverse order (A10:A1).
+                let reversed = coordinate(a) > coordinate(b)
+                guard let a = moved(a, rangeEnd: reversed), let b = moved(b, rangeEnd: !reversed) else { return .error("#REF!") }
+                return .range(sheet: refSheet, a, b)
+            case .unary(let o, let x): return .unary(o, adjust(x))
+            case .percent(let x): return .percent(adjust(x))
+            case .binary(let o, let l, let r): return .binary(o, adjust(l), adjust(r))
+            case .call(let n, let args): return .call(n, args.map(adjust))
+            default: return e
+            }
+        }
+        return "=" + serialize(adjust(e))
     }
 }

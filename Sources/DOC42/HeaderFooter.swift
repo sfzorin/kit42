@@ -95,11 +95,14 @@ final class HeaderEditor: NSObject, NSTextViewDelegate {
     let part: HeaderFooter.Part
     let undo = UndoManager()
     var onCommit: ((HeaderEditor) -> Void)?
+    var onSelectionChange: (() -> Void)?
     private var committed = false
     private let storage = NSTextStorage()
+    private let originalText: NSAttributedString
 
     init(card: PageCard, header: Bool, part: HeaderFooter.Part, text: NSAttributedString, fieldValue: @escaping (DocField) -> String) {
         self.card = card
+        originalText = NSAttributedString(attributedString: text)
         isHeader = header
         self.part = part
         let lm = DocLayoutManager()
@@ -127,15 +130,20 @@ final class HeaderEditor: NSObject, NSTextViewDelegate {
     }
 
     var text: NSAttributedString { NSAttributedString(attributedString: storage) }
+    var hasChanges: Bool { !storage.isEqual(to: originalText) }
 
     func layout() {
+        if let container = textView.textContainer, container.containerSize.width != card.setup.textSize.width {
+            container.containerSize.width = card.setup.textSize.width
+        }
         let h = max(18, HeaderFooter.height(storage, width: card.setup.textSize.width) + 4)
         textView.frame = HeaderFooter.rect(card.setup, header: isHeader, height: h)
     }
 
     func undoManager(for view: NSTextView) -> UndoManager? { undo }
 
-    func textDidChange(_ notification: Notification) { layout() }
+    func textDidChange(_ notification: Notification) { layout(); onSelectionChange?() }
+    func textViewDidChangeSelection(_ notification: Notification) { onSelectionChange?() }
 
     func textDidEndEditing(_ notification: Notification) { commit() }
 
@@ -170,15 +178,22 @@ extension DocWindowController {
             return Fields.value(f, at: -1, c)
         }
         editor.onCommit = { [weak self] e in self?.finishHeaderEdit(e) }
+        editor.onSelectionChange = { [weak self] in
+            self?.syncControls(); self?.syncRuler(); self?.syncRulerSetup()
+        }
         headerEditor = editor
         card.editing = header ? .header : .footer
         window?.makeFirstResponder(editor.textView)
         syncControls()
+        syncRuler()
+        syncRulerSetup()
     }
 
     private func finishHeaderEdit(_ e: HeaderEditor) {
         if headerEditor === e { headerEditor = nil }
         e.card.editing = nil
+        defer { syncControls(); syncRuler(); syncRulerSetup() }
+        guard e.hasChanges else { return }
         let hf = e.card.setup.effectiveHeaderFooter.duplicate()
         HeaderFooter.set(hf, e.part, header: e.isHeader, e.text)
         setHeaderFooter(hf, forSectionOf: e.card, name: e.isHeader ? L("Edit Header") : L("Edit Footer"))
@@ -188,7 +203,7 @@ extension DocWindowController {
 
     /// Stores headers and footers for the section of a page (its own ones) or the document.
     func setHeaderFooter(_ hf: DocHeaderFooter, forSectionOf card: PageCard?, wholeDocument: Bool = false, name: String) {
-        let start = card.flatMap { c in paged.layoutManager.characterRange(forGlyphRange: paged.layoutManager.glyphRange(for: c.textViews[0].textContainer!), actualGlyphRange: nil).location } ?? textView.selectedRange().location
+        let start = card.flatMap { c in paged.layoutManager.characterRange(forGlyphRange: paged.layoutManager.glyphRange(for: c.textViews[0].textContainer!), actualGlyphRange: nil).location } ?? pageSetupLocation
         let own = !wholeDocument && paged.setup(at: start).sectionHF != nil
         if own, let brk = paged.sections.first(where: { $0.index >= start }) {
             setSectionHeaderFooter(hf, breakAt: brk.index, name: name)
@@ -218,7 +233,7 @@ extension DocWindowController {
     @objc func editFooterAction(_ sender: Any?) { editHeaderOrFooter(header: false) }
 
     private func editHeaderOrFooter(header: Bool) {
-        guard let card = paged.card(at: textView.selectedRange().location) else { return }
+        guard let card = headerEditor?.card ?? paged.card(at: textView.selectedRange().location) else { return }
         paged.scrollToVisible(card.frame)
         beginHeaderEdit(card, header: header)
     }
@@ -226,8 +241,7 @@ extension DocWindowController {
     // MARK: Dialog
 
     @objc func headerFooterAction(_ sender: Any?) {
-        let at = textView.selectedRange().location
-        let setup = paged.setup(at: at)
+        let setup = currentSetup
         let hf = setup.effectiveHeaderFooter
         let header = NSButton(checkboxWithTitle: L("Header"), target: nil, action: nil)
         let footer = NSButton(checkboxWithTitle: L("Footer"), target: nil, action: nil)
@@ -274,8 +288,8 @@ extension DocWindowController {
     }
 
     func applyHeaderFooterOptions(_ o: HeaderFooterOptions) {
-        let at = textView.selectedRange().location
-        let setup = paged.setup(at: at)
+        let at = pageSetupLocation
+        let setup = currentSetup
         let hf = setup.effectiveHeaderFooter.duplicate()
         let width = setup.textSize.width
         func text(_ s: String) -> NSAttributedString { NSAttributedString(string: s, attributes: HeaderFooter.attributes(width: width)) }
@@ -337,9 +351,8 @@ extension DocWindowController {
             part?.enumerateAttribute(.docField, in: NSRange(location: 0, length: part?.length ?? 0)) { v, _, _ in if (v as? DocField)?.kind == .page { has = true } }
         }
         var o = HeaderFooterOptions()
-        o.header = hf.header != nil || !has
         o.footer = true
-        o.header = hf.header != nil
+        o.header = hf.header != nil || hf.firstHeader != nil || hf.evenHeader != nil
         o.differentFirst = hf.differentFirst
         o.differentOddEven = hf.differentOddEven
         o.pageNumbers = has ? 0 : 2
@@ -349,7 +362,7 @@ extension DocWindowController {
     var hasPageNumbers: Bool {
         let hf = currentSetup.effectiveHeaderFooter
         var has = false
-        for part in [hf.header, hf.footer] {
+        for part in [hf.header, hf.footer, hf.firstHeader, hf.firstFooter, hf.evenHeader, hf.evenFooter] {
             part?.enumerateAttribute(.docField, in: NSRange(location: 0, length: part?.length ?? 0)) { v, _, _ in if (v as? DocField)?.kind == .page { has = true } }
         }
         return has

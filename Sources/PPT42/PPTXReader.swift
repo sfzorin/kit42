@@ -37,7 +37,7 @@ extension XMLElement {
     var rid: String? {
         attributes?.first { $0.localName == "id" && ($0.uri == PPTXWriter.nsR || ($0.name ?? "").hasPrefix("r:")) }?.stringValue
     }
-    func num(_ name: String) -> CGFloat? { a(name).flatMap { Double($0) }.map { CGFloat($0) } }
+    func num(_ name: String) -> CGFloat? { a(name).flatMap { Double($0) }.flatMap { $0.isFinite ? CGFloat($0) : nil } }
     func bool(_ name: String) -> Bool? { a(name).map { $0 == "1" || $0 == "true" } }
 
     var elements: [XMLElement] { (children ?? []).compactMap { $0 as? XMLElement } }
@@ -100,6 +100,22 @@ struct PPTXReader {
     static func read(_ data: Data) throws -> Deck {
         if data.starts(with: [0xD0, 0xCF, 0x11, 0xE0]) { throw DeckError.legacyPPT }
         var r = PPTXReader(zip: try ZipArchive(data: data))
+        for (path, data) in r.zip.entries where path.hasSuffix(".xml") &&
+            ["ppt/slides/", "ppt/slideLayouts/", "ppt/slideMasters/"].contains(where: { path.hasPrefix($0) }) {
+            guard let root = xmlRoot(data) else { throw DeckError.invalid(L("The file is damaged")) }
+            for object in root.descendants("cNvPr") {
+                if let id = object.a("id"), UInt32(id) == nil { throw DeckError.invalid(L("The file is damaged")) }
+            }
+            for table in root.descendants("tbl") {
+                let rows = table.children("tr"), columns = table.child("tblGrid")?.children("gridCol").count ?? 1
+                guard columns <= 100_000, rows.count <= 100_000 / max(1, columns) else { throw DeckError.invalid(L("The file is damaged")) }
+                for row in rows { for cell in row.children("tc") {
+                    for key in ["gridSpan", "rowSpan"] {
+                        if let raw = cell.a(key), !(1...100_000).contains(Int(raw) ?? 0) { throw DeckError.invalid(L("The file is damaged")) }
+                    }
+                } }
+            }
+        }
         return try r.read()
     }
 
@@ -122,11 +138,16 @@ struct PPTXReader {
             for d in ct.children("Default") { if let e = d.a("Extension"), let t = d.a("ContentType") { contentTypes.defaults[e.lowercased()] = t } }
         }
         let presPath = "ppt/presentation.xml"
-        guard let pres = xmlRoot(zip[presPath]) else { throw DeckError.invalid(L("The file is not a PowerPoint presentation")) }
-        if let sz = pres.child("sldSz"), let cx = sz.num("cx"), let cy = sz.num("cy"), cx > 0, cy > 0 {
+        guard let pres = xmlRoot(zip[presPath]), pres.localName == "presentation" else { throw DeckError.invalid(L("The file is not a PowerPoint presentation")) }
+        if let sz = pres.child("sldSz") {
+            guard let cx = sz.num("cx"), let cy = sz.num("cy"), cx > 0, cy > 0,
+                  cx / emuPerPoint <= 14_400, cy / emuPerPoint <= 14_400 else { throw DeckError.invalid(L("The file is damaged")) }
             deck.size = CGSize(width: cx / emuPerPoint, height: cy / emuPerPoint)
         }
-        if let n = pres.int("firstSlideNum") { deck.firstSlideNumber = n }
+        if let raw = pres.a("firstSlideNum") {
+            guard let n = UInt32(raw) else { throw DeckError.invalid(L("The file is damaged")) }
+            deck.firstSlideNumber = Int(n)
+        }
         let presRels = rels(presPath)
         if let t = presRels.values.first(where: { $0.type.hasSuffix("/commentAuthors") })?.target, let root = xmlRoot(zip[t]) {
             for a in root.children("cmAuthor") { if let id = a.a("id") { commentAuthors[id] = (a.a("name") ?? "", a.a("initials") ?? "") } }
@@ -177,9 +198,15 @@ struct PPTXReader {
         if deck.layouts.isEmpty { deck.layouts = Themes.standard(size: deck.size).1 }
 
         // Slides
-        let slidePaths = (pres.child("sldIdLst")?.children("sldId") ?? []).compactMap { $0.rid.flatMap { presRels[$0]?.target } }
+        let entries = pres.child("sldIdLst")?.children("sldId") ?? []
+        let slidePaths = entries.compactMap { entry -> String? in
+            guard let id = entry.rid, let relationship = presRels[id], !relationship.external,
+                  relationship.type.hasSuffix("/slide") else { return nil }
+            return relationship.target
+        }
+        guard slidePaths.count == entries.count else { throw DeckError.invalid(L("The file is damaged")) }
         for path in slidePaths {
-            guard let xml = xmlRoot(zip[path]) else { continue }
+            guard let xml = xmlRoot(zip[path]), xml.localName == "sld" else { throw DeckError.invalid(L("The file is damaged")) }
             let srels = rels(path)
             let lpath = srels.values.first { $0.type.hasSuffix("/slideLayout") }?.target
             var slide = Slide(layout: lpath.flatMap { layoutIndex[$0] } ?? 0)
@@ -598,7 +625,7 @@ struct PPTXReader {
                 case "br": return "\n"
                 default: return ""
                 }
-            }.joined() }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            }.joined() }.joined(separator: "\n")
         }
         return ""
     }
@@ -883,6 +910,7 @@ struct PPTXReader {
         let rows = tbl.children("tr")
         var t = TableModel(rows: max(1, rows.count), columns: max(1, cols.count), width: cols.reduce(0, +))
         t.columns = cols.isEmpty ? [100] : cols
+        var explicitBorder = false
         if let pr = tbl.child("tblPr") {
             t.firstRow = pr.bool("firstRow") ?? false
             t.bandRows = pr.bool("bandRow") ?? false
@@ -905,6 +933,13 @@ struct PPTXReader {
                     cell.text.insets = NSEdgeInsets(top: 3.6, left: 7.2, bottom: 3.6, right: 7.2)
                 }
                 if let pr = tc.child("tcPr") {
+                    if !explicitBorder, let border = ["lnL", "lnR", "lnT", "lnB"].compactMap({ pr.child($0) }).first {
+                        var line = LineStyle.none
+                        readLine(border, into: &line)
+                        t.borderColor = line.color
+                        t.borderWidth = line.width
+                        explicitBorder = true
+                    }
                     if let v = pr.num("marL") { cell.text.insets.left = v / emuPerPoint }
                     if let v = pr.num("marR") { cell.text.insets.right = v / emuPerPoint }
                     if let v = pr.num("marT") { cell.text.insets.top = v / emuPerPoint }
@@ -921,8 +956,7 @@ struct PPTXReader {
         // Tables without a style look: plain cells with thin borders.
         if tbl.child("tblPr")?.child("tableStyleId") == nil, !t.firstRow, !t.bandRows {
             for ri in t.cells.indices { for ci in t.cells[ri].indices where t.cells[ri][ci].fill == nil { t.cells[ri][ci].fill = Fill.none } }
-            t.borderColor = PColor(scheme: "tx1")
-            t.borderWidth = 0.75
+            if !explicitBorder { t.borderColor = PColor(scheme: "tx1"); t.borderWidth = 0.75 }
         }
         return t
     }

@@ -55,15 +55,76 @@ enum SelfTest {
         }
         // Reference shifting
         let shifted = Formula.shifted("=SUM($A1:B2)+C$3", rows: 2, cols: 1)
+        if shifted != "=SUM($A3:C4)+D$3" { failed += 1 }
         print(shifted == "=SUM($A3:C4)+D$3" ? "ok  " : "FAIL", "shift →", shifted)
         let inserted = Formula.adjusted("=SUM(A1:A10)+B5", sheet: "Лист1", formulaSheet: "Лист1", rows: true, at: 2, count: 3)
+        if inserted != "=SUM(A1:A13)+B8" { failed += 1 }
         print(inserted == "=SUM(A1:A13)+B8" ? "ok  " : "FAIL", "insert rows →", inserted)
+        failed += formulaReferences()
         failed += features()
         failed += functions()
         failed += dataTools()
         failed += pivotFiles()
         failed += colors()
+        failed += deepFiles()
+        failed += deepFormulas()
+        failed += deepSheetReferences()
         print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
         return failed == 0 ? 0 : 1
+    }
+
+    private static func formulaReferences() -> Int {
+        var failed = 0
+        func check(_ name: String, _ ok: Bool) {
+            print(ok ? "ok  " : "FAIL", name)
+            if !ok { failed += 1 }
+        }
+        var wb = Workbook()
+        wb.sheets[0].name = "Data"
+        for (i, value) in [10.0, 20.0, 30.0].enumerated() {
+            var cell = Cell(); cell.input = String(value); cell.value = .number(value)
+            wb.sheets[0][CellRef(row: i, col: 0)] = cell
+        }
+        let calc = Calculator(wb), at = CellRef(row: 4, col: 1)
+        for formula in ["=SUM(1:3)", "=SUM(1 : 3)", "=SUM($1:3)", "=SUM(Data!1:3)", "=SUM('Data'!$1:$3)"] {
+            let value = (try? Formula.parse(formula)).map { calc.scalar(calc.eval($0, sheet: 0, at: at), at: at) }
+            check("whole-row reference: \(formula)", value == .number(60))
+        }
+        for invalid in ["=SUM(A:3)", "=SUM(A1:C)", "=SUM(1:1048577)"] {
+            check("invalid range rejected: \(invalid)", (try? Formula.parse(invalid)) == nil)
+        }
+
+        let deletions: [(String, Bool, Int, Int, String)] = [
+            ("=A2+$B$2+A3", true, 1, -1, "=#REF!+#REF!+A2"),
+            ("=SUM(A2:A3)", true, 1, -2, "=SUM(#REF!)"),
+            ("=SUM(A2:A5)", true, 1, -2, "=SUM(A2:A3)"),
+            ("=SUM(A1:A3)", true, 1, -2, "=SUM(A1:A1)"),
+            ("=SUM(A5:A2)", true, 1, -2, "=SUM(A3:A2)"),
+            ("=SUM(A3:A1)", true, 1, -2, "=SUM(A1:A1)"),
+            ("=B1+$B$2+C1", false, 1, -1, "=#REF!+#REF!+B1"),
+            ("=SUM(B1:C2)", false, 1, -2, "=SUM(#REF!)"),
+            ("=SUM(A1:D2)", false, 1, -2, "=SUM(A1:B2)"),
+            ("=Other!A2+Data!A2", true, 1, -1, "=Other!A2+#REF!"),
+            ("=SUM(A:A)+SUM(2:3)", true, 1, -2, "=SUM(A:A)+SUM(#REF!)"),
+            ("=A1048576", true, 0, 1, "=#REF!"),
+        ]
+        for (formula, rows, index, count, expected) in deletions {
+            let result = Formula.adjusted(formula, sheet: "Data", formulaSheet: "Data", rows: rows, at: index, count: count)
+            check("structural reference change: \(formula) → \(expected)", result == expected)
+        }
+
+        // Copying and structural edits serialize the entire expression, including unchanged literals.
+        for literal in ["1.23456789012345", "0.000000123456789012345", "1234567890123456"] {
+            let original = "=\(literal)+A1"
+            let copied = Formula.shifted(original, rows: 1, cols: 0)
+            let copiedValue = (try? Formula.parse(copied)).map { calc.scalar(calc.eval($0, sheet: 0, at: at), at: at) }
+            check("copy preserves numeric literal \(literal)", copiedValue == .number(Double(literal)! + 20))
+            let array = Matrix(rows: 1, cols: 1, values: [.number(Double(literal)!)])
+            let arrayText = Formula.arrayText(array, col: ",", row: ";")
+            if case .array(let parsed)? = try? Formula.parse("=" + arrayText) {
+                check("array literal preserves precision \(literal)", parsed.values == array.values)
+            } else { check("array literal parses \(literal)", false) }
+        }
+        return failed
     }
 }

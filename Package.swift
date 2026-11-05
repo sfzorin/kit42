@@ -4,7 +4,7 @@ import PackageDescription
 // App extensions start in NSExtensionMain instead of main.
 let extensionEntry = ["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"]
 
-// Suite42: PDF42, DOC42, XLS42, IMG42, PPT42. Every app shares Kit42 (menus, toolbar, look, localization).
+// Suite42: PDF42, DOC42, XLS42, IMG42, PPT42, SCN42. Every app shares Kit42 (menus, toolbar, look, localization).
 let package = Package(
     name: "Suite42",
     platforms: [.macOS(.v14)],

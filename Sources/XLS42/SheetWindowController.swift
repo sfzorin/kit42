@@ -25,7 +25,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     let zoomSlider = NSSlider(value: 100, minValue: 30, maxValue: 400, target: nil, action: nil)
     let zoomLabel = NSTextField(labelWithString: "100%")
     var statusBarHidden: Bool { statusBar.isHidden }
-    private let toolbarController = ToolbarController(identifier: "XLS42.toolbar", elements: Cmd.toolbar)
+    private let toolbarController = ToolbarController(identifier: "XLS42.toolbar", elements: Cmd.toolbar,
+                                                                   optional: Cmd.toolbarOptional)
     private let nameBox = NSTextField()
     private let formulaField = NSTextField()
     /// Field editor of the formula bar while it is being edited.
@@ -309,7 +310,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     func workbookDidChange() {
-        if sheetIndex >= (doc?.workbook.sheets.count ?? 1) { sheetIndex = max(0, (doc?.workbook.sheets.count ?? 1) - 1) }
+        if let doc, !doc.workbook.sheets.indices.contains(sheetIndex) || doc.workbook.sheets[sheetIndex].hidden {
+            sheetIndex = doc.workbook.sheets.firstIndex { !$0.hidden } ?? 0
+        }
         reloadTabs()
         grid.rebuildLayout()
         updateOutlineGutters()
@@ -367,7 +370,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         status.stringValue = statusText(for: clampedSelection)
         let visible = visibleSheets
         sheetInfo.stringValue = L("Sheet %d of %d", (visible.firstIndex(of: sheetIndex) ?? 0) + 1, visible.count)
-        window?.subtitle = sheet.name
+        // Position, as in the other apps: "Sheet name · A1" or "Sheet name · A1:C4".
+        let subtitle = sheet.name + " · " + nameBox.stringValue
+        if window?.subtitle != subtitle { window?.subtitle = subtitle }
     }
 
     /// Current status bar text (tests).
@@ -395,12 +400,24 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         updateSignatureHint(text)
     }
 
-    /// Selection limited to the used area (whole-column selections).
+    /// Limit header selections along their unbounded axis; preserve explicitly selected blank cells.
     var clampedSelection: CellRange {
         let s = grid.selection
-        guard let used = sheet.usedRange else { return CellRange(s.start, s.start) }
-        let end = CellRef(row: min(s.end.row, max(used.end.row, s.start.row)), col: min(s.end.col, max(used.end.col, s.start.col)))
+        let used = sheet.usedRange
+        let end = CellRef(row: grid.selectionAxis == .columns ? min(s.end.row, max(used?.end.row ?? 0, s.start.row)) : s.end.row,
+                          col: grid.selectionAxis == .rows ? min(s.end.col, max(used?.end.col ?? 0, s.start.col)) : s.end.col)
         return CellRange(s.start, end)
+    }
+
+    static let maximumCellOperationCount = 100_000
+
+    /// Dense operations create cells or clipboard entries even for blank positions.
+    func guardCellOperation(_ range: CellRange) -> Bool {
+        guard range.rows.count <= Self.maximumCellOperationCount / range.cols.count else {
+            report(L("This operation supports up to %d cells. Select a smaller range.", Self.maximumCellOperationCount))
+            return false
+        }
+        return true
     }
 
     // MARK: - Sheet tabs
@@ -435,8 +452,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     func selectSheet(_ index: Int) {
-        guard let doc, index < doc.workbook.sheets.count else { return }
-        grid.commitEdit(move: nil)
+        guard let doc, doc.workbook.sheets.indices.contains(index) else { return }
+        guard grid.commitEdit(move: nil) else { return }
         storeSplit()
         sheetIndex = index
         reloadTabs()
@@ -447,7 +464,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc private func tabClicked(_ sender: NSButton) {
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         if sender.tag == sheetIndex, NSApp.currentEvent?.clickCount == 2 {
             renameSheet(sender)
             return
@@ -463,6 +480,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     @objc func addSheet(_ sender: Any?) {
         guard let doc, guardStructure() else { return }
+        guard grid.commitEdit(move: nil) else { return }
         var n = doc.workbook.sheets.count + 1
         while doc.workbook.sheetIndex(named: L("Sheet%d", n)) != nil { n += 1 }
         doc.change(L("New Sheet")) { $0.sheets.append(Sheet(name: L("Sheet%d", n))) }
@@ -473,25 +491,18 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc private func renameSheet(_ sender: Any?) { renameSheet(at: commandTag(of: sender)) }
 
     func renameSheet(at i: Int) {
-        guard let doc, i < doc.workbook.sheets.count, guardStructure() else { return }
+        guard let doc, doc.workbook.sheets.indices.contains(i), guardStructure() else { return }
+        guard grid.commitEdit(move: nil) else { return }
         let field = NSTextField(string: doc.workbook.sheets[i].name)
         let alert = NSAlert.form(L("Rename Sheet"), ok: L("Rename"), rows: [(L("Name:"), field)])
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, doc.workbook.sheetIndex(named: name) == nil || doc.workbook.sheetIndex(named: name) == i else { NSSound.beep(); return }
+        guard Self.validSheetName(name), doc.workbook.sheetIndex(named: name) == nil || doc.workbook.sheetIndex(named: name) == i else { NSSound.beep(); return }
         let old = doc.workbook.sheets[i].name
         doc.change(L("Rename Sheet")) { wb in
             wb.sheets[i].name = name
-            // Keep references to the sheet working.
-            for si in wb.sheets.indices {
-                if wb.sheets[si].pivot?.sourceSheet.caseInsensitiveCompare(old) == .orderedSame { wb.sheets[si].pivot?.sourceSheet = name }
-                for (ref, cell) in wb.sheets[si].cells where cell.isFormula && cell.input.localizedCaseInsensitiveContains(old) {
-                    guard let e = try? Formula.parse(cell.input) else { continue }
-                    let renamed = Self.renameSheetRefs(e, from: old, to: name)
-                    wb.sheets[si].cells[ref]?.input = "=" + Formula.serialize(renamed)
-                }
-            }
+            Self.renameReferences(&wb, from: old, to: name)
         }
     }
 
@@ -512,27 +523,22 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     @objc private func duplicateSheet(_ sender: Any?) {
         let i = commandTag(of: sender)
-        guard let doc, i < doc.workbook.sheets.count, guardStructure() else { return }
-        var copy = doc.workbook.sheets[i]
-        var n = 2
-        while doc.workbook.sheetIndex(named: "\(copy.name) (\(n))") != nil { n += 1 }
-        copy.name = "\(copy.name) (\(n))"
-        doc.change(L("Duplicate Sheet")) { $0.sheets.insert(copy, at: i + 1) }
-        sheetIndex = i + 1
-        workbookDidChange()
+        guard let doc, doc.workbook.sheets.indices.contains(i), guardStructure() else { return }
+        guard grid.commitEdit(move: nil) else { return }
+        moveSheet(i, before: i + 1, copy: true)
     }
 
     @objc private func deleteSheet(_ sender: Any?) { deleteSheet(at: commandTag(of: sender)) }
 
     func deleteSheet(at i: Int) {
-        guard let doc, guardStructure(), visibleSheets.count > 1 || doc.workbook.sheets[i].hidden, doc.workbook.sheets.count > 1,
-              i < doc.workbook.sheets.count else { NSSound.beep(); return }
+        guard let doc, doc.workbook.sheets.indices.contains(i), guardStructure(), visibleSheets.count > 1 || doc.workbook.sheets[i].hidden, doc.workbook.sheets.count > 1 else { NSSound.beep(); return }
         let alert = NSAlert()
         alert.messageText = L("Delete sheet “%@”?", doc.workbook.sheets[i].name)
         alert.informativeText = L("You can undo this with ⌘Z.")
         alert.addButton(withTitle: L("Delete"))
         alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard grid.commitEdit(move: nil) else { return }
         doc.change(L("Delete Sheet")) { $0.sheets.remove(at: i) }
         sheetIndex = min(sheetIndex, doc.workbook.sheets.count - 1)
         if doc.workbook.sheets[sheetIndex].hidden, let v = visibleSheets.last { sheetIndex = v }
@@ -542,8 +548,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     // MARK: - Editing cells
 
     /// Stores typed text: canonical formula or constant, applying an automatic format for %, dates, currency.
-    func setInput(_ text: String, at ref: CellRef) {
-        guard let doc else { return }
+    @discardableResult
+    func setInput(_ text: String, at ref: CellRef) -> Bool {
+        guard let doc else { return false }
         var input = text
         if input.hasPrefix("="), input.count > 1 {
             if let e = try? Formula.parse(input) { input = "=" + Formula.serialize(e) }
@@ -552,32 +559,34 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             input = "=" + input
         }
         let current = sheet[ref]
-        guard current.input != input else { return }
+        guard current.input != input else { return true }
         if let a = sheet.array(containing: ref) {
             // A cell of an array formula: unchanged text is no change; other text only replaces a one-cell array.
-            if input == sheet[a.anchor].input { selectionDidChange(); return }
-            if a.range.count > 1 { report(Self.partOfArrayMessage); selectionDidChange(); return }
+            if input == sheet[a.anchor].input { selectionDidChange(); return true }
+            if a.range.count > 1 { report(Self.partOfArrayMessage); selectionDidChange(); return false }
         }
-        guard guardEditable(CellRange(ref, ref)), validateInput(input, at: ref) else { selectionDidChange(); return }
+        guard guardEditable(CellRange(ref, ref)), validateInput(input, at: ref) else { selectionDidChange(); return false }
         doc.change(L("Typing")) { wb in
             var cell = wb.sheets[sheetIndex][ref]
             if wb.sheets[sheetIndex].arrays[ref] != nil { wb.sheets[sheetIndex].arrays[ref] = nil; cell.array = false }
             cell.input = input
-            cell.value = input.hasPrefix("=") && input.count > 1 ? .empty : XLSX.constant(input)
+            cell.value = input.hasPrefix("=") && input.count > 1 ? .empty : XLSX.constant(input, date1904: wb.date1904)
             if cell.style.numberFormat == "General", !input.hasPrefix("=") {
                 let t = input.trimmingCharacters(in: .whitespaces)
                 if t.hasSuffix("%"), case .number = cell.value { cell.style.numberFormat = t.contains(".") || t.contains(",") ? "0.00%" : "0%" }
-                else if case .number = cell.value, Double(t.replacingOccurrences(of: ",", with: ".")) == nil, DateMath.parse(t) != nil {
+                else if case .number = cell.value, Double(t.replacingOccurrences(of: ",", with: ".")) == nil, DateMath.parse(t, date1904: wb.date1904) != nil {
                     cell.style.numberFormat = t.contains(":") ? "dd.mm.yyyy hh:mm" : "dd.mm.yyyy"
                 }
             }
             wb.sheets[sheetIndex][ref] = cell
         }
+        return true
     }
 
     private func modifyCells(_ name: String, _ body: (inout Cell) -> Void) {
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
-        guard let doc, guardEditable(range) else { return }
+        guard let doc, guardCellOperation(range), guardEditable(range) else { return }
         doc.change(name) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]
@@ -588,8 +597,9 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     private func modifyStyle(_ name: String, _ body: (inout CellStyle) -> Void) {
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
-        guard let doc, guardEditable(range) else { return }
+        guard let doc, guardCellOperation(range), guardEditable(range) else { return }
         doc.change(name, recalc: false) { wb in
             for ref in range.cells {
                 var cell = wb.sheets[sheetIndex][ref]
@@ -600,30 +610,33 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func clearContents(_ sender: Any?) {
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
-        guard guardArrays(range) else { return }
-        if let doc, sheet.arrays.values.contains(where: { range.contains($0.start) && range.contains($0.end) }) {
-            // Whole array formulas go with their cells.
-            guard guardEditable(range) else { return }
-            doc.change(L("Clear")) { wb in
-                dropArrays(in: range, of: &wb)
-                for ref in range.cells where wb.sheets[sheetIndex].cells[ref] != nil {
-                    var cell = wb.sheets[sheetIndex][ref]
-                    cell.input = ""
-                    cell.value = .empty
-                    wb.sheets[sheetIndex][ref] = cell
-                }
+        guard let doc, guardArrays(range), guardEditable(range) else { return }
+        doc.change(L("Clear")) { wb in
+            dropArrays(in: range, of: &wb)
+            // Clearing blank positions is a no-op, including in very large selections.
+            let refs = wb.sheets[sheetIndex].cells.keys.filter { range.contains($0) }
+            for ref in refs {
+                var cell = wb.sheets[sheetIndex][ref]
+                cell.input = ""
+                cell.value = .empty
+                wb.sheets[sheetIndex][ref] = cell
             }
-            return
-        }
-        modifyCells(L("Clear")) { cell in
-            cell.input = ""
-            cell.value = .empty
         }
     }
 
     @objc func clearFormats(_ sender: Any?) {
-        modifyStyle(L("Clear Formats")) { $0 = .default }
+        let range = clampedSelection
+        guard let doc, guardEditable(range) else { return }
+        doc.change(L("Clear Formats"), recalc: false) { wb in
+            let refs = wb.sheets[sheetIndex].cells.keys.filter { range.contains($0) }
+            for ref in refs {
+                var cell = wb.sheets[sheetIndex][ref]
+                cell.style = .default
+                wb.sheets[sheetIndex][ref] = cell
+            }
+        }
     }
 
     // MARK: - Clipboard
@@ -634,76 +647,60 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         var cols: Int
         var cells: [CellRef: Cell]   // offsets
         var changeCount: Int
+        var arrays: [CellRef: CellRange] = [:] // offsets; only complete legacy arrays
+        var external = false
     }
 
     static var clip: Clip?
+    /// UI audits use a private native pasteboard, avoiding clipboard-manager/user races.
+    static let pasteboard: NSPasteboard = ProcessInfo.processInfo.environment["K42_PASTEBOARD"] == "1"
+        ? NSPasteboard(name: NSPasteboard.Name("com.sfzorin.xls42.audit.\(ProcessInfo.processInfo.processIdentifier)")) : .general
 
     @objc func copy(_ sender: Any?) {
+        guard grid.commitEdit(move: nil) else { return }
         let range = clampedSelection
+        guard guardCellOperation(range) else { return }
         var cells: [CellRef: Cell] = [:]
         var lines: [String] = []
+        var arrays: [CellRef: CellRange] = [:]
+        func offset(_ ref: CellRef) -> CellRef { CellRef(row: ref.row - range.start.row, col: ref.col - range.start.col) }
+        for (anchor, array) in sheet.arrays where range.contains(array.start) && range.contains(array.end) {
+            arrays[offset(anchor)] = CellRange(offset(array.start), offset(array.end))
+        }
         for r in range.rows {
             var fields: [String] = []
             for c in range.cols {
                 let ref = CellRef(row: r, col: c)
                 var cell = sheet[ref]
                 // Spilled values: part of a copied spill re-spills from its formula, otherwise they're copied as values.
-                if cell.input.isEmpty, !cell.value.isEmpty {
-                    if let anchor = sheet.spills.first(where: { $0.value.contains(ref) })?.key, range.contains(anchor) { cell.value = .empty }
-                    else { cell.input = XLSX.inputText(for: cell.value, style: cell.style) }
+                if let array = sheet.array(containing: ref), arrays[offset(array.anchor)] == nil {
+                    cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: doc?.workbook.date1904 ?? false)
+                    cell.array = false
+                } else if cell.input.isEmpty, !cell.value.isEmpty {
+                    if let anchor = sheet.spills.first(where: { $0.value.contains(ref) })?.key, range.contains(anchor) {
+                        // Keep cached values for Paste Values; ordinary Paste recalculates the spill.
+                    } else { cell.input = XLSX.inputText(for: cell.value, style: cell.style, date1904: doc?.workbook.date1904 ?? false) }
                 }
                 cells[CellRef(row: r - range.start.row, col: c - range.start.col)] = cell
-                fields.append(NumberFormat.format(cell.value, cell.style.numberFormat).text)
+                let text = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: doc?.workbook.date1904 ?? false).text
+                fields.append(text.contains(where: { "\t\n\r\"".contains($0) }) ? "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : text)
             }
             lines.append(fields.joined(separator: "\t"))
         }
-        let pb = NSPasteboard.general
+        let pb = Self.pasteboard
         pb.clearContents()
         pb.setString(lines.joined(separator: "\n"), forType: .string)
-        Self.clip = Clip(origin: range.start, rows: range.rows.count, cols: range.cols.count, cells: cells, changeCount: pb.changeCount)
+        Self.clip = Clip(origin: range.start, rows: range.rows.count, cols: range.cols.count, cells: cells, changeCount: pb.changeCount, arrays: arrays)
     }
 
     @objc func cut(_ sender: Any?) {
-        guard guardEditable(clampedSelection) else { return }
+        guard grid.commitEdit(move: nil), guardCellOperation(clampedSelection), guardEditable(clampedSelection), guardArrays(clampedSelection) else { return }
         copy(sender)
         clearContents(sender)
     }
 
     @objc func paste(_ sender: Any?) {
-        guard let doc else { return }
-        let dest = grid.active
-        let pb = NSPasteboard.general
-        if let clip = Self.clip, clip.changeCount == pb.changeCount {
-            let target = CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))
-            guard guardEditable(target), guardArrays(target) else { return }
-            doc.change(L("Paste")) { wb in
-                for (offset, cell) in clip.cells {
-                    let target = CellRef(row: dest.row + offset.row, col: dest.col + offset.col)
-                    var c = cell
-                    if c.isFormula {
-                        c.input = Formula.shifted(c.input, rows: target.row - (clip.origin.row + offset.row), cols: target.col - (clip.origin.col + offset.col))
-                    }
-                    wb.sheets[sheetIndex][target] = c
-                }
-            }
-            grid.selection = CellRange(dest, CellRef(row: dest.row + clip.rows - 1, col: dest.col + clip.cols - 1))
-        } else if let text = pb.string(forType: .string) {
-            guard guardEditable(nil) else { return }
-            let rows = text.replacingOccurrences(of: "\r", with: "").split(separator: "\n", omittingEmptySubsequences: false)
-            doc.change(L("Paste")) { wb in
-                for (r, line) in rows.enumerated() where !(r == rows.count - 1 && line.isEmpty) {
-                    for (c, field) in line.split(separator: "\t", omittingEmptySubsequences: false).enumerated() {
-                        let ref = CellRef(row: dest.row + r, col: dest.col + c)
-                        var cell = wb.sheets[sheetIndex][ref]
-                        cell.input = String(field)
-                        cell.value = cell.isFormula ? .empty : XLSX.constant(cell.input)
-                        wb.sheets[sheetIndex][ref] = cell
-                    }
-                }
-            }
-        }
-        grid.needsDisplay = true
-        selectionDidChange()
+        performPaste(.all, ordinary: true)
     }
 
     @objc override func selectAll(_ sender: Any?) { grid.selectAllCells() }
@@ -712,18 +709,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func fillRight(_ sender: Any?) { fill(down: false) }
 
     private func fill(down: Bool) {
-        let range = clampedSelection
-        guard let doc, guardEditable(range) else { return }
-        guard down ? range.rows.count > 1 : range.cols.count > 1 else { return }
-        doc.change(down ? L("Fill Down") : L("Fill Right")) { wb in
-            for ref in range.cells {
-                let source = down ? CellRef(row: range.start.row, col: ref.col) : CellRef(row: ref.row, col: range.start.col)
-                guard source != ref else { continue }
-                var c = wb.sheets[sheetIndex][source]
-                if c.isFormula { c.input = Formula.shifted(c.input, rows: ref.row - source.row, cols: ref.col - source.col) }
-                wb.sheets[sheetIndex][ref] = c
-            }
-        }
+        guard grid.commitEdit(move: nil) else { return }
+        applyFill(clampedSelection, down ? .down : .right)
     }
 
     // MARK: - Formatting
@@ -753,7 +740,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc private func sizeChanged(_ sender: SizeStepper) {
         let size = sender.value
         modifyStyle(L("Font Size")) { $0.fontSize = size }
-        autofitRows(clampedSelection.rows)
+        autofitRows(clampedSelection.rows, undoable: false)
     }
 
     @objc private func textColorChanged(_ sender: ColorButton) {
@@ -814,14 +801,15 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func mergeAction(_ sender: Any?) {
-        guard let doc, guardEditable(nil) else { return }
+        guard grid.commitEdit(move: nil), let doc, guardEditable(nil) else { return }
         let range = clampedSelection
+        guard guardCellOperation(range), !sheet.arrays.values.contains(where: { $0.intersects(range) }) else { report(Self.partOfArrayMessage); return }
         let existing = sheet.merges.filter { $0 == range || range.contains($0.start) }
         doc.change(L("Merge Cells")) { wb in
             if !existing.isEmpty {
                 wb.sheets[sheetIndex].merges.removeAll { m in existing.contains(m) }
             } else if range.count > 1 {
-                wb.sheets[sheetIndex].merges.removeAll { m in m.cells.contains { range.contains($0) } }
+                wb.sheets[sheetIndex].merges.removeAll { $0.intersects(range) }
                 wb.sheets[sheetIndex].merges.append(range)
                 var top = wb.sheets[sheetIndex][range.start]
                 top.style.hAlign = "center"
@@ -831,9 +819,10 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     @objc func bordersAction(_ sender: Any?) {
+        guard grid.commitEdit(move: nil) else { return }
         let mode = commandTag(of: sender)   // 0 all, 1 outside, 2 bottom, 3 none
         let range = clampedSelection
-        guard guardEditable(range) else { return }
+        guard guardCellOperation(range), guardEditable(range) else { return }
         let side = BorderSide(style: "thin", color: .black)
         doc?.change(L("Borders")) { wb in
             for ref in range.cells {
@@ -885,12 +874,12 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     }
 
     func autofit(_ axis: Axis) {
-        guard let doc else { return }
+        guard grid.commitEdit(move: nil), let doc, guardEditable(nil) else { return }
         switch axis {
         case .column(let c):
             var width: CGFloat = 0
             for (ref, cell) in sheet.cells where ref.col == c && !cell.value.isEmpty && sheet.merge(containing: ref) == nil {
-                let text = NumberFormat.format(cell.value, cell.style.numberFormat).text
+                let text = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: self.doc?.workbook.date1904 ?? false).text
                 width = max(width, (text as NSString).size(withAttributes: [.font: cell.style.font()]).width + 8)
             }
             guard width > 0 else { return }
@@ -900,23 +889,24 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         }
     }
 
-    private func autofitRows(_ rows: ClosedRange<Int>) {
+    private func autofitRows(_ rows: ClosedRange<Int>, undoable: Bool = true) {
         guard let doc else { return }
         var heights: [Int: CGFloat] = [:]
         for (ref, cell) in sheet.cells where rows.contains(ref.row) {
             let font = cell.style.font()
             var h = ceil(font.ascender - font.descender + font.leading) + 3
             if cell.style.wrap {
-                let text = NumberFormat.format(cell.value, cell.style.numberFormat).text
-                let w = sheet.width(ref.col) - 4
+                let text = NumberFormat.format(cell.value, cell.style.numberFormat, date1904: self.doc?.workbook.date1904 ?? false).text
+                let w = max(1, sheet.width(ref.col) - 4)
                 h = ceil((text as NSString).boundingRect(with: NSSize(width: w, height: .greatestFiniteMagnitude),
                                                           options: [.usesLineFragmentOrigin], attributes: [.font: font]).height) + 4
             }
             heights[ref.row] = max(heights[ref.row] ?? 0, h)
         }
-        let changes = heights.filter { $0.value > sheet.height($0.key) + 0.5 }
+        let changes = heights.filter { undoable ? abs($0.value - sheet.height($0.key)) > 0.5 : $0.value > sheet.height($0.key) + 0.5 }
         guard !changes.isEmpty else { return }
-        doc.preview { wb in for (r, h) in changes { wb.sheets[sheetIndex].rowHeights[r] = h } }
+        let apply: (inout Workbook) -> Void = { wb in for (r, h) in changes { wb.sheets[self.sheetIndex].rowHeights[r] = h } }
+        if undoable { doc.change(L("Autofit"), recalc: false, apply) } else { doc.preview(apply) }
     }
 
     @objc func insertRowsAction(_ sender: Any?) { shift(rows: true, insert: true) }
@@ -925,6 +915,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func deleteColumnsAction(_ sender: Any?) { shift(rows: false, insert: false) }
 
     private func shift(rows: Bool, insert: Bool) {
+        guard grid.commitEdit(move: nil) else { return }
         guard let doc, guardEditable(nil) else { return }
         let sel = grid.selection
         let index = rows ? sel.start.row : sel.start.col
@@ -937,6 +928,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     // MARK: - Data
 
     @objc func autoSumAction(_ sender: Any?) {
+        guard grid.commitEdit(move: nil) else { return }
         let ref = grid.active
         var top = ref.row - 1
         func isNumber(_ r: CellRef) -> Bool { if case .number = sheet[r].value { return true }; return false }
@@ -956,6 +948,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     @objc func sortDescending(_ sender: Any?) { sort(ascending: false) }
 
     private func sort(ascending: Bool) {
+        guard grid.commitEdit(move: nil) else { return }
         guard let doc, let used = sheet.usedRange, guardEditable(nil) else { return }
         var range = clampedSelection
         let key = grid.active.col
@@ -967,7 +960,8 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             }
             range = CellRange(CellRef(row: used.start.row + (headerIsText ? 1 : 0), col: used.start.col), used.end)
         }
-        guard range.rows.count > 1 else { return }
+        guard range.rows.count > 1, guardCellOperation(range) else { return }
+        guard !sheet.arrays.values.contains(where: { $0.intersects(range) }) else { report(Self.partOfArrayMessage); return }
         let calc = Calculator(doc.workbook)
         let order = range.rows.sorted { a, b in
             let va = sheet[CellRef(row: a, col: key)].value, vb = sheet[CellRef(row: b, col: key)].value
@@ -1022,7 +1016,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
 
     @objc func exportPDFAction(_ sender: Any?) {
         guard let doc, let window else { return }
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         var options = SheetExport.Options.saved
         let scope = NSPopUpButton(frame: .zero, pullsDown: false)
         scope.addItems(withTitles: [L("Current sheet"), L("All sheets"), L("Selection")])
@@ -1061,13 +1055,13 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
             options.gridlines = gridlines.state == .on
             options.save()
             let data = SheetExport.pdf(doc.workbook, activeSheet: active, selection: selection, options: options, base: doc.printInfo)
-            do { try data.write(to: url) } catch { NSApp.presentError(error) }
+            do { try data.write(to: url, options: .atomic) } catch { NSApp.presentError(error) }
         }
     }
 
     @objc func exportCSVAction(_ sender: Any?) {
         guard let window else { return }
-        grid.commitEdit(move: nil)
+        guard grid.commitEdit(move: nil) else { return }
         let delimiter = NSPopUpButton(frame: .zero, pullsDown: false)
         delimiter.addItems(withTitles: [L("Semicolon (;) — Excel with comma decimals"), L("Comma (,)"), L("Tab")])
         delimiter.selectItem(at: NumberFormat.decimal == "," ? 0 : 1)
@@ -1079,10 +1073,11 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
         panel.nameFieldStringValue = "\(sheet.name).csv"
         panel.accessoryView = row
         let current = sheet
+        let date1904 = doc?.workbook.date1904 ?? false
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
             let d: Character = [";", ",", "\t"][max(0, delimiter.indexOfSelectedItem)]
-            do { try SheetExport.csv(current, delimiter: d, bom: true).write(to: url) } catch { NSApp.presentError(error) }
+            do { try SheetExport.csv(current, delimiter: d, bom: true, date1904: date1904).write(to: url, options: .atomic) } catch { NSApp.presentError(error) }
         }
     }
 
@@ -1143,7 +1138,7 @@ final class SheetWindowController: NSWindowController, NSWindowDelegate, NSMenuI
     private func findNext(from: CellRef) {
         guard !searchText.isEmpty else { return }
         let matches = sheet.cells.filter { _, cell in
-            NumberFormat.format(cell.value, cell.style.numberFormat).text.localizedCaseInsensitiveContains(searchText)
+            NumberFormat.format(cell.value, cell.style.numberFormat, date1904: self.doc?.workbook.date1904 ?? false).text.localizedCaseInsensitiveContains(searchText)
                 || cell.input.localizedCaseInsensitiveContains(searchText)
         }.keys.sorted()
         guard let next = matches.first(where: { $0 > from }) ?? matches.first else { NSSound.beep(); return }
