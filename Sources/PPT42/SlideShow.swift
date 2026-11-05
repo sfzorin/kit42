@@ -83,10 +83,18 @@ final class SlideShowController: NSObject {
     let media = ShowMedia()
     private var mediaSlide: Int?
 
-    init(owner: DeckWindowController, deck: Deck, start: Int, rehearse: Bool) {
+    /// Present in a window instead of full screen.
+    let windowed: Bool
+    let overlay = ShowOverlay()
+    private var ink: [Int: [[CGPoint]]] = [:]
+    private var overview: ShowOverview?
+    private var cursorHidden = false
+
+    init(owner: DeckWindowController, deck: Deck, start: Int, rehearse: Bool, windowed: Bool = false) {
         self.owner = owner
         self.deck = deck
         self.rehearse = rehearse
+        self.windowed = windowed
         let showHidden = ShowSettings.showHidden
         order = deck.slides.indices.filter { showHidden || !deck.slides[$0].hidden }
         super.init()
@@ -110,21 +118,31 @@ final class SlideShowController: NSObject {
         let main = NSScreen.main ?? screens.first!
         let test = PresentationDocument.testMode
         if !rehearse {
-            let frame = test ? NSRect(x: -20000, y: -20000, width: 1280, height: 720) : main.frame
-            let w = ShowWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            var frame = test ? NSRect(x: -20000, y: -20000, width: 1280, height: 720) : main.frame
+            if windowed && !test {
+                let vf = main.visibleFrame
+                let w = min(vf.width * 0.8, 1280), h = w * deck.size.height / deck.size.width
+                frame = NSRect(x: vf.midX - w / 2, y: vf.midY - h / 2, width: w, height: h)
+            }
+            let w = ShowWindow(contentRect: frame, styleMask: windowed ? [.titled, .closable, .resizable, .miniaturizable] : [.borderless], backing: .buffered, defer: false)
             w.show = self
             w.backgroundColor = .black
             w.isReleasedWhenClosed = false
             w.contentView = view
             view.wantsLayer = true
-            if !test { w.level = .screenSaver }
-            w.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces]
+            overlay.show = self
+            overlay.frame = view.bounds
+            overlay.autoresizingMask = [.width, .height]
+            view.addSubview(overlay)
+            if windowed { w.title = L("Slide Show"); w.delegate = self }
+            if !test && !windowed { w.level = .screenSaver }
+            w.collectionBehavior = windowed ? [] : [.fullScreenAuxiliary, .canJoinAllSpaces]
             window = w
             pixelWidth = Int(min(3840, frame.width * (main.backingScaleFactor)))
             w.setFrame(frame, display: false)
             w.makeKeyAndOrderFront(nil)
             w.makeFirstResponder(view)
-            if !test {
+            if !test && !windowed {
                 savedOptions = NSApp.presentationOptions
                 NSApp.presentationOptions = [.hideDock, .hideMenuBar]
                 NSCursor.setHiddenUntilMouseMoves(true)
@@ -146,7 +164,9 @@ final class SlideShowController: NSObject {
         media.clear()
         MediaFiles.cleanUp()
         if let w = window {
-            if !PresentationDocument.testMode { NSApp.presentationOptions = savedOptions }
+            if !PresentationDocument.testMode && !windowed { NSApp.presentationOptions = savedOptions }
+            if cursorHidden { NSCursor.unhide(); cursorHidden = false }
+            if overlay.tool == .laser { overlay.tool = .none }
             w.orderOut(nil)
             w.close()
         }
@@ -184,6 +204,7 @@ final class SlideShowController: NSObject {
         }
         presenter?.update()
         scheduleAuto()
+        overlay.strokes = ink[slideIndex] ?? []
         if mediaSlide != slideIndex, window != nil {
             mediaSlide = slideIndex
             media.load(slide, deck: deck)
@@ -423,6 +444,38 @@ final class SlideShowController: NSObject {
         if let p = order.firstIndex(where: { $0 >= target }) { go(to: p) }
     }
 
+    func saveInk(_ strokes: [[CGPoint]]) { ink[slideIndex] = strokes }
+
+    func setTool(_ t: ShowTool) {
+        overlay.tool = overlay.tool == t ? .none : t
+        window?.makeFirstResponder(view)
+    }
+
+    func openOverview() {
+        guard overview == nil, window != nil else { return }
+        let o = ShowOverview()
+        o.show = self
+        o.images = order.compactMap { image(slide: $0, revealed: 0, width: 480) }
+        o.selected = position
+        o.frame = view.bounds
+        o.autoresizingMask = [.width, .height]
+        view.addSubview(o)
+        window?.makeFirstResponder(o)
+        overview = o
+    }
+
+    func closeOverview(go p: Int?) {
+        overview?.removeFromSuperview()
+        overview = nil
+        window?.makeFirstResponder(view)
+        if let p { go(to: p) }
+    }
+
+    func toggleCursor() {
+        cursorHidden.toggle()
+        if cursorHidden { NSCursor.hide() } else { NSCursor.unhide() }
+    }
+
     /// A click on a video or audio clip plays or pauses it.
     func clickMedia(at p: CGPoint) -> Bool { media.toggle(at: p) }
 
@@ -447,11 +500,17 @@ final class SlideShowController: NSObject {
         case NSHomeFunctionKey: go(to: 0)
         case NSEndFunctionKey: go(to: order.count - 1)
         case 27:
-            if !typed.isEmpty { typed = "" } else { end() }
+            if overview != nil { closeOverview(go: nil) }
+            else if overlay.tool != .none { overlay.tool = .none }
+            else if !typed.isEmpty { typed = "" } else { end() }
         default:
             switch chars {
             case "n": next()
-            case "p": previous()
+            case "l": setTool(.laser)
+            case "p": setTool(.pen)
+            case "e": overlay.strokes = []; saveInk([])
+            case "g": openOverview()
+            case "c": toggleCursor()
             case "b", ".": toggleBlank(.black)
             case "w", ",": toggleBlank(.white)
             case "q": end()

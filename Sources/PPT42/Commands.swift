@@ -150,6 +150,7 @@ enum Cmd {
     static let play = Command(L("Play from Start"), #selector(W.playAction(_:)), symbol: "play.fill", shortcut: Shortcut("p", [.command, .option]),
                               toolTip: L("Play the slide show from the first slide"), label: L("Play"))
     static let playCurrent = Command(L("Play from Current Slide"), #selector(W.playCurrentAction(_:)), symbol: "play", shortcut: Shortcut("p", [.command, .shift]))
+    static let playInWindow = Command(L("Present in Window"), #selector(W.playInWindowAction(_:)), symbol: "macwindow")
     static let rehearse = Command(L("Rehearse with Presenter View"), #selector(W.rehearseAction(_:)), symbol: "person.wave.2", shortcut: Shortcut("r", [.command, .option]))
     static let showSettings = Command(L("Slide Show Settings…"), #selector(W.showSettingsAction(_:)), symbol: "gearshape")
 
@@ -192,7 +193,7 @@ enum Cmd {
                           .submenu(L("Theme"), themes.menuElements), .submenu(L("Slide Size"), slideSizes.menuElements), .separator,
                           .submenu(L("Master Layouts"), [.command(newLayout), .command(duplicateLayout), .command(renameLayout), .command(deleteLayout), .separator,
                                                          .submenu(L("Insert Placeholder"), placeholders.menuElements)])]),
-            (L("Slide Show"), [.command(play), .command(playCurrent), .command(rehearse), .separator, .command(showSettings)]),
+            (L("Slide Show"), [.command(play), .command(playCurrent), .command(playInWindow), .command(rehearse), .separator, .command(showSettings)]),
         ]
         spec.help = [.command(welcome)]
         return spec

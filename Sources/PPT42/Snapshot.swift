@@ -54,8 +54,15 @@ extension DeckWindowController {
             } catch { print("save failed: \(error)") }
         }
         if env["K42_SHOW"] != nil || env["K42_PRESENTER"] != nil {
-            startShow(from: current, presenter: env["K42_PRESENTER"] != nil, rehearse: env["K42_PRESENTER"] != nil && env["K42_SHOW"] == nil)
+            startShow(from: current, presenter: env["K42_PRESENTER"] != nil, rehearse: env["K42_PRESENTER"] != nil && env["K42_SHOW"] == nil, windowed: env["K42_SHOW"] == "window")
             for _ in 0..<(env["K42_SHOW_STEPS"].flatMap(Int.init) ?? 0) { SlideShowController.current?.next() }
+            // K42_SHOW_KEYS=gl… : keys pressed in the show (g overview, l laser, p pen, e erase, c cursor).
+            for ch in env["K42_SHOW_KEYS"] ?? "" {
+                if let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                            characters: String(ch), charactersIgnoringModifiers: String(ch), isARepeat: false, keyCode: 0) {
+                    _ = SlideShowController.current?.handleKey(e)
+                }
+            }
         }
     }
 

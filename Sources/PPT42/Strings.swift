@@ -550,4 +550,5 @@ let ppt42Strings: [[String]] = [
     ["Master Layouts", "Макеты образца", "Asıl Düzenler"],
     ["Format", "Формат", "Biçim"],
     ["Sidebar", "Панель", "Kenar Çubuğu"],
+    ["Present in Window", "Показ в окне", "Pencerede Sun"],
 ]

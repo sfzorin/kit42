@@ -942,10 +942,12 @@ extension DeckWindowController {
     @objc func playCurrentAction(_ sender: Any?) { startShow(from: current, presenter: false) }
     @objc func rehearseAction(_ sender: Any?) { startShow(from: current, presenter: true, rehearse: true) }
 
-    func startShow(from index: Int, presenter: Bool, rehearse: Bool = false) {
+    @objc func playInWindowAction(_ sender: Any?) { startShow(from: current, presenter: false, windowed: true) }
+
+    func startShow(from index: Int, presenter: Bool, rehearse: Bool = false, windowed: Bool = false) {
         commitEditing()
         doc?.endSilentEdit()
-        let show = SlideShowController(owner: self, deck: deck, start: index, rehearse: rehearse)
+        let show = SlideShowController(owner: self, deck: deck, start: index, rehearse: rehearse, windowed: windowed)
         show.start()
     }
 

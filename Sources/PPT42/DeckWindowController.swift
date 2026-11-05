@@ -500,7 +500,7 @@ final class DeckWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return editable && (isEditingText || selectedObjects.contains { $0.text != nil || $0.kind == .table })
         case #selector(layoutAction(_:)), #selector(hideSlideAction(_:)), #selector(transitionAction(_:)), #selector(backgroundAction(_:)):
             return mode != .master && currentSlide != nil
-        case #selector(playAction(_:)), #selector(playCurrentAction(_:)), #selector(rehearseAction(_:)):
+        case #selector(playAction(_:)), #selector(playCurrentAction(_:)), #selector(rehearseAction(_:)), #selector(playInWindowAction(_:)):
             return deck.slides.contains { !$0.hidden } && SlideShowController.current == nil
         case #selector(findNextAction(_:)), #selector(findPreviousAction(_:)): return !finder.query.isEmpty
         case #selector(zoomInAction(_:)), #selector(zoomOutAction(_:)), #selector(zoomFitAction(_:)), #selector(actualSizeAction(_:)): return editable
