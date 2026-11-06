@@ -48,6 +48,7 @@ connect `sfzorin/off42` to the existing `off42` Worker with these settings:
 | Root directory | `website` |
 | Build command | `npm run build && npm run check` |
 | Deploy command | `npx --yes wrangler@4.145.0 deploy` |
+| Preview builds | Disabled |
 | Build watch paths | `website/**` |
 
 `wrangler.jsonc` deploys only `dist/` and keeps the existing HTML and 404 handling.
