@@ -773,12 +773,24 @@ mod tests {
             .is_ok()
         {
             let extracted = std::process::Command::new("pdftotext")
+                .args(["-enc", "UTF-8"])
                 .arg(dir.path().join("searchable.pdf"))
                 .arg("-")
                 .output()
                 .unwrap();
-            assert!(extracted.status.success());
-            assert!(String::from_utf8_lossy(&extracted.stdout).contains("Привет"));
+            assert!(
+                extracted.status.success(),
+                "pdftotext failed: status={} stderr={}",
+                extracted.status,
+                String::from_utf8_lossy(&extracted.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&extracted.stdout).contains("Привет"),
+                "Unicode extraction mismatch: stdout={:?}, bytes={:02x?}, stderr={}",
+                String::from_utf8_lossy(&extracted.stdout),
+                extracted.stdout,
+                String::from_utf8_lossy(&extracted.stderr)
+            );
         }
         reopened.rotate(0).unwrap();
         assert!(reopened.pages()[0].words.is_empty());
