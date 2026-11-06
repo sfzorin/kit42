@@ -268,6 +268,11 @@ if args.mode in ('all', 'screenshots'):
         for generator in ('signature', 'seal', 'learn'):
             results.append(run('PDF42', 'mark-' + generator, [out / 'sample.pdf'],
                                {'K42_OPEN_GENERATOR': generator, 'K42_SNAPSHOT_SHEET': '1'}, snapshot=True))
+        # Regression 2026-11-06: long translations squeezed the Form/Pen/Ink row ("Любая…", missing "Форма:").
+        for lang in ('ru', 'tr'):
+            results.append(run('PDF42', f'mark-signature-layout-{lang}', [out / 'sample.pdf', '-Suite42Language', lang],
+                               {'K42_OPEN_GENERATOR': 'signature', 'K42_SNAPSHOT_SHEET': '1', 'K42_GENERATOR_LAYOUT_AUDIT': '1'},
+                               f'Generator layout: PASS {lang}', snapshot=True))
         results.append(run('PDF42', 'pdf-properties', [out / 'sample.pdf'], {'K42_ACTION': 'propertiesAction'}, snapshot=True))
     if 'DOC42' in binaries:
         for name, script, appearance in [('doc-book', 'viewmode 1', 'light'),
