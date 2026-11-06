@@ -1,15 +1,20 @@
 # Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42 · SCN42
 
-Suite42 is a native macOS suite for documents, spreadsheets, presentations, PDFs, images and scanning.
-Its six apps combine Office and OpenDocument file support with PDF editing and digital signatures, rich document
-layout, spreadsheet formulas and charts, slide shows, image editing and searchable scans. They share the Kit42
-library for menus, toolbars, language selection and a reusable signature and stamp library.
+Suite42 is a suite of six native apps for **macOS and Windows**, covering documents, spreadsheets, presentations,
+PDFs, images and scanning. The macOS apps are written in Swift and share Kit42 for menus, toolbars, language
+selection, signatures and stamps. The Windows apps use a separate Rust implementation and native Windows controls.
+Available features, file-format support and runtime dependencies depend on the platform.
 
-Core editing works offline, using Apple's system frameworks with no third-party runtime packages.
-The interface is available in **20 languages**: English, Simplified Chinese, Traditional Chinese (Taiwan), Spanish,
+Core editing works offline. The macOS implementation uses Apple's system frameworks; Windows dependencies
+and build requirements are documented in [rust/README.md](rust/README.md).
+The macOS interface is available in **20 languages**: English, Simplified Chinese, Traditional Chinese (Taiwan), Spanish,
 Arabic, French, Portuguese, Indonesian, Russian, German, Japanese, Vietnamese, Turkish, Filipino, Korean, Thai,
-Italian, Polish, Malay and Hungarian. Network features, including remote signing, trusted timestamps, validation-data retrieval and opening web links,
+Italian, Polish, Malay and Hungarian. Network features in the macOS apps, including remote signing, trusted timestamps,
+validation-data retrieval and opening web links,
 need a connection. Optional GOST signing uses a separately installed CryptoPro CSP.
+
+The format table and detailed app descriptions below cover the **macOS implementation**.
+See [Windows scope and limits](rust/README.md#implemented-scope-and-limits) for the Rust apps.
 
 | App | For | Opens | Saves |
 |---|---|---|---|
@@ -20,14 +25,7 @@ need a connection. Optional GOST signing uses a separately installed CryptoPro C
 | **PPT42** | presentations and slide shows | PPTX, ODP (PPT: a message suggesting conversion) | PPTX/ODP, POTX/OTP templates, PDF (slides, notes pages), PNG/JPEG, outline RTF/Markdown, MP4/MOV |
 | **SCN42** | scanning, page cleanup and OCR | scanners (USB, network, AirScan), iPhone/iPad camera, images, PDF | searchable PDF, PDF/A-style, multi-page TIFF, JPEG, PNG, HEIC, TXT/RTF |
 
-**По-русски.** Suite42 — шесть нативных программ для macOS: PDF42 для правки и подписания PDF, DOC42 для документов
-Word/ODT/RTF/Markdown, XLS42 для таблиц Excel/ODS/CSV, IMG42 для просмотра и правки изображений, PPT42 для презентаций
-PPTX/ODP и показа слайдов, SCN42 для сканирования, обработки страниц и распознавания текста. Общие меню, библиотека
-подписей и печатей, интерфейс на 20 языках. Основные операции работают без интернета и сторонних библиотек времени
-выполнения. Для ГОСТ-подписей и МЧД предусмотрена интеграция с отдельно установленным КриптоПро CSP.
-Свою подпись можно сохранить по образцам и воспроизводить шариковой, гелевой, перьевой или фетровой ручкой.
-
-## What's new
+## What's new on macOS
 
 - **Twenty languages across all six apps.** Bundled translations, native language names in the welcome-screen
   picker, shared language preference and localized Quick Look previews. Interface language is independent of
@@ -51,7 +49,7 @@ commands and coverage limits. Publishing source on GitHub does not update an ins
 binary release. Match verification results to the recorded revision and executable identity; detailed logs and
 local installation history are retained separately.
 
-Final audit on **2026-11-06**: debug/release builds, app selftests and independent file checks passed.
+Final macOS audit on **2026-11-06**: debug/release builds, app selftests and independent file checks passed.
 The selected final results comprise **62 behavioral runs**, **40 screenshot captures** and **144 language launches**
 across six apps; screenshots and language launches are not counted as functional editing tests. After the last
 PDF audit-readiness change, only its page scenario was repeated in debug/release (**73/73 assertions each**).
@@ -61,7 +59,7 @@ The audit fixed scanner lifecycle/output/Undo issues and stamp-page state, bound
 and removed false-positive format/sample checks and duplicate runs. One initial IMG42 debug file scenario failed;
 it did not reproduce in three diagnostic sequences or subsequent full app checks. Its cause remains unconfirmed;
 the stronger fixture baseline and failure diagnostics remain. Hardware and external-provider limits are listed below.
-Local packages are ad-hoc signed; this source publication does not install apps or provide a notarized binary release.
+The local macOS packages are ad-hoc signed; this source publication does not install apps or provide a notarized binary release.
 
 ## Windows Rust workspace
 
@@ -69,7 +67,9 @@ The separate Rust workspace implements the six apps for Windows. Its formats, ru
 and current limitations are described in [rust/README.md](rust/README.md). Native Windows interaction, printing,
 scanner hardware and PDFium interoperability have not been verified on a Windows desktop; it is not a parity claim.
 
-## Install
+<a id="install"></a>
+
+## Build and install on macOS
 
 ```bash
 git clone https://github.com/sfzorin/off42.git && cd off42
@@ -914,7 +914,8 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 
 ## Regression checks
 
-Run these commands from the repository root after installing the Xcode Command Line Tools and Python 3.
+These checks cover the macOS implementation. Run them from the repository root after installing the Xcode Command
+Line Tools and Python 3.
 The document CLI check also needs Poppler's `pdfinfo` and `pdftotext` on PATH. The spreadsheet CLI check uses them for
 PDF checks and records an explicit SKIP when either is missing. The checks use generated fixtures,
 do not need a physical scanner or XCTest, and do not open interactive windows:
@@ -1088,13 +1089,14 @@ The snapshots render AppKit views; native material layers may require checking t
 
 ## Structure
 
-- `Sources/Kit42` — shared: commands, menu bar, toolbar, tool strip, banners, welcome window, localisation,
+- `rust/` — the separate native Windows workspace; see [its README](rust/README.md) for crates, build instructions and limits.
+- `Sources/Kit42` — shared macOS components: commands, menu bar, toolbar, tool strip, banners, welcome window, localisation,
   signature library, certificates, ZIP.
 - `Sources/Previews42` — Quick Look rendering (Markdown → HTML/page, ODS/TSV → table); `Sources/QLPreview42` and
   `Sources/QLThumbnail42` are the extension binaries that `build.sh` packs into `.appex` bundles
   (Info.plist generated, ad-hoc signed with `Resources/QuickLook/Extension.entitlements`); `ql42render` renders the
   same output to files for testing (`ql42render html file.md out.html`, `ql42render thumb file.ods 512 out.png`).
-- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42`, `Sources/SCN42` — the apps. Each has `Commands.swift` (all commands, menus, toolbar)
+- `Sources/PDF42`, `Sources/XLS42`, `Sources/DOC42`, `Sources/IMG42`, `Sources/PPT42`, `Sources/SCN42` — the macOS apps. Each has `Commands.swift` (all commands, menus, toolbar)
   and `Strings.swift` (translations).
 - `DESIGN.md` — the design system: menu order, reserved shortcuts, window layout, how to add an app.
 

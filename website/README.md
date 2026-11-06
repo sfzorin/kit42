@@ -1,6 +1,6 @@
 # OFF42 website
 
-The public, multilingual OFF42 product website for `https://off42.cc`.
+The public, multilingual OFF42 product website for `https://off42.cc`, describing the native macOS and Windows apps.
 It is independent of the native app build: only `website/dist/` is deployed.
 
 ## Build and preview
@@ -15,7 +15,7 @@ npm run preview
 ```
 
 Preview: `http://127.0.0.1:4242`. The root redirects to `/en/`; visitors can choose
-one of the same 20 interface languages as the applications. Each language has
+one of 20 website languages, also available in the macOS interface. Each language has
 13 fully rendered pages: home, feature index, eight features, downloads, open
 source and privacy. Arabic uses RTL. Language links preserve the current route.
 
@@ -54,8 +54,9 @@ and release links. Rebuild and redeploy after changing it.
 
 ## Installer links
 
-No DMG or EXE release existed when the site was created. GitHub includes source for macOS and a preliminary Windows version. Downloads show the real availability, GitHub releases and build
-instructions. This website does not build or distribute unverified native apps.
+No DMG or EXE release existed when the site was created. The project has separate macOS (Swift/Kit42) and Windows
+(Rust) implementations. Downloads show the configured installer availability, GitHub releases and platform-specific
+build instructions. This website does not build or distribute unverified native apps.
 
 `site.config.json` has separate nullable `releases.macos` and `releases.windows`.
 An enabled release entry must have:
@@ -75,7 +76,7 @@ GitHub release asset named `OFF42-...dmg` or `Suite42-...dmg`. It requires an
 unambiguous architecture and a GitHub SHA-256 digest. It updates configuration
 only; it does not build, sign, notarize, publish or deploy anything. Verify the
 actual app release using the repository's AGENTS.md rules before enabling it.
-A Windows release also requires updating platform-support copy in all 20 locales.
+A new release on either platform also requires checking availability and requirements in all 20 locales.
 No placeholder URL is offered as a real download.
 
 ## Verification
@@ -94,15 +95,15 @@ Each page takes its `<title>` and meta description from the locale's `seo` block
 open source, privacy) or a feature's `seoTitle`/`seoDescription`. They use the phrases people search for
 (“free PDF editor for Mac”, “compress PDF”) and differ from the visible headings, which keep the brand voice.
 Titles carry the OFF42 name and must stay unique across all 260 pages. JSON-LD adds `SoftwareApplication`
-(free offer, MIT license, macOS 14+) and `FAQPage` on the home and feature pages, plus `BreadcrumbList` on
-feature pages. The home page also lists the formats each app opens and saves and answers common questions;
+(free offer, MIT license), with macOS and Windows in the general product metadata and macOS scope on feature pages.
+It also adds `FAQPage` on the home and feature pages, plus `BreadcrumbList` on feature pages. The home page also lists the formats each app opens and saves and answers common questions;
 the downloads page shows build-from-source commands with copy buttons while no installer is released.
 Social previews use the 1200 × 630 `assets/og-image.jpg`. The sitemap omits `lastmod` until meaningful per-page dates are available. No `downloadUrl` is emitted while installer files are unavailable.
 `/` redirects permanently (301) to `/en/`.
 
 ## Screenshots
 
-`public/assets/shots/` holds real screenshots of the six apps in all 20 languages (WebP, two widths each): the
+`public/assets/shots/` holds real macOS screenshots of the six apps in all 20 languages (WebP, two widths each): the
 interface runs in the page's language (`-Suite42Language`) and the documents are localized samples of fictional
 companies — agreement and invoice, proposal letter, budget with chart, deck — with generated signatures and
 country-style stamps (company stamps, round seals, hanko/kakuin, Chinese seals, “Paid” stamps). East Asian samples

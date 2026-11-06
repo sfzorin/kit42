@@ -10,19 +10,19 @@
     "home": "首頁"
   },
   "home": {
-    "eyebrow": "免費 · 開放原始碼 · 為 Mac 打造",
+    "eyebrow": "免費 · 開放原始碼 · macOS 和 Windows",
     "title": "整套辦公。不必訂閱。",
-    "intro": "OFF42 是六款原生 Mac 應用程式，處理 PDF、文件、試算表、簡報、影像與掃描檔。免費且開放原始碼。你的檔案留在你的 Mac 上，而不是別人的雲端。",
+    "intro": "OFF42 提供六款適用於 macOS 和 Windows 的原生應用程式，用於處理 PDF、文件、試算表、簡報、圖片和掃描文件。免費開放原始碼，各平台獨立實作，相關限制已於文件中說明。",
     "primary": "取得 OFF42",
     "secondary": "探索工具",
-    "note": "免費 · 開放原始碼 · macOS 14+ · 20 種語言",
+    "note": "免費 · 開放原始碼 · macOS 14+ · Windows",
     "suiteTitle": "完整的辦公工具，輕鬆的工作體驗。",
     "suiteIntro": "從第一份草稿到最後簽署的 PDF，讓熟悉的一套工具陪伴你的日常工作。",
     "featureEyebrow": "小細節，大不同。",
     "featureTitle": "每個檔案，都有更多可能。",
     "featureIntro": "編輯 PDF、縮小大型附件，將紙張轉為可搜尋的文字。為手邊的工作找到合適工具。",
     "privacyTitle": "在你的桌面上處理檔案。",
-    "privacyText": "核心編輯在你的 Mac 上完成，不必將本機檔案上傳到線上編輯器。包含可信任簽章時間戳記在內的網路功能需要連線。",
+    "privacyText": "核心編輯操作在你的電腦本機完成，無需上傳檔案。選用的線上功能需要網路連線，支援情況依平台而異。",
     "privacyLabel": "為本機工作而生",
     "languageTitle": "20 種語言，熟悉的體驗。",
     "languageText": "網站和應用程式介面支援你的語言。選擇熟悉的語言，讓同一套工具隨時觸手可及。",
@@ -30,7 +30,7 @@
     "openText": "OFF42 以 MIT 授權條款發布。閱讀程式碼、自行建置、回報問題，或一起讓下個版本更好。",
     "openLink": "在 GitHub 上探索",
     "endTitle": "訂閱，off。辦公，歸你。",
-    "endText": "免費、開放原始碼，為你的 Mac 打造。",
+    "endText": "免費 · 開放原始碼 · macOS 和 Windows",
     "formatsLabel": "OFFICE 與開放格式",
     "formatsTitle": "直接開啟你手邊現有的檔案。",
     "formatsText": "開啟同事傳來的檔案，並儲存成對方需要的格式。複雜版面的呈現可能不同，匯入後請檢查重要檔案。",
@@ -44,7 +44,7 @@
       },
       {
         "q": "OFF42 可以離線使用嗎？",
-        "a": "核心編輯不必連網即可在你的 Mac 上完成，檔案也不會上傳到任何地方。可信任簽章時間戳記、開啟網頁連結等網路功能需要連線。"
+        "a": "核心編輯操作在你的電腦本機完成，無需上傳檔案。選用的線上功能需要網路連線，支援情況依平台而異。"
       },
       {
         "q": "OFF42 能開啟 Microsoft Office 檔案嗎？",
@@ -56,7 +56,7 @@
       },
       {
         "q": "有 Windows 版本嗎？",
-        "a": "初步的 Windows 版本正在同一個開放儲存庫中開發。Windows 安裝程式尚未發布。"
+        "a": "Windows 原生應用程式已有實作，並提供原始碼。請查看文件中的功能範圍和限制。目前尚未發布公開的 Windows 安裝程式。"
       }
     ]
   },
@@ -66,7 +66,7 @@
     "officeTitle": "完整的辦公套件",
     "officeText": "六款應用程式，搞定桌上的每個檔案：PDF、Word 與 Excel 檔案、投影片、照片和掃描檔。",
     "offlineTitle": "離線也能用",
-    "offlineText": "核心編輯在你的 Mac 上完成。不需帳號、不必上傳，也不用等伺服器。",
+    "offlineText": "在你的電腦本機編輯，無需帳號或上傳檔案。",
     "offTitle": "訂閱：off",
     "offText": "沒有訂閱、沒有試用期、沒有廣告。MIT 授權，今天免費，明天也免費。",
     "answerTitle": "那 42 呢？",
@@ -322,7 +322,7 @@
     "mac": "macOS 版 OFF42",
     "macText": "原始碼適用於 macOS 14 或更新版本。尚未發布公開的 DMG 安裝程式。",
     "windows": "Windows 版 OFF42",
-    "windowsText": "Windows 初步版本的原始碼已在 GitHub 公開。EXE 安裝程式尚未發布。",
+    "windowsText": "Windows 原生應用程式已有實作，並提供原始碼。請查看文件中的功能範圍和限制。目前尚未發布公開的 Windows 安裝程式。",
     "sourceTitle": "建置它，閱讀它，讓它為你所用。",
     "sourceText": "在 GitHub 取得 MIT 授權的原始碼。在 macOS 上建置需要 Xcode Command Line Tools。除非設定發布簽章，否則本機建置採用臨時簽章。",
     "checkReleases": "查看發布版本",
@@ -336,7 +336,7 @@
   },
   "about": {
     "title": "一套坦誠開放的辦公工具。",
-    "intro": "OFF42 是獨立的開放原始碼專案，包含六款原生 macOS 應用程式。透過共用介面與工具，串起日常檔案處理工作。",
+    "intro": "OFF42 提供六款適用於 macOS 和 Windows 的原生應用程式，用於處理 PDF、文件、試算表、簡報、圖片和掃描文件。免費開放原始碼，各平台獨立實作，相關限制已於文件中說明。",
     "licenseTitle": "MIT 授權，歡迎探索。",
     "licenseText": "依 MIT 授權條款使用、研究、修改及再散布軟體。儲存庫包含授權條款與原始碼。",
     "contributeTitle": "更好的工具，來自共同努力。",
@@ -352,20 +352,20 @@
     "siteTitle": "一個簡單的網站",
     "siteText": "網站沒有廣告、分析指令碼或帳號系統。主機服務商可能會處理請求資訊，以提供及保護網站。",
     "appTitle": "在本機處理文件",
-    "appText": "OFF42 的核心編輯在 Mac 本機執行。選用的網路功能、外部連結與憑證時間戳記服務會涉及各自的服務商。",
+    "appText": "核心編輯操作在你的電腦本機完成，無需上傳檔案。選用的線上功能需要網路連線，支援情況依平台而異。",
     "linksTitle": "外部連結",
     "linksText": "GitHub 與其他連結服務各有隱私權政策。造訪本網站不會上傳你的檔案。"
   },
   "seo": {
-    "homeTitle": "OFF42 — 免費 Mac 辦公軟體，免訂閱",
-    "homeDescription": "免費開源的 macOS 辦公軟體：PDF 編輯器、DOCX 文件、XLSX 試算表、PPTX 簡報、圖片編輯器，以及具備 OCR 文字辨識的掃描工具。離線也能用。",
+    "homeTitle": "OFF42 — 免費 macOS 和 Windows 辦公軟體，免訂閱",
+    "homeDescription": "適用於 macOS 和 Windows 的免費開源原生辦公應用程式：PDF、DOCX、XLSX、PPTX、圖片和掃描文件。功能涵蓋範圍與驗證情況依平台而異。",
     "featuresTitle": "功能總覽：PDF、文件、試算表與掃描 | OFF42",
     "featuresDescription": "編輯與簽署 PDF、壓縮大型檔案、掃描並以 OCR 辨識文字、撰寫 DOCX，處理 XLSX 和 PPTX。看看免費的 OFF42 辦公軟體能在 Mac 上為你做什麼。",
-    "downloadTitle": "下載 OFF42 Mac 版 — 免費辦公軟體",
-    "downloadDescription": "OFF42 適用於 macOS 14 或更新版本：查看發布狀態、Windows 預覽版，以及從原始碼建置這套免費、MIT 授權應用程式的逐步說明。",
+    "downloadTitle": "下載 OFF42 macOS 和 Windows 版 — 免費辦公軟體",
+    "downloadDescription": "查看 macOS 和 Windows 版 OFF42 的原始碼、發布狀態、建置說明和平台限制。安裝前請確認已實作和已測試的功能範圍。",
     "aboutTitle": "開源辦公軟體，MIT 授權 | OFF42",
-    "aboutDescription": "OFF42 是獨立的 MIT 授權專案，包含六款原生 Mac 應用程式。你可以在 GitHub 閱讀程式碼、回報問題、協助翻譯或貢獻程式碼。",
-    "privacyTitle": "隱私權：檔案始終留在你的 Mac 上 | OFF42",
-    "privacyDescription": "OFF42 網站沒有廣告、分析指令碼或帳號，應用程式在你的 Mac 本機編輯檔案。了解哪些操作在本機完成，哪些需要連網。"
+    "aboutDescription": "OFF42 以 MIT 授權提供六款適用於 macOS 和 Windows 的原生應用程式。原始碼、平台支援情況和限制可在 GitHub 查看。",
+    "privacyTitle": "隱私權：檔案始終留在你的電腦上 | OFF42",
+    "privacyDescription": "核心編輯操作在你的電腦本機完成，無需上傳檔案。選用的線上功能需要網路連線，支援情況依平台而異。"
   }
 }

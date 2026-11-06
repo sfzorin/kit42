@@ -10,19 +10,19 @@
     "home": "Home"
   },
   "home": {
-    "eyebrow": "FREE · OPEN SOURCE · MADE FOR MAC",
+    "eyebrow": "Free · Open source · macOS and Windows",
     "title": "Your whole office. No subscription.",
-    "intro": "OFF42 is six native Mac apps for PDFs, documents, spreadsheets, presentations, images and scans. Free and open source. Your files stay on your Mac, not in someone else's cloud.",
+    "intro": "OFF42 brings together six native apps for macOS and Windows: PDFs, documents, spreadsheets, presentations, images and scans. Free and open source, with separate platform implementations and documented limitations.",
     "primary": "Get OFF42",
     "secondary": "Explore the tools",
-    "note": "Free · Open source · macOS 14+ · 20 languages",
+    "note": "Free · Open source · macOS 14+ · Windows",
     "suiteTitle": "A whole office. A lighter feeling.",
     "suiteIntro": "From the first rough draft to the final signed PDF, keep your everyday work in one familiar family of tools.",
     "featureEyebrow": "SMALL DETAILS. BIG DIFFERENCE.",
     "featureTitle": "More possibilities in every file.",
     "featureIntro": "Edit a PDF. Tame a large attachment. Turn a paper page into searchable text. Find the tool for the job.",
     "privacyTitle": "Your desk. Not someone else's server.",
-    "privacyText": "Core editing happens on your Mac. Work on local files without uploading them to an online editor. Network features, including trusted signature timestamps, need a connection.",
+    "privacyText": "Core editing runs locally on your computer without uploading files. Optional online features need a connection; availability varies by platform.",
     "privacyLabel": "Made for local work",
     "languageTitle": "A familiar voice, in 20 languages.",
     "languageText": "The website and app interface speak your language. Choose yours and keep the same tools close at hand.",
@@ -30,7 +30,7 @@
     "openText": "OFF42 is released under the MIT license. Read the code, build it yourself, report a bug or help make the next version better.",
     "openLink": "Explore on GitHub",
     "endTitle": "Switch the subscriptions off. Keep the office.",
-    "endText": "Free, open source and made for your Mac.",
+    "endText": "Free · Open source · macOS and Windows",
     "formatsLabel": "OFFICE AND OPEN FORMATS",
     "formatsTitle": "Works with the files you already have.",
     "formatsText": "Open what colleagues send you and save in the format they expect. Complex layouts can look different, so check important files after import.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "Does OFF42 work offline?",
-        "a": "Core editing works on your Mac without an internet connection, and your files are not uploaded anywhere. Network features, such as trusted signature timestamps and opening web links, need a connection."
+        "a": "Core editing runs locally on your computer without uploading files. Optional online features need a connection; availability varies by platform."
       },
       {
         "q": "Can OFF42 open Microsoft Office files?",
@@ -56,7 +56,7 @@
       },
       {
         "q": "Is there a Windows version?",
-        "a": "A preliminary Windows version is being developed in the same open repository. A Windows installer has not been published yet."
+        "a": "Native Windows apps are implemented and available as source code. Check the documented features and limitations. A public Windows installer has not been released."
       }
     ]
   },
@@ -66,7 +66,7 @@
     "officeTitle": "A complete office",
     "officeText": "Six apps for every file on your desk: PDFs, Word and Excel files, slides, photos and scans.",
     "offlineTitle": "Works offline",
-    "offlineText": "Core editing runs on your Mac. No account, no uploads, no waiting for a server.",
+    "offlineText": "Editing runs locally on your computer. No account or file uploads.",
     "offTitle": "Subscriptions: off",
     "offText": "No subscription, no trial period, no ads. MIT-licensed and free, today and tomorrow.",
     "answerTitle": "And 42?",
@@ -322,7 +322,7 @@
     "mac": "OFF42 for macOS",
     "macText": "The source targets macOS 14 or later. A public DMG installer has not been released yet.",
     "windows": "OFF42 for Windows",
-    "windowsText": "Source code for a preliminary Windows version is available on GitHub. An EXE installer has yet to be published.",
+    "windowsText": "Native Windows apps are implemented and available as source code. Check the documented features and limitations. A public Windows installer has not been released.",
     "sourceTitle": "Build it. Read it. Make it yours.",
     "sourceText": "Get the MIT-licensed source on GitHub. Building on macOS requires the Xcode Command Line Tools. Local builds use ad-hoc signing unless you configure distribution signing.",
     "checkReleases": "Check releases",
@@ -336,7 +336,7 @@
   },
   "about": {
     "title": "An office with nothing to hide.",
-    "intro": "OFF42 is an independent, open-source family of six native macOS applications. The project brings everyday file work together through a shared interface and common tools.",
+    "intro": "OFF42 brings together six native apps for macOS and Windows: PDFs, documents, spreadsheets, presentations, images and scans. Free and open source, with separate platform implementations and documented limitations.",
     "licenseTitle": "MIT licensed. Yours to explore.",
     "licenseText": "Use, study, modify and redistribute the software under the MIT license. The repository includes the license terms and source code.",
     "contributeTitle": "Better tools are a shared effort.",
@@ -352,20 +352,20 @@
     "siteTitle": "A simple website",
     "siteText": "The site has no advertising, analytics scripts or account system. Hosting providers may process request information to deliver and protect the website.",
     "appTitle": "Local document work",
-    "appText": "Core editing in OFF42 runs locally on your Mac. Optional network features, external links and certificate timestamp services involve their respective providers.",
+    "appText": "Core editing runs locally on your computer without uploading files. Optional online features need a connection; availability varies by platform.",
     "linksTitle": "External links",
     "linksText": "GitHub and other linked services have their own privacy policies. Your files are not uploaded by visiting this website."
   },
   "seo": {
-    "homeTitle": "OFF42 — Free Office Suite for Mac, No Subscription",
-    "homeDescription": "Free, open-source office for macOS: PDF editor, DOCX documents, XLSX spreadsheets, PPTX slides, image editor and scanner with OCR. Works offline.",
+    "homeTitle": "OFF42 — Free Office Suite for macOS and Windows, No Subscription",
+    "homeDescription": "Free, open-source native office apps for macOS and Windows: PDFs, DOCX, XLSX, PPTX, images and scans. Feature coverage and validation differ by platform.",
     "featuresTitle": "Features: PDF, Documents, Spreadsheets, Scans | OFF42",
     "featuresDescription": "Edit and sign PDFs, shrink large files, scan with OCR, write DOCX and work with XLSX and PPTX. See everything the free OFF42 office does on your Mac.",
-    "downloadTitle": "Download OFF42 for Mac — Free Office Suite",
-    "downloadDescription": "Get OFF42 for macOS 14 or later: release status, the Windows preview and step-by-step instructions to build the free, MIT-licensed apps from source.",
+    "downloadTitle": "Download OFF42 for macOS and Windows — Free Office Suite",
+    "downloadDescription": "OFF42 for macOS and Windows: source code, release status, build instructions and platform limitations. Check what is implemented and tested before installing.",
     "aboutTitle": "Open-Source Office Suite, MIT Licensed | OFF42",
-    "aboutDescription": "OFF42 is an independent, MIT-licensed family of six native Mac apps. Read the code on GitHub, report issues, help translate or contribute.",
-    "privacyTitle": "Privacy: Your Files Stay on Your Mac | OFF42",
-    "privacyDescription": "The OFF42 website has no ads, analytics or accounts, and the apps edit your files locally on your Mac. Learn what stays local and what needs a network."
+    "aboutDescription": "OFF42 is a family of six native apps for macOS and Windows under the MIT license. Explore the source, platform support and limitations on GitHub.",
+    "privacyTitle": "Privacy: Your Files Stay on Your Computer | OFF42",
+    "privacyDescription": "Core editing runs locally on your computer without uploading files. Optional online features need a connection; availability varies by platform."
   }
 }

@@ -54,7 +54,8 @@ for(const page of manifest.files){
   assert(dest.startsWith('/')||dest.startsWith('#'),`Unsafe URL ${dest}`);
   if(dest.startsWith('#')){assert(html.includes(`id="${dest.slice(1)}"`));continue;}
   links++;
-  const [url,hash]=dest.split('#');
+  const [pathAndQuery,hash]=dest.split('#');
+  const url=pathAndQuery.split('?')[0];
   if(url.startsWith('/assets/'))assert((await stat(path.join(root,'dist',url))).isFile());
   else {assert(known.has(url),`Missing route ${dest} from ${page.path}`); if(hash){const target=await read('dist'+url+'index.html');assert(target.includes(`id="${hash}"`),dest);}}
  }

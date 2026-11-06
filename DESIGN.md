@@ -1,14 +1,17 @@
 # Suite42 — design system
 
-PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42 share a look and a menu system. Shared UI components
-live in **Kit42** (`Sources/Kit42`); each app declares its commands and implements its own document or window behavior.
+Suite42 has native macOS and Windows implementations of PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42.
+The Swift/macOS apps share **Kit42** (`Sources/Kit42`); the Rust/Windows apps share native Windows infrastructure.
+The Kit42, AppKit and Swift contracts below describe macOS; the Windows workspace has its own implementation
+and feature scope. Shared product names do not imply identical capabilities.
 This describes the source as of 2026-11-06. [README.md](README.md#regression-checks) documents verification commands
 and scope; detailed build logs, executable identities and installation history are retained with each local audit.
 
 ## Principles
 
-- **Native macOS.** AppKit, system fonts, SF Symbols, system colours (light/dark). No custom chrome.
-  Core editing and bundled translations work offline through Apple's frameworks, without third-party runtime packages.
+- **Native on each platform.** macOS uses AppKit, system fonts, SF Symbols and system colours (light/dark).
+  Windows uses Rust and native Windows controls. Core editing works offline; each implementation documents its
+  own framework and runtime dependencies.
 - **Quiet main toolbar.** Only frequent actions; tools for the current mode live in the tool strip.
 - **One command — one definition.** A `Command` (title, SF Symbol, shortcut, selector) builds the menu item,
   toolbar button and strip button, keeping their labels and shortcuts in one place.
@@ -63,7 +66,7 @@ and groups; where a printer lacks `SB_PIXEL_ALPHA`, scene printing uses a bounde
 These are implementation contracts, not evidence of native event dispatch, rendering, printing or lifecycle behavior.
 See [rust/README.md](rust/README.md) for formats, dependencies and verification limits.
 
-## Window layout
+## Window layout (macOS)
 
 Typical PDF42 layout; other apps add their own formula bar, notes, inspectors or scan settings:
 
@@ -80,7 +83,7 @@ Typical PDF42 layout; other apps add their own formula bar, notes, inspectors or
 └───────────────┴─────────────────────────────────────────────────────────────┘
 ```
 
-- Windows use native toolbar/titlebar controls. Split-view sidebars use `NSSplitViewItem(sidebarWithViewController:)`;
+- App windows use native toolbar/titlebar controls. Split-view sidebars use `NSSplitViewItem(sidebarWithViewController:)`;
   not every app has the same split-view structure.
 - Toolbar order: `toggleSidebar · sidebarTrackingSeparator · flexibleSpace · view group · document actions · mode toggle · search`.
 - Default toolbars hold only frequent actions. A command that already has a home elsewhere (zoom when the window has
@@ -400,7 +403,7 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 - For newly generated document text, prefer document fonts such as Helvetica Neue instead of SF, whose Cyrillic
   characters have caused PDF extraction problems. Preserve fonts from imported documents; UI text uses system fonts.
 
-## Adding an app
+## Adding a macOS app
 
 1. Add `Sources/<App>/`, an executable product/target depending on Kit42 in `Package.swift`, and `Resources/<App>/Info.plist`.
 2. `Commands.swift`: every `Command` plus `menuBar: MenuBarSpec` and `toolbar: [ToolbarElement]`.
@@ -409,7 +412,7 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 5. Add Quick Look type mappings only if needed, and include the app in `scripts/audit-ui.py` with representative fixtures.
 6. Run `./build.sh <App>` and verify both appearances and a narrow window. Update README and the dated status report.
 
-## Interface verification
+## Interface verification (macOS)
 
 `python3 scripts/audit-ui.py` builds isolated test bundles from already-built debug executables and runs native
 controller checks plus light/dark snapshots. It needs a logged-in desktop; bundle identifiers isolate app-specific
