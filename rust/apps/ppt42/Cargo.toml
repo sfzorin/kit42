@@ -1,0 +1,7 @@
+[package]
+name = "ppt42"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+win42 = { path = "../../crates/win42" }
+ppt42-core = { path = "../../crates/ppt42-core" }

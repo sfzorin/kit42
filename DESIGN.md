@@ -42,6 +42,16 @@ and scope; detailed build logs, executable identities and installation history a
   capturing each welcome window. It does not establish editing behavior or full dialog coverage.
   Interface language does not translate document content, add OCR languages or alter the accepted formula syntax.
 
+## Rust Windows foundation
+
+The separate Windows foundation uses `windows-rs` and shared `win42` native window, menu, dialog and control
+infrastructure. File, Edit and Help menus are shared, with View where implemented; Ctrl+O/S/Shift+S/Z/Y are shared; common controls v6 and
+PerMonitorV2 are declared in the application manifest. XLS42 uses a two-dimensional native grid. Dirty-document
+guards precede destructive lifecycle actions. App cores own supported undo/redo state, including text newline policy; PDF42 does not provide Undo/Redo;
+all outputs require a new path and refuse overwrite. These contracts are implemented and cross-compiled, but native
+Windows event dispatch, control rendering, DPI, dialogs and lifecycle behavior remain to be exercised. The Windows
+foundation's scope and format boundaries are in [rust/README.md](rust/README.md).
+
 ## Window layout
 
 Typical PDF42 layout; other apps add their own formula bar, notes, inspectors or scan settings:

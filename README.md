@@ -63,6 +63,13 @@ it did not reproduce in three diagnostic sequences or subsequent full app checks
 the stronger fixture baseline and failure diagnostics remain. Hardware and external-provider limits are listed below.
 Local packages are ad-hoc signed; this source publication does not install apps or provide a notarized binary release.
 
+## Windows Rust foundation
+
+A separate, preliminary Rust foundation covers all six apps. It is cross-built on macOS; native Windows runtime,
+menus, input, rendering, dialogs and DPI have not yet been tested. It does not have feature parity with the macOS
+apps described below. See [rust/README.md](rust/README.md) for build commands, per-app scope and the Windows handoff.
+The cross-build does not install apps or establish a notarized Windows release.
+
 ## Install
 
 ```bash

@@ -1,0 +1,10 @@
+[package]
+name = "pdf42"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+win42 = { path = "../../crates/win42" }
+pdf42-core = { path = "../../crates/pdf42-core" }
+[dev-dependencies]
+scn42-core = { path = "../../crates/scn42-core" }
+lopdf = "0.47"

@@ -1,0 +1,7 @@
+[package]
+name = "scn42-core"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+suite42-core = { path = "../suite42-core" }
+lopdf = "0.47"

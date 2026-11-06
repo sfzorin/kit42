@@ -1,0 +1,7 @@
+[package]
+name = "doc42"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+win42 = { path = "../../crates/win42" }
+doc42-core = { path = "../../crates/doc42-core" }
