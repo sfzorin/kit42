@@ -78,6 +78,10 @@ pub fn start(options: Options) -> Result<Worker, String> {
     Ok(Worker { cancel, rx })
 }
 fn convert(path: &Path, options: &Options, cancel: &AtomicBool) -> Result<(), String> {
+    // tempfile passes both names directly to MoveFileExW on Windows. Canonicalizing
+    // the existing parent provides extended-length drive or UNC paths for both.
+    let output =
+        std::fs::canonicalize(&options.output).map_err(|e| format!("output folder: {e}"))?;
     let stem = path.file_stem().ok_or("Invalid filename")?;
     let mut name = stem.to_os_string();
     name.push(match options.format.as_str() {
@@ -85,7 +89,7 @@ fn convert(path: &Path, options: &Options, cancel: &AtomicBool) -> Result<(), St
         "jpeg" => ".jpg",
         _ => ".tiff",
     });
-    let destination = options.output.join(name);
+    let destination = output.join(name);
     // Existing destinations, including source paths and other inputs, are never replaced.
     if destination.exists() {
         return Err("skipped: destination already exists".into());
@@ -130,7 +134,7 @@ fn convert(path: &Path, options: &Options, cancel: &AtomicBool) -> Result<(), St
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled before publication".into());
     }
-    let mut temp = tempfile::NamedTempFile::new_in(&options.output).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(&output).map_err(|e| e.to_string())?;
     temp.write_all(&bytes)
         .and_then(|_| temp.flush())
         .map_err(|e| e.to_string())?;
