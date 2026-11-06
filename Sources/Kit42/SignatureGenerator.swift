@@ -319,7 +319,7 @@ public enum SignatureGenerator {
 
     /// Renders one copy. `pixelHeight` is the capital height in pixels.
     public static func render(_ name: String, design: UInt64, impression: UInt64, ink: NSColor, pen: PenType = .ballpoint,
-                              pixelHeight: CGFloat = 130) -> CGImage? {
+                              pixelHeight: CGFloat = 130, capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
         let words = name.split(whereSeparator: { $0.isWhitespace || $0 == "." }).map(String.init)
         guard !words.isEmpty else { return nil }
         let s = style(design)
@@ -328,12 +328,16 @@ public enum SignatureGenerator {
         // The hand of this design (fluency and rhythm) — fixed per design.
         var r = SeededRandom(design &* 0x9E37_79B9 &+ 17)
         var hand = SigmaLognormal.Hand()
-        hand.overlap = Double(r.range(0.4...0.6))
-        hand.cornerOverlap = 0.15
+        // Fluent timing (measured by SignatureBench against a fluent and a laboured reference): the line's shape comes
+        // from the spline, so heavy overlap only removes near-stops between movements; cusps slow down, not stop.
+        hand.overlap = Double(r.range(0.68...0.82))
+        hand.cornerOverlap = 0.5
+        hand.sizeScaled = false
         hand.sigma = Double(r.range(0.2...0.24))...Double(r.range(0.26...0.31))
         hand.curvatureGain = r.range(0.3...0.45)
         hand.tempo = Double(r.range(0.13...0.2))
-        return draw(strokes: raw, hand: hand, slant: s.slant, penRatio: s.pen, pen: pen, ink: ink, pixelHeight: pixelHeight, copy: &copy)
+        return draw(strokes: raw, hand: hand, slant: s.slant, penRatio: s.pen, pen: pen, ink: ink, pixelHeight: pixelHeight,
+                    copy: &copy, capture: capture)
     }
 
     /// A generated signature as if recorded from a tablet (positions with time) — test input for learning.
@@ -371,7 +375,7 @@ public enum SignatureGenerator {
     ///   movement, real durations when recorded), perturbed for this copy; speed drives width and ink.
     static func draw(strokes raw: [[CGPoint]], hand: SigmaLognormal.Hand, slant baseSlant: CGFloat, penRatio: CGFloat,
                      pen: PenType, ink: NSColor, pixelHeight: CGFloat, copy: inout SeededRandom, variation: Double = 1,
-                     durations: [[Double]]? = nil) -> CGImage? {
+                     durations: [[Double]]? = nil, capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
         let vary = CGFloat(variation)
         let jitter: CGFloat = 0.006 * vary
         let driftA = copy.range(0.02...0.045) * vary, driftX = copy.range(1.1...2.2), driftY = copy.range(0.9...1.8)
@@ -429,6 +433,7 @@ public enum SignatureGenerator {
             if samples.count > 1 { trajectories.append(samples) }
         }
         guard !trajectories.isEmpty else { return nil }
+        capture?(trajectories)   // measurement (SignatureBench): the pen's path and timing in pixels
         return PenRenderer.draw(trajectories, pen: pen, width: width, ink: shift(ink, &copy), rng: &copy)
     }
 

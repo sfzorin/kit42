@@ -761,6 +761,10 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   pressure), open a scan or photo, or take a sketch or photo from an iPhone or iPad (Continuity). New copies combine
   compatible samples with small variations in movement and ink. Pad input supplies stroke timing; pictures supply
   traced shapes with modelled timing. Samples and the chosen pen are stored locally in the library recipe.
+  `PDF42 --signature-bench DIR [designs copies] [--check]` measures the generator with metrics from handwriting
+  research — normalized jerk, velocity peaks, hesitation (near-stops), line wobble, DTW distance between copies and
+  between styles, and whether Vision reads legible forms — against fluent, laboured and shaky reference trajectories;
+  `--check` exits 1 when timing, wobble or variability leave the recorded thresholds.
   **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,
   USA and Canada, Hong Kong and Taiwan — including the company chop with a signature line and the small round
   chop —, mainland China, Japan, Korea, India, Middle East, Latin America, office stamps, date and registration

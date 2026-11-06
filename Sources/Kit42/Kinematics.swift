@@ -33,6 +33,9 @@ public enum SigmaLognormal {
         public var sigma: ClosedRange<Double> = 0.22...0.32
         public var tempo: Double = 0.16           // seconds for a movement one cap high
         public var curvatureGain: CGFloat = 0.45  // how much of the turn at via-points becomes arc curvature
+        /// Smaller overlap for short movements (keeps letter shapes when the model draws the line itself);
+        /// off when the line comes from elsewhere and the model only times it.
+        public var sizeScaled = true
         public init() {}
     }
 
@@ -65,7 +68,7 @@ public enum SigmaLognormal {
             let mu = log(max(0.02, duration) / 2.2)
             if k > 0 {
                 // Small movements (inside letters) overlap less, so letter shapes survive; long sweeps flow together.
-                let sizeFactor = Double(min(1, max(0.45, chords[k] / 0.45)))
+                let sizeFactor = hand.sizeScaled ? Double(min(1, max(0.45, chords[k] / 0.45))) : 1
                 let ov = corners.contains(k) ? hand.cornerOverlap : hand.overlap * sizeFactor
                 t0 += previousDuration * (1 - ov)
             }

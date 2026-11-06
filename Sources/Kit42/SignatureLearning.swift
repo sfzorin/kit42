@@ -15,8 +15,9 @@ public struct LearnedSignature: Codable {
     public var samples: [SignatureSample]
     public init(samples: [SignatureSample]) { self.samples = samples }
 
-    public func render(impression: UInt64, ink: NSColor, pen: PenType, pixelHeight: CGFloat = 120) -> CGImage? {
-        SignatureLearning.render(self, impression: impression, ink: ink, pen: pen, pixelHeight: pixelHeight)
+    public func render(impression: UInt64, ink: NSColor, pen: PenType, pixelHeight: CGFloat = 120,
+                       capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
+        SignatureLearning.render(self, impression: impression, ink: ink, pen: pen, pixelHeight: pixelHeight, capture: capture)
     }
 }
 
@@ -84,7 +85,8 @@ enum SignatureLearning {
         return (points, corners, durations)
     }
 
-    static func render(_ learned: LearnedSignature, impression: UInt64, ink: NSColor, pen: PenType, pixelHeight: CGFloat) -> CGImage? {
+    static func render(_ learned: LearnedSignature, impression: UInt64, ink: NSColor, pen: PenType, pixelHeight: CGFloat,
+                       capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
         let samples = learned.samples.map(normalized).filter { !$0.isEmpty }
         guard !samples.isEmpty else { return nil }
         var copy = SeededRandom(impression)
@@ -116,13 +118,14 @@ enum SignatureLearning {
             anyTimed = anyTimed || v.durations != nil
         }
         var hand = SigmaLognormal.Hand()
-        hand.overlap = anyTimed ? 0.42 : 0.5
-        hand.cornerOverlap = 0.12
+        hand.overlap = anyTimed ? 0.6 : 0.68
+        hand.cornerOverlap = 0.3
+        hand.sizeScaled = false
         hand.curvatureGain = 0.4
         // A learned hand varies less than an invented one: the samples already carry its natural spread.
         return SignatureGenerator.draw(strokes: viaStrokes, hand: hand, slant: 0, penRatio: 0.024, pen: pen, ink: ink,
                                        pixelHeight: pixelHeight, copy: &copy, variation: samples.count > 1 ? 0.6 : 0.85,
-                                       durations: anyTimed ? durations : nil)
+                                       durations: anyTimed ? durations : nil, capture: capture)
     }
 
     /// Same number of strokes with similar lengths: blending them gives a plausible in-between copy.

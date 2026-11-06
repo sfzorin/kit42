@@ -287,6 +287,7 @@ documented by the app: PPT42 uses ⇧⌘P for Play from Current Slide and remove
 | `WelcomeWindowController` | start window |
 | `StampLibrary`, `StampLibraryViewController`, `ImageTools` | shared library of signatures and seals, background removal |
 | `SigmaLognormal`, `PenRenderer`, `PenType` | sigma-lognormal timing along a smooth line (geometry and time separated); ink from speed and direction for ballpoint, gel, fountain and felt-tip pens, paper fibres |
+| `SignatureBench` | measurement bench: fluency (normalized jerk, velocity peaks, hesitation), line wobble, DTW variability, Vision legibility, calibration references, `--check` thresholds |
 | `SignatureLearning`, `LearnedSignature`, `SignaturePad` | user's samples: timed pad strokes or traced picture strokes (threshold, Zhang–Suen thinning, good-continuation tracing); RDP via-points with captured or modelled durations; compatible samples blended into varied copies |
 | `SignatureGenerator`, `PenAlphabet` | hand-drawn letter centre lines, centripetal spline and low-pass hand; sigma-lognormal speed along that smooth path; 1320 styles (design seed low bits); impression seeds vary drift, letter position/scale and flourishes |
 | `SealGenerator`, `SealCatalog` | 132 stamp templates in 15 categories built from layout families (round, oval, rect rows, office word, CJK grid, dater, table, triangle); `impress` gives imported pictures the same impression |

@@ -23,6 +23,21 @@ if args.count >= 3, args[1] == "--mark-overlay" {
     try MarkOverlayDemo.write(to: URL(fileURLWithPath: args[2]))
     exit(0)
 }
+// PDF42 --signature-bench DIR [designs copies]: fluency, tremor, variability and legibility of generated signatures.
+if args.count >= 3, args[1] == "--signature-bench" {
+    let numbers = args.dropFirst(3).compactMap { Int($0) }
+    let designs = numbers.first ?? 6, copies = numbers.dropFirst().first ?? 5
+    let folder = URL(fileURLWithPath: args[2])
+    print(try SignatureBench.run(to: folder, designs: designs, copies: copies))
+    // --check: exit 1 when fluency, wobble or variability leave the thresholds.
+    if args.contains("--check") {
+        let failed = SignatureBench.check(folder: folder)
+        for f in failed { print("FAIL signature bench: \(f)") }
+        if failed.isEmpty { print("Signature bench checks: passed") }
+        exit(failed.isEmpty ? 0 : 1)
+    }
+    exit(0)
+}
 // PDF42 --mark-samples DIR: generated signatures and stamps for visual review.
 if args.count >= 3, args[1] == "--mark-samples" {
     try MarkSamples.write(to: URL(fileURLWithPath: args[2]))
