@@ -78,7 +78,7 @@ struct State {
 thread_local! { static STATE:RefCell<Option<State>>=const { RefCell::new(None) }; static REFRESHING:Cell<bool>=const {Cell::new(false)}; static DRAGGING:Cell<bool>=const {Cell::new(false)}; static POLL_MS:Cell<u32>=const {Cell::new(100)}; }
 
 unsafe fn msg(hwnd: HWND, s: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
-    MessageBoxW(hwnd, wide(s).as_ptr(), wide("Suite42").as_ptr(), flags)
+    MessageBoxW(hwnd, wide(s).as_ptr(), wide("off42").as_ptr(), flags)
 }
 unsafe fn pick_folder(hwnd: HWND, title: &str) -> Option<String> {
     use windows::{
@@ -2571,7 +2571,7 @@ pub fn run(app: Box<dyn App>) {
         let h = CreateWindowExW(
             0,
             class.as_ptr(),
-            wide("Suite42").as_ptr(),
+            wide("off42").as_ptr(),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

@@ -57,7 +57,7 @@ preservation varies by feature and source file; test important documents before 
   inserting a PNG into another application.
 - **Production → Create Label Sheet** exports a vector A4 PDF. Set label dimensions and gaps in millimetres,
   a copy count, and the first slot to skip used positions. PDF42 and DOC42 can start with selected text.
-  XLS42 uses the displayed values of selected visible rows. Column numbers are relative to the selection.
+  XLS42 uses displayed values and skips hidden rows and columns. Column numbers count visible selected columns.
   Enter 0 to omit the barcode or copy-count column, and 1 in the header field to skip the first visible row.
   Print at actual size (100%). Label text uses the bundled Noto Sans glyphs; scripts that require text shaping
   and characters absent from that font need another text workflow.

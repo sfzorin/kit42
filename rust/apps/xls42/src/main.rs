@@ -90,13 +90,22 @@ impl win42::App for Xls {
         if range.right - range.left >= 200 || range.bottom - range.top >= 5000 {
             return Err("Select up to 5,000 rows and 200 columns.".into());
         }
+        let columns = (range.left..=range.right)
+            .filter(|column| !self.book.sheet_view().hidden_columns.contains(column))
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            return Err("Select visible cells to create labels.".into());
+        }
         let grid = self.book.display_grid();
         let rows = self
             .book
             .visible_rows_from_grid(&grid)
             .into_iter()
             .filter(|row| *row >= range.top && *row <= range.bottom)
-            .map(|row| (row + 1, grid[row][range.left..=range.right].to_vec()))
+            .map(|row| {
+                let values = columns.iter().map(|&col| grid[row][col].clone()).collect();
+                (row + 1, values)
+            })
             .collect::<Vec<_>>();
         if rows.is_empty() {
             return Err("Select visible cells to create labels.".into());
@@ -1528,6 +1537,52 @@ mod regression {
         assert!(app.clipboard_data(40, b"bad".to_vec()).is_err());
         assert_eq!(app.book.cell(4, 1), Some("=A1"));
     }
+    #[test]
+    fn labels_snapshot_only_visible_cells_in_the_selection() {
+        let mut book = Workbook::new(4, 3).unwrap();
+        book.set_cell(0, 0, "Name".into()).unwrap();
+        book.set_cell(0, 1, "Hidden field".into()).unwrap();
+        book.set_cell(0, 2, "Code".into()).unwrap();
+        book.set_cell(1, 0, "Keep".into()).unwrap();
+        book.set_cell(1, 2, "PCB-0007".into()).unwrap();
+        book.set_cell(2, 0, "Hidden row".into()).unwrap();
+        book.set_cell(3, 0, "Filtered row".into()).unwrap();
+        let range = Range {
+            top: 0,
+            left: 0,
+            bottom: 3,
+            right: 2,
+        };
+        book.set_filter(Some(SheetFilter {
+            range,
+            column: 0,
+            contains: "Keep".into(),
+        }))
+        .unwrap();
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.insert(2);
+        view.hidden_columns.insert(1);
+        book.set_sheet_view(view).unwrap();
+        book.set_selection(range).unwrap();
+        let app = Xls {
+            book,
+            row: 0,
+            col: 0,
+            preview: None,
+            visible_cache: Default::default(),
+        };
+        let win42::LabelSource::Rows(rows) = app.label_source().unwrap() else {
+            panic!("expected rows")
+        };
+        assert_eq!(
+            rows,
+            vec![
+                (1, vec!["Name".to_string(), "Code".to_string()]),
+                (2, vec!["Keep".to_string(), "PCB-0007".to_string()])
+            ]
+        );
+    }
+
     #[test]
     fn hidden_row_mapping_drives_render_selection_edit_and_mapped_clipboard() {
         let mut book = Workbook::new(8, 5).unwrap();

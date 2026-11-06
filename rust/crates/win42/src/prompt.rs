@@ -33,7 +33,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                         MessageBoxW(
                             h,
                             wide("Invalid text").as_ptr(),
-                            wide("Suite42").as_ptr(),
+                            wide("off42").as_ptr(),
                             MB_OK,
                         );
                         return 0;
