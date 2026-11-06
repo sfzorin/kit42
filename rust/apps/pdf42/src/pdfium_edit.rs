@@ -386,20 +386,48 @@ pub fn edit_async(
                     let mut matrix = Matrix::default();
                     let mut size = 0f32;
                     let (mut r, mut g, mut b, mut a) = (0, 0, 0, 0);
+                    let marks = (api.marks)(obj);
+                    if marks != 0 {
+                        return Err(format!(
+                            "Font replacement cannot preserve marked text (mark count {marks})"
+                        ));
+                    }
                     let clip = (api.clip)(obj);
-                    if (api.marks)(obj) != 0
-                        || (!clip.is_null() && (api.clip_count)(clip) != 0)
-                        || (api.text_mode)(obj) != 0
-                        || (api.has_transparency)(obj) != 0
-                        || (api.get_matrix)(obj, &mut matrix) == 0
-                        || (api.font_size)(obj, &mut size) == 0
-                        || (api.get_fill)(obj, &mut r, &mut g, &mut b, &mut a) == 0
-                        || a != 255
-                    {
+                    if clip.is_null() {
                         return Err(
-                            "Font replacement supports only unmarked, unclipped, opaque fill text"
-                                .into(),
+                            "Font replacement cannot inspect the text clipping state".into()
                         );
+                    }
+                    let clip_paths = (api.clip_count)(clip);
+                    // PDFium 8125 returns -1 for a valid page object's clip handle
+                    // when its underlying clip path has no reference. Zero can
+                    // mean a text-only clip, so it must not be treated as empty.
+                    if clip_paths != -1 {
+                        return Err(format!("Font replacement cannot preserve clipped text (path count {clip_paths})"));
+                    }
+                    let mode = (api.text_mode)(obj);
+                    if mode != 0 {
+                        return Err(format!(
+                            "Font replacement requires fill text (render mode {mode})"
+                        ));
+                    }
+                    let transparent = (api.has_transparency)(obj);
+                    if transparent != 0 {
+                        return Err(format!(
+                            "Font replacement cannot preserve transparency (state {transparent})"
+                        ));
+                    }
+                    if (api.get_matrix)(obj, &mut matrix) == 0 {
+                        return Err("Font replacement cannot inspect the text matrix".into());
+                    }
+                    if (api.font_size)(obj, &mut size) == 0 {
+                        return Err("Font replacement cannot inspect the text font size".into());
+                    }
+                    if (api.get_fill)(obj, &mut r, &mut g, &mut b, &mut a) == 0 {
+                        return Err("Font replacement cannot inspect the text fill color".into());
+                    }
+                    if a != 255 {
+                        return Err(format!("Font replacement requires opaque text (alpha {a})"));
                     }
                     let data =
                         include_bytes!("../../../crates/doc42-layout-probe/fixtures/NotoSans.ttf");
@@ -530,14 +558,24 @@ mod tests {
     use lopdf::{dictionary, Document, Object, Stream};
     use std::time::Duration;
     fn fixture() -> Vec<u8> {
+        fixture_with(
+            b"BT /F1 18 Tf 20 40 Td (Hello) Tj ET BT /F1 18 Tf 20 100 Td (Neighbor) Tj ET",
+            false,
+        )
+    }
+    fn fixture_with(content: &[u8], transparent: bool) -> Vec<u8> {
         let mut d = Document::with_version("1.7");
         let root = d.new_object_id();
         let font=d.add_object(dictionary!{"Type"=>"Font","Subtype"=>"Type1","BaseFont"=>"Helvetica","Encoding"=>"WinAnsiEncoding"});
-        let stream = d.add_object(Stream::new(
-            dictionary! {},
-            b"BT /F1 18 Tf 20 40 Td (Hello) Tj ET BT /F1 18 Tf 20 100 Td (Neighbor) Tj ET".to_vec(),
-        ));
-        let page=d.add_object(dictionary!{"Type"=>"Page","Parent"=>root,"MediaBox"=>vec![0.into(),0.into(),200.into(),200.into()],"Resources"=>dictionary!{"Font"=>dictionary!{"F1"=>font}},"Contents"=>stream});
+        let stream = d.add_object(Stream::new(dictionary! {}, content.to_vec()));
+        let mut resources = dictionary! {"Font"=>dictionary!{"F1"=>font}};
+        if transparent {
+            resources.set(
+                "ExtGState",
+                dictionary! {"GS1"=>dictionary!{"Type"=>"ExtGState","ca"=>0.5}},
+            );
+        }
+        let page=d.add_object(dictionary!{"Type"=>"Page","Parent"=>root,"MediaBox"=>vec![0.into(),0.into(),200.into(),200.into()],"Resources"=>resources,"Contents"=>stream});
         d.objects.insert(
             root,
             Object::Dictionary(
@@ -549,6 +587,75 @@ mod tests {
         let mut bytes = Vec::new();
         d.save_to(&mut bytes).unwrap();
         bytes
+    }
+    fn select_index(bytes: &[u8], index: i32) -> Selected {
+        let _guard = crate::search::PDFIUM_LOCK.lock().unwrap();
+        unsafe {
+            let api = Api::open().unwrap();
+            let session = Session::open(&api, bytes, 0).unwrap();
+            let object = (api.object)(session.page, index);
+            assert!(!object.is_null());
+            Selected {
+                page: 0,
+                index,
+                text: session.object_text(object).unwrap(),
+            }
+        }
+    }
+    #[test]
+    fn font_replacement_refuses_marked_clipped_and_transparent_objects() {
+        let cases: [(&[u8], bool, i32, &str); 5] = [
+            (
+                b"/Span BMC BT /F1 18 Tf 20 40 Td (Hello) Tj ET EMC",
+                false,
+                0,
+                "marked text",
+            ),
+            (
+                b"q 0 0 30 45 re W n BT /F1 18 Tf 20 40 Td (Hello) Tj ET Q",
+                false,
+                0,
+                "clipped text (path count 1)",
+            ),
+            (
+                b"BT /F1 18 Tf 20 40 Td 7 Tr (H) Tj ET BT /F1 18 Tf 20 40 Td 0 Tr (Hello) Tj ET",
+                false,
+                1,
+                "clipped text (path count 0)",
+            ),
+            (
+                b"/GS1 gs BT /F1 18 Tf 20 40 Td (Hello) Tj ET",
+                true,
+                0,
+                "transparency",
+            ),
+            (
+                b"BT /F1 18 Tf 20 40 Td 1 Tr (Hello) Tj ET",
+                false,
+                0,
+                "render mode 1",
+            ),
+        ];
+        for (content, transparent, index, expected) in cases {
+            let source = fixture_with(content, transparent);
+            let selected = select_index(&source, index);
+            let original_text = selected.text.clone();
+            let error = edit_async(
+                source.clone(),
+                selected,
+                "Привет".into(),
+                true,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap_err();
+            assert!(
+                error.contains(expected),
+                "expected {expected:?}, got {error:?}"
+            );
+            assert_eq!(select_index(&source, index).text, original_text);
+        }
     }
     #[test]
     fn pdfium_replaces_and_deletes_real_text_objects() {
