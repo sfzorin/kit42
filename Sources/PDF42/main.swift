@@ -14,8 +14,8 @@ Localization.register(rows: pdf42Strings)
 
 let args = CommandLine.arguments
 if args.count >= 2, args[1] == "--selftest" {
-    let basic = PDFSelfTest.run(), deep = PDFFilesAudit.run()
-    exit(basic == 0 && deep == 0 ? 0 : 1)
+    let basic = PDFSelfTest.run(), deep = PDFFilesAudit.run(), signatures = SignatureSelfTest.run()
+    exit(basic == 0 && deep == 0 && signatures == 0 ? 0 : 1)
 }
 // PDF42 --mark-overlay DIR: a page of text with a stamp and a signature over it, saved and reopened,
 // with multiply (ink) and, for comparison, normal blending.

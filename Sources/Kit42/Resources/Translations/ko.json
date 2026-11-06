@@ -2847,6 +2847,7 @@
   "Visible signature (in place of the selected image)": "보이는 서명(선택한 이미지 위치)",
   "Void": "무효",
   "Wait for scanning and processing to finish before closing.": "스캔과 처리가 끝난 후 닫으세요.",
+  "Wait for the current operation to finish.": "현재 작업이 완료될 때까지 기다려 주세요.",
   "Warning": "경고",
   "Warning Text": "경고 텍스트",
   "Watermark": "워터마크",

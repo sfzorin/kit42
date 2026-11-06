@@ -2847,6 +2847,7 @@
   "Visible signature (in place of the selected image)": "ลายเซ็นที่มองเห็น (แทนรูปภาพที่เลือก)",
   "Void": "ยกเลิกแล้ว",
   "Wait for scanning and processing to finish before closing.": "รอให้สแกนและประมวลผลเสร็จก่อนปิด",
+  "Wait for the current operation to finish.": "โปรดรอให้การดำเนินการปัจจุบันเสร็จสิ้น",
   "Warning": "คำเตือน",
   "Warning Text": "ข้อความคำเตือน",
   "Watermark": "ลายน้ำ",

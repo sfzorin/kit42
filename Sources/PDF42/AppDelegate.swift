@@ -38,30 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] note in
             if (note.object as? NSWindow)?.windowController is EditorWindowController { self?.welcome.close() }
         }
-        DebugSnapshot.scheduleIfRequested {
+        let prepareSnapshot: () -> Void = {
             let env = ProcessInfo.processInfo.environment
             let editor = NSApp.orderedWindows.compactMap { $0.windowController as? EditorWindowController }.first
-            if let audit = env["K42_AUDIT"] {
-                guard let editor else { print("FAIL PDF audit: no editor window"); exit(1) }
-                let originallyEdited = editor.pdfDoc?.isDocumentEdited == true
-                NSApp.activate(ignoringOtherApps: true)
-                editor.window?.makeKeyAndOrderFront(nil)
-                editor.window?.makeMain()
-                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
-                let passed: Bool
-                switch audit {
-                case "markup": passed = editor.auditMarkup()
-                case "pages": passed = editor.auditPages()
-                case "core": passed = editor.auditCore()
-                case "files": passed = PDFFilesAudit.runUI(owner: editor) == 0
-                default: print("FAIL PDF audit: unknown scenario"); exit(1)
-                }
-                if !passed { exit(1) }
-                // Each scenario restores its disposable source/Undo manager. Restore the original dirty
-                // state too, so snapshot termination cannot open an unrelated Save prompt after PASS.
-                editor.pdfDoc?.updateChangeCount(.changeCleared)
-                if originallyEdited { editor.pdfDoc?.updateChangeCount(.changeDone) }
-            }
             if env["K42_MARKUP"] != nil { editor?.toggleMarkupAction(nil) }
             if env["K42_STAMPS"] != nil { editor?.showStampsAction(nil) }
             if env["K42_COMPRESS"] != nil { editor?.reduceSizeAction(nil) }
@@ -133,6 +112,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
+        }
+        if let audit = ProcessInfo.processInfo.environment["K42_AUDIT"] {
+            // Native activation and PDFKit field editors need the main queue to return between
+            // events. Schedule the snapshot only after the asynchronous audit has completed.
+            Task { @MainActor in
+                let deadline = Date(timeIntervalSinceNow: 3)
+                var editor: EditorWindowController?
+                repeat {
+                    editor = NSApp.orderedWindows.compactMap { $0.windowController as? EditorWindowController }.first
+                    if editor == nil { try? await Task.sleep(nanoseconds: 20_000_000) }
+                } while editor == nil && Date() < deadline
+                guard let editor else { print("FAIL PDF audit: no editor window"); exit(1) }
+                let originallyEdited = editor.pdfDoc?.isDocumentEdited == true
+                guard await editor.activateForNativeAudit("start " + audit) else { exit(1) }
+                let passed: Bool
+                switch audit {
+                case "markup": passed = await editor.auditMarkup()
+                case "pages": passed = await editor.auditPages()
+                case "core": passed = editor.auditCore()
+                case "files": passed = PDFFilesAudit.runUI(owner: editor) == 0
+                default: print("FAIL PDF audit: unknown scenario"); exit(1)
+                }
+                if !passed { exit(1) }
+                // Each scenario restores its disposable source/Undo manager. Restore the original
+                // dirty state so snapshot termination cannot open an unrelated Save prompt.
+                editor.pdfDoc?.updateChangeCount(.changeCleared)
+                if originallyEdited { editor.pdfDoc?.updateChangeCount(.changeDone) }
+                if ProcessInfo.processInfo.environment["K42_SNAPSHOT"] != nil {
+                    DebugSnapshot.scheduleIfRequested(prepare: prepareSnapshot)
+                } else { exit(0) }
+            }
+        } else {
+            DebugSnapshot.scheduleIfRequested(prepare: prepareSnapshot)
         }
     }
 

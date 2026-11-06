@@ -4,7 +4,7 @@ import AppKit
 /// as for a scan or a sketch).
 public struct SignatureSample: Codable {
     public var strokes: [[[Double]]]
-    /// Line width as a share of the signature's height, measured on a picture (nil when drawn on the pad).
+    /// Line width divided by max(1, traced ink height) in picture pixels (nil when drawn on the pad).
     public var penWidth: Double?
     public init(strokes: [[[Double]]], penWidth: Double? = nil) { self.strokes = strokes; self.penWidth = penWidth }
     public var isTimed: Bool { strokes.first?.first.map { $0.count > 2 && $0[2] >= 0 } ?? false }
@@ -25,19 +25,51 @@ public struct LearnedSignature: Codable {
 
 enum SignatureLearning {
     struct Point { var p: CGPoint; var t: Double }
+    struct NormalizedSample { var strokes: [[Point]]; var penWidth: Double? }
+    static let maximumSamplePoints = 32_768
+    static let maximumSamples = 64
 
-    /// Sample in cap units: height 1, left edge and lowest point at 0.
+    /// Normal cap height is 1. Very flat samples fit within 32 cap widths without changing their aspect ratio;
+    /// dividing an underline by an almost-zero height would otherwise allocate billions of pixel samples.
     static func normalized(_ s: SignatureSample) -> [[Point]] {
+        normalizedSample(s)?.strokes ?? []
+    }
+
+    /// Keep measured width with its accepted geometry. It uses the same scale as the centre line, including
+    /// when a very wide sample is reduced to fit the bounds. Invalid samples cannot influence another sample's pen.
+    static func normalizedSample(_ s: SignatureSample) -> NormalizedSample? {
+        guard s.strokes.count <= 1_024 else { return nil }
+        var pointCount = 0
+        for stroke in s.strokes {
+            guard stroke.count <= maximumSamplePoints - pointCount else { return nil }
+            pointCount += stroke.count
+            guard stroke.allSatisfy({ $0.count >= 2 && $0.count <= 4 && $0.allSatisfy(\.isFinite) }) else { return nil }
+        }
         let all = s.strokes.flatMap { $0 }
-        guard let minX = all.map({ $0[0] }).min(), let maxY = all.map({ $0[1] }).max(), let minY = all.map({ $0[1] }).min() else { return [] }
-        let h = max(1e-6, maxY - minY)
-        return s.strokes.map { stroke in
+        guard let minX = all.map({ $0[0] }).min(), let maxX = all.map({ $0[0] }).max(),
+              let maxY = all.map({ $0[1] }).max(), let minY = all.map({ $0[1] }).min() else { return nil }
+        let width = maxX - minX, height = maxY - minY
+        guard width.isFinite, height.isFinite else { return nil }
+        let h = max(height, width / 32)
+        guard h.isFinite, h > 0 else { return nil }
+        var penWidth: Double?
+        if let measured = s.penWidth {
+            guard measured.isFinite, measured > 0 else { return nil }
+            // Apply the measured-width range in its original units, before scaling. Applying the minimum
+            // again after scaling would make wide signatures disproportionately thick.
+            let scaled = min(0.06, max(0.012, measured)) * (max(1, height) / h)
+            guard scaled.isFinite, scaled > 0 else { return nil }
+            penWidth = scaled
+        }
+        let strokes = s.strokes.map { stroke in
             stroke.map { Point(p: CGPoint(x: ($0[0] - minX) / h, y: ($0[1] - minY) / h), t: $0.count > 2 ? $0[2] : -1) }
         }.filter { $0.count > 1 }
+        return strokes.isEmpty ? nil : NormalizedSample(strokes: strokes, penWidth: penWidth)
     }
 
     /// Even spacing along a stroke (`n` points), carrying time.
     static func resample(_ s: [Point], count n: Int) -> [Point] {
+        guard s.count <= maximumSamplePoints, n <= maximumSamplePoints else { return [] }
         guard s.count > 1, n > 1 else { return s }
         var lengths: [CGFloat] = [0]
         for i in 1..<s.count { lengths.append(lengths[i - 1] + hypot(s[i].p.x - s[i - 1].p.x, s[i].p.y - s[i - 1].p.y)) }
@@ -61,8 +93,10 @@ enum SignatureLearning {
         guard pts.count > 2 else { return (pts, [], nil) }
         var keep = [Bool](repeating: false, count: pts.count)
         keep[0] = true; keep[pts.count - 1] = true
-        func rdp(_ a: Int, _ b: Int) {
-            guard b > a + 1 else { return }
+        // Avoid recursive stack growth on densely recorded or traced strokes.
+        var pending = [(0, pts.count - 1)]
+        while let (a, b) = pending.popLast() {
+            guard b > a + 1 else { continue }
             let pa = pts[a], pb = pts[b]
             let dx = pb.x - pa.x, dy = pb.y - pa.y, len = max(1e-9, hypot(dx, dy))
             var worst = -1, dist: CGFloat = 0
@@ -70,9 +104,10 @@ enum SignatureLearning {
                 let d = abs((pts[i].x - pa.x) * dy - (pts[i].y - pa.y) * dx) / len
                 if d > dist { dist = d; worst = i }
             }
-            if dist > tolerance, worst > 0 { keep[worst] = true; rdp(a, worst); rdp(worst, b) }
+            if dist > tolerance, worst > 0 {
+                keep[worst] = true; pending.append((a, worst)); pending.append((worst, b))
+            }
         }
-        rdp(0, pts.count - 1)
         let idx = keep.indices.filter { keep[$0] }
         let points = idx.map { pts[$0] }
         var corners = Set<Int>()
@@ -89,7 +124,9 @@ enum SignatureLearning {
 
     static func render(_ learned: LearnedSignature, impression: UInt64, ink: NSColor, pen: PenType, pixelHeight: CGFloat,
                        capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
-        let samples = learned.samples.map(normalized).filter { !$0.isEmpty }
+        guard learned.samples.count <= maximumSamples else { return nil }
+        let accepted = learned.samples.compactMap(normalizedSample)
+        let samples = accepted.map(\.strokes)
         guard !samples.isEmpty else { return nil }
         var copy = SeededRandom(impression)
         // Base sample, blended with another one of the same structure (same number of strokes, similar lengths).
@@ -125,8 +162,8 @@ enum SignatureLearning {
         hand.sizeScaled = false
         hand.curvatureGain = 0.4
         // The line width of the user's own pen when it was measured on a picture.
-        let widths = learned.samples.compactMap(\.penWidth)
-        let penRatio = widths.isEmpty ? 0.024 : CGFloat(min(0.06, max(0.012, widths.reduce(0, +) / Double(widths.count))))
+        let widths = accepted.compactMap(\.penWidth)
+        let penRatio = widths.isEmpty ? 0.024 : CGFloat(widths.reduce(0, +) / Double(widths.count))
         // A learned hand varies less than an invented one: the samples already carry its natural spread.
         return SignatureGenerator.draw(strokes: viaStrokes, hand: hand, slant: 0, penRatio: penRatio, pen: pen, ink: ink,
                                        pixelHeight: pixelHeight, copy: &copy, variation: samples.count > 1 ? 0.6 : 0.85,

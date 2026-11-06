@@ -251,6 +251,8 @@ let scn42Strings: [[String]] = [
     ["Document (white paper, sharp text)", "Документ (белая бумага, чёткий текст)", "Belge (beyaz kâğıt, net metin)"],
     ["Photo (auto colour and contrast)", "Фото (авто цвет и контраст)", "Fotoğraf (otomatik renk ve kontrast)"],
 
+    ["Wait for the current operation to finish.", "Дождитесь завершения текущей операции.", "Geçerli işlemin tamamlanmasını bekleyin."],
+
     // History
     ["Saved scans appear here.", "Здесь появятся сохранённые сканы.", "Kaydedilen taramalar burada görünür."],
     ["Open", "Открыть", "Aç"],

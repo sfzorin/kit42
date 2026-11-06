@@ -2847,6 +2847,7 @@
   "Visible signature (in place of the selected image)": "可視署名（選択した画像の位置）",
   "Void": "無効",
   "Wait for scanning and processing to finish before closing.": "閉じる前にスキャンと処理の完了を待ってください。",
+  "Wait for the current operation to finish.": "現在の操作が完了するまでお待ちください。",
   "Warning": "警告",
   "Warning Text": "警告文",
   "Watermark": "透かし",
