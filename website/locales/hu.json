@@ -56,7 +56,7 @@
       },
       {
         "q": "Van Windows-verzió?",
-        "a": "A natív Windows-alkalmazások megvalósultak, és forráskódként elérhetők. Nézd meg a dokumentált funkciókat és korlátokat. Nyilvános Windows-telepítő még nem jelent meg."
+        "a": "Előzetes verzió mind a hat alkalmazással. Bontsd ki a teljes ZIP-fájlt, majd indítsd el a kívánt alkalmazást. Címkék és vonalkódok készítésére is használható."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Elérhető",
     "unavailable": "Még nem jelent meg",
     "downloadDmg": "DMG letöltése",
-    "downloadExe": "EXE letöltése",
+    "downloadZip": "ZIP letöltése",
     "checksum": "SHA-256",
     "version": "Verzió",
     "requirements": "Rendszerkövetelmények",
@@ -323,6 +323,7 @@
     "macText": "A forráskód macOS 14 vagy újabb rendszerhez készült. Nyilvános DMG-telepítő még nem jelent meg.",
     "windows": "OFF42 Windowsra",
     "windowsText": "A natív Windows-alkalmazások megvalósultak, és forráskódként elérhetők. Nézd meg a dokumentált funkciókat és korlátokat. Nyilvános Windows-telepítő még nem jelent meg.",
+    "windowsPreviewText": "Előzetes verzió mind a hat alkalmazással. Bontsd ki a teljes ZIP-fájlt, majd indítsd el a kívánt alkalmazást. Címkék és vonalkódok készítésére is használható.",
     "sourceTitle": "Építsd meg. Olvasd el. Alakítsd magadra.",
     "sourceText": "Szerezd be az MIT-licencű forráskódot a GitHubon. A macOS-en történő fordításhoz Xcode Command Line Tools szükséges. A helyi fordítások ad-hoc aláírást használnak, hacsak nem állítasz be terjesztési aláírást.",
     "checkReleases": "Kiadások megtekintése",

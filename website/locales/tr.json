@@ -56,7 +56,7 @@
       },
       {
         "q": "Windows sürümü var mı?",
-        "a": "Yerel Windows uygulamaları geliştirilmiş ve kaynak koduyla sunulmuştur. Belgelenen özellikleri ve sınırlamaları inceleyin. Henüz herkese açık bir Windows yükleyicisi yayımlanmamıştır."
+        "a": "Altı uygulamanın tamamını içeren önizleme sürümü. ZIP dosyasının tamamını çıkarıp istediğiniz uygulamayı açın. Etiket ve barkod oluşturma araçları içerir."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Kullanılabilir",
     "unavailable": "Henüz yayımlanmadı",
     "downloadDmg": "DMG indir",
-    "downloadExe": "EXE indir",
+    "downloadZip": "ZIP indir",
     "checksum": "SHA-256",
     "version": "Sürüm",
     "requirements": "Sistem gereksinimleri",
@@ -323,6 +323,7 @@
     "macText": "Kaynak kodu macOS 14 veya üzerini hedefler. Herkese açık bir DMG yükleyicisi henüz yayımlanmadı.",
     "windows": "Windows için OFF42",
     "windowsText": "Yerel Windows uygulamaları geliştirilmiş ve kaynak koduyla sunulmuştur. Belgelenen özellikleri ve sınırlamaları inceleyin. Henüz herkese açık bir Windows yükleyicisi yayımlanmamıştır.",
+    "windowsPreviewText": "Altı uygulamanın tamamını içeren önizleme sürümü. ZIP dosyasının tamamını çıkarıp istediğiniz uygulamayı açın. Etiket ve barkod oluşturma araçları içerir.",
     "sourceTitle": "Derleyin. İnceleyin. Kendinize uyarlayın.",
     "sourceText": "MIT lisanslı kaynak kodunu GitHub'dan edinin. macOS üzerinde derleme için Xcode Command Line Tools gerekir. Dağıtım imzası ayarlamadıkça yerel derlemeler ad-hoc imzalama kullanır.",
     "checkReleases": "Sürümleri kontrol edin",

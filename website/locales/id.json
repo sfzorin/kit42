@@ -56,7 +56,7 @@
       },
       {
         "q": "Apakah ada versi Windows?",
-        "a": "Aplikasi native Windows sudah diimplementasikan dan tersedia sebagai kode sumber. Periksa fitur dan batasan yang didokumentasikan. Penginstal publik Windows belum dirilis."
+        "a": "Versi pratinjau berisi keenam aplikasi. Ekstrak seluruh isi ZIP, lalu jalankan aplikasi yang Anda inginkan. Termasuk alat untuk membuat label dan kode batang."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Tersedia",
     "unavailable": "Belum dirilis",
     "downloadDmg": "Unduh DMG",
-    "downloadExe": "Unduh EXE",
+    "downloadZip": "Unduh ZIP",
     "checksum": "SHA-256",
     "version": "Versi",
     "requirements": "Persyaratan sistem",
@@ -323,6 +323,7 @@
     "macText": "Kode sumber menargetkan macOS 14 atau lebih baru. Penginstal DMG publik belum dirilis.",
     "windows": "OFF42 untuk Windows",
     "windowsText": "Aplikasi native Windows sudah diimplementasikan dan tersedia sebagai kode sumber. Periksa fitur dan batasan yang didokumentasikan. Penginstal publik Windows belum dirilis.",
+    "windowsPreviewText": "Versi pratinjau berisi keenam aplikasi. Ekstrak seluruh isi ZIP, lalu jalankan aplikasi yang Anda inginkan. Termasuk alat untuk membuat label dan kode batang.",
     "sourceTitle": "Bangun. Baca. Sesuaikan untuk Anda.",
     "sourceText": "Dapatkan kode sumber berlisensi MIT di GitHub. Pembuatan di macOS memerlukan Xcode Command Line Tools. Build lokal memakai penandatanganan ad-hoc kecuali Anda mengatur penandatanganan distribusi.",
     "checkReleases": "Periksa rilis",

@@ -56,7 +56,7 @@
       },
       {
         "q": "Czy jest wersja dla Windows?",
-        "a": "Natywne aplikacje Windows są zaimplementowane i dostępne w postaci kodu źródłowego. Sprawdź udokumentowane funkcje i ograniczenia. Publiczny instalator dla Windows nie został jeszcze wydany."
+        "a": "Wersja wstępna zawiera wszystkie sześć aplikacji. Rozpakuj całe archiwum ZIP i uruchom wybraną aplikację. Zawiera narzędzia do tworzenia etykiet i kodów kreskowych."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Dostępne",
     "unavailable": "Jeszcze niewydane",
     "downloadDmg": "Pobierz DMG",
-    "downloadExe": "Pobierz EXE",
+    "downloadZip": "Pobierz ZIP",
     "checksum": "SHA-256",
     "version": "Wersja",
     "requirements": "Wymagania systemowe",
@@ -323,6 +323,7 @@
     "macText": "Kod jest przeznaczony dla macOS 14 lub nowszego. Publiczny instalator DMG nie został jeszcze wydany.",
     "windows": "OFF42 dla Windows",
     "windowsText": "Natywne aplikacje Windows są zaimplementowane i dostępne w postaci kodu źródłowego. Sprawdź udokumentowane funkcje i ograniczenia. Publiczny instalator dla Windows nie został jeszcze wydany.",
+    "windowsPreviewText": "Wersja wstępna zawiera wszystkie sześć aplikacji. Rozpakuj całe archiwum ZIP i uruchom wybraną aplikację. Zawiera narzędzia do tworzenia etykiet i kodów kreskowych.",
     "sourceTitle": "Zbuduj. Przeczytaj. Dostosuj do siebie.",
     "sourceText": "Pobierz kod na licencji MIT z GitHub. Budowanie na macOS wymaga Xcode Command Line Tools. Lokalne kompilacje korzystają z podpisu ad-hoc, chyba że skonfigurujesz podpisywanie dystrybucyjne.",
     "checkReleases": "Sprawdź wydania",

@@ -56,7 +56,7 @@
       },
       {
         "q": "Esiste una versione per Windows?",
-        "a": "Le app native per Windows sono implementate e disponibili come codice sorgente. Consulta le funzioni e i limiti documentati. Non è ancora stato pubblicato un programma di installazione pubblico per Windows."
+        "a": "Versione di anteprima con tutte e sei le app. Estrai tutto il contenuto dello ZIP e avvia l’app che ti serve. Include strumenti per creare etichette e codici a barre."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Disponibile",
     "unavailable": "Non ancora pubblicato",
     "downloadDmg": "Scarica DMG",
-    "downloadExe": "Scarica EXE",
+    "downloadZip": "Scarica ZIP",
     "checksum": "SHA-256",
     "version": "Versione",
     "requirements": "Requisiti di sistema",
@@ -323,6 +323,7 @@
     "macText": "Il codice è destinato a macOS 14 o successivo. Non è ancora stato pubblicato un programma di installazione DMG pubblico.",
     "windows": "OFF42 per Windows",
     "windowsText": "Le app native per Windows sono implementate e disponibili come codice sorgente. Consulta le funzioni e i limiti documentati. Non è ancora stato pubblicato un programma di installazione pubblico per Windows.",
+    "windowsPreviewText": "Versione di anteprima con tutte e sei le app. Estrai tutto il contenuto dello ZIP e avvia l’app che ti serve. Include strumenti per creare etichette e codici a barre.",
     "sourceTitle": "Compila. Leggi. Fallo tuo.",
     "sourceText": "Trovi il codice con licenza MIT su GitHub. Per compilare su macOS servono gli Xcode Command Line Tools. Le build locali usano la firma ad-hoc, a meno che tu non configuri una firma per la distribuzione.",
     "checkReleases": "Controlla le versioni",

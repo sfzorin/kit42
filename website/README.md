@@ -62,11 +62,10 @@ The public repository is `https://github.com/sfzorin/off42`. The site reads
 this address from `site.config.json` when building source, license, issues
 and release links. Rebuild and redeploy after changing it.
 
-## Installer links
+## Download links
 
-No DMG or EXE release existed when the site was created. The project has separate macOS (Swift/Kit42) and Windows
-(Rust) implementations. Downloads show the configured installer availability, GitHub releases and platform-specific
-build instructions. This website does not build or distribute unverified native apps.
+The macOS and Windows previews are published on GitHub Releases as a DMG and a ZIP, respectively.
+The website links to those assets and publishes their SHA-256 digests.
 
 `site.config.json` has separate nullable `releases.macos` and `releases.windows`.
 An enabled release entry must have:

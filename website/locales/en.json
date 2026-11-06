@@ -56,7 +56,7 @@
       },
       {
         "q": "Is there a Windows version?",
-        "a": "Native Windows apps are implemented and available as source code. Check the documented features and limitations. A public Windows installer has not been released."
+        "a": "Preview with all six apps. Extract the entire ZIP, then launch the app you want. Includes tools for labels and barcodes."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Available",
     "unavailable": "Not released yet",
     "downloadDmg": "Download DMG",
-    "downloadExe": "Download EXE",
+    "downloadZip": "Download ZIP",
     "checksum": "SHA-256",
     "version": "Version",
     "requirements": "System requirements",
@@ -323,6 +323,7 @@
     "macText": "The source targets macOS 14 or later. A public DMG installer has not been released yet.",
     "windows": "OFF42 for Windows",
     "windowsText": "Native Windows apps are implemented and available as source code. Check the documented features and limitations. A public Windows installer has not been released.",
+    "windowsPreviewText": "Preview with all six apps. Extract the entire ZIP, then launch the app you want. Includes tools for labels and barcodes.",
     "sourceTitle": "Build it. Read it. Make it yours.",
     "sourceText": "Get the MIT-licensed source on GitHub. Building on macOS requires the Xcode Command Line Tools. Local builds use ad-hoc signing unless you configure distribution signing.",
     "checkReleases": "Check releases",

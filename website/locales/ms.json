@@ -56,7 +56,7 @@
       },
       {
         "q": "Adakah versi Windows tersedia?",
-        "a": "Aplikasi natif Windows telah dilaksanakan dan tersedia sebagai kod sumber. Semak ciri dan batasan yang didokumenkan. Pemasang Windows awam belum diterbitkan."
+        "a": "Versi pratonton yang mengandungi kesemua enam aplikasi. Ekstrak keseluruhan ZIP, kemudian jalankan aplikasi pilihan anda. Termasuk alat untuk membuat label dan kod bar."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Tersedia",
     "unavailable": "Belum dikeluarkan",
     "downloadDmg": "Muat turun DMG",
-    "downloadExe": "Muat turun EXE",
+    "downloadZip": "Muat turun ZIP",
     "checksum": "SHA-256",
     "version": "Versi",
     "requirements": "Keperluan sistem",
@@ -323,6 +323,7 @@
     "macText": "Kod sumber menyasarkan macOS 14 atau lebih baharu. Pemasang DMG awam belum dikeluarkan.",
     "windows": "OFF42 untuk Windows",
     "windowsText": "Aplikasi natif Windows telah dilaksanakan dan tersedia sebagai kod sumber. Semak ciri dan batasan yang didokumenkan. Pemasang Windows awam belum diterbitkan.",
+    "windowsPreviewText": "Versi pratonton yang mengandungi kesemua enam aplikasi. Ekstrak keseluruhan ZIP, kemudian jalankan aplikasi pilihan anda. Termasuk alat untuk membuat label dan kod bar.",
     "sourceTitle": "Bina. Baca. Jadikannya milik anda.",
     "sourceText": "Dapatkan kod sumber berlesen MIT di GitHub. Pembinaan pada macOS memerlukan Xcode Command Line Tools. Binaan setempat menggunakan tandatangan ad-hoc melainkan anda mengkonfigurasi tandatangan pengedaran.",
     "checkReleases": "Semak keluaran",

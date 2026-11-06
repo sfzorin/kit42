@@ -56,7 +56,7 @@
       },
       {
         "q": "Existe-t-il une version Windows ?",
-        "a": "Les applications Windows natives sont implémentées et disponibles sous forme de code source. Consultez les fonctions et limites documentées. Aucun programme d’installation Windows public n’a encore été publié."
+        "a": "Version préliminaire avec les six applications. Décompressez toute l’archive ZIP, puis lancez l’application de votre choix. Des outils permettent de créer des étiquettes et des codes-barres."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Disponible",
     "unavailable": "Pas encore publié",
     "downloadDmg": "Télécharger le DMG",
-    "downloadExe": "Télécharger l'EXE",
+    "downloadZip": "Télécharger le ZIP",
     "checksum": "SHA-256",
     "version": "Version",
     "requirements": "Configuration requise",
@@ -323,6 +323,7 @@
     "macText": "Le code source cible macOS 14 ou ultérieur. Aucun programme d'installation DMG public n'a encore été publié.",
     "windows": "OFF42 pour Windows",
     "windowsText": "Les applications Windows natives sont implémentées et disponibles sous forme de code source. Consultez les fonctions et limites documentées. Aucun programme d’installation Windows public n’a encore été publié.",
+    "windowsPreviewText": "Version préliminaire avec les six applications. Décompressez toute l’archive ZIP, puis lancez l’application de votre choix. Des outils permettent de créer des étiquettes et des codes-barres.",
     "sourceTitle": "Compilez. Explorez. Appropriez-vous le code.",
     "sourceText": "Retrouvez le code sous licence MIT sur GitHub. La compilation sur macOS nécessite Xcode Command Line Tools. Les compilations locales utilisent une signature ad-hoc sauf si vous configurez une signature de distribution.",
     "checkReleases": "Voir les versions",

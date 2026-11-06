@@ -56,7 +56,7 @@
       },
       {
         "q": "May bersyon ba para sa Windows?",
-        "a": "Naipatupad na ang mga native Windows app at makukuha ang source code. Tingnan ang dokumentadong mga feature at limitasyon. Wala pang inilalabas na pampublikong Windows installer."
+        "a": "Preview na may anim na app. I-extract ang buong ZIP at buksan ang app na gusto mo. May mga tool para sa mga label at barcode."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Available",
     "unavailable": "Hindi pa nailalabas",
     "downloadDmg": "I-download ang DMG",
-    "downloadExe": "I-download ang EXE",
+    "downloadZip": "I-download ang ZIP",
     "checksum": "SHA-256",
     "version": "Bersyon",
     "requirements": "Mga kinakailangan sa system",
@@ -323,6 +323,7 @@
     "macText": "Para sa macOS 14 o mas bago ang source code. Wala pang pampublikong DMG installer na inilalabas.",
     "windows": "OFF42 para sa Windows",
     "windowsText": "Naipatupad na ang mga native Windows app at makukuha ang source code. Tingnan ang dokumentadong mga feature at limitasyon. Wala pang inilalabas na pampublikong Windows installer.",
+    "windowsPreviewText": "Preview na may anim na app. I-extract ang buong ZIP at buksan ang app na gusto mo. May mga tool para sa mga label at barcode.",
     "sourceTitle": "Buuin. Basahin. Iangkop sa iyo.",
     "sourceText": "Kunin sa GitHub ang source code na may lisensyang MIT. Kailangan ang Xcode Command Line Tools para mag-build sa macOS. Gumagamit ng ad-hoc signing ang lokal na build maliban kung mag-configure ka ng distribution signing.",
     "checkReleases": "Tingnan ang mga release",

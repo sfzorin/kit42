@@ -56,7 +56,7 @@
       },
       {
         "q": "Gibt es eine Windows-Version?",
-        "a": "Native Windows-Apps sind implementiert und als Quellcode verfügbar. Beachte die dokumentierten Funktionen und Einschränkungen. Ein öffentlicher Windows-Installer wurde noch nicht veröffentlicht."
+        "a": "Vorschau mit allen sechs Apps. Entpacke die ZIP-Datei vollständig und starte die gewünschte App. Mit Werkzeugen für Etiketten und Barcodes."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Verfügbar",
     "unavailable": "Noch nicht veröffentlicht",
     "downloadDmg": "DMG herunterladen",
-    "downloadExe": "EXE herunterladen",
+    "downloadZip": "ZIP herunterladen",
     "checksum": "SHA-256",
     "version": "Version",
     "requirements": "Systemanforderungen",
@@ -323,6 +323,7 @@
     "macText": "Der Quellcode richtet sich an macOS 14 oder neuer. Ein öffentliches DMG-Installationspaket wurde noch nicht veröffentlicht.",
     "windows": "OFF42 für Windows",
     "windowsText": "Native Windows-Apps sind implementiert und als Quellcode verfügbar. Beachte die dokumentierten Funktionen und Einschränkungen. Ein öffentlicher Windows-Installer wurde noch nicht veröffentlicht.",
+    "windowsPreviewText": "Vorschau mit allen sechs Apps. Entpacke die ZIP-Datei vollständig und starte die gewünschte App. Mit Werkzeugen für Etiketten und Barcodes.",
     "sourceTitle": "Kompilieren. Lesen. Selbst gestalten.",
     "sourceText": "Den Quellcode unter MIT-Lizenz findest du auf GitHub. Zum Kompilieren auf macOS brauchst du Xcode Command Line Tools. Lokale Builds verwenden Ad-hoc-Signaturen, sofern du keine Signatur für die Verteilung konfigurierst.",
     "checkReleases": "Veröffentlichungen prüfen",

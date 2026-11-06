@@ -61,7 +61,7 @@ for(const page of manifest.files){
  }
  if(page.route==='download/')for(const [platform,release] of Object.entries(config.releases)){
   if(release){assert(new URL(release.url).protocol==='https:');assert(release.version&&release.requirements&&release.architecture);assert(!release.sha256||/^[a-f0-9]{64}$/.test(release.sha256));assert(html.includes(release.url));}
-  else assert(!html.includes(platform==='macos'?source.labels.downloadDmg:source.labels.downloadExe));
+  else assert(!html.includes(platform==='macos'?source.labels.downloadDmg:source.labels.downloadZip));
  }
 }
 const sitemap=await read('dist/sitemap.xml');assert.equal((sitemap.match(/<loc>/g)||[]).length,260);assert(!sitemap.includes('<lastmod>'),'Sitemap must not claim unverified modification dates');

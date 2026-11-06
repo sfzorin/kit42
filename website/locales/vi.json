@@ -56,7 +56,7 @@
       },
       {
         "q": "Có phiên bản Windows không?",
-        "a": "Các ứng dụng gốc cho Windows đã được triển khai và có sẵn mã nguồn. Hãy xem tính năng và giới hạn được ghi trong tài liệu. Bộ cài Windows công khai chưa được phát hành."
+        "a": "Bản xem trước có đủ sáu ứng dụng. Giải nén toàn bộ tệp ZIP rồi mở ứng dụng bạn muốn. Có công cụ tạo nhãn và mã vạch."
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "Có sẵn",
     "unavailable": "Chưa phát hành",
     "downloadDmg": "Tải DMG",
-    "downloadExe": "Tải EXE",
+    "downloadZip": "Tải ZIP",
     "checksum": "SHA-256",
     "version": "Phiên bản",
     "requirements": "Yêu cầu hệ thống",
@@ -323,6 +323,7 @@
     "macText": "Mã nguồn dành cho macOS 14 trở lên. Bộ cài DMG công khai chưa được phát hành.",
     "windows": "OFF42 cho Windows",
     "windowsText": "Các ứng dụng gốc cho Windows đã được triển khai và có sẵn mã nguồn. Hãy xem tính năng và giới hạn được ghi trong tài liệu. Bộ cài Windows công khai chưa được phát hành.",
+    "windowsPreviewText": "Bản xem trước có đủ sáu ứng dụng. Giải nén toàn bộ tệp ZIP rồi mở ứng dụng bạn muốn. Có công cụ tạo nhãn và mã vạch.",
     "sourceTitle": "Biên dịch. Tìm hiểu. Biến thành công cụ của bạn.",
     "sourceText": "Lấy mã nguồn có giấy phép MIT trên GitHub. Biên dịch trên macOS cần Xcode Command Line Tools. Bản dựng cục bộ dùng chữ ký ad-hoc, trừ khi bạn cấu hình ký để phân phối.",
     "checkReleases": "Xem bản phát hành",

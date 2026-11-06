@@ -56,7 +56,7 @@
       },
       {
         "q": "有 Windows 版本嗎？",
-        "a": "Windows 原生應用程式已有實作，並提供原始碼。請查看文件中的功能範圍和限制。目前尚未發布公開的 Windows 安裝程式。"
+        "a": "預覽版包含全部六款應用程式。請完整解壓縮 ZIP 檔案，再啟動所需的應用程式。 包含標籤與條碼製作工具。"
       }
     ]
   },
@@ -114,7 +114,7 @@
     "available": "可用",
     "unavailable": "尚未發布",
     "downloadDmg": "下載 DMG",
-    "downloadExe": "下載 EXE",
+    "downloadZip": "下載 ZIP",
     "checksum": "SHA-256",
     "version": "版本",
     "requirements": "系統需求",
@@ -323,6 +323,7 @@
     "macText": "原始碼適用於 macOS 14 或更新版本。尚未發布公開的 DMG 安裝程式。",
     "windows": "Windows 版 OFF42",
     "windowsText": "Windows 原生應用程式已有實作，並提供原始碼。請查看文件中的功能範圍和限制。目前尚未發布公開的 Windows 安裝程式。",
+    "windowsPreviewText": "預覽版包含全部六款應用程式。請完整解壓縮 ZIP 檔案，再啟動所需的應用程式。 包含標籤與條碼製作工具。",
     "sourceTitle": "建置它，閱讀它，讓它為你所用。",
     "sourceText": "在 GitHub 取得 MIT 授權的原始碼。在 macOS 上建置需要 Xcode Command Line Tools。除非設定發布簽章，否則本機建置採用臨時簽章。",
     "checkReleases": "查看發布版本",
