@@ -14,18 +14,33 @@ struct Xls {
     visible_cache: std::cell::RefCell<Vec<usize>>,
 }
 impl Xls {
+    fn normalize_focus(&mut self) {
+        let view = self.book.sheet_view();
+        if view.hidden_rows.contains(&self.row) {
+            self.row = (self.row..self.book.rows())
+                .chain((0..self.row).rev())
+                .find(|row| !view.hidden_rows.contains(row))
+                .unwrap_or(self.row);
+        }
+        if view.hidden_columns.contains(&self.col) {
+            self.col = (self.col..self.book.cols())
+                .chain((0..self.col).rev())
+                .find(|col| !view.hidden_columns.contains(col))
+                .unwrap_or(self.col);
+        }
+    }
     fn compute_visible_rows(&self, grid: &[Vec<String>]) -> Vec<usize> {
         let mut rows = self.book.visible_rows_from_grid(grid);
-        if !rows.contains(&self.row) && self.row < self.book.rows() {
+        if !rows.contains(&self.row)
+            && self.row < self.book.rows()
+            && !self.book.sheet_view().hidden_rows.contains(&self.row)
+        {
             rows.push(self.row);
             rows.sort_unstable()
         }
         rows
     }
     fn visible_rows(&self) -> Vec<usize> {
-        if self.book.sheet_filter().is_none() {
-            return (0..self.book.rows()).collect();
-        }
         if self.visible_cache.borrow().is_empty() {
             let rows = self.compute_visible_rows(&self.book.display_grid());
             self.visible_cache.replace(rows);
@@ -33,24 +48,10 @@ impl Xls {
         self.visible_cache.borrow().clone()
     }
     fn visible_at(&self, index: usize) -> Option<usize> {
-        if self.book.sheet_filter().is_none() {
-            (index < self.book.rows()).then_some(index)
-        } else {
-            if self.visible_cache.borrow().is_empty() {
-                self.visible_rows();
-            }
-            self.visible_cache.borrow().get(index).copied()
-        }
+        self.visible_rows().get(index).copied()
     }
     fn visible_position(&self, row: usize) -> Option<usize> {
-        if self.book.sheet_filter().is_none() {
-            (row < self.book.rows()).then_some(row)
-        } else {
-            if self.visible_cache.borrow().is_empty() {
-                self.visible_rows();
-            }
-            self.visible_cache.borrow().iter().position(|r| *r == row)
-        }
+        self.visible_rows().iter().position(|value| *value == row)
     }
     fn clear_visible_cache(&self) {
         self.visible_cache.borrow_mut().clear();
@@ -64,6 +65,9 @@ impl Xls {
                 right: self.col,
             };
         }
+        self.selection_range()
+    }
+    fn selection_range(&self) -> Range {
         let r = self.book.selection();
         if self.row >= r.top && self.row <= r.bottom && self.col >= r.left && self.col <= r.right {
             r
@@ -172,6 +176,11 @@ impl win42::App for Xls {
             (67, "Move current sheet..."),
             (68, "Format selection as table..."),
             (69, "Remove table at selection"),
+            (70, "Freeze panes..."),
+            (71, "Hide selected rows"),
+            (72, "Unhide selected rows"),
+            (73, "Hide selected columns"),
+            (74, "Unhide selected columns"),
         ]
         .into_iter()
         .map(|(id, title)| win42::CommandSpec {
@@ -184,22 +193,65 @@ impl win42::App for Xls {
     }
     fn clipboard_request(&self, id: u16) -> Option<win42::ClipboardRequest> {
         match id {
-            39 => self
-                .book
-                .copy_tsv(self.active_range())
-                .ok()
-                .map(win42::ClipboardRequest::WriteText),
-            40 if !self.book.is_read_only() => Some(win42::ClipboardRequest::ReadText),
+            39 => {
+                let range = self.selection_range();
+                let rows: Vec<_> = self
+                    .visible_rows()
+                    .into_iter()
+                    .filter(|row| *row >= range.top && *row <= range.bottom)
+                    .collect();
+                let cols: Vec<_> = (range.left..=range.right)
+                    .filter(|col| !self.book.sheet_view().hidden_columns.contains(col))
+                    .collect();
+                self.book
+                    .copy_clipboard_mapped(&rows, &cols)
+                    .ok()
+                    .map(|(text, bytes)| win42::ClipboardRequest::WriteDataAndText {
+                        format: "Suite42.Spreadsheet.Cells.v1".into(),
+                        bytes,
+                        text,
+                    })
+            }
+            40 if !self.book.is_read_only() => Some(win42::ClipboardRequest::ReadDataOrText(
+                "Suite42.Spreadsheet.Cells.v1".into(),
+            )),
             _ => None,
         }
+    }
+    fn clipboard_data(&mut self, id: u16, bytes: Vec<u8>) -> Result<(), String> {
+        if id != 40 {
+            return Err("Unexpected clipboard action".into());
+        }
+        let rows: Vec<_> = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| *row >= self.row)
+            .collect();
+        let cols: Vec<_> = (self.col..self.book.cols())
+            .filter(|col| !self.book.sheet_view().hidden_columns.contains(col))
+            .collect();
+        self.book
+            .paste_clipboard_mapped(&rows, &cols, &bytes)
+            .map_err(|e| e.to_string())?;
+        self.clear_visible_cache();
+        Ok(())
     }
     fn clipboard_text(&mut self, id: u16, text: String) -> Result<(), String> {
         if id != 40 {
             return Err("Unexpected clipboard action".into());
         }
+        let rows: Vec<_> = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| *row >= self.row)
+            .collect();
+        let cols: Vec<_> = (self.col..self.book.cols())
+            .filter(|col| !self.book.sheet_view().hidden_columns.contains(col))
+            .collect();
         self.book
-            .paste_tsv(self.row, self.col, &text)
+            .paste_tsv_mapped(&rows, &cols, &text)
             .map_err(|e| e.to_string())?;
+        self.clear_visible_cache();
         Ok(())
     }
     fn dialog_request(&self, id: u16) -> Option<win42::DialogRequest> {
@@ -274,6 +326,13 @@ impl win42::App for Xls {
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let (title, fields) = match id {
             20 | 21 | 22 => ("Sheet name", vec![("Name", String::new())]),
+            70 => (
+                "Freeze panes",
+                vec![
+                    ("Rows", self.book.sheet_view().frozen_rows.to_string()),
+                    ("Columns", self.book.sheet_view().frozen_columns.to_string()),
+                ],
+            ),
             68 => (
                 "Create table from selection",
                 vec![
@@ -520,6 +579,12 @@ impl win42::App for Xls {
                     .sort_range(range, n(0)?, v[1].eq_ignore_ascii_case("yes"))
                     .map_err(|e| e.to_string())?;
             }
+            70 => {
+                let mut view = self.book.sheet_view().clone();
+                view.frozen_rows = v[0].parse().map_err(|_| "Invalid frozen row count")?;
+                view.frozen_columns = v[1].parse().map_err(|_| "Invalid frozen column count")?;
+                self.book.set_sheet_view(view).map_err(|e| e.to_string())?;
+            }
             68 => {
                 self.book
                     .add_table(&v[0], self.active_range(), v[1].eq_ignore_ascii_case("yes"))
@@ -752,6 +817,8 @@ impl win42::App for Xls {
         }
         self.row = self.row.min(self.book.rows() - 1);
         self.col = self.col.min(self.book.cols() - 1);
+        self.normalize_focus();
+        self.clear_visible_cache();
         Ok(())
     }
     fn name(&self) -> &'static str {
@@ -772,12 +839,31 @@ impl win42::App for Xls {
     fn uses_custom_grid(&self) -> bool {
         true
     }
+    fn grid_frozen_panes(&self) -> (usize, usize) {
+        let rows = self.book.sheet_view().frozen_rows;
+        let visible = self
+            .visible_rows()
+            .into_iter()
+            .filter(|row| *row < rows)
+            .count();
+        (visible, self.book.sheet_view().frozen_columns)
+    }
     fn grid_column_width(&self, column: usize) -> u16 {
-        self.book.column_width(column).unwrap_or(80)
+        if self.book.sheet_view().hidden_columns.contains(&column) {
+            0
+        } else {
+            self.book.column_width(column).unwrap_or(80)
+        }
     }
     fn grid_row_height(&self, row: usize) -> u16 {
         self.visible_at(row)
-            .and_then(|r| self.book.row_height(r))
+            .map(|r| {
+                if self.book.sheet_view().hidden_rows.contains(&r) {
+                    0
+                } else {
+                    self.book.row_height(r).unwrap_or(20)
+                }
+            })
             .unwrap_or(20)
     }
     fn resize_grid_column(&mut self, column: usize, pixels: u16) -> Result<(), String> {
@@ -815,12 +901,18 @@ impl win42::App for Xls {
             self.clear_visible_cache();
             self.row = 0;
             self.col = 0;
+            self.normalize_focus();
         }
     }
     fn grid_selection(&self) -> Option<win42::GridRange> {
-        let r = self.active_range();
-        let top = self.visible_position(r.top)?;
-        let bottom = self.visible_position(r.bottom)?;
+        let r = self.selection_range();
+        let rows = self.visible_rows();
+        let top = rows
+            .iter()
+            .position(|row| *row >= r.top && *row <= r.bottom)?;
+        let bottom = rows
+            .iter()
+            .rposition(|row| *row >= r.top && *row <= r.bottom)?;
         Some(win42::GridRange {
             top,
             left: r.left,
@@ -834,20 +926,11 @@ impl win42::App for Xls {
         let Some(&bottom) = rows.get(r.bottom) else {
             return;
         };
-        let range = if self.book.sheet_filter().is_some() {
-            Range {
-                top,
-                left: r.left,
-                bottom: top,
-                right: r.left,
-            }
-        } else {
-            Range {
-                top,
-                left: r.left,
-                bottom,
-                right: r.right,
-            }
+        let range = Range {
+            top,
+            left: r.left,
+            bottom,
+            right: r.right,
         };
         if self.book.set_selection(range).is_ok() {
             self.row = range.top;
@@ -864,20 +947,11 @@ impl win42::App for Xls {
         let Some(active) = self.visible_at(focus.0) else {
             return;
         };
-        let range = if self.book.sheet_filter().is_some() {
-            Range {
-                top: active,
-                left: focus.1,
-                bottom: active,
-                right: focus.1,
-            }
-        } else {
-            Range {
-                top,
-                left: r.left,
-                bottom,
-                right: r.right,
-            }
+        let range = Range {
+            top,
+            left: r.left,
+            bottom,
+            right: r.right,
         };
         if self.book.set_selection(range).is_ok() {
             self.row = active;
@@ -894,11 +968,13 @@ impl win42::App for Xls {
             .iter()
             .find(|m| row >= m.top && row <= m.bottom && column >= m.left && column <= m.right)
             .filter(|_| self.book.sheet_filter().is_none())
-            .map(|m| win42::GridRange {
-                top: m.top,
-                left: m.left,
-                bottom: m.bottom,
-                right: m.right,
+            .and_then(|m| {
+                Some(win42::GridRange {
+                    top: self.visible_position(m.top)?,
+                    left: m.left,
+                    bottom: self.visible_position(m.bottom)?,
+                    right: m.right,
+                })
             });
         Some(win42::GridCellStyle {
             foreground: s.foreground.map(rgb),
@@ -927,7 +1003,7 @@ impl win42::App for Xls {
         if id != 62 {
             return None;
         }
-        let mut pages = match print::pages(&self.book, &self.visible_rows()) {
+        let mut pages = match print::pages(&self.book, &self.book.visible_rows()) {
             Ok(p) => p,
             Err(_) => return Some(win42::PrintJob::Scenes(Vec::new())),
         };
@@ -960,7 +1036,11 @@ impl win42::App for Xls {
             .map(|data| charts::scene(&data))
     }
     fn select_cell(&mut self, row: usize, col: usize) {
-        self.row = self.visible_at(row).unwrap_or(self.row);
+        let actual = self.visible_at(row).unwrap_or(self.row);
+        if actual != self.row {
+            self.row = actual;
+            self.clear_visible_cache();
+        }
         self.col = col.min(self.book.cols() - 1);
     }
     fn selected_cell(&self) -> Option<(usize, usize)> {
@@ -1060,6 +1140,7 @@ impl win42::App for Xls {
         self.clear_visible_cache();
         self.row = 0;
         self.col = 0;
+        self.normalize_focus();
         Ok(())
     }
     fn save(&mut self, p: &Path) -> Result<(), String> {
@@ -1080,8 +1161,9 @@ impl win42::App for Xls {
     fn edit(&mut self, s: String) -> Result<(), String> {
         self.book
             .set_cell_editor_text(self.row, self.col, win42::from_native_text(&s))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.clear_visible_cache();
+        Ok(())
     }
     fn select(&mut self, i: usize) {
         self.select_cell(i / self.book.cols(), i % self.book.cols())
@@ -1109,6 +1191,29 @@ impl win42::App for Xls {
             }
             11 => {
                 self.book.add_column().map_err(|e| e.to_string())?;
+            }
+            71..=74 => {
+                let range = self.active_range();
+                let mut view = self.book.sheet_view().clone();
+                match id {
+                    71 => view.hidden_rows.extend(range.top..=range.bottom),
+                    72 => {
+                        for row in range.top..=range.bottom {
+                            view.hidden_rows.remove(&row);
+                        }
+                    }
+                    73 => view.hidden_columns.extend(range.left..=range.right),
+                    74 => {
+                        for col in range.left..=range.right {
+                            view.hidden_columns.remove(&col);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                self.book.set_sheet_view(view).map_err(|e| e.to_string())?;
+                let selection = self.book.selection();
+                self.row = selection.top;
+                self.col = selection.left;
             }
             69 => {
                 let table = self
@@ -1190,6 +1295,8 @@ impl win42::App for Xls {
         }
         self.row = self.row.min(self.book.rows() - 1);
         self.col = self.col.min(self.book.cols() - 1);
+        self.normalize_focus();
+        self.clear_visible_cache();
         if self
             .preview
             .is_some_and(|id| !self.book.charts().iter().any(|c| c.id == id))
@@ -1234,6 +1341,316 @@ mod tests {
 mod regression {
     use super::*;
     use win42::App;
+    #[test]
+    fn typed_copy_moves_formula_while_external_text_is_literal() {
+        let mut app = Xls {
+            book: Workbook::new(4, 4).unwrap(),
+            row: 0,
+            col: 1,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        app.book.set_cell(0, 1, "=A1".into()).unwrap();
+        let bytes = match app.clipboard_request(39).unwrap() {
+            win42::ClipboardRequest::WriteDataAndText { bytes, text, .. } => {
+                assert!(text.contains("=A1"));
+                bytes
+            }
+            _ => panic!("missing typed copy"),
+        };
+        app.select_cell(1, 1);
+        app.clipboard_data(40, bytes).unwrap();
+        assert_eq!(app.book.cell(1, 1), Some("=A2"));
+        app.action(4).unwrap();
+        assert_eq!(app.book.cell(1, 1), Some(""));
+        app.action(5).unwrap();
+        assert_eq!(app.book.cell(1, 1), Some("=A2"));
+        app.select_cell(2, 1);
+        app.clipboard_text(40, "=A1".into()).unwrap();
+        assert_eq!(app.book.cell(2, 1), Some("=A1"));
+    }
+    #[test]
+    fn typed_clipboard_translates_formulas_across_filtered_hidden_gaps() {
+        let mut book = Workbook::new(9, 5).unwrap();
+        for row in [1, 3, 4, 6] {
+            book.set_cell(row, 0, format!("hit{row}")).unwrap();
+        }
+        book.set_cell(1, 1, "=A2".into()).unwrap();
+        book.set_cell(3, 3, "=$A4+A$2+$A$2".into()).unwrap();
+        let mut style = book.style(1, 1).unwrap().clone();
+        style.italic = true;
+        book.set_style(
+            Range {
+                top: 1,
+                left: 1,
+                bottom: 1,
+                right: 1,
+            },
+            style,
+        )
+        .unwrap();
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.extend([0, 2, 5]);
+        view.hidden_columns.insert(2);
+        book.set_sheet_view(view).unwrap();
+        book.set_filter(Some(SheetFilter {
+            range: Range {
+                top: 0,
+                left: 0,
+                bottom: 8,
+                right: 0,
+            },
+            column: 0,
+            contains: "hit".into(),
+        }))
+        .unwrap();
+        let mut app = Xls {
+            book,
+            row: 1,
+            col: 1,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            app.table()
+                .unwrap()
+                .iter()
+                .map(|r| r[0].as_str())
+                .collect::<Vec<_>>(),
+            ["hit1", "hit3", "hit4", "hit6"]
+        );
+        app.select_grid_range_with_focus(
+            win42::GridRange {
+                top: 0,
+                left: 1,
+                bottom: 1,
+                right: 3,
+            },
+            (0, 1),
+        );
+        let (text, bytes) = match app.clipboard_request(39).unwrap() {
+            win42::ClipboardRequest::WriteDataAndText { text, bytes, .. } => (text, bytes),
+            _ => panic!("missing typed copy"),
+        };
+        assert!(text.contains("=A2"));
+        assert!(text.contains("=$A4+A$2+$A$2"));
+        assert!(matches!(
+            app.clipboard_request(40),
+            Some(win42::ClipboardRequest::ReadDataOrText(_))
+        ));
+        app.select_cell(2, 1);
+        assert_eq!(app.row, 4);
+        app.clipboard_data(40, bytes).unwrap();
+        assert_eq!(app.book.cell(4, 1), Some("=A5"));
+        assert_eq!(app.book.cell(6, 3), Some("=$A7+A$2+$A$2"));
+        assert!(app.book.style(4, 1).unwrap().italic);
+        assert_eq!(app.book.cell(5, 1), Some(""));
+        assert_eq!(app.book.cell(4, 2), Some(""));
+        app.action(4).unwrap();
+        assert_eq!(app.book.cell(4, 1), Some(""));
+        assert_eq!(app.book.cell(6, 3), Some(""));
+        app.action(5).unwrap();
+        assert_eq!(app.book.cell(4, 1), Some("=A5"));
+        app.clipboard_text(40, "=A1".into()).unwrap();
+        assert_eq!(app.book.cell(4, 1), Some("=A1"));
+        assert!(app.clipboard_data(40, b"bad".to_vec()).is_err());
+        assert_eq!(app.book.cell(4, 1), Some("=A1"));
+    }
+    #[test]
+    fn hidden_row_mapping_drives_render_selection_edit_and_mapped_clipboard() {
+        let mut book = Workbook::new(8, 5).unwrap();
+        for row in 0..8 {
+            book.set_cell(row, 0, format!("row{row}")).unwrap();
+        }
+        book.set_row_height(3, 44).unwrap();
+        let mut style = book.style(3, 0).unwrap().clone();
+        style.bold = true;
+        book.set_style(
+            Range {
+                top: 3,
+                left: 0,
+                bottom: 3,
+                right: 0,
+            },
+            style,
+        )
+        .unwrap();
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.extend([0, 2]);
+        view.hidden_columns.insert(1);
+        view.frozen_rows = 4;
+        book.set_sheet_view(view).unwrap();
+        let mut app = Xls {
+            book,
+            row: 1,
+            col: 0,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        let rendered = app.table().unwrap();
+        assert_eq!(
+            rendered
+                .iter()
+                .take(3)
+                .map(|row| row[0].as_str())
+                .collect::<Vec<_>>(),
+            ["row1", "row3", "row4"]
+        );
+        assert_eq!(app.grid_row_label(0), "2");
+        assert_eq!(app.grid_row_label(1), "4");
+        assert_eq!(app.grid_row_height(1), 44);
+        assert!(app.grid_cell_style(1, 0).unwrap().bold);
+        assert_eq!(app.grid_frozen_panes(), (2, 0));
+        app.select_cell(1, 0);
+        assert_eq!(app.row, 3);
+        app.edit("edited".into()).unwrap();
+        assert_eq!(app.book.cell(3, 0), Some("edited"));
+        assert_eq!(app.book.cell(2, 0), Some("row2"));
+        app.clipboard_text(40, "a\tb\nc\td".into()).unwrap();
+        assert_eq!(app.book.cell(3, 0), Some("a"));
+        assert_eq!(app.book.cell(3, 2), Some("b"));
+        assert_eq!(app.book.cell(4, 0), Some("c"));
+        assert_eq!(app.book.cell(4, 2), Some("d"));
+        assert_eq!(app.book.cell(3, 1), Some(""));
+        assert_eq!(app.book.cell(4, 1), Some(""));
+        assert_eq!(app.book.cell(2, 0), Some("row2"));
+        if let Some(win42::ClipboardRequest::WriteDataAndText { text, .. }) =
+            app.clipboard_request(39)
+        {
+            assert!(text.contains("a\tb"));
+            assert!(text.contains("c\td"));
+        } else {
+            panic!("missing mapped clipboard contents");
+        }
+        app.select_cell(5, 0);
+        assert!(app.clipboard_text(40, "overflow\nextra".into()).is_err());
+        assert_eq!(app.book.cell(7, 0), Some("row7"));
+        app.action(4).unwrap();
+        assert_eq!(app.book.cell(3, 0), Some("edited"));
+        assert_eq!(app.book.cell(4, 0), Some("row4"));
+    }
+    #[test]
+    fn filtered_hidden_mapping_pastes_only_into_visible_destinations() {
+        let mut book = Workbook::new(7, 5).unwrap();
+        for (row, value) in [
+            "header",
+            "hit one",
+            "hidden",
+            "hit two",
+            "hit three",
+            "other",
+            "other",
+        ]
+        .iter()
+        .enumerate()
+        {
+            book.set_cell(row, 0, (*value).into()).unwrap();
+        }
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.extend([0, 2]);
+        view.hidden_columns.insert(2);
+        view.frozen_rows = 4;
+        book.set_sheet_view(view).unwrap();
+        book.set_filter(Some(SheetFilter {
+            range: Range {
+                top: 0,
+                left: 0,
+                bottom: 6,
+                right: 0,
+            },
+            column: 0,
+            contains: "hit".into(),
+        }))
+        .unwrap();
+        let mut app = Xls {
+            book,
+            row: 1,
+            col: 1,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        let rendered = app.table().unwrap();
+        assert_eq!(
+            rendered
+                .iter()
+                .map(|row| row[0].as_str())
+                .collect::<Vec<_>>(),
+            ["hit one", "hit two", "hit three"]
+        );
+        assert_eq!(app.grid_row_label(0), "2");
+        assert_eq!(app.grid_row_label(1), "4");
+        assert_eq!(app.grid_frozen_panes(), (2, 0));
+        app.select_grid_range_with_focus(
+            win42::GridRange {
+                top: 0,
+                left: 1,
+                bottom: 1,
+                right: 3,
+            },
+            (0, 1),
+        );
+        assert_eq!(app.selected_cell(), Some((0, 1)));
+        assert_eq!(app.row, 1);
+        app.clipboard_text(40, "a\tb\nc\td".into()).unwrap();
+        assert_eq!(app.book.cell(1, 1), Some("a"));
+        assert_eq!(app.book.cell(1, 3), Some("b"));
+        assert_eq!(app.book.cell(3, 1), Some("c"));
+        assert_eq!(app.book.cell(3, 3), Some("d"));
+        assert_eq!(app.book.cell(2, 1), Some(""));
+        assert_eq!(app.book.cell(1, 2), Some(""));
+        app.action(4).unwrap();
+        assert_eq!(app.book.cell(1, 1), Some(""));
+        assert_eq!(app.book.cell(3, 3), Some(""));
+    }
+    #[test]
+    fn view_commands_preserve_hidden_cell_destinations_and_history() {
+        let mut app = Xls {
+            book: Workbook::new(6, 5).unwrap(),
+            row: 0,
+            col: 0,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        app.book.set_cell(1, 1, "hidden value".into()).unwrap();
+        app.book
+            .set_selection(Range {
+                top: 1,
+                left: 1,
+                bottom: 1,
+                right: 1,
+            })
+            .unwrap();
+        app.row = 1;
+        app.col = 1;
+        app.action(71).unwrap();
+        assert_eq!(app.grid_row_label(1), "3");
+        assert_eq!(app.table().unwrap().len(), 5);
+        assert_ne!(app.row, 1);
+        app.select_cell(1, 1);
+        app.edit("visible destination".into()).unwrap();
+        assert_eq!(app.book.cell(2, 1), Some("visible destination"));
+        app.action(4).unwrap();
+        assert_eq!(app.book.cell(2, 1), Some(""));
+        app.action(4).unwrap();
+        assert_eq!(app.grid_row_label(1), "2");
+        app.action(5).unwrap();
+        assert_eq!(app.grid_row_label(1), "3");
+        app.book
+            .set_selection(Range {
+                top: 0,
+                left: 0,
+                bottom: 2,
+                right: 2,
+            })
+            .unwrap();
+        app.row = 0;
+        app.col = 0;
+        app.action(72).unwrap();
+        assert_eq!(app.grid_row_label(1), "2");
+        assert_eq!(app.book.cell(1, 1), Some("hidden value"));
+        app.input_action(70, &["2".into(), "1".into()]).unwrap();
+        assert_eq!(app.grid_frozen_panes(), (2, 1));
+    }
     #[test]
     fn table_commands_create_style_and_convert_to_range() {
         let mut app = Xls {

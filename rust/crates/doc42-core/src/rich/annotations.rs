@@ -248,6 +248,12 @@ pub(super) fn remap_edit(
                 remap_offset(position.offset, range.start, range.end, inserted, right);
         }
     };
+    for bookmark in &mut state.bookmarks {
+        let collapsed = bookmark.start == bookmark.end;
+        let insertion = range.start == range.end;
+        apply(&mut bookmark.start, insertion || collapsed);
+        apply(&mut bookmark.end, !insertion || collapsed);
+    }
     for comment in &mut state.comments {
         let collapsed = comment.start == comment.end;
         let insertion = range.start == range.end;

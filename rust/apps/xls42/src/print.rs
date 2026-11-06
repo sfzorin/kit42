@@ -87,9 +87,13 @@ pub fn pages(book: &Workbook, visible: &[usize]) -> Result<Vec<PrintPage>, Strin
         return Err("A merged range crosses the repeated header boundary".into());
     }
     let rows: Vec<_> = (area.top..=area.bottom)
-        .filter(|r| *r < header_end || visible.contains(r))
+        .filter(|r| {
+            !book.sheet_view().hidden_rows.contains(r) && (*r < header_end || visible.contains(r))
+        })
         .collect();
-    let cols: Vec<_> = (area.left..=area.right).collect();
+    let cols: Vec<_> = (area.left..=area.right)
+        .filter(|c| !book.sheet_view().hidden_columns.contains(c))
+        .collect();
     let cw = |c| book.column_width(c).unwrap_or(80) as f64 * 0.75;
     let rh = |r| book.row_height(r).unwrap_or(20) as f64 * 0.75;
     let total: f64 = cols.iter().map(|&c| cw(c)).sum();
@@ -274,6 +278,40 @@ pub fn pages(book: &Workbook, visible: &[usize]) -> Result<Vec<PrintPage>, Strin
 mod tests {
     use super::*;
     use xls42_core::{CellStyle, SheetFilter};
+    #[test]
+    fn printed_pages_exclude_hidden_rows_and_columns() {
+        let mut book = Workbook::new(4, 4).unwrap();
+        book.set_cell(0, 0, "visible".into()).unwrap();
+        book.set_cell(1, 0, "hidden-row".into()).unwrap();
+        book.set_cell(0, 1, "hidden-col".into()).unwrap();
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.insert(1);
+        view.hidden_columns.insert(1);
+        book.set_sheet_view(view).unwrap();
+        let mut layout = book.print_settings().clone();
+        layout.area = Some(Range {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        });
+        book.set_print_settings(layout).unwrap();
+        let pages = pages(&book, &book.visible_rows()).unwrap();
+        let text: Vec<_> = pages
+            .iter()
+            .flat_map(|p| &p.scene.items)
+            .filter_map(|item| {
+                if let SceneItem::TextBox { text, .. } = item {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(text.contains(&"visible"));
+        assert!(!text.contains(&"hidden-row"));
+        assert!(!text.contains(&"hidden-col"));
+    }
     #[test]
     fn paginates_all_visible_rows_with_repeated_headers_and_styling() {
         let mut b = Workbook::new(20, 3).unwrap();

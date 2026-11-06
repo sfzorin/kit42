@@ -1,9 +1,13 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod batch;
 mod pdf_view;
 use img42_core::ImageDocument;
 use std::path::Path;
 #[derive(Default)]
 struct Img {
+    batch: Option<batch::Worker>,
+    batch_outcomes: Vec<String>,
+    batch_done: Option<bool>,
     pending: Option<(u64, Vec<img42_core::SaveState>)>,
     next_save: u64,
     frames: Vec<Option<ImageDocument>>,
@@ -46,6 +50,38 @@ impl Img {
     }
 }
 impl win42::App for Img {
+    fn poll_background(&mut self) -> bool {
+        let mut changed = false;
+        let mut done = None;
+        if let Some(worker) = &self.batch {
+            loop {
+                match worker.rx.try_recv() {
+                    Ok(batch::Event::Outcome(line)) => {
+                        changed = true;
+                        self.batch_outcomes.push(line);
+                    }
+                    Ok(batch::Event::Done(cancelled)) => {
+                        changed = true;
+                        done = Some(cancelled);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        changed = true;
+                        self.batch_outcomes
+                            .push("Worker stopped unexpectedly".into());
+                        done = Some(true);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(cancelled) = done {
+            self.batch_done = Some(cancelled);
+            self.batch = None;
+        }
+        changed
+    }
     fn begin_async_open(&mut self, path: &Path) -> Result<bool, String> {
         if !path
             .extension()
@@ -329,9 +365,40 @@ impl win42::App for Img {
             (37, "Previous image in folder"),
             (38, "Next image in folder"),
             (39, "Lasso selection tool"),
+            (40, "Batch convert folder..."),
+            (41, "Cancel batch"),
+            (42, "Batch outcomes..."),
         ]
     }
+    fn input_folder_fields(&self, id: u16) -> Vec<(usize, &'static str)> {
+        if id == 40 {
+            vec![
+                (0, "Choose the input image folder"),
+                (1, "Choose the output folder"),
+            ]
+        } else {
+            vec![]
+        }
+    }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 40 {
+            return Some(win42::InputRequest {
+                title: "Batch conversion: JPEG is 8-bit on white",
+                fields: vec![
+                    ("Input folder path", String::new()),
+                    ("Output folder path (must exist)", String::new()),
+                    ("Format: png, tiff, jpeg", "png".into()),
+                    ("Maximum width (0 = unchanged)", "0".into()),
+                    ("Maximum height (0 = unchanged)", "0".into()),
+                    (
+                        "Resize: fit-no-upscale, fit, exact",
+                        "fit-no-upscale".into(),
+                    ),
+                    ("Frames: first (PNG/JPEG), all (TIFF)", "first".into()),
+                    ("JPEG quality (1–100)", "90".into()),
+                ],
+            });
+        }
         if id == 33 {
             return Some(win42::InputRequest {
                 title: "Select pixels by sampled color",
@@ -413,6 +480,59 @@ impl win42::App for Img {
         Some(win42::InputRequest { title, fields })
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id == 40 {
+            if self.batch.is_some() {
+                return Err("A batch is already running".into());
+            }
+            let get = |i: usize| {
+                values
+                    .get(i)
+                    .map(|x| x.trim())
+                    .ok_or("Missing batch option")
+            };
+            let format = get(2)?.to_ascii_lowercase();
+            if format != "png" && format != "tiff" && format != "jpeg" {
+                return Err("Choose png, tiff or jpeg".into());
+            }
+            let w: u32 = get(3)?.parse().map_err(|_| "Invalid width")?;
+            let h: u32 = get(4)?.parse().map_err(|_| "Invalid height")?;
+            let size = if w == 0 && h == 0 {
+                None
+            } else if w > 0 && h > 0 && w <= 16384 && h <= 16384 {
+                Some((w, h))
+            } else {
+                return Err("Enter two dimensions from 1 to 16384, or two zeros".into());
+            };
+            let resize_mode = get(5)?.to_ascii_lowercase();
+            if !["fit-no-upscale", "fit", "exact"].contains(&resize_mode.as_str()) {
+                return Err("Choose fit-no-upscale, fit or exact".into());
+            }
+            let frames = get(6)?.to_ascii_lowercase();
+            if !["first", "all"].contains(&frames.as_str()) {
+                return Err("Choose first or all frames".into());
+            }
+            if frames == "all" && format != "tiff" {
+                return Err("All frames requires TIFF; choose first for PNG or JPEG".into());
+            }
+            let jpeg_quality: u8 = get(7)?.parse().map_err(|_| "JPEG quality must be 1–100")?;
+            if !(1..=100).contains(&jpeg_quality) {
+                return Err("JPEG quality must be 1–100".into());
+            }
+            let options = batch::Options {
+                input: get(0)?.into(),
+                output: get(1)?.into(),
+                format,
+                size,
+                resize_mode,
+                frames,
+                jpeg_quality,
+            };
+            let worker = batch::start(options)?;
+            self.batch_outcomes.clear();
+            self.batch_done = None;
+            self.batch = Some(worker);
+            return Ok(());
+        }
         if id == 33 {
             let parse = |i: usize| {
                 values
@@ -607,6 +727,26 @@ impl win42::App for Img {
         self.zoom
     }
     fn status(&self) -> String {
+        let completed = self
+            .batch_outcomes
+            .iter()
+            .filter(|line| line.ends_with(": completed"))
+            .count();
+        if self.batch.is_some() {
+            return format!(
+                "Batch running: {} completed, {} other outcomes; Cancel batch or Batch outcomes",
+                completed,
+                self.batch_outcomes.len() - completed
+            );
+        }
+        if let Some(cancelled) = self.batch_done {
+            return format!(
+                "Batch {}: {} completed, {} other outcomes; open Batch outcomes",
+                if cancelled { "cancelled" } else { "finished" },
+                completed,
+                self.batch_outcomes.len() - completed
+            );
+        }
         if let Some((_, _, progress)) = &self.pdf_pending {
             return format!(
                 "Opening PDF: {} pages rendered",
@@ -640,8 +780,13 @@ impl win42::App for Img {
     fn can_save(&self) -> bool {
         self.doc.is_some()
     }
-    fn enabled(&self, _: u16) -> bool {
-        self.doc.is_some()
+    fn enabled(&self, id: u16) -> bool {
+        match id {
+            40 => self.batch.is_none(),
+            41 => self.batch.is_some(),
+            42 => !self.batch_outcomes.is_empty(),
+            _ => self.doc.is_some(),
+        }
     }
     fn open(&mut self, p: &Path) -> Result<(), String> {
         if p.extension()
@@ -701,6 +846,17 @@ impl win42::App for Img {
         self.frame_index
     }
     fn action(&mut self, id: u16) -> Result<(), String> {
+        if id == 41 {
+            if let Some(worker) = &self.batch {
+                worker
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return Ok(());
+        }
+        if id == 42 {
+            return Err(format!("Batch outcomes (JPEG is 8-bit on white; compatible metadata may be retained, other metadata may be lost):\n{}", self.batch_outcomes.join("\n")));
+        }
         if id == 37 || id == 38 {
             let source = self.source_path.as_ref().ok_or("Open an image first")?;
             let folder = source.parent().ok_or("Image has no folder")?;
@@ -1064,5 +1220,24 @@ mod selection_tests {
         assert!(m[10]);
         assert!(!m[15]);
         assert!(polygon_mask(4, 4, &[(0, 0), (1, 1)]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod batch_option_tests {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn rejects_invalid_jpeg_quality() {
+        for quality in ["0", "101", "bad"] {
+            let values = ["input", "output", "jpeg", "0", "0", "fit", "first", quality]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            assert!(Img::default()
+                .input_action(40, &values)
+                .unwrap_err()
+                .contains("quality"));
+        }
     }
 }

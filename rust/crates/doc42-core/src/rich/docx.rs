@@ -3,6 +3,7 @@ use super::*;
 mod comments;
 mod headers;
 mod images;
+mod links;
 mod notes;
 mod numbering;
 mod styles;
@@ -81,10 +82,63 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     {
         return Err(Error::Unsupported("DOCX note anchors outside body".into()));
     }
+    if s.bookmarks.iter().any(|b| {
+        !body_ids.contains(&b.start.paragraph)
+            || !body_ids.contains(&b.end.paragraph)
+            || b.name.len() > 40
+            || !b
+                .name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            || !b
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || s.tables_of_contents
+                .iter()
+                .flat_map(|t| &t.entries)
+                .any(|e| {
+                    b.name == format!("DOC42_H{}", e.heading)
+                        && (b.start.paragraph != e.heading || b.start.offset != 0)
+                })
+    }) {
+        return Err(Error::Unsupported(
+            "DOCX bookmark name, target or conflict".into(),
+        ));
+    }
+    if s.sections
+        .iter()
+        .flat_map(|sec| sec.header.iter().chain(&sec.footer))
+        .chain(s.footnotes.iter().flat_map(|n| &n.paragraphs))
+        .any(|p| p.runs.iter().any(|r| r.link.is_some()))
+    {
+        return Err(Error::Unsupported("DOCX links in headers or notes".into()));
+    }
     let mut body = String::new();
     for b in &s.blocks {
         match b {
             Block::Paragraph(p) => {
+                if super::cached_toc_paragraph(s, p.id)
+                    && (s
+                        .comments
+                        .iter()
+                        .any(|c| c.start.paragraph == p.id || c.end.paragraph == p.id)
+                        || s.footnotes.iter().any(|n| n.at.paragraph == p.id)
+                        || s.bookmarks
+                            .iter()
+                            .any(|b| b.start.paragraph == p.id || b.end.paragraph == p.id)
+                        || s.fields.iter().any(|f| f.at.paragraph == p.id))
+                {
+                    return Err(Error::Unsupported("annotations in cached Word TOC".into()));
+                }
+                if let Some(raw) = s.tables_of_contents.iter().find_map(|toc| {
+                    let index = toc.entries.iter().position(|e| e.paragraph == p.id)?;
+                    toc.docx_cached.as_ref()?.get(index)
+                }) {
+                    body.push_str(raw);
+                    continue;
+                }
                 let entry = s
                     .tables_of_contents
                     .iter()
@@ -105,15 +159,28 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                     }
                 }
                 let mut xml = String::new();
-                write_paragraph(&mut xml, &copy, &s.fields, &s.comments, &s.footnotes)?;
+                write_paragraph(
+                    &mut xml,
+                    &copy,
+                    &s.fields,
+                    &s.comments,
+                    &s.footnotes,
+                    &s.bookmarks,
+                )?;
                 let pos = xml
                     .find("</w:pPr>")
                     .ok_or_else(|| bad("DOCX paragraph properties"))?
                     + "</w:pPr>".len();
                 if s.tables_of_contents
                     .iter()
+                    .filter(|t| t.docx_cached.is_none())
                     .flat_map(|t| &t.entries)
                     .any(|e| e.heading == p.id)
+                    && !s.bookmarks.iter().any(|b| {
+                        b.name == format!("DOC42_H{}", p.id)
+                            && b.start.paragraph == p.id
+                            && b.start.offset == 0
+                    })
                 {
                     xml.insert_str(pos, &format!("<w:bookmarkStart w:id=\"{}\" w:name=\"DOC42_H{}\"/><w:bookmarkEnd w:id=\"{}\"/>", p.id, p.id, p.id));
                 }
@@ -124,11 +191,15 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                     );
                     let close = xml.rfind("</w:p>").ok_or_else(|| bad("DOCX paragraph"))?;
                     xml.insert_str(close, "</w:hyperlink>");
-                    if s.tables_of_contents
+                    if let Some(toc) = s
+                        .tables_of_contents
                         .iter()
-                        .any(|t| t.entries.first().is_some_and(|e| e.paragraph == p.id))
+                        .find(|t| t.entries.first().is_some_and(|e| e.paragraph == p.id))
                     {
-                        xml.insert_str(pos, "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> TOC \\o &quot;1-9&quot; \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>");
+                        if toc.max_level > 8 {
+                            return Err(Error::Unsupported("Word TOC outline level 10".into()));
+                        }
+                        xml.insert_str(pos, &format!("<w:r><w:fldChar w:fldCharType=\"begin\" w:dirty=\"1\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> TOC \\o &quot;{}-{}&quot; \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>", toc.min_level + 1, toc.max_level + 1));
                     }
                     if s.tables_of_contents
                         .iter()
@@ -220,6 +291,7 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                                     &s.fields,
                                     &s.comments,
                                     &s.footnotes,
+                                    &s.bookmarks,
                                 )?;
                             }
                         } else {
@@ -258,6 +330,7 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         .or_insert_with(|| rel.into_bytes());
     numbering::add_parts(&mut parts, &s.blocks)?;
     images::add_parts(&mut parts, &s.blocks)?;
+    links::write_rels(&mut parts, s)?;
     comments::write(&mut parts, &s.comments)?;
     notes::write(&mut parts, &s.footnotes)?;
     parts.insert("word/document.xml".into(), doc.into_bytes());
@@ -269,6 +342,7 @@ fn write_paragraph(
     fields: &[Field],
     comments: &[Annotation],
     notes: &[Footnote],
+    bookmarks: &[Bookmark],
 ) -> Result<(), Error> {
     if !p.style.odt_extra.is_empty() || p.runs.iter().any(|r| !r.style.odt_extra.is_empty()) {
         return Err(Error::Unsupported(
@@ -334,6 +408,8 @@ fn write_paragraph(
         Start(u64),
         End(u64),
         Note(&'a Footnote),
+        BookmarkStart(&'a Bookmark),
+        BookmarkEnd(u64),
     }
     let mut markers: Vec<(usize, u8, Marker<'_>)> = fields
         .iter()
@@ -346,6 +422,14 @@ fn write_paragraph(
         }
         if comment.end.paragraph == p.id {
             markers.push((comment.end.offset, 2, Marker::End(comment.id)));
+        }
+    }
+    for bookmark in bookmarks {
+        if bookmark.start.paragraph == p.id {
+            markers.push((bookmark.start.offset, 0, Marker::BookmarkStart(bookmark)));
+        }
+        if bookmark.end.paragraph == p.id {
+            markers.push((bookmark.end.offset, 2, Marker::BookmarkEnd(bookmark.id)));
         }
     }
     for note in notes {
@@ -363,6 +447,12 @@ fn write_paragraph(
             Marker::End(id) => body.push_str(&format!(
                 "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
             )),
+            Marker::BookmarkStart(bookmark) => body.push_str(&format!(
+                "<w:bookmarkStart w:id=\"{}\" w:name=\"{}\"/>",
+                bookmark.id,
+                esc(&bookmark.name)
+            )),
+            Marker::BookmarkEnd(id) => body.push_str(&format!("<w:bookmarkEnd w:id=\"{id}\"/>")),
             Marker::Note(note) => {
                 let tag = if note.endnote {
                     "endnoteReference"
@@ -422,8 +512,18 @@ fn write_run(body: &mut String, r: &Run, text: &str) -> Result<(), Error> {
     if text.is_empty() {
         return Ok(());
     }
-    if r.link.is_some() || r.style.highlight.is_some() {
-        return Err(Error::Unsupported("DOCX links or highlighting".into()));
+    if r.style.highlight.is_some() {
+        return Err(Error::Unsupported("DOCX highlighting".into()));
+    }
+    if let Some(link) = &r.link {
+        if let Some(anchor) = link.strip_prefix('#') {
+            body.push_str(&format!("<w:hyperlink w:anchor=\"{}\">", esc(anchor)));
+        } else {
+            body.push_str(&format!(
+                "<w:hyperlink r:id=\"{}\">",
+                links::relation_id(link)
+            ));
+        }
     }
     if r.text
         .chars()
@@ -457,6 +557,9 @@ fn write_run(body: &mut String, r: &Run, text: &str) -> Result<(), Error> {
         String::new()
     };
     body.push_str(&format!("<w:r><w:rPr>{style_ref}<w:rFonts w:ascii=\"{}\" w:hAnsi=\"{}\"/><w:sz w:val=\"{}\"/><w:b w:val=\"{}\"/><w:i w:val=\"{}\"/><w:u w:val=\"{}\"/><w:strike w:val=\"{}\"/>{color}</w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r>",esc(&t.font),esc(&t.font),t.size_half_points,u8::from(t.bold),u8::from(t.italic),if t.underline {"single"} else {"none"},u8::from(t.strike),esc(text)));
+    if r.link.is_some() {
+        body.push_str("</w:hyperlink>");
+    }
     Ok(())
 }
 fn val<'a>(n: roxmltree::Node<'a, 'a>, name: &str) -> Option<&'a str> {
@@ -558,6 +661,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                 "/webSettings",
                 "/theme",
                 "/numbering",
+                "/hyperlink",
                 "/image",
                 "/header",
                 "/footer",
@@ -568,13 +672,16 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             ]
             .iter()
             .any(|suffix| t.ends_with(suffix))
-                || r.attribute("TargetMode").is_some()
+                || (r.attribute("TargetMode").is_some()
+                    && !(t.ends_with("/hyperlink")
+                        && r.attribute("TargetMode") == Some("External")))
             {
                 return Err(Error::Unsupported(format!("DOCX relationship {t}")));
             }
         }
     }
     let (xml, toc_scan) = toc::normalize(&xml)?;
+    let (xml, link_scan) = links::normalize(&xml, &parts)?;
     let doc = roxmltree::Document::parse(&xml).map_err(bad)?;
     for n in doc.descendants().filter(|n| n.is_element()) {
         if n.has_tag_name((W, "drawing")) || n.ancestors().any(|a| a.has_tag_name((W, "drawing"))) {
@@ -670,6 +777,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
     let mut comment_marks: Vec<(u64, usize, u64, u8)> = Vec::new();
     let mut note_marks: Vec<(u64, usize, u64, bool)> = Vec::new();
     let mut body_ids = std::collections::BTreeMap::new();
+    let mut paragraph_positions = std::collections::BTreeMap::new();
     for (body_index, node) in body.children().filter(|n| n.is_element()).enumerate() {
         if node.has_tag_name((W, "p")) {
             body_ids.insert(body_index, s.next_id);
@@ -682,6 +790,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                     .push(Block::Image(images::read(node, id, &s.docx_parts)?));
             }
             "p" => {
+                paragraph_positions.insert(node.range().start, s.next_id);
                 let id = s.next_id;
                 s.next_id += 1;
                 s.blocks.push(Block::Paragraph(read_paragraph(
@@ -809,6 +918,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                         }
                         let mut paragraphs = Vec::new();
                         for p in cell.children().filter(|n| n.has_tag_name((W, "p"))) {
+                            paragraph_positions.insert(p.range().start, s.next_id);
                             let pid = s.next_id;
                             s.next_id += 1;
                             paragraphs.push(read_paragraph(
@@ -1029,8 +1139,39 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             kind,
         });
     }
+    for (position, start, end, target) in link_scan.links {
+        let id = *paragraph_positions
+            .get(&position)
+            .ok_or_else(|| bad("DOCX link paragraph"))?;
+        let p = paragraph_mut(&mut s, id).ok_or_else(|| bad("DOCX link paragraph"))?;
+        super::links::apply_link(p, start..end, Some(target))?;
+    }
+    for (name, start_para, start, end_para, end) in link_scan.bookmarks {
+        let start = Position {
+            paragraph: *paragraph_positions
+                .get(&start_para)
+                .ok_or_else(|| bad("DOCX bookmark start"))?,
+            offset: start,
+        };
+        let end = Position {
+            paragraph: *paragraph_positions
+                .get(&end_para)
+                .ok_or_else(|| bad("DOCX bookmark end"))?,
+            offset: end,
+        };
+        let id = s.next_id;
+        s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
+        s.bookmarks.push(Bookmark {
+            id,
+            name,
+            start,
+            end,
+        });
+    }
     if let Some(scan) = toc_scan {
-        for table in scan.tables {
+        for ((table, cached), (min_level, max_level)) in
+            scan.tables.into_iter().zip(scan.cached).zip(scan.levels)
+        {
             let id = s.next_id;
             s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
             let mut entries = Vec::new();
@@ -1051,7 +1192,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                 }
                 entries.push(TocEntry { paragraph, heading });
             }
-            s.tables_of_contents.push(TableOfContents { id, entries });
+            s.tables_of_contents.push(TableOfContents {
+                id,
+                entries,
+                min_level,
+                max_level,
+                docx_cached: cached,
+                odt_cached: None,
+            });
         }
     }
     Ok(s)
@@ -1184,6 +1332,7 @@ fn read_paragraph(
             &[
                 "rPr",
                 "t",
+                "tab",
                 "fldChar",
                 "instrText",
                 "commentReference",
@@ -1281,6 +1430,15 @@ fn read_paragraph(
                     let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
                     comment_marks.push((id, offset, external, 2));
                 }
+                "tab" => {
+                    if field.is_none() {
+                        runs.push(Run {
+                            text: "\t".into(),
+                            style: run_style.clone(),
+                            link: None,
+                        });
+                    }
+                }
                 "t" => {
                     if field.as_ref().is_some_and(|(_, separated)| !separated) {
                         return Err(bad("DOCX field result before separator"));
@@ -1306,6 +1464,70 @@ fn read_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_word_toc_cache_survives_body_edit_and_update_invalidates_it() {
+        let document = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="1"/></w:r><w:r><w:instrText> TOC \o &quot;1-3&quot; \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:hyperlink w:anchor="_Toc42"><w:r><w:t>Heading</w:t></w:r><w:r><w:tab/></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF _Toc42 \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:hyperlink><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:bookmarkStart w:id="9" w:name="_Toc42"/><w:r><w:t>Heading</w:t></w:r><w:bookmarkEnd w:id="9"/></w:p><w:sectPr/></w:body></w:document>"#
+        );
+        let mut parts = std::collections::BTreeMap::new();
+        parts.insert("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_vec());
+        parts.insert("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/document.xml".into(), document.into_bytes());
+        let mut doc = RichDocument::decode(&package(&parts).unwrap(), Format::Docx).unwrap();
+        assert_eq!(doc.state().tables_of_contents[0].max_level, 2);
+        assert!(doc.state().tables_of_contents[0].docx_cached.is_some());
+        let projection = String::from_utf8(doc.rich_edit_projection().unwrap())
+            .unwrap()
+            .replacen("Body", "Body edited", 1);
+        doc.apply_rich_edit_projection(projection.as_bytes(), (0, 0))
+            .unwrap();
+        let output = doc.encode(Format::Docx).unwrap();
+        let reopened = RichDocument::decode(&output, Format::Docx).unwrap();
+        let cached = &reopened.state().tables_of_contents[0]
+            .docx_cached
+            .as_ref()
+            .unwrap()[0];
+        assert!(cached.contains("PAGEREF _Toc42"));
+        assert!(cached.contains(">7</w:t>"));
+        let toc = doc.state().tables_of_contents[0].id;
+        doc.update_toc(toc).unwrap();
+        assert!(doc.state().tables_of_contents[0].docx_cached.is_none());
+        let updated =
+            RichDocument::decode(&doc.encode(Format::Docx).unwrap(), Format::Docx).unwrap();
+        assert!(updated.state().tables_of_contents[0].docx_cached.is_none());
+        assert_eq!(updated.state().tables_of_contents[0].max_level, 2);
+    }
+    #[test]
+    fn external_word_links_and_unrelated_bookmarks_roundtrip() {
+        let document = format!(
+            r#"<w:document xmlns:w="{W}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:bookmarkStart w:id="7" w:name="MyMark"/><w:r><w:t>Target</w:t></w:r><w:bookmarkEnd w:id="7"/></w:p><w:p><w:hyperlink r:id="rId4" w:history="1"><w:r><w:t>Visit</w:t></w:r></w:hyperlink><w:r><w:t> </w:t></w:r><w:hyperlink w:anchor="MyMark"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>"#
+        );
+        let mut parts = std::collections::BTreeMap::new();
+        parts.insert("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_vec());
+        parts.insert("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/_rels/document.xml.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/" TargetMode="External"/></Relationships>"#.to_vec());
+        parts.insert("word/document.xml".into(), document.into_bytes());
+        let doc = RichDocument::decode(&package(&parts).unwrap(), Format::Docx).unwrap();
+        assert_eq!(doc.state().bookmarks[0].name, "MyMark");
+        let Block::Paragraph(p) = &doc.state().blocks[1] else {
+            panic!()
+        };
+        assert!(p
+            .runs
+            .iter()
+            .any(|r| r.link.as_deref() == Some("https://example.org/")));
+        assert!(p.runs.iter().any(|r| r.link.as_deref() == Some("#MyMark")));
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Docx).unwrap(), Format::Docx).unwrap();
+        assert_eq!(reopened.state().bookmarks[0].name, "MyMark");
+        let Block::Paragraph(p) = &reopened.state().blocks[1] else {
+            panic!()
+        };
+        assert!(p
+            .runs
+            .iter()
+            .any(|r| r.link.as_deref() == Some("https://example.org/")));
+    }
     #[test]
     fn external_word_footnote_and_separator_survive_resave() {
         let doc = format!(

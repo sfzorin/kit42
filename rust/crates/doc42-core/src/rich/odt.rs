@@ -596,6 +596,98 @@ fn read_comment(node: roxmltree::Node<'_, '_>) -> Result<OdtComment, Error> {
         date,
     })
 }
+fn standalone_xml(node: roxmltree::Node<'_, '_>) -> Result<String, Error> {
+    let mut xml = node.document().input_text()[node.range()].to_owned();
+    let bytes = xml.as_bytes();
+    let mut end = None;
+    let mut quote = None;
+    for (i, &byte) in bytes.iter().enumerate() {
+        match (quote, byte) {
+            (Some(q), b) if b == q => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => {
+                end = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let end = end.ok_or_else(|| bad("ODT source element"))?;
+    // Namespace declarations are not exposed as ordinary attributes by roxmltree.
+    // Tokenize only the start tag to distinguish xmlns:t from xmlns:text and
+    // avoid matching declaration-like text inside attribute values.
+    let mut declared = HashSet::new();
+    let mut i = 1;
+    while i < end && !bytes[i].is_ascii_whitespace() && bytes[i] != b'/' {
+        i += 1;
+    }
+    while i < end {
+        while i < end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == end || bytes[i] == b'/' {
+            break;
+        }
+        let start = i;
+        while i < end && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' {
+            i += 1;
+        }
+        let name = std::str::from_utf8(&bytes[start..i]).map_err(bad)?;
+        while i < end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == end || bytes[i] != b'=' {
+            return Err(bad("ODT source attribute"));
+        }
+        i += 1;
+        while i < end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == end || !matches!(bytes[i], b'\'' | b'"') {
+            return Err(bad("ODT source attribute quote"));
+        }
+        let q = bytes[i];
+        i += 1;
+        while i < end && bytes[i] != q {
+            i += 1;
+        }
+        if i == end {
+            return Err(bad("ODT source attribute quote"));
+        }
+        i += 1;
+        if name == "xmlns" || name.starts_with("xmlns:") {
+            declared.insert(name.to_owned());
+        }
+    }
+    let mut insert = end;
+    while insert > 0 && bytes[insert - 1].is_ascii_whitespace() {
+        insert -= 1;
+    }
+    if insert > 0 && bytes[insert - 1] == b'/' {
+        insert -= 1;
+    }
+    let mut declarations = String::new();
+    // roxmltree's node namespaces are the complete in-scope set, with the
+    // nearest declaration winning for re-bound prefixes.
+    for ns in node.namespaces() {
+        let name = match ns.name() {
+            Some("xml") => continue,
+            Some(prefix) => format!("xmlns:{prefix}"),
+            None => "xmlns".to_owned(),
+        };
+        if !declared.contains(&name) {
+            declarations.push_str(&format!(" {name}=\"{}\"", esc(ns.uri())));
+        }
+    }
+    xml.insert_str(insert, &declarations);
+    Ok(xml)
+}
+
+struct PendingToc {
+    entries: Vec<(u64, String)>,
+    cache: OdtTocCache,
+    max_level: u8,
+}
 struct Reader<'a> {
     styles: Styles,
     parts: &'a BTreeMap<String, Vec<u8>>,
@@ -609,9 +701,38 @@ struct Reader<'a> {
     comment_data: BTreeMap<String, OdtComment>,
     point_counter: u64,
     bookmarks: BTreeMap<String, u64>,
-    pending_tocs: Vec<Vec<(u64, String)>>,
+    pending_bookmarks: Vec<(usize, String, u8)>,
+    bookmark_marks: Vec<(Position, String, u8)>,
+    pending_tocs: Vec<PendingToc>,
+    source_automatic_styles: BTreeMap<String, (String, Vec<String>)>,
 }
 impl Reader<'_> {
+    fn index_styles(&self, node: roxmltree::Node<'_, '_>) -> String {
+        let mut pending = node
+            .descendants()
+            .filter(|n| n.is_element())
+            .flat_map(|n| n.attributes())
+            .filter(|a| a.name().ends_with("style-name"))
+            .map(|a| a.value().to_owned())
+            .collect::<Vec<_>>();
+        let mut selected = std::collections::BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if !selected.insert(name.clone()) {
+                continue;
+            }
+            if let Some((_, dependencies)) = self.source_automatic_styles.get(&name) {
+                pending.extend(dependencies.iter().cloned());
+            }
+        }
+        selected
+            .into_iter()
+            .filter_map(|name| {
+                self.source_automatic_styles
+                    .get(&name)
+                    .map(|(xml, _)| xml.as_str())
+            })
+            .collect()
+    }
     fn id(&mut self) -> u64 {
         let id = self.next;
         self.next += 1;
@@ -740,13 +861,26 @@ impl Reader<'_> {
             return Ok(());
         }
         match n.tag_name().name() {
-            "bookmark" if n.tag_name().namespace() == Some(T) => {
+            "bookmark" | "bookmark-start" | "bookmark-end"
+                if n.tag_name().namespace() == Some(T) =>
+            {
                 if attr(n, T, "name").is_none()
                     || n.attributes().len() != 1
                     || n.children().any(|c| c.is_element())
                 {
                     return Err(unsupported("ODT bookmark metadata"));
                 }
+                if self.inside_note {
+                    return Err(unsupported("ODT note bookmark"));
+                }
+                let name = attr(n, T, "name").unwrap().to_owned();
+                let kind = match n.tag_name().name() {
+                    "bookmark" => 0,
+                    "bookmark-start" => 1,
+                    _ => 2,
+                };
+                self.pending_bookmarks
+                    .push((out.iter().map(|r| r.text.len()).sum(), name, kind));
                 Ok(())
             }
             "span" => {
@@ -761,11 +895,28 @@ impl Reader<'_> {
                 Ok(())
             }
             "a" => {
+                if n.attributes().any(|a| !match (a.namespace(), a.name()) {
+                    (Some(XL), "href") => true,
+                    (Some(XL), "type") => a.value() == "simple",
+                    (Some(XL), "show") => a.value() == "replace",
+                    (Some(XL), "actuate") => a.value() == "onRequest",
+                    (Some(T), "style-name") => true,
+                    _ => false,
+                }) {
+                    return Err(unsupported("ODT hyperlink metadata"));
+                }
                 let target = attr(n, XL, "href")
                     .ok_or_else(|| bad("ODT link"))?
                     .to_owned();
+                let mut t = run.clone();
+                let mut p = para.clone();
+                self.styles
+                    .apply("text", attr(n, T, "style-name"), &mut t, &mut p)?;
+                if let Some(name) = self.styles.named_source("text", attr(n, T, "style-name")) {
+                    t.source_style = Some(name);
+                }
                 for c in n.children() {
-                    self.inline(c, run, para, Some(target.clone()), out)?
+                    self.inline(c, &t, &p, Some(target.clone()), out)?
                 }
                 Ok(())
             }
@@ -837,11 +988,18 @@ impl Reader<'_> {
             self.inline(c, &run, &para, None, &mut runs)?
         }
         let id = self.id();
-        for bookmark in n.children().filter(|c| c.has_tag_name((T, "bookmark"))) {
-            let name = attr(bookmark, T, "name").ok_or_else(|| bad("ODT bookmark name"))?;
-            if self.bookmarks.insert(name.to_owned(), id).is_some() {
+        for (offset, name, kind) in std::mem::take(&mut self.pending_bookmarks) {
+            if kind != 2 && self.bookmarks.insert(name.clone(), id).is_some() {
                 return Err(bad("duplicate ODT bookmark"));
             }
+            self.bookmark_marks.push((
+                Position {
+                    paragraph: id,
+                    offset,
+                },
+                name,
+                kind,
+            ));
         }
         for (offset, paragraphs, endnote, citation) in std::mem::take(&mut self.pending_notes) {
             let note_id = self.id();
@@ -931,46 +1089,63 @@ impl Reader<'_> {
                         .children()
                         .find(|c| c.has_tag_name((T, "table-of-content-source")))
                         .ok_or_else(|| bad("ODT index source"))?;
-                    if n.attributes()
-                        .any(|a| a.namespace() != Some(T) || a.name() != "name")
-                        || source
-                            .attributes()
-                            .any(|a| a.namespace() != Some(T) || a.name() != "outline-level")
-                    {
+                    if n.attributes().any(|a| {
+                        a.namespace() != Some(T)
+                            || !match a.name() {
+                                "name" | "style-name" => true,
+                                "protected" => matches!(a.value(), "true" | "false"),
+                                _ => false,
+                            }
+                    }) || source.attributes().any(|a| {
+                        a.namespace() != Some(T)
+                            || !match a.name() {
+                                "outline-level" => {
+                                    a.value().parse::<u8>().is_ok_and(|n| (1..=10).contains(&n))
+                                }
+                                "index-scope" => a.value() == "document",
+                                "use-outline-level" => a.value() == "true",
+                                "use-index-marks" | "use-index-source-styles" => {
+                                    a.value() == "false"
+                                }
+                                _ => false,
+                            }
+                    }) {
                         return Err(unsupported("ODT index options"));
                     }
-                    for template in source.children().filter(|c| c.is_element()) {
-                        if template
-                            .attributes()
-                            .any(|a| a.namespace() != Some(T) || a.name() != "outline-level")
-                            || template
-                                .children()
-                                .filter(|c| c.is_element())
-                                .map(|c| c.tag_name().name())
-                                .collect::<Vec<_>>()
-                                != [
-                                    "index-entry-link-start",
-                                    "index-entry-text",
-                                    "index-entry-link-end",
-                                ]
-                            || template.children().filter(|c| c.is_element()).any(|c| {
-                                c.attributes().len() != 0 || c.children().any(|n| n.is_element())
-                            })
-                        {
-                            return Err(unsupported("ODT index template"));
-                        }
-                    }
-                    if source
-                        .children()
-                        .filter(|c| c.is_element())
-                        .any(|c| !c.has_tag_name((T, "table-of-content-entry-template")))
-                    {
+                    let max_level = attr(source, T, "outline-level")
+                        .unwrap_or("10")
+                        .parse::<u8>()
+                        .map_err(bad)?
+                        - 1;
+                    if source.children().filter(|c| c.is_element()).any(|c| {
+                        !c.has_tag_name((T, "table-of-content-entry-template"))
+                            && !c.has_tag_name((T, "index-title-template"))
+                    }) {
                         return Err(unsupported("ODT index source options"));
                     }
                     let body = n
                         .children()
                         .find(|c| c.has_tag_name((T, "index-body")))
                         .ok_or_else(|| bad("ODT index body"))?;
+                    let has_pages = source
+                        .descendants()
+                        .any(|c| c.has_tag_name((T, "index-entry-page-number")))
+                        && (body.descendants().any(|c| c.has_tag_name((T, "tab")))
+                            || body
+                                .children()
+                                .filter(|n| n.has_tag_name((T, "p")))
+                                .any(|p| {
+                                    p.descendants().filter(|n| n.has_tag_name((T, "a"))).count() > 1
+                                }));
+                    let mut cache = OdtTocCache {
+                        title_xml: None,
+                        title_paragraphs: Vec::new(),
+                        index_xml: standalone_xml(n)?,
+                        source_xml: standalone_xml(source)?,
+                        automatic_styles: self.index_styles(n),
+                        has_pages,
+                        needs_refresh: false,
+                    };
                     if n.children().filter(|c| c.is_element()).any(|c| {
                         !c.has_tag_name((T, "index-body"))
                             && !c.has_tag_name((T, "table-of-content-source"))
@@ -979,6 +1154,40 @@ impl Reader<'_> {
                     }
                     let mut entries = Vec::new();
                     for item in body.children().filter(|c| c.is_element()) {
+                        if item.has_tag_name((T, "index-title")) {
+                            if cache.title_xml.is_some() || !entries.is_empty() {
+                                return Err(unsupported("ODT index title position"));
+                            }
+                            cache.title_xml = Some(standalone_xml(item)?);
+                            for title in item.children().filter(|c| c.is_element()) {
+                                if !title.has_tag_name((T, "p")) {
+                                    return Err(unsupported("ODT index title content"));
+                                }
+                                let marks = (
+                                    self.comment_marks.len(),
+                                    self.bookmark_marks.len(),
+                                    self.state.footnotes.len(),
+                                    self.state.fields.len(),
+                                );
+                                let p = self.para(title, None)?;
+                                if marks
+                                    != (
+                                        self.comment_marks.len(),
+                                        self.bookmark_marks.len(),
+                                        self.state.footnotes.len(),
+                                        self.state.fields.len(),
+                                    )
+                                {
+                                    return Err(unsupported("annotations in ODT index title"));
+                                }
+                                cache.title_paragraphs.push(p.id);
+                                self.state.blocks.push(Block::Paragraph(p));
+                            }
+                            if cache.title_paragraphs.is_empty() {
+                                return Err(unsupported("empty ODT index title"));
+                            }
+                            continue;
+                        }
                         if !item.has_tag_name((T, "p")) {
                             return Err(unsupported("ODT index entry"));
                         }
@@ -993,9 +1202,10 @@ impl Reader<'_> {
                             .to_owned();
                         if p.runs
                             .iter()
-                            .any(|r| r.link.as_deref() != Some(&format!("#{target}")))
+                            .filter_map(|r| r.link.as_deref())
+                            .any(|link| link != format!("#{target}"))
                         {
-                            return Err(unsupported("ODT mixed index entry"));
+                            return Err(unsupported("ODT index entry with multiple targets"));
                         }
                         entries.push((p.id, target));
                         self.state.blocks.push(Block::Paragraph(p));
@@ -1003,7 +1213,11 @@ impl Reader<'_> {
                     if entries.is_empty() {
                         return Err(unsupported("empty ODT index"));
                     }
-                    self.pending_tocs.push(entries);
+                    self.pending_tocs.push(PendingToc {
+                        entries,
+                        cache,
+                        max_level,
+                    });
                 }
                 "sequence-decls" if n.tag_name().namespace() == Some(T) => {}
                 "table" if n.tag_name().namespace() == Some(TB) => {
@@ -1308,20 +1522,42 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
         comment_data: BTreeMap::new(),
         point_counter: 0,
         bookmarks: BTreeMap::new(),
+        pending_bookmarks: vec![],
+        bookmark_marks: vec![],
         pending_tocs: vec![],
+        source_automatic_styles: {
+            let mut map = BTreeMap::new();
+            if let Some(node) = content_doc
+                .descendants()
+                .find(|n| n.has_tag_name((O, "automatic-styles")))
+            {
+                for child in node.children().filter(|n| n.is_element()) {
+                    if let Some(name) = attr(child, S, "name") {
+                        let dependencies = child
+                            .descendants()
+                            .filter(|n| n.is_element())
+                            .flat_map(|n| n.attributes())
+                            .filter(|a| a.name().ends_with("style-name"))
+                            .map(|a| a.value().to_owned())
+                            .collect();
+                        if map
+                            .insert(name.to_owned(), (standalone_xml(child)?, dependencies))
+                            .is_some()
+                        {
+                            return Err(bad("duplicate ODT automatic style"));
+                        }
+                    }
+                }
+            }
+            map
+        },
     };
     r.state.blocks.clear();
     r.blocks(body, 0, None)?;
-    let used_bookmarks: HashSet<String> = r
-        .pending_tocs
-        .iter()
-        .flatten()
-        .map(|(_, name)| name.clone())
-        .collect();
     for pending in std::mem::take(&mut r.pending_tocs) {
         let id = r.id();
         let mut entries = Vec::new();
-        for (paragraph, bookmark) in pending {
+        for (paragraph, bookmark) in pending.entries {
             let heading = *r
                 .bookmarks
                 .get(&bookmark)
@@ -1333,9 +1569,14 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             }
             entries.push(TocEntry { paragraph, heading });
         }
-        r.state
-            .tables_of_contents
-            .push(TableOfContents { id, entries });
+        r.state.tables_of_contents.push(TableOfContents {
+            id,
+            entries,
+            min_level: 0,
+            max_level: pending.max_level,
+            docx_cached: None,
+            odt_cached: Some(pending.cache),
+        });
     }
     if r.state.blocks.is_empty() {
         return Err(bad("empty ODT document"));
@@ -1402,13 +1643,27 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
     if !r.comment_data.is_empty() {
         return Err(unsupported("unanchored ODT comment"));
     }
-    if r.bookmarks
-        .keys()
-        .any(|name| !used_bookmarks.contains(name))
-    {
-        return Err(unsupported(
-            "ODT bookmark outside supported table of contents",
-        ));
+    let mut ranges: BTreeMap<String, (Option<Position>, Option<Position>)> = BTreeMap::new();
+    for (position, name, kind) in std::mem::take(&mut r.bookmark_marks) {
+        let pair = ranges.entry(name).or_default();
+        match kind {
+            0 if pair.0.is_none() && pair.1.is_none() => {
+                pair.0 = Some(position.clone());
+                pair.1 = Some(position);
+            }
+            1 if pair.0.is_none() => pair.0 = Some(position),
+            2 if pair.1.is_none() => pair.1 = Some(position),
+            _ => return Err(bad("duplicate ODT bookmark marker")),
+        }
+    }
+    for (name, (start, end)) in ranges {
+        let id = r.id();
+        r.state.bookmarks.push(Bookmark {
+            id,
+            name,
+            start: start.ok_or_else(|| bad("ODT bookmark start"))?,
+            end: end.ok_or_else(|| bad("ODT bookmark end"))?,
+        });
     }
     r.state.next_id = r.next;
     r.state.sections[0].page = page.clone();
@@ -1425,6 +1680,7 @@ struct Writer {
     fields: Vec<Field>,
     comments: Vec<Annotation>,
     notes: Vec<Footnote>,
+    bookmarks: Vec<Bookmark>,
 }
 impl Writer {
     fn name(&mut self, prefix: &str) -> String {
@@ -1497,6 +1753,9 @@ impl Writer {
             Start(Annotation),
             End(u64),
             Note(String),
+            BookmarkStart(String),
+            BookmarkEnd(String),
+            BookmarkPoint(String),
         }
         let mut markers: Vec<(usize, u8, Marker)> = self
             .fields
@@ -1510,6 +1769,32 @@ impl Writer {
             }
             if comment.end.paragraph == p.id {
                 markers.push((comment.end.offset, 2, Marker::End(comment.id)));
+            }
+        }
+        for bookmark in &self.bookmarks {
+            if bookmark.start == bookmark.end {
+                if bookmark.start.paragraph == p.id {
+                    markers.push((
+                        bookmark.start.offset,
+                        1,
+                        Marker::BookmarkPoint(bookmark.name.clone()),
+                    ));
+                }
+            } else {
+                if bookmark.start.paragraph == p.id {
+                    markers.push((
+                        bookmark.start.offset,
+                        0,
+                        Marker::BookmarkStart(bookmark.name.clone()),
+                    ));
+                }
+                if bookmark.end.paragraph == p.id {
+                    markers.push((
+                        bookmark.end.offset,
+                        2,
+                        Marker::BookmarkEnd(bookmark.name.clone()),
+                    ));
+                }
             }
         }
         let notes = self
@@ -1561,6 +1846,15 @@ impl Writer {
                 }
                 Marker::End(id) => format!("<office:annotation-end office:name=\"DOC42C{id}\"/>"),
                 Marker::Note(markup) => markup.clone(),
+                Marker::BookmarkStart(name) => {
+                    format!("<text:bookmark-start text:name=\"{}\"/>", esc(name))
+                }
+                Marker::BookmarkEnd(name) => {
+                    format!("<text:bookmark-end text:name=\"{}\"/>", esc(name))
+                }
+                Marker::BookmarkPoint(name) => {
+                    format!("<text:bookmark text:name=\"{}\"/>", esc(name))
+                }
             })
         };
         let mut marker_index = 0;
@@ -1958,6 +2252,18 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
             return Err(unsupported("editing ODT header/footer distance"));
         }
     }
+    if s.tables_of_contents
+        .iter()
+        .flat_map(|t| &t.entries)
+        .any(|entry| {
+            s.bookmarks.iter().any(|b| {
+                b.name == format!("DOC42_H{}", entry.heading)
+                    && (b.start.paragraph != entry.heading || b.start.offset != 0)
+            })
+        })
+    {
+        return Err(unsupported("ODT bookmark conflicts with TOC target"));
+    }
     let mut parts = s.odt_parts.clone();
     if parts
         .keys()
@@ -1975,6 +2281,7 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         fields: s.fields.clone(),
         comments: s.comments.clone(),
         notes: s.footnotes.clone(),
+        bookmarks: s.bookmarks.clone(),
     };
     if let Some(styles) = parts.get("styles.xml") {
         let xml = std::str::from_utf8(styles).map_err(bad)?;
@@ -1996,7 +2303,41 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
             }
         }
     }
+    let mut source_by_name = BTreeMap::<String, String>::new();
+    for cache in s
+        .tables_of_contents
+        .iter()
+        .filter_map(|t| t.odt_cached.as_ref())
+    {
+        let wrap = format!("<root>{}</root>", cache.automatic_styles);
+        let doc = roxmltree::Document::parse(&wrap).map_err(bad)?;
+        for child in doc.root_element().children().filter(|n| n.is_element()) {
+            let name =
+                attr(child, S, "name").ok_or_else(|| unsupported("unnamed cached ODT style"))?;
+            let raw = standalone_xml(child)?;
+            if let Some(prior) = source_by_name.insert(name.to_owned(), raw.clone()) {
+                if prior != raw {
+                    return Err(unsupported("conflicting cached ODT style"));
+                }
+            }
+        }
+    }
+    let mut style_names = source_by_name.keys().cloned().collect::<HashSet<_>>();
+    for name in source_by_name.keys() {
+        if let Some(number) = ["DOC42P", "DOC42T", "DOC42C", "DOC42W"]
+            .iter()
+            .find_map(|prefix| name.strip_prefix(prefix))
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            if number.checked_add(MAX_BYTES).is_none() {
+                return Err(Error::Limit);
+            }
+            w.next = w.next.max(number);
+        }
+    }
+    let source_styles = source_by_name.into_values().collect::<String>();
     let mut lists = String::new();
+    let mut list_names = HashMap::new();
     let mut seen = HashSet::new();
     for p in s.blocks.iter().filter_map(|b| {
         if let Block::Paragraph(p) = b {
@@ -2011,11 +2352,16 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
             }
             if seen.insert((l.id, l.numbered)) {
                 let kind = if l.numbered { "number" } else { "bullet" };
-                lists.push_str(&format!(
-                    "<text:list-style style:name=\"DOC42L{}{}\">",
-                    l.id,
-                    if l.numbered { "N" } else { "B" }
-                ));
+                let base = format!("DOC42L{}{}", l.id, if l.numbered { "N" } else { "B" });
+                let mut name = base.clone();
+                let mut suffix = 0usize;
+                while style_names.contains(&name) {
+                    suffix += 1;
+                    name = format!("{base}_{suffix}");
+                }
+                style_names.insert(name.clone());
+                list_names.insert((l.id, l.numbered), name.clone());
+                lists.push_str(&format!("<text:list-style style:name=\"{}\">", esc(&name)));
                 for level in 1..=9 {
                     let extra = if l.numbered {
                         " style:num-format=\"1\""
@@ -2033,6 +2379,70 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     let mut body = String::new();
     let mut stack: Vec<(u64, bool)> = Vec::new();
     for block in &s.blocks {
+        if let Block::Paragraph(p) = block {
+            if let Some(toc) = s.tables_of_contents.iter().find(|t| {
+                t.odt_cached
+                    .as_ref()
+                    .is_some_and(|c| c.title_paragraphs.contains(&p.id))
+            }) {
+                let cache = toc.odt_cached.as_ref().unwrap();
+                if s.comments
+                    .iter()
+                    .any(|c| c.start.paragraph == p.id || c.end.paragraph == p.id)
+                    || s.footnotes.iter().any(|n| n.at.paragraph == p.id)
+                    || s.bookmarks
+                        .iter()
+                        .any(|b| b.start.paragraph == p.id || b.end.paragraph == p.id)
+                    || s.fields.iter().any(|f| f.at.paragraph == p.id)
+                {
+                    return Err(unsupported("annotations in ODT index title"));
+                }
+                if cache.title_paragraphs.first() == Some(&p.id) {
+                    close_lists(&mut body, &mut stack);
+                    if !cache.needs_refresh {
+                        body.push_str(&cache.index_xml);
+                    } else {
+                        body.push_str(&format!(
+                            "<text:table-of-content text:name=\"DOC42_T{}\">",
+                            toc.id
+                        ));
+                        body.push_str(&cache.source_xml);
+                        body.push_str("<text:index-body>");
+                        body.push_str(
+                            cache
+                                .title_xml
+                                .as_deref()
+                                .ok_or_else(|| bad("ODT index title"))?,
+                        );
+                    }
+                }
+                continue;
+            }
+        }
+        if let Block::Paragraph(p) = block {
+            if let Some(toc) = s.tables_of_contents.iter().find(|t| {
+                t.odt_cached.as_ref().is_some_and(|c| !c.needs_refresh)
+                    && t.entries.iter().any(|e| e.paragraph == p.id)
+            }) {
+                if s.comments
+                    .iter()
+                    .any(|c| c.start.paragraph == p.id || c.end.paragraph == p.id)
+                    || s.footnotes.iter().any(|n| n.at.paragraph == p.id)
+                    || s.bookmarks
+                        .iter()
+                        .any(|b| b.start.paragraph == p.id || b.end.paragraph == p.id)
+                    || s.fields.iter().any(|f| f.at.paragraph == p.id)
+                {
+                    return Err(unsupported("annotations in cached ODT index"));
+                }
+                if toc.entries.first().is_some_and(|e| e.paragraph == p.id)
+                    && toc.odt_cached.as_ref().unwrap().title_paragraphs.is_empty()
+                {
+                    body.push_str(&toc.odt_cached.as_ref().unwrap().index_xml);
+                }
+                continue;
+            }
+        }
         if let Block::Paragraph(p) = block {
             if let Some(list) = &p.style.list {
                 let level = list.level as usize;
@@ -2052,11 +2462,10 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                     return Err(unsupported("discontinuous ODT list depth"));
                 }
                 if stack.len() == level {
-                    body.push_str(&format!(
-                        "<text:list text:style-name=\"DOC42L{}{}\">",
-                        list.id,
-                        if list.numbered { "N" } else { "B" }
-                    ));
+                    let name = list_names
+                        .get(&(list.id, list.numbered))
+                        .ok_or_else(|| bad("ODT list style"))?;
+                    body.push_str(&format!("<text:list text:style-name=\"{}\">", esc(name)));
                     stack.push((list.id, list.numbered));
                 }
                 body.push_str("<text:list-item>");
@@ -2066,16 +2475,32 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         }
         close_lists(&mut body, &mut stack);
         if let Block::Paragraph(p) = block {
-            if let Some(toc) = s
-                .tables_of_contents
-                .iter()
-                .find(|t| t.entries.first().is_some_and(|e| e.paragraph == p.id))
-            {
-                body.push_str(&format!("<text:table-of-content text:name=\"DOC42_T{}\"><text:table-of-content-source text:outline-level=\"10\">", toc.id));
-                for level in 1..=10 {
-                    body.push_str(&format!("<text:table-of-content-entry-template text:outline-level=\"{level}\"><text:index-entry-link-start/><text:index-entry-text/><text:index-entry-link-end/></text:table-of-content-entry-template>"));
+            if let Some(toc) = s.tables_of_contents.iter().find(|t| {
+                t.entries.first().is_some_and(|e| e.paragraph == p.id)
+                    && t.odt_cached
+                        .as_ref()
+                        .is_none_or(|c| c.title_paragraphs.is_empty())
+            }) {
+                body.push_str(&format!(
+                    "<text:table-of-content text:name=\"DOC42_T{}\">",
+                    toc.id
+                ));
+                if let Some(cache) = &toc.odt_cached {
+                    body.push_str(&cache.source_xml);
+                } else {
+                    if toc.min_level != 0 {
+                        return Err(unsupported("ODT index minimum heading level"));
+                    }
+                    body.push_str(&format!(
+                        "<text:table-of-content-source text:outline-level=\"{}\">",
+                        toc.max_level + 1
+                    ));
+                    for level in 1..=toc.max_level + 1 {
+                        body.push_str(&format!("<text:table-of-content-entry-template text:outline-level=\"{level}\"><text:index-entry-link-start/><text:index-entry-text/><text:index-entry-link-end/></text:table-of-content-entry-template>"));
+                    }
+                    body.push_str("</text:table-of-content-source>");
                 }
-                body.push_str("</text:table-of-content-source><text:index-body>");
+                body.push_str("<text:index-body>");
             }
         }
         match block {
@@ -2083,8 +2508,14 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                 let mut xml = w.paragraph(p)?;
                 if s.tables_of_contents
                     .iter()
+                    .filter(|t| t.odt_cached.as_ref().is_none_or(|c| c.needs_refresh))
                     .flat_map(|t| &t.entries)
                     .any(|e| e.heading == p.id)
+                    && !s.bookmarks.iter().any(|b| {
+                        b.name == format!("DOC42_H{}", p.id)
+                            && b.start.paragraph == p.id
+                            && b.start.offset == 0
+                    })
                 {
                     let start = xml.find('>').ok_or_else(|| bad("ODT paragraph"))? + 1;
                     xml.insert_str(
@@ -2108,7 +2539,7 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         }
     }
     close_lists(&mut body, &mut stack);
-    let content=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-content {NS} office:version=\"1.3\"><office:automatic-styles>{lists}{}</office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>",w.automatic);
+    let content=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-content {NS} office:version=\"1.3\"><office:automatic-styles>{source_styles}{lists}{}</office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>",w.automatic);
     parts.insert("content.xml".into(), content.into_bytes());
     if let Some(existing) = parts.get("styles.xml").cloned() {
         let text = String::from_utf8(existing).map_err(bad)?;
@@ -2222,6 +2653,140 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_odt_preserves_self_closing_styles_and_inherited_rebound_namespaces() {
+        let content = format!(
+            r##"<office:document-content xmlns:office="{O}" xmlns:text="{T}" xmlns:ctx="urn:wrong-index" xmlns:style="urn:wrong-style" xmlns:xlink="{XL}"><office:automatic-styles xmlns:style="{S}"><style:style style:name="PIndex" style:family="paragraph"/></office:automatic-styles><office:body><office:text xmlns="{T}" xmlns:ctx="{T}" xmlns:t="{T}"><ctx:table-of-content xmlns:text="{T}" text:name="Table > 1"><table-of-content-source text:outline-level="1"><table-of-content-entry-template text:outline-level="1" text:style-name="PIndex"><index-entry-link-start/><index-entry-text/><index-entry-tab-stop/><index-entry-page-number/><index-entry-link-end/></table-of-content-entry-template></table-of-content-source><index-body><p text:style-name="PIndex"><a xlink:href="#Target">Heading</a><tab/><a xlink:href="#Target">4</a></p></index-body></ctx:table-of-content><p>Body</p><h text:outline-level="1"><bookmark text:name="Target"/>Heading</h></office:text></office:body></office:document-content>"##
+        );
+        let styles = format!("<office:document-styles {NS}><office:automatic-styles><style:page-layout style:name=\"P\"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"P\"/></office:master-styles></office:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let mut doc =
+            RichDocument::decode(&zip.finish().unwrap().into_inner(), Format::Odt).unwrap();
+        let projection = String::from_utf8(doc.rich_edit_projection().unwrap())
+            .unwrap()
+            .replacen("Body", "Body edited", 1);
+        doc.apply_rich_edit_projection(projection.as_bytes(), (0, 0))
+            .unwrap();
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        let cache = reopened.state().tables_of_contents[0]
+            .odt_cached
+            .as_ref()
+            .unwrap();
+        let index = roxmltree::Document::parse(&cache.index_xml).unwrap();
+        assert!(index.root_element().has_tag_name((T, "table-of-content")));
+        assert_eq!(
+            index.root_element().lookup_namespace_uri(Some("ctx")),
+            Some(T)
+        );
+        assert_eq!(
+            index.root_element().lookup_namespace_uri(Some("t")),
+            Some(T)
+        );
+        assert_eq!(index.root_element().lookup_namespace_uri(None), Some(T));
+        assert!(index.descendants().any(|n| n.has_tag_name((T, "p"))));
+        assert!(index
+            .descendants()
+            .any(|n| n.has_tag_name((T, "a")) && n.text() == Some("4")));
+        let style = roxmltree::Document::parse(&cache.automatic_styles).unwrap();
+        assert!(style.root_element().has_tag_name((S, "style")));
+        assert_eq!(attr(style.root_element(), S, "name"), Some("PIndex"));
+        assert!(style.root_element().children().all(|n| !n.is_element()));
+        assert!(reopened.state().blocks.iter().any(|b| matches!(b, Block::Paragraph(p) if p.runs.iter().map(|r| r.text.as_str()).collect::<String>() == "Body edited")));
+    }
+    #[test]
+    fn external_odt_toc_cache_and_styles_survive_body_edit_and_update() {
+        let content = format!(
+            r##"<office:document-content {NS}><office:automatic-styles><style:style style:name="PIndex" style:family="paragraph"><style:paragraph-properties fo:margin-left="12pt"/></style:style><style:style style:name="PTitle" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style></office:automatic-styles><office:body><office:text><text:table-of-content text:name="Table1" text:protected="true"><text:table-of-content-source text:outline-level="3" text:use-outline-level="true"><text:index-title-template>Contents</text:index-title-template><text:table-of-content-entry-template text:outline-level="1" text:style-name="PIndex"><text:index-entry-link-start/><text:index-entry-text/><text:index-entry-tab-stop/><text:index-entry-page-number/><text:index-entry-link-end/></text:table-of-content-entry-template></text:table-of-content-source><text:index-body><text:index-title text:name="Title1"><text:p text:style-name="PTitle">Contents</text:p></text:index-title><text:p text:style-name="PIndex"><text:a xlink:type="simple" xlink:href="#Target">Heading</text:a><text:tab/><text:a xlink:type="simple" xlink:href="#Target">7</text:a></text:p></text:index-body></text:table-of-content><text:p>Body</text:p><text:h text:outline-level="1"><text:bookmark-start text:name="Target"/>Heading<text:bookmark-end text:name="Target"/></text:h></office:text></office:body></office:document-content>"##
+        );
+        let styles = format!("<office:document-styles {NS}><office:automatic-styles><style:page-layout style:name=\"P\"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"P\"/></office:master-styles></office:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+            ("custom/keep.bin", b"opaque".as_slice()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let mut doc =
+            RichDocument::decode(&zip.finish().unwrap().into_inner(), Format::Odt).unwrap();
+        let toc = doc.state().tables_of_contents[0].id;
+        assert_eq!(doc.state().tables_of_contents[0].max_level, 2);
+        assert!(
+            doc.state().tables_of_contents[0]
+                .odt_cached
+                .as_ref()
+                .unwrap()
+                .has_pages
+        );
+        let projection = String::from_utf8(doc.rich_edit_projection().unwrap())
+            .unwrap()
+            .replacen("Body", "Body edited", 1);
+        doc.apply_rich_edit_projection(projection.as_bytes(), (0, 0))
+            .unwrap();
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        let cache = reopened.state().tables_of_contents[0]
+            .odt_cached
+            .as_ref()
+            .unwrap();
+        assert!(cache.index_xml.contains(">7</text:a>"));
+        assert!(cache.index_xml.contains("index-title"));
+        assert!(cache.automatic_styles.contains("PIndex"));
+        assert!(cache.automatic_styles.contains("PTitle"));
+        assert_eq!(reopened.state().odt_parts["custom/keep.bin"], b"opaque");
+        doc.update_toc(toc).unwrap();
+        let updated = RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        let cache = updated.state().tables_of_contents[0]
+            .odt_cached
+            .as_ref()
+            .unwrap();
+        assert!(!cache.has_pages);
+        assert!(cache.index_xml.contains("index-title"));
+        assert!(cache.source_xml.contains("index-entry-page-number"));
+        assert_eq!(updated.state().tables_of_contents[0].max_level, 2);
+    }
+    #[test]
+    fn external_odt_links_and_bookmarks_survive_resave() {
+        let content = format!(
+            r##"<office:document-content xmlns:office="{O}" xmlns:text="{T}" xmlns:xlink="{XL}"><office:body><office:text><text:p><text:bookmark-start text:name="Target"/>Heading<text:bookmark-end text:name="Target"/></text:p><text:p><text:a xlink:type="simple" xlink:href="#Target">Jump</text:a> <text:a xlink:type="simple" xlink:href="https://example.org/">Visit</text:a></text:p></office:text></office:body></office:document-content>"##
+        );
+        let styles = format!("<office:document-styles {NS}><office:automatic-styles><style:page-layout style:name=\"P\"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"P\"/></office:master-styles></office:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+            ("custom/keep.bin", b"opaque".as_slice()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let doc = RichDocument::decode(&zip.finish().unwrap().into_inner(), Format::Odt).unwrap();
+        assert_eq!(doc.state().bookmarks[0].name, "Target");
+        let Block::Paragraph(p) = &doc.state().blocks[1] else {
+            panic!()
+        };
+        assert!(p.runs.iter().any(|r| r.link.as_deref() == Some("#Target")));
+        assert!(p
+            .runs
+            .iter()
+            .any(|r| r.link.as_deref() == Some("https://example.org/")));
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        assert_eq!(reopened.state().bookmarks[0].name, "Target");
+        assert_eq!(reopened.state().odt_parts["custom/keep.bin"], b"opaque");
+    }
     fn paragraph(id: u64, text: &str) -> Paragraph {
         Paragraph {
             id,

@@ -7,6 +7,103 @@ use windows_sys::Win32::Graphics::Gdi::{
 
 use crate::{Point, Viewport};
 
+pub(crate) unsafe fn opacity_layer(
+    dc: HDC,
+    viewport: Viewport,
+    bounds: crate::CanvasRect,
+    opacity: u8,
+    draw: impl FnOnce(HDC, Viewport),
+) {
+    use std::{
+        mem::{size_of, zeroed},
+        ptr::null_mut,
+    };
+    use windows_sys::Win32::Graphics::Gdi::*;
+    if opacity == 0
+        || !viewport.zoom.is_finite()
+        || viewport.zoom <= 0.0
+        || ![bounds.x, bounds.y, bounds.width, bounds.height]
+            .iter()
+            .all(|v| v.is_finite())
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+    {
+        return;
+    }
+    let a = viewport.document_to_view(Point {
+        x: bounds.x,
+        y: bounds.y,
+    });
+    let width = bounds.width * viewport.zoom;
+    let height = bounds.height * viewport.zoom;
+    if !a.x.is_finite()
+        || !a.y.is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+        || width > 32767.0
+        || height > 32767.0
+    {
+        return;
+    }
+    let scale = (4096.0 / width).min(4096.0 / height).min(1.0);
+    let w = (width * scale).ceil().max(1.0) as i32;
+    let h = (height * scale).ceil().max(1.0) as i32;
+    let mut bmi: BITMAPINFO = zeroed();
+    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    let memory = CreateCompatibleDC(dc);
+    if memory.is_null() {
+        return;
+    }
+    let mut bits = null_mut();
+    let bitmap = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
+        DeleteDC(memory);
+        return;
+    }
+    std::ptr::write_bytes(bits.cast::<u8>(), 255, w as usize * h as usize * 4);
+    let old = SelectObject(memory, bitmap as _);
+    let zoom = viewport.zoom * scale;
+    draw(
+        memory,
+        Viewport {
+            zoom,
+            pan: Point {
+                x: -bounds.x * zoom,
+                y: -bounds.y * zoom,
+            },
+        },
+    );
+    AlphaBlend(
+        dc,
+        a.x.round() as i32,
+        a.y.round() as i32,
+        width.round().max(1.0) as i32,
+        height.round().max(1.0) as i32,
+        memory,
+        0,
+        0,
+        w,
+        h,
+        BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: opacity,
+            AlphaFormat: 0,
+        },
+    );
+    SelectObject(memory, old);
+    DeleteObject(bitmap as _);
+    DeleteDC(memory);
+}
+
 thread_local! { static DEPTH: Cell<usize> = const { Cell::new(0) }; }
 struct SavedDc(HDC, i32);
 impl Drop for SavedDc {

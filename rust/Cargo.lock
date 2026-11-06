@@ -2491,6 +2491,7 @@ name = "win42"
 version = "0.1.0"
 dependencies = [
  "suite42-core",
+ "windows",
  "windows-sys",
 ]
 

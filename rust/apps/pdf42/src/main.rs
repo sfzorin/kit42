@@ -986,13 +986,16 @@ impl win42::App for Pdf {
                 ],
             });
         }
-        if (54..=58).contains(&id) {
+        if (54..=58).contains(&id) || id == 79 {
             let names = doc.bookmarks().ok()?;
             let mut fields = Vec::new();
             if id == 54 {
                 fields.push(("Title", String::new()));
             } else {
                 fields.push(("Bookmark number", "1".into()));
+                if id == 79 {
+                    fields.push(("Child title", String::new()));
+                }
                 if id == 56 {
                     fields.push(("New title", names.first().cloned().unwrap_or_default()));
                 }
@@ -1014,7 +1017,8 @@ impl win42::App for Pdf {
                     54 => "Add bookmark",
                     55 => "Go to bookmark",
                     56 => "Rename bookmark",
-                    57 => "Delete bookmark",
+                    57 => "Delete bookmark and children",
+                    79 => "Add child bookmark",
                     _ => "Move bookmark",
                 },
                 fields,
@@ -1200,7 +1204,7 @@ impl win42::App for Pdf {
             self.export_dpi = dpi;
             return Ok(());
         }
-        if (54..=58).contains(&id) {
+        if (54..=58).contains(&id) || id == 79 {
             let doc = self.doc.as_mut().ok_or("Open a PDF first")?;
             if id == 54 {
                 let title = values.first().ok_or("Enter a title")?;
@@ -1217,6 +1221,7 @@ impl win42::App for Pdf {
                     55 => doc.select_bookmark(index)?,
                     56 => doc.rename_bookmark(index, values.get(1).ok_or("Enter a title")?)?,
                     57 => doc.delete_bookmark(index)?,
+                    79 => doc.add_child_bookmark(index, values.get(1).ok_or("Enter a title")?)?,
                     58 => {
                         let to: usize = values
                             .get(1)
@@ -1702,6 +1707,7 @@ impl win42::App for Pdf {
             (56, "Rename Bookmark…"),
             (57, "Delete Bookmark…"),
             (58, "Move Bookmark…"),
+            (79, "Add Child Bookmark…"),
             (59, "Set Image Export Range…"),
             (62, "Cancel Image Export"),
             (63, "Compress PDF Streams"),
@@ -1861,7 +1867,7 @@ impl win42::App for Pdf {
                 }
             }
             49 | 50 => d.attachments().is_ok_and(|v| !v.is_empty()),
-            55..=58 => d.bookmarks().is_ok_and(|v| !v.is_empty()),
+            55..=58 | 79 => d.bookmarks().is_ok_and(|v| !v.is_empty()),
             60 | 61 => {
                 #[cfg(windows)]
                 {

@@ -2,21 +2,26 @@
 pub type Pages = Vec<(u32, u32, Vec<u8>, u32, u32)>;
 pub type ResultMessage = (u64, Result<Pages, String>);
 
-pub fn start(id: u64, parent: usize) -> std::sync::mpsc::Receiver<ResultMessage> {
+pub fn start(
+    id: u64,
+    parent: usize,
+    byte_budget: usize,
+    page_budget: usize,
+) -> std::sync::mpsc::Receiver<ResultMessage> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send((id, acquire_sta(parent)));
+        let _ = tx.send((id, acquire_sta(parent, byte_budget, page_budget)));
     });
     rx
 }
 
 #[cfg(not(windows))]
-fn acquire_sta(_: usize) -> Result<Pages, String> {
+fn acquire_sta(_: usize, _: usize, _: usize) -> Result<Pages, String> {
     Err("WIA scanner acquisition is available only on Windows".into())
 }
 
 #[cfg(windows)]
-fn acquire_sta(parent: usize) -> Result<Pages, String> {
+fn acquire_sta(parent: usize, byte_budget: usize, page_budget: usize) -> Result<Pages, String> {
     use windows::{
         core::BSTR,
         Win32::{
@@ -74,15 +79,32 @@ fn acquire_sta(parent: usize) -> Result<Pages, String> {
             return Ok(Vec::new());
         }
         let mut pages = Vec::new();
+        let mut total = 0usize;
         for name in names {
-            pages.extend(decode_frames(&name)?);
+            let remaining_bytes = byte_budget
+                .checked_sub(total)
+                .ok_or("Acquired images exceed memory limit")?;
+            let remaining_pages = page_budget
+                .checked_sub(pages.len())
+                .ok_or("Acquired images exceed page limit")?;
+            let batch = decode_frames(&name, remaining_bytes, remaining_pages)?;
+            for page in batch {
+                total = total
+                    .checked_add(page.2.len())
+                    .ok_or("Acquired images exceed memory limit")?;
+                pages.push(page);
+            }
         }
         Ok(pages)
     }
 }
 
 #[cfg(windows)]
-unsafe fn decode_frames(path: &str) -> Result<Pages, String> {
+unsafe fn decode_frames(
+    path: &str,
+    byte_budget: usize,
+    page_budget: usize,
+) -> Result<Pages, String> {
     use windows::{
         core::PCWSTR,
         Win32::{
@@ -108,7 +130,7 @@ unsafe fn decode_frames(path: &str) -> Result<Pages, String> {
         )
         .map_err(|e| format!("Cannot decode acquired image: {e}"))?;
     let count = decoder.GetFrameCount().map_err(|e| e.to_string())?;
-    if count == 0 || count > 32 {
+    if count == 0 || count as usize > page_budget {
         return Err("Acquired image has an unsupported frame count".into());
     }
     let mut pages = Vec::new();
@@ -135,7 +157,7 @@ unsafe fn decode_frames(path: &str) -> Result<Pages, String> {
             .and_then(|v| v.checked_mul(4))
             .ok_or("Invalid acquired dimensions")?;
         total = total.checked_add(size).ok_or("Acquired images too large")?;
-        if w == 0 || h == 0 || w > 10000 || h > 10000 || total > 16 * 1024 * 1024 {
+        if w == 0 || h == 0 || w > 10000 || h > 10000 || total > byte_budget {
             return Err("Acquired images exceed page/memory limits".into());
         }
         let mut pixels = vec![0; size];

@@ -14,7 +14,16 @@ impl RichDocument {
                 .blocks
                 .iter()
                 .filter_map(|b| match b {
-                    Block::Paragraph(p) if p.style.outline_level.is_some() => Some(p.clone()),
+                    Block::Paragraph(p)
+                        if p.style.outline_level.is_some_and(|l| l <= 8)
+                            && !s
+                                .tables_of_contents
+                                .iter()
+                                .filter_map(|t| t.odt_cached.as_ref())
+                                .any(|c| c.title_paragraphs.contains(&p.id)) =>
+                    {
+                        Some(p.clone())
+                    }
                     _ => None,
                 })
                 .collect();
@@ -51,7 +60,14 @@ impl RichDocument {
                     heading: heading.id,
                 });
             }
-            s.tables_of_contents.push(TableOfContents { id, entries });
+            s.tables_of_contents.push(TableOfContents {
+                id,
+                entries,
+                min_level: 0,
+                max_level: 8,
+                docx_cached: None,
+                odt_cached: None,
+            });
             Ok(())
         })
     }
@@ -76,13 +92,16 @@ impl RichDocument {
             let index = s.tables_of_contents.iter().position(|t| t.id == id)
                 .ok_or_else(|| Error::Invalid("table of contents".into()))?;
             let entries = &s.tables_of_contents[index].entries;
+            let titles = s.tables_of_contents[index].odt_cached.as_ref().map(|c| c.title_paragraphs.clone()).unwrap_or_default();
             if entries.iter().any(|e| s.comments.iter().any(|c| c.start.paragraph == e.paragraph || c.end.paragraph == e.paragraph)
                 || s.footnotes.iter().any(|n| n.at.paragraph == e.paragraph)
                 || s.fields.iter().any(|f| f.at.paragraph == e.paragraph)
+                || s.bookmarks.iter().any(|b| b.start.paragraph == e.paragraph || b.end.paragraph == e.paragraph)
                 || s.revisions.iter().any(|r| r.start.paragraph == e.paragraph || r.end.paragraph == e.paragraph)) {
                 return Err(Error::Unsupported("annotations on generated TOC entries".into()));
             }
-            s.blocks.retain(|b| !matches!(b, Block::Paragraph(p) if entries.iter().any(|e| e.paragraph == p.id)));
+            if titles.iter().any(|id| s.comments.iter().any(|c| c.start.paragraph == *id || c.end.paragraph == *id) || s.footnotes.iter().any(|n| n.at.paragraph == *id) || s.bookmarks.iter().any(|b| b.start.paragraph == *id || b.end.paragraph == *id) || s.fields.iter().any(|f| f.at.paragraph == *id) || s.revisions.iter().any(|r| r.start.paragraph == *id || r.end.paragraph == *id)) { return Err(Error::Unsupported("annotations on TOC title".into())); }
+            s.blocks.retain(|b| !matches!(b, Block::Paragraph(p) if entries.iter().any(|e| e.paragraph == p.id) || titles.contains(&p.id)));
             s.tables_of_contents.remove(index);
             s.selection = Selection::default();
             Ok(())
@@ -97,6 +116,11 @@ impl RichDocument {
                 .position(|t| t.id == id)
                 .ok_or_else(|| Error::Invalid("table of contents".into()))?;
             let old = s.tables_of_contents[toc].entries.clone();
+            let titles = s.tables_of_contents[toc]
+                .odt_cached
+                .as_ref()
+                .map(|c| c.title_paragraphs.clone())
+                .unwrap_or_default();
             let index = s
                 .blocks
                 .iter()
@@ -110,6 +134,12 @@ impl RichDocument {
                     .any(|c| c.start.paragraph == e.paragraph || c.end.paragraph == e.paragraph)
                     || s.footnotes.iter().any(|n| n.at.paragraph == e.paragraph)
                     || s.fields.iter().any(|f| f.at.paragraph == e.paragraph)
+                    || s.bookmarks
+                        .iter()
+                        .any(|b| b.start.paragraph == e.paragraph || b.end.paragraph == e.paragraph)
+                    || s.revisions
+                        .iter()
+                        .any(|r| r.start.paragraph == e.paragraph || r.end.paragraph == e.paragraph)
             }) {
                 return Err(Error::Unsupported(
                     "annotations on generated TOC entries".into(),
@@ -119,7 +149,20 @@ impl RichDocument {
                 .blocks
                 .iter()
                 .filter_map(|b| match b {
-                    Block::Paragraph(p) if p.style.outline_level.is_some() => Some(p.clone()),
+                    Block::Paragraph(p)
+                        if !titles.contains(&p.id)
+                            && !s
+                                .tables_of_contents
+                                .iter()
+                                .filter_map(|t| t.odt_cached.as_ref())
+                                .any(|c| c.title_paragraphs.contains(&p.id))
+                            && p.style.outline_level.is_some_and(|l| {
+                                l >= s.tables_of_contents[toc].min_level
+                                    && l <= s.tables_of_contents[toc].max_level
+                            }) =>
+                    {
+                        Some(p.clone())
+                    }
                     _ => None,
                 })
                 .collect();
@@ -160,6 +203,11 @@ impl RichDocument {
                 });
             }
             s.tables_of_contents[toc].entries = entries;
+            s.tables_of_contents[toc].docx_cached = None;
+            if let Some(cache) = &mut s.tables_of_contents[toc].odt_cached {
+                cache.needs_refresh = true;
+                cache.has_pages = false;
+            }
             s.selection = Selection::default();
             Ok(())
         })

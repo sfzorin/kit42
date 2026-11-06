@@ -180,7 +180,8 @@ struct Bookmark {
     existing: Option<ObjectId>,
     title: String,
     page: Option<ObjectId>,
-    descendants: i64,
+    depth: usize,
+    closed: bool,
 }
 #[derive(Clone)]
 struct FormField {
@@ -693,6 +694,316 @@ fn resolve_local_destination(doc: &Document, destination: &Object) -> Option<Obj
         }
     }
     resolve(doc, destination, 0)
+}
+// Remove supported local references before pruning a reduced page tree. Work on a
+// disposable document so history retains the original object graph.
+fn prune_page_references(
+    doc: &mut Document,
+    kept: &[ObjectId],
+    removed: &HashSet<ObjectId>,
+) -> Result<(), String> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let catalog = doc.catalog().map_err(|e| e.to_string())?.clone();
+    if catalog.has(b"StructTreeRoot") {
+        return Err("Tagged PDF page removal is not yet supported safely".into());
+    }
+    let original = doc.clone();
+    if catalog.get(b"OpenAction").ok().is_some_and(|v| {
+        resolve_local_destination(&original, v).is_some_and(|id| removed.contains(&id))
+    }) {
+        doc.catalog_mut()
+            .map_err(|e| e.to_string())?
+            .remove(b"OpenAction");
+    }
+    fn clean(value: &mut Object, original: &Document, removed: &HashSet<ObjectId>) {
+        match value {
+            Object::Dictionary(d) => {
+                let is_removed = |v: &Object| {
+                    resolve_local_destination(original, v).is_some_and(|id| removed.contains(&id))
+                };
+                if d.get(b"Dest").ok().is_some_and(is_removed) {
+                    d.remove(b"Dest");
+                }
+                let remove_action = d
+                    .get(b"A")
+                    .ok()
+                    .and_then(|v| original.dereference(v).ok())
+                    .and_then(|(_, v)| v.as_dict().ok())
+                    .is_some_and(|a| {
+                        a.get(b"S").ok().and_then(|v| v.as_name().ok()) == Some(b"GoTo")
+                            && a.get(b"D").ok().is_some_and(is_removed)
+                    });
+                if remove_action {
+                    d.remove(b"A");
+                }
+                for (_, v) in d.iter_mut() {
+                    clean(v, original, removed);
+                }
+            }
+            Object::Array(a) => {
+                for v in a {
+                    clean(v, original, removed);
+                }
+            }
+            Object::Stream(s) => {
+                let mut d = Object::Dictionary(s.dict.clone());
+                clean(&mut d, original, removed);
+                if let Object::Dictionary(d) = d {
+                    s.dict = d;
+                }
+            }
+            _ => {}
+        }
+    }
+    for value in doc.objects.values_mut() {
+        clean(value, &original, removed);
+    }
+    // Old-style destination dictionaries and destination name trees can keep
+    // omitted pages reachable even after their consumers have been detached.
+    if let Ok(v) = catalog.get(b"Dests") {
+        let mut d = original
+            .dereference(v)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?
+            .clone();
+        let keys: Vec<_> = d
+            .iter()
+            .filter(|(_, v)| {
+                resolve_local_destination(&original, v).is_some_and(|id| removed.contains(&id))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in keys {
+            d.remove(&key);
+        }
+        doc.catalog_mut()
+            .map_err(|e| e.to_string())?
+            .set("Dests", d);
+    }
+    fn names(
+        doc: &Document,
+        node: &Object,
+        out: &mut Vec<(Object, Object)>,
+        seen: &mut HashSet<ObjectId>,
+    ) -> Result<(), String> {
+        if let Ok(id) = node.as_reference() {
+            if !seen.insert(id) || seen.len() > 10000 {
+                return Err("Invalid destination name tree".into());
+            }
+        }
+        let d = doc
+            .dereference(node)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?;
+        if let Ok(v) = d.get(b"Names") {
+            let a = doc
+                .dereference(v)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_array()
+                .map_err(|e| e.to_string())?;
+            if a.len() % 2 != 0 {
+                return Err("Invalid destination name tree".into());
+            }
+            for pair in a.chunks_exact(2) {
+                out.push((pair[0].clone(), pair[1].clone()));
+            }
+        }
+        if let Ok(v) = d.get(b"Kids") {
+            for child in doc
+                .dereference(v)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_array()
+                .map_err(|e| e.to_string())?
+            {
+                names(doc, child, out, seen)?;
+            }
+        }
+        Ok(())
+    }
+    if let Some(tree) = catalog
+        .get(b"Names")
+        .ok()
+        .and_then(|v| original.dereference(v).ok())
+        .and_then(|(_, v)| v.as_dict().ok())
+        .and_then(|d| d.get(b"Dests").ok())
+    {
+        let mut entries = Vec::new();
+        names(&original, tree, &mut entries, &mut HashSet::new())?;
+        entries.retain(|(_, v)| {
+            !resolve_local_destination(&original, v).is_some_and(|id| removed.contains(&id))
+        });
+        let tree = doc.add_object(lopdf::dictionary! {"Names" => entries.into_iter().flat_map(|(k,v)| [k,v]).collect::<Vec<_>>()});
+        let mut all = original
+            .dereference(catalog.get(b"Names").unwrap())
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?
+            .clone();
+        all.set("Dests", tree);
+        doc.catalog_mut()
+            .map_err(|e| e.to_string())?
+            .set("Names", all);
+    }
+    let mut page_widgets = HashMap::new();
+    for (page, object) in &original.objects {
+        if object
+            .as_dict()
+            .ok()
+            .and_then(|d| d.get(b"Type").ok())
+            .and_then(|v| v.as_name().ok())
+            != Some(b"Page")
+        {
+            continue;
+        }
+        if let Ok(v) = original
+            .get_dictionary(*page)
+            .and_then(|d| d.get(b"Annots"))
+        {
+            let a = original
+                .dereference(v)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_array()
+                .map_err(|e| e.to_string())?;
+            for item in a {
+                if let Ok(id) = item.as_reference() {
+                    if page_widgets.insert(id, *page).is_some() {
+                        return Err("Annotation belongs to multiple pages".into());
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(form) = catalog.get(b"AcroForm") {
+        let mut form = original
+            .dereference(form)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?
+            .clone();
+        if form.has(b"XFA") {
+            return Err("XFA forms cannot be safely reduced to selected pages".into());
+        }
+        fn field(
+            doc: &mut Document,
+            original: &Document,
+            id: ObjectId,
+            removed: &HashSet<ObjectId>,
+            widgets: &HashMap<ObjectId, ObjectId>,
+            seen: &mut HashSet<ObjectId>,
+            discarded: &mut HashSet<ObjectId>,
+        ) -> Result<bool, String> {
+            if !seen.insert(id) || seen.len() > 10000 {
+                return Err("Invalid form field tree".into());
+            }
+            let mut d = doc.get_dictionary(id).map_err(|e| e.to_string())?.clone();
+            let widget = d.get(b"Subtype").ok().and_then(|v| v.as_name().ok()) == Some(b"Widget");
+            let page = d
+                .get(b"P")
+                .ok()
+                .and_then(|v| v.as_reference().ok())
+                .or_else(|| widgets.get(&id).copied());
+            let mut had_kids = false;
+            let mut retained = Vec::new();
+            if let Ok(v) = d.get(b"Kids") {
+                had_kids = true;
+                for kid in original
+                    .dereference(v)
+                    .map_err(|e| e.to_string())?
+                    .1
+                    .as_array()
+                    .map_err(|e| e.to_string())?
+                {
+                    let kid = kid
+                        .as_reference()
+                        .map_err(|_| "Direct form fields cannot be safely reduced")?;
+                    if field(doc, original, kid, removed, widgets, seen, discarded)? {
+                        retained.push(Object::Reference(kid));
+                    }
+                }
+                d.set("Kids", retained.clone());
+            }
+            let drop = (widget && page.is_some_and(|p| removed.contains(&p)))
+                || (had_kids && retained.is_empty() && !widget);
+            if drop {
+                discarded.insert(id);
+                return Ok(false);
+            }
+            doc.objects.insert(id, Object::Dictionary(d));
+            Ok(true)
+        }
+        let fields = form
+            .get(b"Fields")
+            .ok()
+            .map(|v| {
+                original
+                    .dereference(v)
+                    .map_err(|e| e.to_string())
+                    .and_then(|(_, v)| v.as_array().map_err(|e| e.to_string()))
+                    .cloned()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut retained = Vec::new();
+        let mut discarded = HashSet::new();
+        let mut seen = HashSet::new();
+        for f in fields {
+            let id = f
+                .as_reference()
+                .map_err(|_| "Direct form fields cannot be safely reduced")?;
+            if field(
+                doc,
+                &original,
+                id,
+                removed,
+                &page_widgets,
+                &mut seen,
+                &mut discarded,
+            )? {
+                retained.push(Object::Reference(id));
+            }
+        }
+        if !discarded.is_empty()
+            && original.objects.values().any(|v| {
+                v.as_dict().ok().is_some_and(|d| {
+                    d.get(b"S").ok().and_then(|v| v.as_name().ok()) == Some(b"JavaScript")
+                })
+            })
+        {
+            return Err("PDF JavaScript may refer to removed form fields".into());
+        }
+        form.set("Fields", retained);
+        if let Ok(co) = form.get(b"CO") {
+            let mut co = original
+                .dereference(co)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_array()
+                .map_err(|e| e.to_string())?
+                .clone();
+            co.retain(|v| {
+                !v.as_reference()
+                    .ok()
+                    .is_some_and(|id| discarded.contains(&id))
+            });
+            form.set("CO", co);
+        }
+        doc.catalog_mut()
+            .map_err(|e| e.to_string())?
+            .set("AcroForm", form);
+    }
+    let _ = kept;
+    Ok(())
 }
 impl PdfDocument {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -1566,52 +1877,81 @@ impl PdfDocument {
             .1
             .as_dict()
             .map_err(|e| e.to_string())?;
-        let mut next = match root.get(b"First") {
-            Ok(value) => Some(
-                value
-                    .as_reference()
-                    .map_err(|_| "Direct bookmark objects cannot be safely imported")?,
-            ),
-            Err(_) => None,
-        };
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        while let Some(id) = next {
-            if !seen.insert(id) || seen.len() > 10_000 {
-                return Err("Invalid bookmark list".into());
+        fn visit(
+            doc: &Document,
+            first: Option<ObjectId>,
+            depth: usize,
+            seen: &mut HashSet<ObjectId>,
+            out: &mut Vec<Bookmark>,
+        ) -> Result<(), String> {
+            if depth > 64 {
+                return Err("Bookmark nesting limit exceeded".into());
             }
-            let d = self.doc.get_dictionary(id).map_err(|e| e.to_string())?;
-            let title = d
-                .get(b"Title")
-                .ok()
-                .and_then(|v| lopdf::decode_text_string(v).ok())
-                .unwrap_or_default();
-            let destination = d.get(b"Dest").ok().or_else(|| {
-                let action = d
-                    .get(b"A")
-                    .ok()
-                    .and_then(|v| self.doc.dereference(v).ok())
-                    .and_then(|(_, v)| v.as_dict().ok())?;
-                if action.get(b"S").ok().and_then(|v| v.as_name().ok()) != Some(b"GoTo") {
-                    return None;
+            let mut next = first;
+            while let Some(id) = next {
+                if !seen.insert(id) || seen.len() > 10_000 {
+                    return Err("Invalid bookmark tree".into());
                 }
-                action.get(b"D").ok()
-            });
-            let page = destination.and_then(|v| resolve_local_destination(&self.doc, v));
-            let descendants = d
-                .get(b"Count")
-                .ok()
-                .and_then(|v| v.as_i64().ok())
-                .unwrap_or(0)
-                .max(0);
-            out.push(Bookmark {
-                existing: Some(id),
-                title,
-                page,
-                descendants,
-            });
-            next = d.get(b"Next").ok().and_then(|v| v.as_reference().ok());
+                let d = doc.get_dictionary(id).map_err(|e| e.to_string())?;
+                let title = d
+                    .get(b"Title")
+                    .ok()
+                    .and_then(|v| lopdf::decode_text_string(v).ok())
+                    .unwrap_or_default();
+                let destination = d.get(b"Dest").ok().or_else(|| {
+                    let action = d
+                        .get(b"A")
+                        .ok()
+                        .and_then(|v| doc.dereference(v).ok())
+                        .and_then(|(_, v)| v.as_dict().ok())?;
+                    (action.get(b"S").ok().and_then(|v| v.as_name().ok()) == Some(b"GoTo"))
+                        .then(|| action.get(b"D").ok())
+                        .flatten()
+                });
+                let page = destination.and_then(|v| resolve_local_destination(doc, v));
+                let closed = d
+                    .get(b"Count")
+                    .ok()
+                    .and_then(|v| v.as_i64().ok())
+                    .unwrap_or(0)
+                    < 0;
+                out.push(Bookmark {
+                    existing: Some(id),
+                    title,
+                    page,
+                    depth,
+                    closed,
+                });
+                let child = d
+                    .get(b"First")
+                    .ok()
+                    .map(|v| {
+                        v.as_reference()
+                            .map_err(|_| "Direct bookmark objects cannot be safely imported")
+                    })
+                    .transpose()?;
+                visit(doc, child, depth + 1, seen, out)?;
+                next = d
+                    .get(b"Next")
+                    .ok()
+                    .map(|v| {
+                        v.as_reference()
+                            .map_err(|_| "Direct bookmark objects cannot be safely imported")
+                    })
+                    .transpose()?;
+            }
+            Ok(())
         }
+        let first = root
+            .get(b"First")
+            .ok()
+            .map(|v| {
+                v.as_reference()
+                    .map_err(|_| "Direct bookmark objects cannot be safely imported")
+            })
+            .transpose()?;
+        let mut out = Vec::new();
+        visit(&self.doc, first, 0, &mut HashSet::new(), &mut out)?;
         Ok(out)
     }
     fn current_bookmarks(&self) -> Result<Vec<Bookmark>, String> {
@@ -1626,7 +1966,7 @@ impl PdfDocument {
         Ok(self
             .current_bookmarks()?
             .into_iter()
-            .map(|b| b.title)
+            .map(|b| format!("{}{}", "  ".repeat(b.depth), b.title))
             .collect())
     }
     pub fn select_bookmark(&mut self, index: usize) -> Result<(), String> {
@@ -1657,7 +1997,8 @@ impl PdfDocument {
             existing: None,
             title: title.into(),
             page: Some(self.history.current().selected),
-            descendants: 0,
+            depth: 0,
+            closed: false,
         });
         let mut state = self.history.current().clone();
         state.bookmarks = Some(bookmarks);
@@ -1678,12 +2019,47 @@ impl PdfDocument {
         self.history.apply(state);
         Ok(())
     }
+    pub fn add_child_bookmark(&mut self, parent: usize, title: &str) -> Result<(), String> {
+        if title.is_empty() || title.len() > 32768 {
+            return Err("Enter a bookmark title".into());
+        }
+        let mut bookmarks = self.current_bookmarks()?;
+        let depth = bookmarks
+            .get(parent)
+            .ok_or("Bookmark index out of range")?
+            .depth
+            + 1;
+        if depth > 64 || bookmarks.len() >= 10_000 {
+            return Err("Bookmark limit exceeded".into());
+        }
+        let end = (parent + 1..bookmarks.len())
+            .find(|&i| bookmarks[i].depth < depth)
+            .unwrap_or(bookmarks.len());
+        bookmarks.insert(
+            end,
+            Bookmark {
+                existing: None,
+                title: title.into(),
+                page: Some(self.history.current().selected),
+                depth,
+                closed: false,
+            },
+        );
+        let mut state = self.history.current().clone();
+        state.bookmarks = Some(bookmarks);
+        self.history.apply(state);
+        Ok(())
+    }
     pub fn delete_bookmark(&mut self, index: usize) -> Result<(), String> {
         let mut bookmarks = self.current_bookmarks()?;
-        if index >= bookmarks.len() {
-            return Err("Bookmark index out of range".into());
-        }
-        bookmarks.remove(index);
+        let depth = bookmarks
+            .get(index)
+            .ok_or("Bookmark index out of range")?
+            .depth;
+        let end = (index + 1..bookmarks.len())
+            .find(|&i| bookmarks[i].depth <= depth)
+            .unwrap_or(bookmarks.len());
+        bookmarks.drain(index..end);
         let mut state = self.history.current().clone();
         state.bookmarks = Some(bookmarks);
         self.history.apply(state);
@@ -1691,11 +2067,38 @@ impl PdfDocument {
     }
     pub fn move_bookmark(&mut self, from: usize, to: usize) -> Result<(), String> {
         let mut bookmarks = self.current_bookmarks()?;
-        if from >= bookmarks.len() || to >= bookmarks.len() {
-            return Err("Bookmark index out of range".into());
+        let depth = bookmarks
+            .get(from)
+            .ok_or("Bookmark index out of range")?
+            .depth;
+        if bookmarks
+            .get(to)
+            .ok_or("Bookmark index out of range")?
+            .depth
+            != depth
+        {
+            return Err("Move bookmarks among siblings at the same level".into());
         }
-        let bookmark = bookmarks.remove(from);
-        bookmarks.insert(to, bookmark);
+        let parent = |i: usize| (0..i).rev().find(|&j| bookmarks[j].depth < depth);
+        if parent(from) != parent(to) {
+            return Err("Move bookmarks among siblings of the same parent".into());
+        }
+        if from == to {
+            return Ok(());
+        }
+        let end = (from + 1..bookmarks.len())
+            .find(|&i| bookmarks[i].depth <= depth)
+            .unwrap_or(bookmarks.len());
+        let moving: Vec<_> = bookmarks.drain(from..end).collect();
+        let target = if to > from { to - (end - from) } else { to };
+        let insert = if to > from {
+            (target + 1..bookmarks.len())
+                .find(|&i| bookmarks[i].depth <= depth)
+                .unwrap_or(bookmarks.len())
+        } else {
+            target
+        };
+        bookmarks.splice(insert..insert, moving);
         let mut state = self.history.current().clone();
         state.bookmarks = Some(bookmarks);
         self.history.apply(state);
@@ -2778,6 +3181,12 @@ impl PdfDocument {
                 .map_err(|e| e.to_string())?
                 .set("PageLabels", tree);
         }
+        let removed: HashSet<_> = pages
+            .iter()
+            .copied()
+            .filter(|id| *id != pages[index])
+            .collect();
+        prune_page_references(&mut doc, &[pages[index]], &removed)?;
         doc.prune_objects();
         if pages
             .iter()
@@ -3514,22 +3923,71 @@ impl PdfDocument {
                     .iter()
                     .map(|b| b.existing.unwrap_or_else(|| doc.new_object_id()))
                     .collect();
+                // Count each visible child, but skip descendants of a closed child.
+                // For a closed item this is the count that would be visible if
+                // that item alone were opened, so its own state is not consulted.
+                fn visible_count(bookmarks: &[Bookmark], start: usize, end: usize) -> i64 {
+                    let mut count = 0;
+                    let mut hidden_below = None;
+                    for item in &bookmarks[start..end] {
+                        if hidden_below.is_some_and(|depth| item.depth > depth) {
+                            continue;
+                        }
+                        hidden_below = None;
+                        count += 1;
+                        if item.closed {
+                            hidden_below = Some(item.depth);
+                        }
+                    }
+                    count
+                }
+                let mut root_items = Vec::new();
                 for (i, b) in bookmarks.iter().enumerate() {
+                    let parent = (0..i).rev().find(|&j| bookmarks[j].depth < b.depth);
+                    if b.depth > 0 && parent.is_none_or(|j| bookmarks[j].depth + 1 != b.depth) {
+                        return Err("Invalid bookmark hierarchy".into());
+                    }
+                    let end = (i + 1..bookmarks.len())
+                        .find(|&j| bookmarks[j].depth <= b.depth)
+                        .unwrap_or(bookmarks.len());
+                    let siblings: Vec<_> = (0..bookmarks.len())
+                        .filter(|&j| {
+                            bookmarks[j].depth == b.depth
+                                && (0..j).rev().find(|&k| bookmarks[k].depth < b.depth) == parent
+                        })
+                        .collect();
+                    let pos = siblings
+                        .iter()
+                        .position(|&j| j == i)
+                        .ok_or("Invalid bookmark hierarchy")?;
+                    let children: Vec<_> = (i + 1..end)
+                        .filter(|&j| bookmarks[j].depth == b.depth + 1)
+                        .collect();
                     let mut item = match b.existing {
                         Some(id) => doc.get_dictionary(id).map_err(|e| e.to_string())?.clone(),
                         None => lopdf::dictionary! {},
                     };
                     item.set("Title", lopdf::text_string(&b.title));
-                    item.set("Parent", root_id);
-                    if i > 0 {
-                        item.set("Prev", ids[i - 1]);
+                    item.set("Parent", parent.map(|j| ids[j]).unwrap_or(root_id));
+                    if pos > 0 {
+                        item.set("Prev", ids[siblings[pos - 1]]);
                     } else {
                         item.remove(b"Prev");
                     }
-                    if i + 1 < ids.len() {
-                        item.set("Next", ids[i + 1]);
+                    if pos + 1 < siblings.len() {
+                        item.set("Next", ids[siblings[pos + 1]]);
                     } else {
                         item.remove(b"Next");
+                    }
+                    if children.is_empty() {
+                        item.remove(b"First");
+                        item.remove(b"Last");
+                        item.remove(b"Count");
+                    } else {
+                        item.set("First", ids[children[0]]);
+                        item.set("Last", ids[*children.last().unwrap()]);
+                        let count = visible_count(bookmarks, i + 1, end);
+                        item.set("Count", if b.closed { -count } else { count });
                     }
                     if b.existing.is_none() {
                         item.set(
@@ -3540,14 +3998,14 @@ impl PdfDocument {
                             ],
                         );
                     }
+                    if parent.is_none() {
+                        root_items.push(i);
+                    }
                     doc.objects.insert(ids[i], Object::Dictionary(item));
                 }
-                root.set("First", ids[0]);
-                root.set("Last", *ids.last().unwrap());
-                root.set(
-                    "Count",
-                    bookmarks.iter().map(|b| 1 + b.descendants).sum::<i64>(),
-                );
+                root.set("First", ids[root_items[0]]);
+                root.set("Last", ids[*root_items.last().unwrap()]);
+                root.set("Count", visible_count(bookmarks, 0, bookmarks.len()));
                 doc.objects.insert(root_id, Object::Dictionary(root));
                 doc.catalog_mut()
                     .map_err(|e| e.to_string())?
@@ -3591,13 +4049,23 @@ impl PdfDocument {
                 }
             }
         }
-        doc.prune_objects();
-        if self
-            .original_pages
+        let removed: HashSet<_> = doc
+            .objects
             .iter()
-            .filter(|id| !state.pages.contains(id))
-            .any(|id| doc.objects.contains_key(id))
-        {
+            .filter_map(|(id, object)| {
+                (object
+                    .as_dict()
+                    .ok()
+                    .and_then(|d| d.get(b"Type").ok())
+                    .and_then(|v| v.as_name().ok())
+                    == Some(b"Page")
+                    && !state.pages.contains(id))
+                .then_some(*id)
+            })
+            .collect();
+        prune_page_references(&mut doc, &state.pages, &removed)?;
+        doc.prune_objects();
+        if removed.iter().any(|id| doc.objects.contains_key(id)) {
             return Err(
                 "Deleted page remains referenced by navigation, forms or another object".into(),
             );
@@ -4759,16 +5227,185 @@ mod tests {
         assert_eq!(p.page_count(), 2);
         assert!(p.undo());
         assert_eq!(p.page_count(), 3);
-        let before = p.is_dirty();
-        assert!(p.delete(0).is_err());
+        p.delete(0).unwrap();
+        let (deleted, _) = p.save_snapshot().unwrap();
+        fs::write(&extracted, deleted).unwrap();
+        let r = PdfDocument::open(&extracted).unwrap();
+        assert_eq!(r.page_count(), 2);
+        assert!(r.form_fields().is_empty());
+        assert_eq!(r.bookmarks().unwrap(), vec!["first"]);
+        assert!(p.undo());
         assert_eq!(p.page_count(), 3);
-        assert_eq!(p.is_dirty(), before);
+        assert!(p.redo());
+        assert_eq!(p.page_count(), 2);
+        assert!(p.undo());
+        fs::remove_file(&extracted).unwrap();
         p.extract_page(0, &extracted).unwrap();
         let mut r = PdfDocument::open(&extracted).unwrap();
         assert_eq!(r.page_count(), 1);
         assert_eq!(r.form_fields()[0].0, "Name");
         r.select_bookmark(0).unwrap();
         assert_eq!(r.current(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn serialized_outline_counts_only_visible_descendants() {
+        let dir = std::env::temp_dir().join(format!("pdf42-outline-count-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        sample(&input, false);
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.add_bookmark("A").unwrap();
+        p.add_child_bookmark(0, "B").unwrap();
+        p.add_child_bookmark(1, "C").unwrap();
+        p.add_child_bookmark(0, "D").unwrap();
+        p.add_bookmark("E").unwrap();
+        p.add_child_bookmark(4, "F").unwrap();
+        p.add_child_bookmark(4, "G").unwrap();
+        p.add_child_bookmark(6, "H").unwrap();
+        let mut state = p.history.current().clone();
+        let bookmarks = state.bookmarks.as_mut().unwrap();
+        for item in bookmarks {
+            if ["B", "E", "G"].contains(&item.title.as_str()) {
+                item.closed = true;
+            }
+        }
+        p.history.apply(state);
+        fn counts(bytes: &[u8]) -> (i64, std::collections::HashMap<String, Option<i64>>) {
+            fn walk(
+                doc: &Document,
+                first: ObjectId,
+                out: &mut std::collections::HashMap<String, Option<i64>>,
+            ) {
+                let mut next = Some(first);
+                while let Some(id) = next {
+                    let item = doc.get_dictionary(id).unwrap();
+                    let title = lopdf::decode_text_string(item.get(b"Title").unwrap()).unwrap();
+                    out.insert(title, item.get(b"Count").ok().map(|v| v.as_i64().unwrap()));
+                    if let Ok(first) = item.get(b"First") {
+                        walk(doc, first.as_reference().unwrap(), out);
+                    }
+                    next = item.get(b"Next").ok().map(|v| v.as_reference().unwrap());
+                }
+            }
+            let doc = Document::load_mem(bytes).unwrap();
+            let root = doc
+                .dereference(doc.catalog().unwrap().get(b"Outlines").unwrap())
+                .unwrap()
+                .1
+                .as_dict()
+                .unwrap();
+            let mut items = std::collections::HashMap::new();
+            walk(
+                &doc,
+                root.get(b"First").unwrap().as_reference().unwrap(),
+                &mut items,
+            );
+            (root.get(b"Count").unwrap().as_i64().unwrap(), items)
+        }
+        let (bytes, _) = p.save_snapshot().unwrap();
+        let (root, items) = counts(&bytes);
+        assert_eq!(root, 4);
+        assert_eq!(items["A"], Some(2));
+        assert_eq!(items["B"], Some(-1));
+        assert_eq!(items["E"], Some(-2));
+        assert_eq!(items["G"], Some(-1));
+        assert_eq!(items["H"], None);
+        fs::write(&output, bytes).unwrap();
+        let mut reopened = PdfDocument::open(&output).unwrap();
+        reopened.move_bookmark(3, 1).unwrap();
+        let (bytes, _) = reopened.save_snapshot().unwrap();
+        let (root, items) = counts(&bytes);
+        assert_eq!(root, 4);
+        assert_eq!(items["A"], Some(2));
+        assert_eq!(items["B"], Some(-1));
+        assert_eq!(items["E"], Some(-2));
+        reopened.delete_bookmark(6).unwrap();
+        let (bytes, _) = reopened.save_snapshot().unwrap();
+        let (root, items) = counts(&bytes);
+        assert_eq!(root, 4);
+        assert_eq!(items["E"], Some(-1));
+        assert!(!items.contains_key("G"));
+        assert!(!items.contains_key("H"));
+        assert!(reopened.undo());
+        let (bytes, _) = reopened.save_snapshot().unwrap();
+        assert_eq!(counts(&bytes).1["E"], Some(-2));
+        assert!(reopened.redo());
+        let (bytes, _) = reopened.save_snapshot().unwrap();
+        assert_eq!(counts(&bytes).1["E"], Some(-1));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn nested_bookmarks_and_deleted_link_targets_survive_save_and_history() {
+        let dir = std::env::temp_dir().join(format!("pdf42-outline-links-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        let extracted = dir.join("extract.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        let pages: Vec<_> = d.get_pages().values().copied().collect();
+        let omitted = d.add_object(lopdf::Stream::new(
+            lopdf::Dictionary::new(),
+            b"UNIQUE_REMOVED_PAGE_CONTENT".to_vec(),
+        ));
+        d.get_dictionary_mut(pages[1])
+            .unwrap()
+            .set("Contents", omitted);
+        let link = d.add_object(lopdf::dictionary! {"Type"=>"Annot", "Subtype"=>"Link", "Rect"=>vec![0.into(),0.into(),10.into(),10.into()], "Dest"=>vec![Object::Reference(pages[1]), Object::Name(b"Fit".to_vec())]});
+        d.get_dictionary_mut(pages[0])
+            .unwrap()
+            .set("Annots", vec![Object::Reference(link)]);
+        d.save(&input).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.add_bookmark("Parent").unwrap();
+        p.select(1).unwrap();
+        p.add_child_bookmark(0, "Child").unwrap();
+        p.select(2).unwrap();
+        p.add_child_bookmark(0, "Sibling").unwrap();
+        p.move_bookmark(2, 1).unwrap();
+        assert_eq!(
+            p.bookmarks().unwrap(),
+            vec!["Parent", "  Sibling", "  Child"]
+        );
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        p.extract_page(0, &extracted).unwrap();
+        let extracted_doc = Document::load(&extracted).unwrap();
+        assert_eq!(extracted_doc.get_pages().len(), 1);
+        assert!(!extracted_doc.objects.values().any(|v| matches!(v, Object::Stream(st) if st.decompressed_content().unwrap_or_else(|_| st.content.clone()).windows(27).any(|w| w == b"UNIQUE_REMOVED_PAGE_CONTENT"))));
+        fs::remove_file(&extracted).unwrap();
+        let mut r = PdfDocument::open(&output).unwrap();
+        assert_eq!(
+            r.bookmarks().unwrap(),
+            vec!["Parent", "  Sibling", "  Child"]
+        );
+        r.select_bookmark(1).unwrap();
+        assert_eq!(r.current(), 2);
+        r.delete(1).unwrap();
+        let (bytes, _) = r.save_snapshot().unwrap();
+        let saved = Document::load_mem(&bytes).unwrap();
+        assert!(!saved.objects.values().any(|v| matches!(v,Object::Stream(st) if st.decompressed_content().unwrap_or_else(|_| st.content.clone()).windows(27).any(|w| w == b"UNIQUE_REMOVED_PAGE_CONTENT"))));
+        let link_dict = saved.get_dictionary(link).unwrap();
+        assert!(link_dict.get(b"Dest").is_err());
+        fs::write(&output, bytes).unwrap();
+        let mut reopened = PdfDocument::open(&output).unwrap();
+        assert_eq!(
+            reopened.bookmarks().unwrap(),
+            vec!["Parent", "  Sibling", "  Child"]
+        );
+        assert!(reopened.select_bookmark(2).is_err());
+        reopened.select_bookmark(1).unwrap();
+        assert_eq!(reopened.current(), 1);
+        assert!(r.undo());
+        assert_eq!(r.page_count(), 3);
+        assert!(r.redo());
+        assert_eq!(r.page_count(), 2);
+        r.extract_page(0, &extracted).unwrap();
+        let x = Document::load(&extracted).unwrap();
+        assert_eq!(x.get_pages().len(), 1);
+        assert!(!x.objects.values().any(|v| matches!(v,Object::Stream(st) if st.decompressed_content().unwrap_or_else(|_| st.content.clone()).windows(27).any(|w| w == b"UNIQUE_REMOVED_PAGE_CONTENT"))));
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

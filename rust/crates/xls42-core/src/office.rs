@@ -143,6 +143,22 @@ impl Workbook {
             let ws = book.add_worksheet();
             ws.set_name(&sheet.name)
                 .map_err(|_| Error::Invalid("invalid XLSX sheet name"))?;
+            if sheet.view.frozen_rows != 0 || sheet.view.frozen_columns != 0 {
+                ws.set_freeze_panes(
+                    sheet.view.frozen_rows as u32,
+                    sheet.view.frozen_columns as u16,
+                )
+                .map_err(|_| Error::Invalid("Invalid frozen panes"))?;
+            }
+            for row in &sheet.view.hidden_rows {
+                ws.set_row_hidden(*row as u32)
+                    .map_err(|_| Error::Invalid("Cannot hide row"))?;
+            }
+            for col in &sheet.view.hidden_columns {
+                ws.set_column_hidden(*col as u16)
+                    .map_err(|_| Error::Invalid("Cannot hide column"))?;
+            }
+
             if sheet.protected {
                 ws.protect();
             }
@@ -953,6 +969,18 @@ impl Workbook {
         }
         for sh in &state.sheets {
             let mut sheet = Sheet::new(&sh.name);
+            if sh.view.frozen_rows > 0 {
+                sheet.split_row_header((sh.view.frozen_rows - 1) as u32);
+            }
+            if sh.view.frozen_columns > 0 {
+                sheet.split_col_header((sh.view.frozen_columns - 1) as u32);
+            }
+            for row in &sh.view.hidden_rows {
+                sheet.set_row_visible(*row as u32, spreadsheet_ods::sheet::Visibility::Collapsed);
+            }
+            for col in &sh.view.hidden_columns {
+                sheet.set_col_visible(*col as u32, spreadsheet_ods::sheet::Visibility::Collapsed);
+            }
             for (&r, &h) in &sh.row_heights {
                 sheet.set_row_height(r as u32, Length::Pt(h as f64 * 0.75))
             }
@@ -1240,6 +1268,36 @@ fn import_ods_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
     for i in 0..state.sheets.len() {
         let source = book.sheet(i);
         let sheet = &mut state.sheets[i];
+        if matches!(
+            source.config().vert_split_mode,
+            spreadsheet_ods::sheet::SplitMode::Heading
+        ) {
+            let n = source.config().vert_split_pos as usize;
+            if n < MAX_ROWS {
+                sheet.rows = sheet.rows.max(n + 1);
+                sheet.view.frozen_rows = n;
+            }
+        }
+        if matches!(
+            source.config().hor_split_mode,
+            spreadsheet_ods::sheet::SplitMode::Heading
+        ) {
+            let n = source.config().hor_split_pos as usize;
+            if n < MAX_COLS {
+                sheet.cols = sheet.cols.max(n + 1);
+                sheet.view.frozen_columns = n;
+            }
+        }
+        for row in 0..sheet.rows {
+            if source.row_visible(row as u32) != spreadsheet_ods::sheet::Visibility::Visible {
+                sheet.view.hidden_rows.insert(row);
+            }
+        }
+        for col in 0..sheet.cols {
+            if source.col_visible(col as u32) != spreadsheet_ods::sheet::Visibility::Visible {
+                sheet.view.hidden_columns.insert(col);
+            }
+        }
         for r in 0..sheet.rows {
             if let Length::Pt(v) = source.row_height(r as u32) {
                 if v > 0.0 && v < 49151.0 {
@@ -1772,6 +1830,51 @@ fn import_xlsx_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
             continue;
         };
         let d = xml(&text)?;
+        if let Some(pane) = d.descendants().find(|n| {
+            n.has_tag_name("pane") && matches!(n.attribute("state"), Some("frozen" | "frozenSplit"))
+        }) {
+            let rows = pane
+                .attribute("ySplit")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            let cols = pane
+                .attribute("xSplit")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            if rows < MAX_ROWS && cols < MAX_COLS {
+                sheet.rows = sheet.rows.max(rows + 1);
+                sheet.cols = sheet.cols.max(cols + 1);
+                sheet.view.frozen_rows = rows;
+                sheet.view.frozen_columns = cols;
+            }
+        }
+        for row in d.descendants().filter(|n| {
+            n.has_tag_name("row") && matches!(n.attribute("hidden"), Some("1" | "true"))
+        }) {
+            if let Some(index) = row
+                .attribute("r")
+                .and_then(|v| v.parse::<usize>().ok())
+                .and_then(|v| v.checked_sub(1))
+            {
+                if index < sheet.rows {
+                    sheet.view.hidden_rows.insert(index);
+                }
+            }
+        }
+        for col in d.descendants().filter(|n| {
+            n.has_tag_name("col") && matches!(n.attribute("hidden"), Some("1" | "true"))
+        }) {
+            if let (Some(min), Some(max)) = (
+                col.attribute("min").and_then(|v| v.parse::<usize>().ok()),
+                col.attribute("max").and_then(|v| v.parse::<usize>().ok()),
+            ) {
+                if min > 0 && min <= max {
+                    for index in min - 1..max.min(sheet.cols) {
+                        sheet.view.hidden_columns.insert(index);
+                    }
+                }
+            }
+        }
         sheet.protected = d
             .root_element()
             .children()
@@ -2102,6 +2205,7 @@ impl Workbook {
                         && a.cols == b.cols
                         && !b.source_structure
                         && a.merges == b.merges
+                        && a.view == b.view
                         && a.row_heights == b.row_heights
                         && a.col_widths == b.col_widths
                 })
@@ -2491,6 +2595,74 @@ fn ods_has_sheet_ref(value: &str, name: &str) -> bool {
     let value = value.to_lowercase();
     value.contains(&plain) || value.contains(&quoted)
 }
+fn patch_ods_settings(text: &str, old: &State, current: &State) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut edits = Vec::new();
+    let tables = d
+        .descendants()
+        .find(|n| {
+            n.has_tag_name("config-item-map-named")
+                && n.attributes()
+                    .any(|a| a.name() == "name" && a.value() == "Tables")
+        })
+        .ok_or(Error::Invalid("ODS sheet view settings are missing"))?;
+    for (before, after) in old.sheets.iter().zip(&current.sheets) {
+        if before.view.frozen_rows == after.view.frozen_rows
+            && before.view.frozen_columns == after.view.frozen_columns
+        {
+            continue;
+        }
+        let entry = tables
+            .children()
+            .find(|n| {
+                n.has_tag_name("config-item-map-entry")
+                    && n.attributes()
+                        .any(|a| a.name() == "name" && a.value() == before.name)
+            })
+            .ok_or(Error::Invalid("ODS sheet view entry is missing"))?;
+        if entry.descendants().any(|n| {
+            n.has_tag_name("config-item")
+                && n.attributes().any(|a| {
+                    a.name() == "name"
+                        && matches!(a.value(), "HorizontalSplitMode" | "VerticalSplitMode")
+                })
+                && n.text() == Some("1")
+        }) {
+            return Err(Error::Invalid(
+                "Movable ODS splits cannot yet be changed safely",
+            ));
+        }
+        for (key, value) in [
+            (
+                "HorizontalSplitMode",
+                if after.view.frozen_columns > 0 { 2 } else { 0 },
+            ),
+            (
+                "VerticalSplitMode",
+                if after.view.frozen_rows > 0 { 2 } else { 0 },
+            ),
+            ("HorizontalSplitPosition", after.view.frozen_columns),
+            ("VerticalSplitPosition", after.view.frozen_rows),
+            ("PositionRight", after.view.frozen_columns),
+            ("PositionBottom", after.view.frozen_rows),
+        ] {
+            let item = entry
+                .children()
+                .find(|n| {
+                    n.has_tag_name("config-item")
+                        && n.attributes()
+                            .any(|a| a.name() == "name" && a.value() == key)
+                })
+                .ok_or(Error::Invalid("ODS split setting is missing"))?;
+            let child = item
+                .children()
+                .find(|n| n.is_text())
+                .ok_or(Error::Invalid("Invalid ODS split setting"))?;
+            edits.push((child.range().start, child.range().end, value.to_string()));
+        }
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
 fn shift_ods_cell(
     mut row: usize,
     mut col: usize,
@@ -2518,6 +2690,53 @@ fn patch_ods(
     use spreadsheet_ods::Value;
     let mut book = spreadsheet_ods::read_ods_buf(bytes)
         .map_err(|_| Error::Invalid("cannot read original ODS"))?;
+    let view_changed = old
+        .sheets
+        .iter()
+        .zip(&current.sheets)
+        .any(|(before, after)| before.view != after.view);
+    for (i, (before, after)) in old.sheets.iter().zip(&current.sheets).enumerate() {
+        for row in before
+            .view
+            .hidden_rows
+            .symmetric_difference(&after.view.hidden_rows)
+        {
+            if after.view.hidden_rows.contains(row)
+                && book.sheet(i).used_grid_size().0 <= *row as u32
+            {
+                book.sheet_mut(i)
+                    .set_value(*row as u32, 0, spreadsheet_ods::Value::Empty);
+            }
+            book.sheet_mut(i).set_row_visible(
+                *row as u32,
+                if after.view.hidden_rows.contains(row) {
+                    spreadsheet_ods::sheet::Visibility::Collapsed
+                } else {
+                    spreadsheet_ods::sheet::Visibility::Visible
+                },
+            );
+        }
+        for col in before
+            .view
+            .hidden_columns
+            .symmetric_difference(&after.view.hidden_columns)
+        {
+            if after.view.hidden_columns.contains(col)
+                && book.sheet(i).used_grid_size().1 <= *col as u32
+            {
+                book.sheet_mut(i)
+                    .set_value(0, *col as u32, spreadsheet_ods::Value::Empty);
+            }
+            book.sheet_mut(i).set_col_visible(
+                *col as u32,
+                if after.view.hidden_columns.contains(col) {
+                    spreadsheet_ods::sheet::Visibility::Collapsed
+                } else {
+                    spreadsheet_ods::sheet::Visibility::Visible
+                },
+            );
+        }
+    }
     let mut style_seq = 0usize;
     let mut shifted_style_ids: Vec<BTreeMap<(usize, usize), usize>> =
         vec![BTreeMap::new(); old.sheets.len()];
@@ -2652,15 +2871,67 @@ fn patch_ods(
     verify_ods_untouched_styles(bytes, &generated, changes, old, current)?;
     let mut original =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("invalid ODS"))?;
-    let mut generated = zip::ZipArchive::new(Cursor::new(generated.as_slice()))
+    let mut generated_zip = zip::ZipArchive::new(Cursor::new(generated.as_slice()))
         .map_err(|_| Error::Invalid("invalid ODS output"))?;
     let before =
         zip_text(&mut original, "content.xml")?.ok_or(Error::Invalid("missing ODS content"))?;
     verify_ods_repeated_styles(&before)?;
-    let after = zip_text(&mut generated, "content.xml")?
+    let after = zip_text(&mut generated_zip, "content.xml")?
         .ok_or(Error::Invalid("missing generated ODS content"))?;
     let after = preserve_ods_auto_styles(&before, &after)?;
-    verify_ods_opaque_content(&before, &after)?;
+    verify_ods_opaque_content(&before, &after, view_changed)?;
+    if view_changed {
+        let parsed = spreadsheet_ods::read_ods_buf(&generated)
+            .map_err(|_| Error::Invalid("Invalid ODS view output"))?;
+        let prior = spreadsheet_ods::read_ods_buf(bytes)
+            .map_err(|_| Error::Invalid("Invalid ODS source"))?;
+        for (i, sheet) in current.sheets.iter().enumerate() {
+            for row in 0..sheet.rows {
+                let hidden = parsed.sheet(i).row_visible(row as u32)
+                    != spreadsheet_ods::sheet::Visibility::Visible;
+                if old.sheets[i].view.hidden_rows.contains(&row)
+                    == sheet.view.hidden_rows.contains(&row)
+                    && prior.sheet(i).row_visible(row as u32)
+                        != parsed.sheet(i).row_visible(row as u32)
+                {
+                    return Err(Error::Invalid(
+                        "Unchanged ODS row visibility would be altered",
+                    ));
+                }
+                if hidden != sheet.view.hidden_rows.contains(&row) {
+                    return Err(Error::Invalid("ODS row visibility could not be preserved"));
+                }
+            }
+            for col in 0..sheet.cols {
+                let hidden = parsed.sheet(i).col_visible(col as u32)
+                    != spreadsheet_ods::sheet::Visibility::Visible;
+                if old.sheets[i].view.hidden_columns.contains(&col)
+                    == sheet.view.hidden_columns.contains(&col)
+                    && prior.sheet(i).col_visible(col as u32)
+                        != parsed.sheet(i).col_visible(col as u32)
+                {
+                    return Err(Error::Invalid(
+                        "Unchanged ODS column visibility would be altered",
+                    ));
+                }
+                if hidden != sheet.view.hidden_columns.contains(&col) {
+                    return Err(Error::Invalid(
+                        "ODS column visibility could not be preserved",
+                    ));
+                }
+            }
+        }
+    }
+    let freeze_changed = old.sheets.iter().zip(&current.sheets).any(|(a, b)| {
+        a.view.frozen_rows != b.view.frozen_rows || a.view.frozen_columns != b.view.frozen_columns
+    });
+    let settings = if freeze_changed {
+        let settings = zip_text(&mut original, "settings.xml")?
+            .ok_or(Error::Invalid("ODS view settings are missing"))?;
+        Some(patch_ods_settings(&settings, old, current)?)
+    } else {
+        None
+    };
 
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..original.len() {
@@ -2671,7 +2942,14 @@ fn patch_ods(
         if name == EXTRA {
             continue;
         }
-        if name == "content.xml" {
+        if name == "settings.xml" && settings.is_some() {
+            let opts =
+                zip::write::SimpleFileOptions::default().compression_method(file.compression());
+            writer
+                .start_file(name, opts)
+                .map_err(|_| Error::Invalid("cannot write ODS settings"))?;
+            writer.write_all(settings.as_ref().unwrap().as_bytes())?;
+        } else if name == "content.xml" {
             let opts =
                 zip::write::SimpleFileOptions::default().compression_method(file.compression());
             writer
@@ -3795,7 +4073,7 @@ fn patch_xlsx_view_refs(text: &str, edits: &[StructuralEdit]) -> Result<String, 
     }
     Ok(apply_edits(text.to_owned(), updates))
 }
-fn translate_shared_formula(input: &str, dr: isize, dc: isize) -> String {
+pub(super) fn translate_shared_formula(input: &str, dr: isize, dc: isize) -> String {
     let bytes = input.as_bytes();
     let mut text = String::new();
     let mut qualifiers = Vec::new();
@@ -3820,6 +4098,22 @@ fn translate_shared_formula(input: &str, dr: isize, dc: isize) -> String {
             continue;
         }
         let start = i;
+        if bytes[i] == b'[' {
+            let mut depth = 1usize;
+            i += 1;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'[' {
+                    depth += 1;
+                } else if bytes[i] == b']' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            let marker = format!("\u{1}{}\u{2}", qualifiers.len());
+            qualifiers.push(input[start..i].to_owned());
+            text.push_str(&marker);
+            continue;
+        }
         if bytes[i] == b'\'' {
             i += 1;
             while i < bytes.len() {
@@ -4036,6 +4330,7 @@ fn patch_xlsx_sheet_contents(
     } else {
         patch_xlsx_geometry(&patched, sheet, current_sheet)?
     };
+    let patched = patch_xlsx_view_state(&patched, &sheet.view, &current_sheet.view)?;
     update_dimension(&patched, changes)
 }
 fn patch_xlsx(
@@ -4173,6 +4468,7 @@ fn patch_xlsx(
             && sheet.cols == current_sheet.cols
             && !current_sheet.source_structure
             && sheet.merges == current_sheet.merges
+            && sheet.view == current_sheet.view
             && sheet.row_heights == current_sheet.row_heights
             && sheet.col_widths == current_sheet.col_widths
         {
@@ -4507,7 +4803,11 @@ fn canonical_xml(node: roxmltree::Node<'_, '_>, out: &mut String) {
         }
     }
 }
-fn verify_ods_opaque_content(before: &str, after: &str) -> Result<(), Error> {
+fn verify_ods_opaque_content(
+    before: &str,
+    after: &str,
+    allow_visibility: bool,
+) -> Result<(), Error> {
     fn parts(text: &str) -> Result<Vec<String>, Error> {
         let d = xml(text)?;
         let mut all = Vec::new();
@@ -4554,7 +4854,7 @@ fn verify_ods_opaque_content(before: &str, after: &str) -> Result<(), Error> {
             "ODS contains unsupported content that could change during editing",
         ));
     }
-    fn other_attributes(text: &str) -> Result<Vec<String>, Error> {
+    fn other_attributes(text: &str, allow_visibility: bool) -> Result<Vec<String>, Error> {
         let d = xml(text)?;
         let mut attrs = Vec::new();
         for n in d.descendants().filter(|n| n.is_element()) {
@@ -4564,6 +4864,12 @@ fn verify_ods_opaque_content(before: &str, after: &str) -> Result<(), Error> {
                 continue;
             }
             for a in n.attributes() {
+                if allow_visibility
+                    && a.name() == "visibility"
+                    && matches!(n.tag_name().name(), "table-row" | "table-column")
+                {
+                    continue;
+                }
                 if a.name() == "style-name"
                     && (n.has_tag_name("table-cell") || n.has_tag_name("covered-table-cell"))
                 {
@@ -4596,7 +4902,7 @@ fn verify_ods_opaque_content(before: &str, after: &str) -> Result<(), Error> {
         attrs.sort();
         Ok(attrs)
     }
-    if other_attributes(before)? != other_attributes(after)? {
+    if other_attributes(before, allow_visibility)? != other_attributes(after, allow_visibility)? {
         return Err(Error::Invalid(
             "ODS contains cell or document metadata that cannot yet be preserved",
         ));
@@ -4926,6 +5232,159 @@ fn patch_xlsx_merges(text: &str, old: &[Range], new: &[Range]) -> Result<String,
     }
     Ok(out)
 }
+fn patch_xlsx_view_state(text: &str, old: &SheetView, new: &SheetView) -> Result<String, Error> {
+    if old == new {
+        return Ok(text.to_owned());
+    }
+    let mut output = text.to_owned();
+    if old.hidden_rows != new.hidden_rows {
+        let d = xml(&output)?;
+        if d.descendants().any(|n| n.has_tag_name("autoFilter")) {
+            return Err(Error::Invalid(
+                "Hidden rows in a filtered source sheet cannot yet be changed safely",
+            ));
+        }
+        for &row in old.hidden_rows.symmetric_difference(&new.hidden_rows) {
+            let d = xml(&output)?;
+            let root = d.root_element();
+            let data = root
+                .children()
+                .find(|n| n.has_tag_name("sheetData"))
+                .ok_or(Error::Invalid("Missing sheet data"))?;
+            let p = prefix(&output[data.range()]);
+            let node = data.children().find(|n| {
+                n.has_tag_name("row")
+                    && n.attribute("r").and_then(|v| v.parse::<usize>().ok()) == Some(row + 1)
+            });
+            let hidden = if new.hidden_rows.contains(&row) {
+                "1"
+            } else {
+                "0"
+            };
+            if let Some(node) = node {
+                let range = node.range();
+                let modified = crate::xlsx_styles::attrs(
+                    &output[range.clone()],
+                    &[("hidden", hidden.into())],
+                )?;
+                output.replace_range(range, &modified);
+            } else {
+                let part = format!("<{p}row r=\"{}\" hidden=\"{}\"/>", row + 1, hidden);
+                let raw = &output[data.range()];
+                if raw.trim_end().ends_with("/>") {
+                    let range = data.range();
+                    let at = raw.rfind("/>").unwrap();
+                    let value = format!("{}>{part}</{p}sheetData>", &raw[..at]);
+                    output.replace_range(range, &value);
+                } else {
+                    let index = data
+                        .children()
+                        .filter(|n| n.has_tag_name("row"))
+                        .find(|n| {
+                            n.attribute("r")
+                                .and_then(|v| v.parse::<usize>().ok())
+                                .is_some_and(|v| v > row + 1)
+                        })
+                        .map(|n| n.range().start)
+                        .unwrap_or_else(|| data.range().start + raw.rfind("</").unwrap());
+                    output.insert_str(index, &part);
+                }
+            }
+        }
+    }
+    if old.frozen_rows != new.frozen_rows || old.frozen_columns != new.frozen_columns {
+        let d = xml(&output)?;
+        let root = d.root_element();
+        let views = root
+            .children()
+            .find(|n| n.has_tag_name("sheetViews"))
+            .ok_or(Error::Invalid("Missing sheet view"))?;
+        let all: Vec<_> = views
+            .children()
+            .filter(|n| n.has_tag_name("sheetView"))
+            .collect();
+        if all.len() != 1 {
+            return Err(Error::Invalid(
+                "Multiple sheet views cannot yet be edited safely",
+            ));
+        }
+        let view = all[0];
+        let p = prefix(&output[view.range()]);
+        let panes: Vec<_> = view.children().filter(|n| n.has_tag_name("pane")).collect();
+        if panes.len() > 1
+            || panes.first().is_some_and(|pane| {
+                !matches!(pane.attribute("state"), Some("frozen" | "frozenSplit"))
+            })
+        {
+            return Err(Error::Invalid("Split panes cannot yet be changed safely"));
+        }
+        let selections: Vec<_> = view
+            .children()
+            .filter(|n| n.has_tag_name("selection"))
+            .collect();
+        if selections.iter().any(|selection| {
+            selection
+                .attributes()
+                .any(|a| !matches!(a.name(), "pane" | "activeCell" | "activeCellId" | "sqref"))
+        }) {
+            return Err(Error::Invalid(
+                "Extended pane selections cannot yet be changed safely",
+            ));
+        }
+        let old_active = panes.first().and_then(|pane| pane.attribute("activePane"));
+        let selected = selections
+            .iter()
+            .copied()
+            .find(|selection| selection.attribute("pane") == old_active)
+            .or_else(|| selections.first().copied());
+        let rows = new.frozen_rows;
+        let cols = new.frozen_columns;
+        let active = if rows > 0 && cols > 0 {
+            "bottomRight"
+        } else if rows > 0 {
+            "bottomLeft"
+        } else if cols > 0 {
+            "topRight"
+        } else {
+            "topLeft"
+        };
+        let pane = if rows == 0 && cols == 0 {
+            String::new()
+        } else {
+            format!("<{p}pane xSplit=\"{cols}\" ySplit=\"{rows}\" topLeftCell=\"{}{}\" activePane=\"{active}\" state=\"frozen\"/>",col_name(cols),rows+1)
+        };
+        let mut edits = Vec::new();
+        if let Some(node) = panes.first() {
+            edits.push((node.range().start, node.range().end, pane));
+        } else if !pane.is_empty() {
+            let raw = &output[view.range()];
+            if raw.trim_end().ends_with("/>") {
+                let at = raw.rfind("/>").unwrap();
+                edits.push((
+                    view.range().start,
+                    view.range().end,
+                    format!("{}>{pane}</{p}sheetView>", &raw[..at]),
+                ));
+            } else {
+                let at = view.range().start
+                    + raw.find('>').ok_or(Error::Invalid("Invalid sheet view"))?
+                    + 1;
+                edits.push((at, at, pane));
+            }
+        }
+        for node in selections {
+            let range = node.range();
+            let modified = if Some(node) == selected {
+                crate::xlsx_styles::attrs(&output[range.clone()], &[("pane", active.into())])?
+            } else {
+                String::new()
+            };
+            edits.push((range.start, range.end, modified));
+        }
+        output = apply_edits(output, edits);
+    }
+    Ok(output)
+}
 fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, Error> {
     let mut output = text.to_owned();
     for (&row, &height) in &new.row_heights {
@@ -4978,12 +5437,20 @@ fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, E
             }
         }
     }
-    let changed: Vec<_> = new
-        .col_widths
-        .iter()
-        .filter(|(c, w)| old.col_widths.get(c) != Some(w))
-        .map(|(c, w)| (*c, *w))
-        .collect();
+    let mut changed: BTreeMap<usize, (Option<u16>, Option<bool>)> = BTreeMap::new();
+    for (&col, &width) in &new.col_widths {
+        if old.col_widths.get(&col) != Some(&width) {
+            changed.entry(col).or_default().0 = Some(width);
+        }
+    }
+    for &col in old
+        .view
+        .hidden_columns
+        .symmetric_difference(&new.view.hidden_columns)
+    {
+        changed.entry(col).or_default().1 = Some(new.view.hidden_columns.contains(&col));
+    }
+    let changed: Vec<_> = changed.into_iter().collect();
     if changed.is_empty() {
         return Ok(output);
     }
@@ -5017,7 +5484,7 @@ fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, E
             prior_end = last;
             let raw = &output[col.range()];
             let mut cursor = first;
-            for &(idx, width) in &changed {
+            for &(idx, (width, hidden)) in &changed {
                 let n = idx + 1;
                 if n < first || n > last {
                     continue;
@@ -5029,16 +5496,16 @@ fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, E
                     )?;
                     segments.push((cursor, n - 1, cloned));
                 }
-                let char_width = ((width as u32 * 256) / 7) as f64 / 256.0;
-                let cloned = crate::xlsx_styles::attrs(
-                    raw,
-                    &[
-                        ("min", n.to_string()),
-                        ("max", n.to_string()),
-                        ("width", char_width.to_string()),
-                        ("customWidth", "1".into()),
-                    ],
-                )?;
+                let mut updates = vec![("min", n.to_string()), ("max", n.to_string())];
+                if let Some(width) = width {
+                    let value = ((width as u32 * 256) / 7) as f64 / 256.0;
+                    updates.push(("width", value.to_string()));
+                    updates.push(("customWidth", "1".into()));
+                }
+                if let Some(hidden) = hidden {
+                    updates.push(("hidden", if hidden { "1" } else { "0" }.into()));
+                }
+                let cloned = crate::xlsx_styles::attrs(raw, &updates)?;
                 segments.push((n, n, cloned));
                 cursor = n + 1;
             }
@@ -5051,17 +5518,22 @@ fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, E
             }
         }
     }
-    for &(idx, width) in &changed {
+    for &(idx, (width, hidden)) in &changed {
         let n = idx + 1;
         if !segments.iter().any(|(a, b, _)| n >= *a && n <= *b) {
-            let char_width = ((width as u32 * 256) / 7) as f64 / 256.0;
-            segments.push((
-                n,
-                n,
-                format!(
-                    "<{p}col min=\"{n}\" max=\"{n}\" width=\"{char_width}\" customWidth=\"1\"/>"
-                ),
-            ));
+            let mut attrs = format!("min=\"{n}\" max=\"{n}\"");
+            if let Some(width) = width {
+                let value = ((width as u32 * 256) / 7) as f64 / 256.0;
+                attrs.push_str(&format!(" width=\"{value}\" customWidth=\"1\""));
+            }
+            if let Some(hidden) = hidden {
+                attrs.push_str(if hidden {
+                    " hidden=\"1\""
+                } else {
+                    " hidden=\"0\""
+                });
+            }
+            segments.push((n, n, format!("<{p}col {attrs}/>")));
         }
     }
     segments.sort_by_key(|v| v.0);
@@ -6058,6 +6530,103 @@ mod external_sheet_structure_regression {
         );
         assert!(book.delete_rows(0, 1).is_err());
         assert!(book.insert_columns(0, 1).is_err());
+    }
+    #[test]
+    fn external_ods_view_changes_preserve_cells_and_opaque_parts() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut sheet = spreadsheet_ods::Sheet::new("Sheet1");
+        sheet.set_value(0, 0, "keep");
+        source.push_sheet(sheet);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut writer = zip::ZipWriter::new_append(Cursor::new(bytes)).unwrap();
+        writer
+            .start_file(
+                "Pictures/opaque.bin",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer.write_all(b"opaque").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        let mut view = book.sheet_view().clone();
+        view.frozen_rows = 2;
+        view.frozen_columns = 1;
+        view.hidden_rows.insert(3);
+        view.hidden_columns.insert(2);
+        book.set_sheet_view(view.clone()).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(reopened.sheet_view(), &view);
+        assert_eq!(reopened.cell(0, 0), Some("keep"));
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let mut opaque = String::new();
+        archive
+            .by_name("Pictures/opaque.bin")
+            .unwrap()
+            .read_to_string(&mut opaque)
+            .unwrap();
+        assert_eq!(opaque, "opaque");
+        let mut book = reopened;
+        book.set_sheet_view(SheetView::default()).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        assert_eq!(
+            Workbook::from_office_bytes(&saved, "ods")
+                .unwrap()
+                .sheet_view(),
+            &SheetView::default()
+        );
+    }
+    #[test]
+    fn external_xlsx_view_changes_preserve_cells_and_opaque_parts() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_string(0, 0, "keep").unwrap();
+        sheet.set_column_width(1, 20).unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut writer = zip::ZipWriter::new_append(Cursor::new(bytes)).unwrap();
+        writer
+            .start_file(
+                "customXml/opaque.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer.write_all(b"opaque").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let mut view = book.sheet_view().clone();
+        view.frozen_rows = 1;
+        view.frozen_columns = 1;
+        view.hidden_rows.insert(2);
+        view.hidden_columns.insert(1);
+        book.set_sheet_view(view.clone()).unwrap();
+        assert!(book.undo());
+        assert!(book.redo());
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.sheet_view(), &view);
+        assert_eq!(reopened.cell(0, 0), Some("keep"));
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let mut opaque = String::new();
+        archive
+            .by_name("customXml/opaque.txt")
+            .unwrap()
+            .read_to_string(&mut opaque)
+            .unwrap();
+        assert_eq!(opaque, "opaque");
+        let mut book = reopened;
+        let mut clear = book.sheet_view().clone();
+        clear.frozen_rows = 0;
+        clear.frozen_columns = 0;
+        clear.hidden_rows.clear();
+        clear.hidden_columns.clear();
+        book.set_sheet_view(clear.clone()).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        assert_eq!(
+            Workbook::from_office_bytes(&saved, "xlsx")
+                .unwrap()
+                .sheet_view(),
+            &clear
+        );
     }
     #[test]
     fn native_xlsx_1904_writes_epoch_and_formula_cache() {

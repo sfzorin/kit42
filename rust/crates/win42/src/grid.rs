@@ -1,5 +1,5 @@
 //! Opt-in variable-geometry native spreadsheet grid.
-use crate::grid_geometry::{index_at, offsets};
+use crate::grid_geometry::{index_at, index_at_view, offsets, position};
 use crate::GridRange;
 use std::{
     collections::BTreeSet,
@@ -28,6 +28,7 @@ pub(super) struct Snapshot {
     pub selected: Option<(usize, usize)>,
     pub range: Option<GridRange>,
     pub readonly: bool,
+    pub frozen: (usize, usize),
     pub clipboard: Option<(u16, u16)>,
 }
 const HEADER: i32 = 25;
@@ -41,6 +42,7 @@ struct GridState {
     selecting: bool,
     preview_selection: Option<(GridRange, (usize, usize))>,
     anchor: Option<(usize, usize)>,
+    focus_pane: Option<(bool, bool)>,
     editor: HWND,
     committing: bool,
 }
@@ -130,22 +132,41 @@ unsafe fn text(
     SelectObject(dc, old);
     DeleteObject(font as _);
 }
-fn cell_rect(
+fn cell_fragment(
     r: usize,
     c: usize,
     merged: Option<GridRange>,
     xs: &[i32],
     ys: &[i32],
     st: &GridState,
-) -> Option<RECT> {
-    let (left, top, right, bottom) =
-        crate::grid_geometry::bounds(r, c, merged, xs, ys, st.x, st.y, ROW_HEADER, HEADER)?;
-    Some(RECT {
-        left,
-        top,
-        right,
-        bottom,
-    })
+    frozen: (usize, usize),
+    client: (i32, i32),
+    pane: (bool, bool),
+) -> Option<crate::grid_geometry::Fragment> {
+    let range = merged.unwrap_or(GridRange {
+        top: r,
+        left: c,
+        bottom: r,
+        right: c,
+    });
+    crate::grid_geometry::pane_fragment(
+        range,
+        xs,
+        ys,
+        frozen,
+        (st.x, st.y),
+        (ROW_HEADER, HEADER),
+        client,
+        pane,
+    )
+}
+fn rect_from_tuple(v: (i32, i32, i32, i32)) -> RECT {
+    RECT {
+        left: v.0,
+        top: v.1,
+        right: v.2,
+        bottom: v.3,
+    }
 }
 
 unsafe fn update_scroll(hwnd: HWND) {
@@ -207,26 +228,52 @@ unsafe fn paint(hwnd: HWND) {
     IntersectClipRect(dc, ROW_HEADER, HEADER, rc.right, rc.bottom);
     let mut drawn = BTreeSet::new();
     for r in 0..snap.rows.len() {
-        let top = HEADER + ys[r] - st.y;
-        let bottom = HEADER + ys[r + 1] - st.y;
+        if snap.heights[r] <= 0 {
+            continue;
+        }
+        let top = position(&ys, r, snap.frozen.0, st.y, HEADER);
+        let bottom = top + snap.heights[r];
         if bottom <= HEADER || top >= rc.bottom {
             continue;
         }
         for c in 0..snap.widths.len() {
-            let left = ROW_HEADER + xs[c] - st.x;
-            let right = ROW_HEADER + xs[c + 1] - st.x;
+            if snap.widths[c] <= 0 {
+                continue;
+            }
+            let left = position(&xs, c, snap.frozen.1, st.x, ROW_HEADER);
+            let right = left + snap.widths[c];
             if right <= ROW_HEADER || left >= rc.right {
                 continue;
             }
+            let pane_kind = (r < snap.frozen.0, c < snap.frozen.1);
             let style = super::native::grid_style(r, c).unwrap_or_default();
             let (ar, ac) = style.merged.map_or((r, c), |m| (m.top, m.left));
-            if !drawn.insert((ar, ac)) {
-                continue;
-            }
             let style = super::native::grid_style(ar, ac).unwrap_or_default();
-            let Some(rect) = cell_rect(ar, ac, style.merged, &xs, &ys, st) else {
+            let Some(fragment) = cell_fragment(
+                ar,
+                ac,
+                style.merged,
+                &xs,
+                &ys,
+                st,
+                snap.frozen,
+                (rc.right, rc.bottom),
+                pane_kind,
+            ) else {
                 continue;
             };
+            if !drawn.insert((ar, ac, pane_kind.0, pane_kind.1)) {
+                continue;
+            }
+            let pane = SaveDC(dc);
+            IntersectClipRect(
+                dc,
+                fragment.clip.0,
+                fragment.clip.1,
+                fragment.clip.2,
+                fragment.clip.3,
+            );
+            let rect = rect_from_tuple(fragment.rect);
             let bg = if selected(st.preview_selection.map(|v| v.0).or(snap.range), r, c) {
                 [210, 228, 252]
             } else {
@@ -310,6 +357,7 @@ unsafe fn paint(hwnd: HWND) {
                     [35, 100, 210],
                 );
             }
+            RestoreDC(dc, pane);
         }
     }
     RestoreDC(dc, save);
@@ -328,9 +376,26 @@ unsafe fn paint(hwnd: HWND) {
     };
     fill(dc, &left, [239, 242, 247]);
     for c in 0..snap.widths.len() {
-        let a = ROW_HEADER + xs[c] - st.x;
-        let b = ROW_HEADER + xs[c + 1] - st.x;
+        if snap.widths[c] <= 0 {
+            continue;
+        }
+        let a = position(&xs, c, snap.frozen.1, st.x, ROW_HEADER);
+        let b = a + snap.widths[c];
+        let pane = SaveDC(dc);
+        let split = ROW_HEADER + xs[snap.frozen.1.min(snap.widths.len())];
+        IntersectClipRect(
+            dc,
+            if c < snap.frozen.1 { ROW_HEADER } else { split },
+            0,
+            if c < snap.frozen.1 {
+                split.min(rc.right)
+            } else {
+                rc.right
+            },
+            HEADER,
+        );
         if b <= ROW_HEADER || a >= rc.right {
+            RestoreDC(dc, pane);
             continue;
         }
         text(
@@ -347,12 +412,30 @@ unsafe fn paint(hwnd: HWND) {
             false,
             true,
         );
-        line(dc, b - 1, 0, b - 1, HEADER, [195; 3])
+        line(dc, b - 1, 0, b - 1, HEADER, [195; 3]);
+        RestoreDC(dc, pane);
     }
     for r in 0..snap.heights.len() {
-        let a = HEADER + ys[r] - st.y;
-        let b = HEADER + ys[r + 1] - st.y;
+        if snap.heights[r] <= 0 {
+            continue;
+        }
+        let a = position(&ys, r, snap.frozen.0, st.y, HEADER);
+        let b = a + snap.heights[r];
+        let pane = SaveDC(dc);
+        let split = HEADER + ys[snap.frozen.0.min(snap.heights.len())];
+        IntersectClipRect(
+            dc,
+            0,
+            if r < snap.frozen.0 { HEADER } else { split },
+            ROW_HEADER,
+            if r < snap.frozen.0 {
+                split.min(rc.bottom)
+            } else {
+                rc.bottom
+            },
+        );
         if b <= HEADER || a >= rc.bottom {
+            RestoreDC(dc, pane);
             continue;
         }
         text(
@@ -369,7 +452,8 @@ unsafe fn paint(hwnd: HWND) {
             false,
             true,
         );
-        line(dc, 0, b - 1, ROW_HEADER, b - 1, [195; 3])
+        line(dc, 0, b - 1, ROW_HEADER, b - 1, [195; 3]);
+        RestoreDC(dc, pane);
     }
     line(dc, ROW_HEADER - 1, 0, ROW_HEADER - 1, rc.bottom, [175; 3]);
     line(dc, 0, HEADER - 1, rc.right, HEADER - 1, [175; 3]);
@@ -382,7 +466,7 @@ unsafe fn paint(hwnd: HWND) {
     }
     EndPaint(hwnd, &ps);
 }
-unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> Option<(usize, usize)> {
+unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> Option<((usize, usize), (bool, bool))> {
     if x < ROW_HEADER || y < HEADER {
         return None;
     }
@@ -390,13 +474,12 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> Option<(usize, usize)> {
     let snap = super::native::grid_snapshot()?;
     let xs = offsets(&snap.widths);
     let ys = offsets(&snap.heights);
-    let c = index_at(&xs, x - ROW_HEADER + st.x)?;
-    let r = index_at(&ys, y - HEADER + st.y)?;
-    Some(
-        super::native::grid_style(r, c)
-            .and_then(|s| s.merged)
-            .map_or((r, c), |m| (m.top, m.left)),
-    )
+    let c = index_at_view(&xs, x, snap.frozen.1, st.x, ROW_HEADER)?;
+    let r = index_at_view(&ys, y, snap.frozen.0, st.y, HEADER)?;
+    let anchor = super::native::grid_style(r, c)
+        .and_then(|s| s.merged)
+        .map_or((r, c), |m| (m.top, m.left));
+    Some((anchor, (r < snap.frozen.0, c < snap.frozen.1)))
 }
 unsafe fn finish_editor(hwnd: HWND, commit: bool) -> bool {
     let Some(st) = state(hwnd) else { return true };
@@ -463,15 +546,43 @@ unsafe fn begin_editor(hwnd: HWND, replace: bool) {
     let xs = offsets(&snap.widths);
     let ys = offsets(&snap.heights);
     let style = super::native::grid_style(r, c).unwrap_or_default();
-    let Some(mut rect) = cell_rect(r, c, style.merged, &xs, &ys, st) else {
-        return;
-    };
     let mut client = RECT::default();
     GetClientRect(hwnd, &mut client);
-    rect.left = rect.left.max(ROW_HEADER);
-    rect.top = rect.top.max(HEADER);
-    rect.right = rect.right.min(client.right);
-    rect.bottom = rect.bottom.min(client.bottom);
+    let preferred = st
+        .focus_pane
+        .unwrap_or((r < snap.frozen.0, c < snap.frozen.1));
+    let fragment = cell_fragment(
+        r,
+        c,
+        style.merged,
+        &xs,
+        &ys,
+        st,
+        snap.frozen,
+        (client.right, client.bottom),
+        preferred,
+    )
+    .or_else(|| {
+        [(true, true), (true, false), (false, true), (false, false)]
+            .into_iter()
+            .find_map(|pane| {
+                cell_fragment(
+                    r,
+                    c,
+                    style.merged,
+                    &xs,
+                    &ys,
+                    st,
+                    snap.frozen,
+                    (client.right, client.bottom),
+                    pane,
+                )
+            })
+    });
+    let Some(fragment) = fragment else {
+        return;
+    };
+    let rect = rect_from_tuple(fragment.visible);
     if rect.right <= rect.left || rect.bottom <= rect.top {
         return;
     }
@@ -527,15 +638,43 @@ unsafe fn position_editor(hwnd: HWND) {
     let xs = offsets(&snap.widths);
     let ys = offsets(&snap.heights);
     let style = super::native::grid_style(r, c).unwrap_or_default();
-    let Some(mut rect) = cell_rect(r, c, style.merged, &xs, &ys, st) else {
-        return;
-    };
     let mut client = RECT::default();
     GetClientRect(hwnd, &mut client);
-    rect.left = rect.left.max(ROW_HEADER);
-    rect.top = rect.top.max(HEADER);
-    rect.right = rect.right.min(client.right);
-    rect.bottom = rect.bottom.min(client.bottom);
+    let preferred = st
+        .focus_pane
+        .unwrap_or((r < snap.frozen.0, c < snap.frozen.1));
+    let fragment = cell_fragment(
+        r,
+        c,
+        style.merged,
+        &xs,
+        &ys,
+        st,
+        snap.frozen,
+        (client.right, client.bottom),
+        preferred,
+    )
+    .or_else(|| {
+        [(true, true), (true, false), (false, true), (false, false)]
+            .into_iter()
+            .find_map(|pane| {
+                cell_fragment(
+                    r,
+                    c,
+                    style.merged,
+                    &xs,
+                    &ys,
+                    st,
+                    snap.frozen,
+                    (client.right, client.bottom),
+                    pane,
+                )
+            })
+    });
+    let Some(fragment) = fragment else {
+        return;
+    };
+    let rect = rect_from_tuple(fragment.visible);
     if rect.right > rect.left && rect.bottom > rect.top {
         MoveWindow(
             edit,
@@ -564,14 +703,14 @@ unsafe fn ensure_visible(hwnd: HWND, row: usize, col: usize) {
     GetClientRect(hwnd, &mut rc);
     let w = (rc.right - ROW_HEADER).max(1);
     let h = (rc.bottom - HEADER).max(1);
-    if xs[col] < st.x {
-        st.x = xs[col]
-    } else if xs[col + 1] > st.x + w {
+    if col >= snap.frozen.1 && xs[col] < st.x + xs[snap.frozen.1.min(snap.widths.len())] {
+        st.x = xs[col] - xs[snap.frozen.1.min(snap.widths.len())]
+    } else if col >= snap.frozen.1 && xs[col + 1] > st.x + w {
         st.x = xs[col + 1] - w
     }
-    if ys[row] < st.y {
-        st.y = ys[row]
-    } else if ys[row + 1] > st.y + h {
+    if row >= snap.frozen.0 && ys[row] < st.y + ys[snap.frozen.0.min(snap.heights.len())] {
+        st.y = ys[row] - ys[snap.frozen.0.min(snap.heights.len())]
+    } else if row >= snap.frozen.0 && ys[row + 1] > st.y + h {
         st.y = ys[row + 1] - h
     }
     update_scroll(hwnd);
@@ -626,8 +765,17 @@ unsafe fn move_selection(hwnd: HWND, key: u16, shift: bool) {
         VK_RIGHT => (r, (current.right + 1).min(snap.widths.len() - 1)),
         VK_UP => (current.top.saturating_sub(1), c),
         VK_DOWN => ((current.bottom + 1).min(snap.rows.len() - 1), c),
-        VK_HOME => (r, 0),
-        VK_END => (r, snap.widths.len() - 1),
+        VK_HOME => (
+            r,
+            snap.widths.iter().position(|width| *width > 0).unwrap_or(c),
+        ),
+        VK_END => (
+            r,
+            snap.widths
+                .iter()
+                .rposition(|width| *width > 0)
+                .unwrap_or(c),
+        ),
         VK_PRIOR | VK_NEXT => {
             let ys = offsets(&snap.heights);
             let mut rc = RECT::default();
@@ -656,9 +804,63 @@ unsafe fn move_selection(hwnd: HWND, key: u16, shift: bool) {
         }
         _ => (r, c),
     };
+    let mut target = target;
+    if key == VK_TAB {
+        let width = snap.widths.len();
+        let total = snap.rows.len().saturating_mul(width);
+        let mut index = target.0 * width + target.1;
+        for _ in 0..total {
+            if snap.heights[index / width] > 0 && snap.widths[index % width] > 0 {
+                break;
+            }
+            if shift {
+                if index == 0 {
+                    return;
+                }
+                index -= 1;
+            } else {
+                index += 1;
+                if index >= total {
+                    return;
+                }
+            }
+        }
+        target = (index / width, index % width);
+    } else {
+        let backwards = matches!(key, VK_LEFT | VK_UP | VK_HOME | VK_PRIOR);
+        while snap.widths[target.1] <= 0 {
+            if backwards {
+                if target.1 == 0 {
+                    return;
+                }
+                target.1 -= 1;
+            } else {
+                target.1 += 1;
+                if target.1 >= snap.widths.len() {
+                    return;
+                }
+            }
+        }
+        while snap.heights[target.0] <= 0 {
+            if backwards {
+                if target.0 == 0 {
+                    return;
+                }
+                target.0 -= 1;
+            } else {
+                target.0 += 1;
+                if target.0 >= snap.heights.len() {
+                    return;
+                }
+            }
+        }
+    }
     let target = super::native::grid_style(target.0, target.1)
         .and_then(|s| s.merged)
         .map_or(target, |m| (m.top, m.left));
+    if let Some(st) = state(hwnd) {
+        st.focus_pane = None;
+    }
     if shift && key != VK_TAB {
         let anchor = state(hwnd).and_then(|s| s.anchor).unwrap_or((r, c));
         if let Some(st) = state(hwnd) {
@@ -675,7 +877,8 @@ unsafe fn move_selection(hwnd: HWND, key: u16, shift: bool) {
         );
     } else {
         if let Some(st) = state(hwnd) {
-            st.anchor = Some(target)
+            st.anchor = Some(target);
+            st.focus_pane = None;
         }
         super::native::grid_select(target.0, target.1);
     }
@@ -694,6 +897,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 selecting: false,
                 preview_selection: None,
                 anchor: None,
+                focus_pane: None,
                 editor: null_mut(),
                 committing: false,
             });
@@ -750,7 +954,21 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 xs.iter()
                     .enumerate()
                     .skip(1)
-                    .find(|(_, v)| (ROW_HEADER + **v - sx - x).abs() <= 4)
+                    .find(|(i, _)| {
+                        let split = ROW_HEADER + xs[snap.frozen.1.min(snap.widths.len())];
+                        let belongs = if *i - 1 < snap.frozen.1 {
+                            x <= split
+                        } else {
+                            x >= split
+                        };
+                        belongs
+                            && snap.widths[*i - 1] > 0
+                            && (position(&xs, *i - 1, snap.frozen.1, sx, ROW_HEADER)
+                                + snap.widths[*i - 1]
+                                - x)
+                                .abs()
+                                <= 4
+                    })
                     .map(|(i, _)| Drag {
                         index: i - 1,
                         start: x,
@@ -762,7 +980,21 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 ys.iter()
                     .enumerate()
                     .skip(1)
-                    .find(|(_, v)| (HEADER + **v - sy - y).abs() <= 4)
+                    .find(|(i, _)| {
+                        let split = HEADER + ys[snap.frozen.0.min(snap.heights.len())];
+                        let belongs = if *i - 1 < snap.frozen.0 {
+                            y <= split
+                        } else {
+                            y >= split
+                        };
+                        belongs
+                            && snap.heights[*i - 1] > 0
+                            && (position(&ys, *i - 1, snap.frozen.0, sy, HEADER)
+                                + snap.heights[*i - 1]
+                                - y)
+                                .abs()
+                                <= 4
+                    })
                     .map(|(i, _)| Drag {
                         index: i - 1,
                         start: y,
@@ -800,7 +1032,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                         current,
                     ))
                 } else if y < HEADER && x >= ROW_HEADER {
-                    index_at(&xs, x - ROW_HEADER + sx).map(|c| {
+                    index_at_view(&xs, x, snap.frozen.1, sx, ROW_HEADER).map(|c| {
                         (
                             GridRange {
                                 top: 0,
@@ -812,7 +1044,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                         )
                     })
                 } else if x < ROW_HEADER && y >= HEADER {
-                    index_at(&ys, y - HEADER + sy).map(|r| {
+                    index_at_view(&ys, y, snap.frozen.0, sy, HEADER).map(|r| {
                         (
                             GridRange {
                                 top: if shift { prior.top.min(r) } else { r },
@@ -829,14 +1061,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 if let Some((range, focus)) = header {
                     super::native::grid_select_range(range, focus);
                     if let Some(st) = state(hwnd) {
-                        st.anchor = Some(focus)
+                        st.anchor = Some(focus);
+                        st.focus_pane = None;
                     }
                     SetFocus(hwnd);
                     InvalidateRect(hwnd, null(), 0);
                     return 0;
                 }
             }
-            if let Some(target) = hit(hwnd, x, y) {
+            if let Some((target, pane)) = hit(hwnd, x, y) {
                 let shift = GetKeyState(VK_SHIFT as i32) < 0;
                 let anchor = if shift {
                     old_anchor.or(snap.selected).unwrap_or(target)
@@ -845,6 +1078,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 };
                 if let Some(st) = state(hwnd) {
                     st.anchor = Some(anchor);
+                    st.focus_pane = Some(pane);
                     st.selecting = true
                 }
                 if shift {
@@ -902,8 +1136,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 }
                 let px = x.clamp(ROW_HEADER, client.right.max(ROW_HEADER + 1) - 1);
                 let py = y.clamp(HEADER, client.bottom.max(HEADER + 1) - 1);
-                if let (Some(anchor), Some(target)) = (anchor, hit(hwnd, px, py)) {
+                if let (Some(anchor), Some((target, pane))) = (anchor, hit(hwnd, px, py)) {
                     if let Some(st) = state(hwnd) {
+                        st.focus_pane = Some(pane);
                         st.preview_selection = Some((
                             GridRange {
                                 top: anchor.0.min(target.0),
@@ -957,7 +1192,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         }
         WM_LBUTTONDBLCLK => {
             let (x, y) = coordinate(l);
-            if let Some((r, c)) = hit(hwnd, x, y) {
+            if let Some(((r, c), pane)) = hit(hwnd, x, y) {
+                if let Some(st) = state(hwnd) {
+                    st.focus_pane = Some(pane);
+                }
                 super::native::grid_select(r, c);
                 begin_editor(hwnd, false)
             }

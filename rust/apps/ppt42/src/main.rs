@@ -55,9 +55,16 @@ struct Ppt {
     drag: Option<Drag>,
     rubber_band: Option<(win42::Point, win42::Point, bool)>,
     presenting: bool,
+    show: Option<Show>,
     rich_edit_object: Option<u64>,
     rich_draft: Option<ppt42_core::SlideObject>,
     rich_selection: (usize, usize),
+}
+struct Show {
+    since: std::time::Instant,
+    previous: Option<usize>,
+    paused: Option<std::time::Instant>,
+    transition_ms: u32,
 }
 enum Drag {
     Move(win42::Point, Vec<ppt42_core::SlideObject>),
@@ -186,6 +193,7 @@ impl Ppt {
             rubber_band: None,
             drag: None,
             presenting: false,
+            show: None,
             rich_edit_object: None,
             rich_draft: None,
             rich_selection: (0, 0),
@@ -193,6 +201,99 @@ impl Ppt {
     }
 }
 impl Ppt {
+    fn show_move(&mut self, index: usize, now: std::time::Instant) -> Result<(), String> {
+        let old = self.deck.current();
+        if index == old {
+            return Ok(());
+        }
+        let paused = self.show.as_ref().is_some_and(|show| show.paused.is_some());
+        self.deck.select(index)?;
+        let timing = self.deck.slides()[index].timing;
+        self.show = Some(Show {
+            since: now,
+            previous: (!paused && timing.transition != ppt42_core::Transition::Cut).then_some(old),
+            paused: paused.then_some(now),
+            transition_ms: if !paused && timing.transition != ppt42_core::Transition::Cut {
+                timing.duration_ms
+            } else {
+                0
+            },
+        });
+        Ok(())
+    }
+    fn show_tick(&mut self, now: std::time::Instant) -> bool {
+        if !self.presenting {
+            self.show = None;
+            return false;
+        }
+        let Some(show) = &mut self.show else {
+            return false;
+        };
+        if show.paused.is_some() {
+            return false;
+        }
+        let timing = self.deck.slides()[self.deck.current()].timing;
+        let elapsed = now.saturating_duration_since(show.since).as_millis();
+        if show.previous.is_some() && elapsed < u128::from(timing.duration_ms) {
+            return true;
+        }
+        if show.previous.take().is_some() {
+            return true;
+        }
+        if timing
+            .advance_ms
+            .is_some_and(|ms| elapsed >= u128::from(ms) + u128::from(show.transition_ms))
+        {
+            let next = self.deck.current() + 1;
+            if next < self.deck.slides().len() {
+                let _ = self.show_move(next, now);
+                return true;
+            }
+        }
+        false
+    }
+    fn show_event(
+        &mut self,
+        event: win42::CanvasEvent,
+        now: std::time::Instant,
+    ) -> Result<(), String> {
+        use win42::CanvasEvent::*;
+        match event {
+            Key { code: 27, .. } => {
+                self.presenting = false;
+                self.show = None;
+            }
+            Key { code: 80, .. } => {
+                if let Some(show) = self.show.as_mut() {
+                    if let Some(paused) = show.paused.take() {
+                        show.since += now.saturating_duration_since(paused);
+                    } else {
+                        show.paused = Some(now);
+                    }
+                }
+            }
+            Key {
+                code: 39 | 40 | 32 | 34,
+                ..
+            }
+            | PointerUp(_) => {
+                let i = self.deck.current();
+                if i + 1 < self.deck.slides().len() {
+                    self.show_move(i + 1, now)?;
+                }
+            }
+            Key {
+                code: 37 | 38 | 33, ..
+            } => {
+                let i = self.deck.current();
+                if i > 0 {
+                    self.show_move(i - 1, now)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     fn selection(&self) -> Vec<u64> {
         let slide = &self.deck.slides()[self.deck.current()];
         let mut ids = self
@@ -717,6 +818,26 @@ impl win42::App for Ppt {
             fn scale_items(items: &mut [win42::SceneItem], sx: f64, sy: f64) -> Option<()> {
                 for item in items {
                     match item {
+                        win42::SceneItem::OpacityLayer { bounds, items, .. } => {
+                            bounds.x *= sx;
+                            bounds.y *= sy;
+                            bounds.width *= sx;
+                            bounds.height *= sy;
+                            scale_items(items, sx, sy)?;
+                        }
+                        win42::SceneItem::ClippedOffset {
+                            clip,
+                            offset,
+                            items,
+                        } => {
+                            clip.x *= sx;
+                            clip.y *= sy;
+                            clip.width *= sx;
+                            clip.height *= sy;
+                            offset.x *= sx;
+                            offset.y *= sy;
+                            scale_items(items, sx, sy)?;
+                        }
                         win42::SceneItem::Transform { center, items, .. } => {
                             if (sx - sy).abs() > 1e-9 {
                                 return None;
@@ -928,6 +1049,32 @@ impl win42::App for Ppt {
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let slide = &self.deck.slides()[self.deck.current()];
         match id {
+            66 => Some(win42::InputRequest {
+                title: "Slide timing and transition",
+                fields: vec![
+                    (
+                        "Advance after milliseconds (empty = manual)",
+                        slide
+                            .timing
+                            .advance_ms
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "Transition (cut, fade, or push-left)",
+                        match slide.timing.transition {
+                            ppt42_core::Transition::Cut => "cut",
+                            ppt42_core::Transition::PushLeft => "push-left",
+                            ppt42_core::Transition::Fade => "fade",
+                        }
+                        .into(),
+                    ),
+                    (
+                        "Transition duration milliseconds",
+                        slide.timing.duration_ms.to_string(),
+                    ),
+                ],
+            }),
             24 => Some(win42::InputRequest {
                 title: "Edit slide text",
                 fields: vec![("Title", slide.title.clone()), ("Body", slide.body.clone())],
@@ -981,6 +1128,50 @@ impl win42::App for Ppt {
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
         match id {
+            66 if values.len() == 3 => {
+                let advance_ms = if values[0].trim().is_empty() {
+                    None
+                } else {
+                    Some(
+                        values[0]
+                            .trim()
+                            .parse()
+                            .map_err(|_| "Invalid advance time")?,
+                    )
+                };
+                let transition = match values[1].trim().to_ascii_lowercase().as_str() {
+                    "cut" => ppt42_core::Transition::Cut,
+                    "push-left" => ppt42_core::Transition::PushLeft,
+                    "fade" => ppt42_core::Transition::Fade,
+                    _ => return Err("Use cut, fade, or push-left".into()),
+                };
+                let duration_ms = values[2]
+                    .trim()
+                    .parse()
+                    .map_err(|_| "Invalid transition duration")?;
+                if self.odp_source.is_some() && ![250, 500, 1000].contains(&duration_ms) {
+                    return Err(
+                        "ODP transition duration must be 250, 500, or 1000 milliseconds".into(),
+                    );
+                }
+                let slide = self.deck.slides()[self.deck.current()].source_identity();
+                if self
+                    .pptx_source
+                    .as_ref()
+                    .is_some_and(|s| !s.can_edit_timing(slide))
+                    || self
+                        .odp_source
+                        .as_ref()
+                        .is_some_and(|s| !s.can_edit_timing(slide))
+                {
+                    return Err("This slide transition cannot be safely edited".into());
+                }
+                self.deck.set_timing(ppt42_core::SlideTiming {
+                    advance_ms,
+                    transition,
+                    duration_ms,
+                })
+            }
             65 if values.len() == 1 => {
                 let angle: f64 = values[0].parse().map_err(|_| "Invalid rotation")?;
                 if !angle.is_finite() {
@@ -1141,34 +1332,74 @@ impl win42::App for Ppt {
         }
     }
     fn canvas_scene(&self) -> Option<win42::CanvasScene> {
-        self.scene_for(self.deck.current(), !self.presenting)
+        let mut current = self.scene_for(self.deck.current(), !self.presenting)?;
+        if let Some(show) = self.show.as_ref().filter(|_| self.presenting) {
+            if let Some(previous) = show.previous {
+                let now = show.paused.unwrap_or_else(std::time::Instant::now);
+                let elapsed = now.saturating_duration_since(show.since).as_secs_f64();
+                let duration =
+                    self.deck.slides()[self.deck.current()].timing.duration_ms as f64 / 1000.0;
+                let fraction = (elapsed / duration).clamp(0.0, 1.0);
+                let old = self.scene_for(previous, false)?;
+                let clip = win42::CanvasRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 720.0,
+                    height: 405.0,
+                };
+                current.items = if self.deck.slides()[self.deck.current()].timing.transition
+                    == ppt42_core::Transition::Fade
+                {
+                    let mut layers = old.items;
+                    layers.push(win42::SceneItem::OpacityLayer {
+                        bounds: clip,
+                        opacity: (fraction * 255.0).round() as u8,
+                        items: current.items,
+                    });
+                    layers
+                } else {
+                    vec![
+                        win42::SceneItem::ClippedOffset {
+                            clip,
+                            offset: win42::Point {
+                                x: -720.0 * fraction,
+                                y: 0.0,
+                            },
+                            items: old.items,
+                        },
+                        win42::SceneItem::ClippedOffset {
+                            clip,
+                            offset: win42::Point {
+                                x: 720.0 * (1.0 - fraction),
+                                y: 0.0,
+                            },
+                            items: current.items,
+                        },
+                    ]
+                };
+            }
+        }
+        Some(current)
+    }
+    fn poll_background(&mut self) -> bool {
+        self.show_tick(std::time::Instant::now())
+    }
+    fn background_poll_ms(&self) -> u32 {
+        if self.presenting
+            && self
+                .show
+                .as_ref()
+                .is_some_and(|s| s.previous.is_some() && s.paused.is_none())
+        {
+            16
+        } else {
+            100
+        }
     }
     fn canvas_event(&mut self, event: win42::CanvasEvent) -> Result<(), String> {
         use win42::CanvasEvent::*;
         if self.presenting {
-            match event {
-                Key { code: 27, .. } => self.presenting = false,
-                Key {
-                    code: 39 | 40 | 32 | 34,
-                    ..
-                }
-                | PointerUp(_) => {
-                    let i = self.deck.current();
-                    if i + 1 < self.deck.slides().len() {
-                        self.deck.select(i + 1)?;
-                    }
-                }
-                Key {
-                    code: 37 | 38 | 33, ..
-                } => {
-                    let i = self.deck.current();
-                    if i > 0 {
-                        self.deck.select(i - 1)?;
-                    }
-                }
-                _ => {}
-            }
-            return Ok(());
+            return self.show_event(event, std::time::Instant::now());
         }
         match event {
             DoubleClick(p) => {
@@ -1377,6 +1608,8 @@ impl win42::App for Ppt {
             (34, "Edit Table Cell…"),
             (40, "Print Slides…"),
             (41, "Start Slide Show"),
+            (67, "Start Slide Show from Beginning"),
+            (66, "Slide Timing and Transition…"),
             (42, "Text Font…"),
             (43, "Align Text Left"),
             (44, "Align Text Center"),
@@ -1415,6 +1648,19 @@ impl win42::App for Ppt {
         format!("{}\r\n{}", s.title, win42::to_native_text(&s.body))
     }
     fn status(&self) -> String {
+        if self.presenting {
+            let state = if self.show.as_ref().is_some_and(|show| show.paused.is_some()) {
+                "Paused"
+            } else {
+                "Playing"
+            };
+            return format!(
+                "Slide {} of {} | {} | arrows navigate, P pauses, Esc exits",
+                self.deck.current() + 1,
+                self.deck.slides().len(),
+                state
+            );
+        }
         if self.rich_edit_object.is_some() {
             return "Editing text in place | Select text for formatting | click outside or Done to commit; Esc cancels".into();
         }
@@ -1609,6 +1855,15 @@ impl win42::App for Ppt {
             return false;
         }
         match id {
+            66 => {
+                self.pptx_source
+                    .as_ref()
+                    .is_none_or(|s| s.can_edit_timing(self.deck.slides()[i].source_identity()))
+                    && self
+                        .odp_source
+                        .as_ref()
+                        .is_none_or(|s| s.can_edit_timing(self.deck.slides()[i].source_identity()))
+            }
             58 => {
                 self.rich_edit_object.is_some()
                     || self.selected_object.is_some_and(|id| {
@@ -1794,8 +2049,17 @@ impl win42::App for Ppt {
             62 => self.format_rich_paragraph(id),
             63 => self.deck.group_objects(&self.selection()),
             64 => self.deck.ungroup_objects(&self.selection()),
-            41 => {
+            41 | 67 => {
+                if id == 67 {
+                    self.deck.select(0)?;
+                }
                 self.presenting = true;
+                self.show = Some(Show {
+                    since: std::time::Instant::now(),
+                    previous: None,
+                    paused: None,
+                    transition_ms: 0,
+                });
                 self.selected_object = None;
                 self.selected_objects.clear();
                 self.rubber_band = None;
@@ -1862,6 +2126,116 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+
+    #[test]
+    fn paused_manual_navigation_waits_for_explicit_resume() {
+        use std::time::{Duration, Instant};
+        let mut app = Ppt::new(Presentation::new());
+        for index in 0..3 {
+            if index > 0 {
+                app.deck.add().unwrap();
+            }
+            app.deck
+                .set_timing(ppt42_core::SlideTiming {
+                    advance_ms: Some(200),
+                    transition: ppt42_core::Transition::PushLeft,
+                    duration_ms: 500,
+                })
+                .unwrap();
+        }
+        app.deck.select(0).unwrap();
+        let start = Instant::now();
+        app.presenting = true;
+        app.show = Some(Show {
+            since: start,
+            previous: None,
+            paused: None,
+            transition_ms: 0,
+        });
+        let key = |code| win42::CanvasEvent::Key { code, modifiers: 0 };
+        app.show_event(key(80), start + Duration::from_millis(50))
+            .unwrap();
+        app.show_event(key(39), start + Duration::from_millis(100))
+            .unwrap();
+        assert_eq!(app.deck.current(), 1);
+        assert!(app.show.as_ref().unwrap().paused.is_some());
+        assert!(app.show.as_ref().unwrap().previous.is_none());
+        app.show_event(key(37), start + Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(app.deck.current(), 0);
+        app.show_event(
+            win42::CanvasEvent::PointerUp(win42::Point { x: 0.0, y: 0.0 }),
+            start + Duration::from_millis(300),
+        )
+        .unwrap();
+        assert_eq!(app.deck.current(), 1);
+        assert!(!app.show_tick(start + Duration::from_secs(20)));
+        assert_eq!(app.deck.current(), 1);
+        app.show_event(key(80), start + Duration::from_secs(20))
+            .unwrap();
+        assert!(!app.show_tick(start + Duration::from_secs(20) + Duration::from_millis(199)));
+        assert!(app.show_tick(start + Duration::from_secs(20) + Duration::from_millis(200)));
+        assert_eq!(app.deck.current(), 2);
+        assert!(app.show.as_ref().unwrap().paused.is_none());
+    }
+
+    #[test]
+    fn slideshow_advance_push_pause_and_cancel() {
+        use std::time::{Duration, Instant};
+        let mut app = Ppt::new(Presentation::new());
+        app.deck
+            .set_timing(ppt42_core::SlideTiming {
+                advance_ms: Some(200),
+                ..Default::default()
+            })
+            .unwrap();
+        app.deck.add().unwrap();
+        app.deck
+            .set_timing(ppt42_core::SlideTiming {
+                transition: ppt42_core::Transition::PushLeft,
+                duration_ms: 500,
+                advance_ms: Some(200),
+            })
+            .unwrap();
+        app.deck.select(0).unwrap();
+        let start = Instant::now();
+        app.presenting = true;
+        app.show = Some(Show {
+            since: start,
+            previous: None,
+            paused: None,
+            transition_ms: 0,
+        });
+        assert!(!app.show_tick(start + Duration::from_millis(199)));
+        assert!(app.show_tick(start + Duration::from_millis(200)));
+        assert_eq!(app.deck.current(), 1);
+        assert_eq!(app.show.as_ref().unwrap().previous, Some(0));
+        assert!(app.show_tick(start + Duration::from_millis(400)));
+        app.show.as_mut().unwrap().paused = Some(start + Duration::from_millis(400));
+        assert!(!app.show_tick(start + Duration::from_secs(5)));
+        app.canvas_event(win42::CanvasEvent::Key {
+            code: 27,
+            modifiers: 0,
+        })
+        .unwrap();
+        assert!(!app.show_tick(start + Duration::from_secs(6)));
+        assert!(app.show.is_none());
+        app.deck.select(0).unwrap();
+        app.deck.select(1).unwrap();
+        app.deck
+            .set_timing(ppt42_core::SlideTiming {
+                transition: ppt42_core::Transition::Fade,
+                ..Default::default()
+            })
+            .unwrap();
+        app.deck.select(0).unwrap();
+        app.presenting = true;
+        app.show_move(1, Instant::now()).unwrap();
+        let scene = app.canvas_scene().unwrap();
+        assert!(scene.items.iter().any(
+            |item| matches!(item, win42::SceneItem::OpacityLayer { items, .. } if !items.is_empty())
+        ));
+    }
 
     #[test]
     fn rotation_hit_resize_and_group_undo() {

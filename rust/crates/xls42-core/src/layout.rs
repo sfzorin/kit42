@@ -1,5 +1,33 @@
 //! Sheet filter and page layout state; rendering belongs to the host.
 use super::*;
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SheetView {
+    pub frozen_rows: usize,
+    pub frozen_columns: usize,
+    pub hidden_rows: std::collections::BTreeSet<usize>,
+    pub hidden_columns: std::collections::BTreeSet<usize>,
+}
+pub(super) fn valid_view(view: &SheetView, sheet: &Sheet) -> bool {
+    view.frozen_rows < sheet.rows
+        && view.frozen_columns < sheet.cols
+        && view.hidden_rows.len() < sheet.rows
+        && view.hidden_columns.len() < sheet.cols
+        && view.hidden_rows.iter().all(|row| *row < sheet.rows)
+        && view.hidden_columns.iter().all(|col| *col < sheet.cols)
+        && !sheet.merges.iter().any(|range| {
+            view.hidden_rows
+                .range(range.top..=range.bottom)
+                .next()
+                .is_some()
+                || view
+                    .hidden_columns
+                    .range(range.left..=range.right)
+                    .next()
+                    .is_some()
+                || (range.top < view.frozen_rows && range.bottom >= view.frozen_rows)
+                || (range.left < view.frozen_columns && range.right >= view.frozen_columns)
+        })
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetFilter {
     pub range: Range,
@@ -68,6 +96,54 @@ pub(super) fn valid_print(p: &PrintSettings, s: &Sheet) -> bool {
         && p.row_breaks.windows(2).all(|v| v[0] < v[1])
 }
 impl Workbook {
+    pub fn sheet_view(&self) -> &SheetView {
+        &self.history.current().sheet().view
+    }
+    pub fn set_sheet_view(&mut self, view: SheetView) -> Result<bool, Error> {
+        self.require_editable()?;
+        let mut state = self.history.current().clone();
+        if state.sheet().protected
+            && (view.hidden_rows != state.sheet().view.hidden_rows
+                || view.hidden_columns != state.sheet().view.hidden_columns)
+        {
+            return Err(Error::Protected);
+        }
+        if !valid_view(&view, state.sheet()) {
+            return Err(Error::Invalid("Invalid hidden range or frozen pane"));
+        }
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "View edits for this external format are not yet supported safely",
+            ));
+        }
+        let selected = state.selection;
+        if view.hidden_rows.contains(&selected.top) || view.hidden_columns.contains(&selected.left)
+        {
+            let rows = state.sheet().rows;
+            let cols = state.sheet().cols;
+            let row = (selected.top..rows)
+                .chain((0..selected.top).rev())
+                .find(|r| !view.hidden_rows.contains(r))
+                .ok_or(Error::Bounds)?;
+            let col = (selected.left..cols)
+                .chain((0..selected.left).rev())
+                .find(|c| !view.hidden_columns.contains(c))
+                .ok_or(Error::Bounds)?;
+            state.selection = Range {
+                top: row,
+                left: col,
+                bottom: row,
+                right: col,
+            };
+        }
+        state.sheet_mut().view = view;
+        if self.has_external_source() {
+            self.validate_external_rename(&state)?;
+        }
+        Ok(self.history.apply(state))
+    }
     pub fn sheet_filter(&self) -> Option<&SheetFilter> {
         self.history.current().sheet().filter.as_ref()
     }
@@ -93,17 +169,20 @@ impl Workbook {
     pub fn visible_rows_from_grid(&self, grid: &[Vec<String>]) -> Vec<usize> {
         let s = self.history.current().sheet();
         let Some(f) = &s.filter else {
-            return (0..s.rows).collect();
+            return (0..s.rows)
+                .filter(|r| !s.view.hidden_rows.contains(r))
+                .collect();
         };
         let needle = f.contains.to_lowercase();
         (0..s.rows)
             .filter(|r| {
-                *r <= f.range.top
-                    || *r > f.range.bottom
-                    || grid
-                        .get(*r)
-                        .and_then(|row| row.get(f.column))
-                        .is_some_and(|value| value.to_lowercase().contains(&needle))
+                !s.view.hidden_rows.contains(r)
+                    && (*r <= f.range.top
+                        || *r > f.range.bottom
+                        || grid
+                            .get(*r)
+                            .and_then(|row| row.get(f.column))
+                            .is_some_and(|value| value.to_lowercase().contains(&needle)))
             })
             .collect()
     }
@@ -192,5 +271,67 @@ mod tests {
         assert_eq!(restored.sheet_filter(), Some(&filter));
         assert_eq!(restored.print_settings(), &p);
         assert_eq!(restored.visible_rows(), [0, 1, 3, 5]);
+    }
+}
+
+#[cfg(test)]
+mod sheet_view_regression {
+    use super::*;
+    #[test]
+    fn hidden_and_frozen_view_survives_history_and_formats() {
+        let mut book = Workbook::new(8, 6).unwrap();
+        book.set_cell(3, 2, "retained".into()).unwrap();
+        let mut view = book.sheet_view().clone();
+        view.frozen_rows = 2;
+        view.frozen_columns = 1;
+        view.hidden_rows.insert(3);
+        view.hidden_columns.insert(2);
+        book.set_sheet_view(view.clone()).unwrap();
+        assert!(book.undo());
+        assert_eq!(book.sheet_view(), &SheetView::default());
+        assert!(book.redo());
+        assert_eq!(book.sheet_view(), &view);
+        let native = book.project_bytes().unwrap();
+        assert_eq!(
+            Workbook::from_project_bytes(&native).unwrap().sheet_view(),
+            &view
+        );
+        let xlsx = book.xlsx_bytes().unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(xlsx.as_slice())).unwrap();
+        let mut sheet = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("xl/worksheets/sheet1.xml").unwrap(),
+            &mut sheet,
+        )
+        .unwrap();
+        assert!(sheet.contains("state=\"frozen\""));
+        assert!(sheet.contains("hidden=\"1\""));
+        assert_eq!(
+            Workbook::from_office_bytes(&xlsx, "xlsx")
+                .unwrap()
+                .sheet_view(),
+            &view
+        );
+        let ods = book.ods_bytes().unwrap();
+        let external = spreadsheet_ods::read_ods_buf(&ods).unwrap();
+        assert_eq!(
+            external.sheet(0).row_visible(3),
+            spreadsheet_ods::sheet::Visibility::Collapsed
+        );
+        assert_eq!(
+            external.sheet(0).col_visible(2),
+            spreadsheet_ods::sheet::Visibility::Collapsed
+        );
+        assert!(matches!(
+            external.sheet(0).config().vert_split_mode,
+            spreadsheet_ods::sheet::SplitMode::Heading
+        ));
+        assert_eq!(external.sheet(0).config().vert_split_pos, 2);
+        assert_eq!(
+            Workbook::from_office_bytes(&ods, "ods")
+                .unwrap()
+                .sheet_view(),
+            &view
+        );
     }
 }

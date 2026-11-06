@@ -38,7 +38,7 @@ pub(super) fn write(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:{root} xmlns:w=\"{W}\" xmlns:r=\"{R}\">"
         );
         for p in paras {
-            write_paragraph(&mut xml, p, fields, &[], &[])?;
+            write_paragraph(&mut xml, p, fields, &[], &[], &[])?;
         }
         xml.push_str(&format!("</w:{root}>"));
         parts.insert(name.clone(), xml.into_bytes());

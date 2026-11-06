@@ -32,7 +32,7 @@ fn read(path: &std::path::Path) -> Result<Settings, String> {
         || language.len() > 256
         || !language
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-')
     {
         return Err("Invalid OCR settings".into());
     }
@@ -53,7 +53,7 @@ pub fn save(settings: &Settings) -> Result<(), String> {
         || !settings
             .language
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-')
     {
         return Err("Invalid OCR settings".into());
     }

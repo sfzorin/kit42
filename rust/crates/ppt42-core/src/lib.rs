@@ -30,6 +30,30 @@ pub struct Slide {
     pub objects: Vec<SlideObject>,
     #[serde(default = "first_object_id")]
     next_object_id: u64,
+    #[serde(default)]
+    pub timing: SlideTiming,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Transition {
+    #[default]
+    Cut,
+    PushLeft,
+    Fade,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlideTiming {
+    pub advance_ms: Option<u32>,
+    pub transition: Transition,
+    pub duration_ms: u32,
+}
+impl Default for SlideTiming {
+    fn default() -> Self {
+        Self {
+            advance_ms: None,
+            transition: Transition::Cut,
+            duration_ms: 500,
+        }
+    }
 }
 fn first_object_id() -> u64 {
     1
@@ -148,6 +172,7 @@ impl Slide {
             body,
             objects: Vec::new(),
             next_object_id: 1,
+            timing: SlideTiming::default(),
         }
     }
     fn edited(&self, title: &str, body: &str) -> Self {
@@ -162,6 +187,7 @@ impl Slide {
             body_text,
             objects: self.objects.clone(),
             next_object_id: self.next_object_id,
+            timing: self.timing,
         }
     }
 }
@@ -189,6 +215,10 @@ impl Deck {
                     && s.body_text.policy_consistent()
                     && s.title_text.raw() == s.title
                     && s.body_text.raw() == s.body
+                    && s.timing
+                        .advance_ms
+                        .is_none_or(|ms| (100..=86_400_000).contains(&ms))
+                    && (100..=10_000).contains(&s.timing.duration_ms)
                     && {
                         let mut object_ids = HashSet::new();
                         s.next_object_id > 0
@@ -320,6 +350,15 @@ impl Presentation {
         self.history.apply(state);
         Ok(())
     }
+    pub fn set_timing(&mut self, timing: SlideTiming) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        state.deck.slides[self.current()].timing = timing;
+        if !state.deck.valid() {
+            return Err("Invalid slide timing".into());
+        }
+        self.history.apply(state);
+        Ok(())
+    }
     /// Import raw text and establish line-ending policy for the selected slide.
     pub fn edit_raw(&mut self, title: String, body: String) -> Result<(), String> {
         let mut state = self.history.current().clone();
@@ -327,9 +366,11 @@ impl Presentation {
         let id = state.deck.slides[index].id;
         let objects = state.deck.slides[index].objects.clone();
         let next_object_id = state.deck.slides[index].next_object_id;
+        let timing = state.deck.slides[index].timing;
         state.deck.slides[index] = Slide::new(id, title, body);
         state.deck.slides[index].objects = objects;
         state.deck.slides[index].next_object_id = next_object_id;
+        state.deck.slides[index].timing = timing;
         if !state.deck.valid() {
             return Err("invalid slide text or deck exceeds size limit".into());
         }
@@ -967,6 +1008,23 @@ mod tests {
         assert_eq!(opened.slides()[0].objects[0].text, "hello");
     }
     use super::*;
+    #[test]
+    fn timing_native_snapshot_and_legacy_default() {
+        let mut deck = Presentation::new();
+        let timing = SlideTiming {
+            advance_ms: Some(1500),
+            transition: Transition::Fade,
+            duration_ms: 700,
+        };
+        deck.set_timing(timing).unwrap();
+        let (bytes, _) = deck.save_snapshot().unwrap();
+        let parsed: Deck = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.slides[0].timing, timing);
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["slides"][0].as_object_mut().unwrap().remove("timing");
+        let legacy: Deck = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.slides[0].timing, SlideTiming::default());
+    }
     #[test]
     fn duplicate_preserves_identity_policy_history_and_reopen() {
         let mut p = Presentation::new();

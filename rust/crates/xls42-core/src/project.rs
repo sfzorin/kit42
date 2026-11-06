@@ -35,6 +35,8 @@ struct ProjectSheet {
     #[serde(default)]
     tables: Vec<SpreadsheetTable>,
     #[serde(default)]
+    view: SheetView,
+    #[serde(default)]
     filter: Option<SheetFilter>,
     #[serde(default)]
     print: PrintSettings,
@@ -83,6 +85,7 @@ impl Project {
                     charts: sh.charts.clone(),
                     pivots: sh.pivots.clone(),
                     tables: sh.tables.clone(),
+                    view: sh.view.clone(),
                     filter: sh.filter.clone(),
                     print: sh.print.clone(),
                 })
@@ -146,6 +149,7 @@ impl Project {
             s.charts = sh.charts;
             s.pivots = sh.pivots;
             s.tables = sh.tables;
+            s.view = sh.view;
             if sh
                 .filter
                 .as_ref()
@@ -179,6 +183,9 @@ impl Project {
                     return Err(Error::Invalid("invalid merge"));
                 }
                 s.merges.push(m)
+            }
+            if !layout::valid_view(&s.view, &s) {
+                return Err(Error::Invalid("Invalid sheet view"));
             }
             if sh.row_heights.iter().any(|(r, v)| *r >= s.rows || *v == 0)
                 || sh.col_widths.iter().any(|(c, v)| *c >= s.cols || *v == 0)
@@ -230,7 +237,7 @@ impl Project {
         Ok(state)
     }
 }
-fn content_valid(c: &CellContent) -> bool {
+pub(super) fn content_valid(c: &CellContent) -> bool {
     let t = match c {
         CellContent::Text(v)
         | CellContent::Number(v)

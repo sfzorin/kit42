@@ -1,9 +1,10 @@
 //! Bounded sparse workbook. Raw text remains authoritative for editing and CSV.
 mod analytics;
+mod clipboard;
 mod tables;
 pub use tables::SpreadsheetTable;
 mod layout;
-pub use layout::{PrintSettings, SheetFilter};
+pub use layout::{PrintSettings, SheetFilter, SheetView};
 mod display;
 pub use analytics::{Chart, ChartData, ChartKind, ChartSeries, Pivot, PivotAggregate};
 mod formula;
@@ -59,7 +60,7 @@ impl From<csv::Error> for Error {
     }
 }
 pub type SheetId = u64;
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CellStyle {
     pub bold: bool,
     pub italic: bool,
@@ -171,6 +172,7 @@ struct Sheet {
     charts: Vec<Chart>,
     pivots: Vec<Pivot>,
     tables: Vec<SpreadsheetTable>,
+    view: SheetView,
     opaque_table_headers: Vec<Range>,
     protected_formula_ranges: Vec<Range>,
     shared_formula_cells: Vec<(usize, usize)>,
@@ -204,6 +206,7 @@ impl Sheet {
             charts: Vec::new(),
             pivots: Vec::new(),
             tables: Vec::new(),
+            view: SheetView::default(),
             opaque_table_headers: Vec::new(),
             protected_formula_ranges: Vec::new(),
             shared_formula_cells: Vec::new(),
@@ -519,6 +522,7 @@ impl Workbook {
             || !state.sheet().pivots.is_empty()
             || !state.sheet().tables.is_empty()
             || state.sheet().filter.is_some()
+            || state.sheet().view != SheetView::default()
             || state.sheet().print != PrintSettings::default()
         {
             return Err(Error::Invalid(
@@ -913,6 +917,11 @@ impl Workbook {
         if !range.valid(s) {
             return Err(Error::Bounds);
         }
+        if range.top < s.view.frozen_rows && range.bottom >= s.view.frozen_rows
+            || range.left < s.view.frozen_columns && range.right >= s.view.frozen_columns
+        {
+            return Err(Error::Invalid("Merged cells cannot cross a frozen pane"));
+        }
         if range.top == range.bottom && range.left == range.right {
             return Err(Error::Invalid("Merge requires at least two cells"));
         }
@@ -1086,12 +1095,46 @@ impl Workbook {
             }
             s.cells.insert((r, c), cell);
         }
+        let hidden = if rows {
+            &mut s.view.hidden_rows
+        } else {
+            &mut s.view.hidden_columns
+        };
+        *hidden = hidden
+            .iter()
+            .filter_map(|&value| {
+                if delete && value >= at && value < at + count {
+                    None
+                } else if delete && value >= at + count {
+                    Some(value - count)
+                } else if !delete && value >= at {
+                    Some(value + count)
+                } else {
+                    Some(value)
+                }
+            })
+            .collect();
+        let frozen = if rows {
+            &mut s.view.frozen_rows
+        } else {
+            &mut s.view.frozen_columns
+        };
+        if delete {
+            *frozen = frozen.saturating_sub(count.min(frozen.saturating_sub(at)));
+        } else if at < *frozen {
+            *frozen = frozen.checked_add(count).ok_or(Error::Limit)?;
+        }
         if rows {
             s.rows = if delete { size - count } else { size + count };
             shift_geometry(&mut s.row_heights, at, count, delete)
         } else {
             s.cols = if delete { size - count } else { size + count };
             shift_geometry(&mut s.col_widths, at, count, delete)
+        }
+        if !layout::valid_view(&st.sheet().view, st.sheet()) {
+            return Err(Error::Invalid(
+                "Structural edit conflicts with frozen or hidden view",
+            ));
         }
         for sheet in st.sheets.iter_mut().filter(|sheet| sheet.id != active) {
             for cell in sheet.cells.values_mut() {
@@ -1167,7 +1210,7 @@ impl Workbook {
         for (r, c, cell) in cells {
             if let Some(mut cell) = cell {
                 if matches!(cell.text, CellContent::Formula(_)) {
-                    cell.text = CellContent::from_raw(translate_refs(
+                    cell.text = CellContent::from_raw(office::translate_shared_formula(
                         cell.text.raw(),
                         top as isize - source.top as isize,
                         left as isize - source.left as isize,
@@ -2284,11 +2327,28 @@ impl Workbook {
         if !range.valid(self.history.current().sheet()) {
             return Err(Error::Bounds);
         }
+        self.copy_tsv_mapped(
+            &(range.top..=range.bottom).collect::<Vec<_>>(),
+            &(range.left..=range.right).collect::<Vec<_>>(),
+        )
+    }
+    pub fn copy_tsv_mapped(&self, rows: &[usize], cols: &[usize]) -> Result<String, Error> {
+        if rows.is_empty()
+            || cols.is_empty()
+            || rows.len() > MAX_ROWS
+            || cols.len() > MAX_COLS
+            || rows.windows(2).any(|x| x[0] >= x[1])
+            || cols.windows(2).any(|x| x[0] >= x[1])
+            || rows.last().is_none_or(|r| *r >= self.rows())
+            || cols.last().is_none_or(|c| *c >= self.cols())
+        {
+            return Err(Error::Bounds);
+        }
         let mut writer = csv::WriterBuilder::new()
             .delimiter(b'\t')
             .from_writer(Vec::new());
-        for r in range.top..=range.bottom {
-            writer.write_record((range.left..=range.right).map(|c| self.cell(r, c).unwrap()))?;
+        for &row in rows {
+            writer.write_record(cols.iter().map(|&col| self.cell(row, col).unwrap()))?;
         }
         let bytes = writer.into_inner().map_err(|e| Error::Io(e.into_error()))?;
         if bytes.len() > MAX_INPUT {
@@ -2298,9 +2358,36 @@ impl Workbook {
     }
     /// Paste a complete text rectangle as one undoable transaction.
     pub fn paste_tsv(&mut self, top: usize, left: usize, text: &str) -> Result<bool, Error> {
+        if top >= self.rows() || left >= self.cols() {
+            return Err(Error::Bounds);
+        }
+        self.paste_tsv_mapped(
+            &(top..self.rows()).collect::<Vec<_>>(),
+            &(left..self.cols()).collect::<Vec<_>>(),
+            text,
+        )
+    }
+    /// Paste into explicitly mapped physical rows and columns in one history transaction.
+    pub fn paste_tsv_mapped(
+        &mut self,
+        rows: &[usize],
+        cols: &[usize],
+        text: &str,
+    ) -> Result<bool, Error> {
         self.require_editable()?;
         if text.len() > MAX_INPUT {
             return Err(Error::Limit);
+        }
+        if rows.is_empty()
+            || cols.is_empty()
+            || rows.len() > MAX_ROWS
+            || cols.len() > MAX_COLS
+            || rows.windows(2).any(|x| x[0] >= x[1])
+            || cols.windows(2).any(|x| x[0] >= x[1])
+            || rows.last().is_none_or(|r| *r >= self.rows())
+            || cols.last().is_none_or(|c| *c >= self.cols())
+        {
+            return Err(Error::Bounds);
         }
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(b'\t')
@@ -2320,36 +2407,27 @@ impl Workbook {
         if data.is_empty() || width == 0 {
             return Ok(false);
         }
+        if data.len() > rows.len() || width > cols.len() {
+            return Err(Error::Bounds);
+        }
+        let selected_rows = &rows[..data.len()];
+        let selected_cols = &cols[..width];
         let mut state = self.history.current().clone();
         let sheet = state.sheet_mut();
         if sheet.protected {
             return Err(Error::Protected);
         }
-        let bottom = top
-            .checked_add(data.len())
-            .and_then(|v| v.checked_sub(1))
-            .ok_or(Error::Bounds)?;
-        let right = left
-            .checked_add(width)
-            .and_then(|v| v.checked_sub(1))
-            .ok_or(Error::Bounds)?;
-        let dest = Range {
-            top,
-            left,
-            bottom,
-            right,
-        };
-        if !dest.valid(sheet) {
-            return Err(Error::Bounds);
-        }
-        if sheet.merges.iter().any(|m| m.overlaps(dest)) {
+        if sheet.merges.iter().any(|m| {
+            selected_rows.iter().any(|r| *r >= m.top && *r <= m.bottom)
+                && selected_cols.iter().any(|c| *c >= m.left && *c <= m.right)
+        }) {
             return Err(Error::Invalid(
                 "paste involving merged cells is unsupported",
             ));
         }
         for (r, row) in data.iter().enumerate() {
             for c in 0..width {
-                let key = (top + r, left + c);
+                let key = (selected_rows[r], selected_cols[c]);
                 let text = row.get(c).unwrap_or("");
                 let style = sheet.cells.get(&key).map_or(0, |cell| cell.style);
                 if text.is_empty() && style == 0 {
@@ -2368,8 +2446,14 @@ impl Workbook {
         if state.bytes() > MAX_TEXT {
             return Err(Error::Limit);
         }
+        let dest = Range {
+            top: selected_rows[0],
+            left: selected_cols[0],
+            bottom: *selected_rows.last().unwrap(),
+            right: *selected_cols.last().unwrap(),
+        };
         state.selection = dest;
-        rules::validate_range(&state, dest)?;
+        rules::validate_mapped(&state, selected_rows, selected_cols)?;
         tables::reconcile_headers(self.history.current(), &mut state)?;
         self.validate_external_table_edit(&state)?;
         Ok(self.history.apply(state))
@@ -2378,6 +2462,37 @@ impl Workbook {
 #[cfg(test)]
 mod more_regressions {
     use super::*;
+    #[test]
+    fn mapped_paste_rejects_invalid_destination_atomically() {
+        let mut book = Workbook::new(5, 4).unwrap();
+        book.set_cell(0, 0, "original".into()).unwrap();
+        book.add_validation(DataValidation {
+            range: Range {
+                top: 2,
+                left: 2,
+                bottom: 2,
+                right: 2,
+            },
+            allow_blank: false,
+            kind: ValidationKind::Number {
+                minimum: 1.0,
+                maximum: 9.0,
+            },
+        })
+        .unwrap();
+        assert!(book
+            .paste_tsv_mapped(&[0, 2], &[0, 2], "changed\tok\nother\tbad")
+            .is_err());
+        assert_eq!(book.cell(0, 0), Some("original"));
+        assert_eq!(book.cell(2, 0), Some(""));
+        assert_eq!(book.cell(2, 2), Some(""));
+        book.paste_tsv_mapped(&[0, 2], &[0, 2], "changed\tok\nother\t5")
+            .unwrap();
+        assert_eq!(book.cell(2, 2), Some("5"));
+        assert!(book.undo());
+        assert_eq!(book.cell(0, 0), Some("original"));
+        assert_eq!(book.cell(2, 2), Some(""));
+    }
     #[test]
     fn functions_arguments_and_clipboard_are_transactional() {
         let mut b = Workbook::new(6, 5).unwrap();

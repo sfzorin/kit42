@@ -168,6 +168,69 @@ impl Workbook {
         Some(style)
     }
 }
+pub(super) fn validate_mapped(state: &State, rows: &[usize], cols: &[usize]) -> Result<(), Error> {
+    let sheet = state.sheet();
+    if sheet.validations.is_empty() {
+        return Ok(());
+    }
+    let has_formula = rows.iter().any(|&row| {
+        cols.iter().any(|&col| {
+            sheet
+                .cells
+                .get(&(row, col))
+                .is_some_and(|cell| matches!(cell.text, CellContent::Formula(_)))
+                && sheet
+                    .validations
+                    .iter()
+                    .any(|rule| contains(rule.range, row, col))
+        })
+    });
+    let grid = if has_formula {
+        let book = Workbook {
+            history: SnapshotHistory::new(state.clone(), 0),
+            snapshots: BTreeMap::new(),
+            next_revision: 1,
+            external_source: None,
+            external_baseline: None,
+            external_format: None,
+            external_cache: BTreeMap::new(),
+        };
+        Some(formula::display_grid(&book))
+    } else {
+        None
+    };
+    for &row in rows {
+        for &col in cols {
+            for rule in sheet
+                .validations
+                .iter()
+                .filter(|rule| contains(rule.range, row, col))
+            {
+                let cell = sheet.cells.get(&(row, col));
+                let raw = cell.map_or("", |cell| cell.text.raw());
+                if raw.is_empty() && rule.allow_blank {
+                    continue;
+                }
+                let value = if matches!(cell.map(|cell| &cell.text), Some(CellContent::Formula(_)))
+                {
+                    grid.as_ref().unwrap()[row][col].as_str()
+                } else {
+                    raw
+                };
+                let valid = match &rule.kind {
+                    ValidationKind::Number { minimum, maximum } => value
+                        .parse::<f64>()
+                        .is_ok_and(|v| v.is_finite() && v >= *minimum && v <= *maximum),
+                    ValidationKind::List { values } => values.iter().any(|v| v == value),
+                };
+                if !valid {
+                    return Err(Error::Invalid("Value does not satisfy cell validation"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub(super) fn validate_range(state: &State, range: Range) -> Result<(), Error> {
     let sheet = state.sheet();
     let rules: Vec<_> = sheet

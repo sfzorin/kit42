@@ -18,6 +18,8 @@ struct ObjectSource {
 struct PageSource {
     slide_id: u64,
     objects: Vec<ObjectSource>,
+    timing: SlideTiming,
+    timing_editable: bool,
 }
 pub struct Source {
     bytes: Vec<u8>,
@@ -25,6 +27,12 @@ pub struct Source {
     size_points: Option<(f64, f64)>,
 }
 impl Source {
+    pub fn can_edit_timing(&self, slide: u64) -> bool {
+        self.pages
+            .iter()
+            .find(|p| p.slide_id == slide)
+            .is_none_or(|p| p.timing_editable)
+    }
     pub fn can_edit_rich(&self, slide: u64, object: u64) -> bool {
         self.pages
             .iter()
@@ -127,6 +135,101 @@ fn esc(s: &str) -> String {
 }
 fn pt(n: f64) -> String {
     format!("{n:.4}pt")
+}
+fn parse_timing(
+    page: roxmltree::Node<'_, '_>,
+    tree: &roxmltree::Document<'_>,
+) -> Option<SlideTiming> {
+    let Some(name) = attr(page, "style-name") else {
+        return Some(SlideTiming::default());
+    };
+    let style = tree.descendants().find(|n| {
+        n.is_element()
+            && n.tag_name().name() == "style"
+            && attr(*n, "name") == Some(name)
+            && attr(*n, "family") == Some("drawing-page")
+    })?;
+    if attr(style, "parent-style-name").is_some() {
+        return None;
+    }
+    let Some(props) = style
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "drawing-page-properties")
+    else {
+        return Some(SlideTiming::default());
+    };
+    let transition = match (
+        attr(props, "type"),
+        attr(props, "subtype"),
+        attr(props, "transition-style"),
+    ) {
+        (None, _, None | Some("none")) => Transition::Cut,
+        (Some("pushWipe"), Some("fromRight"), _) => Transition::PushLeft,
+        (Some("fade"), None | Some("crossfade"), _) => Transition::Fade,
+        _ => return None,
+    };
+    if attr(props, "direction").is_some_and(|s| s != "forward") {
+        return None;
+    }
+    let advance_ms = match attr(props, "transition-type").unwrap_or("manual") {
+        "manual" => None,
+        "automatic" | "semi-automatic" => {
+            let duration = attr(props, "duration")?
+                .strip_prefix("PT")?
+                .strip_suffix('S')?
+                .parse::<f64>()
+                .ok()?;
+            if !duration.is_finite() || !(0.1..=86400.0).contains(&duration) {
+                return None;
+            }
+            Some((duration * 1000.0).round() as u32)
+        }
+        _ => return None,
+    };
+    let duration_ms = match attr(props, "transition-speed").unwrap_or("medium") {
+        "slow" => 1000,
+        "medium" => 500,
+        "fast" => 250,
+        _ => return None,
+    };
+    Some(SlideTiming {
+        advance_ms,
+        transition,
+        duration_ms,
+    })
+}
+fn timing_style(name: &str, timing: SlideTiming) -> Result<String, String> {
+    let speed = match timing.duration_ms {
+        250 => "fast",
+        500 => "medium",
+        1000 => "slow",
+        _ => {
+            return Err(
+                "ODP supports fast (250), medium (500), or slow (1000) transition duration".into(),
+            )
+        }
+    };
+    let advance = timing
+        .advance_ms
+        .map(|ms| {
+            format!(
+                " presentation:transition-type=\"automatic\" presentation:duration=\"PT{:.3}S\"",
+                ms as f64 / 1000.0
+            )
+        })
+        .unwrap_or_else(|| " presentation:transition-type=\"manual\"".into());
+    let transition = match timing.transition {
+        Transition::Cut => " presentation:transition-style=\"none\"",
+        Transition::PushLeft => " smil:type=\"pushWipe\" smil:subtype=\"fromRight\"",
+        Transition::Fade => " smil:type=\"fade\" smil:subtype=\"crossfade\"",
+    };
+    Ok(format!("<style:style xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" xmlns:presentation=\"urn:oasis:names:tc:opendocument:xmlns:presentation:1.0\" xmlns:smil=\"urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0\" style:name=\"{name}\" style:family=\"drawing-page\"><style:drawing-page-properties presentation:transition-speed=\"{speed}\"{advance}{transition}/></style:style>"))
+}
+fn timing_name(xml: &str, slide_id: u64) -> Result<String, String> {
+    (0..10000)
+        .map(|n| format!("suite42_timing_{slide_id}_{n}"))
+        .find(|name| !xml.contains(&format!("style:name=\"{name}\"")))
+        .ok_or_else(|| "ODP timing style identity exhausted".into())
 }
 fn rotation_transform(o: &SlideObject) -> String {
     let angle = o.rotation_degrees.rem_euclid(360.0).to_radians();
@@ -464,6 +567,35 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
         if i > 0 {
             deck.add()?;
         }
+        let parsed_timing = parse_timing(*page, &tree);
+        let timing = parsed_timing.unwrap_or_default();
+        deck.set_timing(timing)?;
+        let style_safe = attr(*page, "style-name").is_none_or(|name| {
+            tree.descendants()
+                .find(|n| {
+                    n.is_element()
+                        && n.tag_name().name() == "style"
+                        && attr(*n, "name") == Some(name)
+                        && attr(*n, "family") == Some("drawing-page")
+                })
+                .is_some_and(|style| {
+                    style.children().filter(|n| n.is_element()).all(|p| {
+                        p.tag_name().name() == "drawing-page-properties"
+                            && p.attributes().all(|a| {
+                                matches!(
+                                    a.name(),
+                                    "transition-type"
+                                        | "duration"
+                                        | "transition-speed"
+                                        | "transition-style"
+                                        | "type"
+                                        | "subtype"
+                                        | "direction"
+                                )
+                            })
+                    })
+                })
+        });
         let mut source_objects = Vec::new();
         let mut group_ids = HashMap::new();
         for node in page.descendants().filter(|n| {
@@ -754,6 +886,8 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
         source_pages.push(PageSource {
             slide_id: deck.slides()[i].id,
             objects: source_objects,
+            timing,
+            timing_editable: parsed_timing.is_some() && style_safe,
         });
     }
     deck.select(0)?;
@@ -806,9 +940,11 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
     let mut pages = String::new();
     let mut media: Vec<(String, Vec<u8>, &str)> = Vec::new();
     for (si, slide) in deck.slides().iter().enumerate() {
+        let timing_name = format!("suite42_page_{si}");
+        styles.push_str(&timing_style(&timing_name, slide.timing)?);
         pages.push_str(&format!(
-            "<draw:page draw:name=\"Slide {}\" draw:master-page-name=\"Default\">",
-            si + 1
+            "<draw:page draw:name=\"Slide {}\" draw:style-name=\"{}\" draw:master-page-name=\"Default\">",
+            si + 1, timing_name
         ));
         let mut group_shapes: HashMap<u64, String> = HashMap::new();
         let mut group_order = Vec::new();
@@ -937,6 +1073,27 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timing_roundtrip_and_source_overlay() {
+        use super::*;
+        let mut deck = Presentation::new();
+        let timing = SlideTiming {
+            advance_ms: Some(2500),
+            transition: Transition::PushLeft,
+            duration_ms: 1000,
+        };
+        deck.set_timing(timing).unwrap();
+        let (mut opened, source) = import_with_source(&export(&deck).unwrap()).unwrap();
+        assert_eq!(opened.slides()[0].timing, timing);
+        let changed = SlideTiming {
+            advance_ms: None,
+            transition: Transition::Fade,
+            duration_ms: 250,
+        };
+        opened.set_timing(changed).unwrap();
+        let (again, _) = import_with_source(&export_overlay(&opened, &source).unwrap()).unwrap();
+        assert_eq!(again.slides()[0].timing, changed);
+    }
     #[test]
     fn rotation_roundtrips_new_and_overlay() {
         use super::*;
@@ -1379,13 +1536,39 @@ pub fn export_overlay(deck: &Presentation, source: &Source) -> Result<Vec<u8>, S
                 .and_then(|n| attr(*n, "master-page-name"))
                 .map(|v| format!(" draw:master-page-name=\"{}\"", esc(v)))
                 .unwrap_or_default();
-            rendered_pages.push(format!("<draw:page xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" draw:name=\"Suite42 {}\"{master}>{added}</draw:page>",slide.id));
+            let timing_name = timing_name(original, slide.id)?;
+            extra_styles.push_str(&timing_style(&timing_name, slide.timing)?);
+            rendered_pages.push(format!("<draw:page xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" draw:name=\"Suite42 {}\" draw:style-name=\"{timing_name}\"{master}>{added}</draw:page>",slide.id));
             continue;
         };
         let page = &source.pages[index];
         let page_node = source_nodes[index];
         let base = page_node.range().start;
         let mut patches = Vec::new();
+        if slide.timing != page.timing {
+            if !page.timing_editable {
+                return Err("This ODP page style cannot be safely edited".into());
+            }
+            let timing_name = timing_name(original, slide.id)?;
+            extra_styles.push_str(&timing_style(&timing_name, slide.timing)?);
+            if attr(page_node, "style-name").is_some() {
+                patch_attr(page_node, "style-name", timing_name, original, &mut patches)?;
+            } else {
+                let start = page_node.range().start;
+                let end = original[start..].find('>').ok_or("Invalid ODP page")? + start;
+                let at = if original.as_bytes().get(end.wrapping_sub(1)) == Some(&b'/') {
+                    end - 1
+                } else {
+                    end
+                };
+                let ns = match page_node.lookup_namespace_uri(Some("draw")) {
+                    Some("urn:oasis:names:tc:opendocument:xmlns:drawing:1.0") => "",
+                    None => " xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\"",
+                    Some(_) => return Err("ODP draw namespace is incompatible".into()),
+                };
+                patches.push((at..at, format!("{ns} draw:style-name=\"{timing_name}\"")));
+            }
+        }
         if slide.id != page.slide_id && attr(page_node, "name").is_some() {
             patch_attr(
                 page_node,

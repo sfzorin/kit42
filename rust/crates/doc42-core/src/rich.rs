@@ -3,6 +3,7 @@ mod annotations;
 pub use annotations::ProjectedNote;
 mod docx;
 mod html;
+mod links;
 mod markdown;
 mod odt;
 mod rtf;
@@ -283,6 +284,27 @@ pub enum FieldKind {
     Date,
     Custom(String),
 }
+/// A named bookmark spans two stable text positions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub id: u64,
+    pub name: String,
+    pub start: Position,
+    pub end: Position,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OdtTocCache {
+    pub index_xml: String,
+    pub source_xml: String,
+    #[serde(default)]
+    pub title_xml: Option<String>,
+    #[serde(default)]
+    pub title_paragraphs: Vec<u64>,
+    pub automatic_styles: String,
+    pub has_pages: bool,
+    #[serde(default)]
+    pub needs_refresh: bool,
+}
 /// Generated entries retain their heading identity independently of displayed text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntry {
@@ -293,6 +315,18 @@ pub struct TocEntry {
 pub struct TableOfContents {
     pub id: u64,
     pub entries: Vec<TocEntry>,
+    #[serde(default)]
+    pub min_level: u8,
+    #[serde(default = "toc_default_max_level")]
+    pub max_level: u8,
+    /// Original Word field paragraphs, including source-provided cached pages.
+    #[serde(default)]
+    pub docx_cached: Option<Vec<String>>,
+    #[serde(default)]
+    pub odt_cached: Option<OdtTocCache>,
+}
+fn toc_default_max_level() -> u8 {
+    8
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -304,6 +338,8 @@ pub struct State {
     pub footnotes: Vec<Footnote>,
     pub revisions: Vec<Revision>,
     pub fields: Vec<Field>,
+    #[serde(default)]
+    pub bookmarks: Vec<Bookmark>,
     #[serde(default)]
     pub tables_of_contents: Vec<TableOfContents>,
     pub next_id: u64,
@@ -344,6 +380,7 @@ impl Default for State {
             footnotes: vec![],
             revisions: vec![],
             fields: vec![],
+            bookmarks: vec![],
             tables_of_contents: vec![],
             next_id: 2,
             text_policy: TextValue::default(),
@@ -431,6 +468,9 @@ impl RichDocument {
         destination: &std::path::Path,
     ) -> Result<suite42_core::session::SaveBundle, Error> {
         validate(self.state())?;
+        if !self.state().bookmarks.is_empty() {
+            return Err(Error::Unsupported("bookmark Markdown export".into()));
+        }
         if !self.state().tables_of_contents.is_empty() {
             return Err(Error::Unsupported(
                 "table of contents Markdown export is under development".into(),
@@ -524,6 +564,11 @@ impl RichDocument {
     }
     pub fn encode(&self, format: Format) -> Result<Vec<u8>, Error> {
         validate(self.state())?;
+        if !self.state().bookmarks.is_empty()
+            && !matches!(format, Format::Project | Format::Odt | Format::Docx)
+        {
+            return Err(Error::Unsupported("bookmark export for this format".into()));
+        }
         if !self.state().tables_of_contents.is_empty()
             && !matches!(format, Format::Project | Format::Odt | Format::Docx)
         {
@@ -595,6 +640,7 @@ fn plain(s: &State) -> bool {
         && s.footnotes.is_empty()
         && s.revisions.is_empty()
         && s.fields.is_empty()
+        && s.bookmarks.is_empty()
         && s.tables_of_contents.is_empty()
         && s.blocks.iter().all(|b| match b {
             Block::Paragraph(p) => {
@@ -712,6 +758,7 @@ fn validate(s: &State) -> Result<(), Error> {
         .chain(s.footnotes.iter().map(|x| x.id))
         .chain(s.revisions.iter().map(|x| x.id))
         .chain(s.fields.iter().map(|x| x.id))
+        .chain(s.bookmarks.iter().map(|x| x.id))
     {
         if id == 0 || !ids.insert(id) {
             return Err(Error::Invalid("duplicate annotation or field ID".into()));
@@ -735,8 +782,21 @@ fn validate(s: &State) -> Result<(), Error> {
             .any(|x| !valid_position(&x.start) || !valid_position(&x.end))
         || s.footnotes.iter().any(|x| !valid_position(&x.at))
         || s.fields.iter().any(|x| !valid_position(&x.at))
+        || s.bookmarks
+            .iter()
+            .any(|x| !valid_position(&x.start) || !valid_position(&x.end))
     {
         return Err(Error::Invalid("invalid text position".into()));
+    }
+    let mut bookmark_names = std::collections::HashSet::new();
+    for bookmark in &s.bookmarks {
+        if bookmark.name.is_empty()
+            || bookmark.name.len() > 255
+            || bookmark.name.chars().any(char::is_control)
+            || !bookmark_names.insert(&bookmark.name)
+        {
+            return Err(Error::Invalid("invalid or duplicate bookmark name".into()));
+        }
     }
     let body_paragraphs: std::collections::HashSet<u64> = s
         .blocks
@@ -748,8 +808,41 @@ fn validate(s: &State) -> Result<(), Error> {
         .collect();
     let mut toc_entries = std::collections::HashSet::new();
     for toc in &s.tables_of_contents {
-        if toc.id == 0 || !ids.insert(toc.id) || toc.entries.is_empty() {
+        if toc
+            .docx_cached
+            .as_ref()
+            .is_some_and(|source| source.len() != toc.entries.len())
+        {
+            return Err(Error::Invalid("invalid cached TOC".into()));
+        }
+        if toc.id == 0
+            || !ids.insert(toc.id)
+            || toc.entries.is_empty()
+            || toc.min_level > toc.max_level
+            || toc.max_level > 9
+        {
             return Err(Error::Invalid("invalid table of contents identity".into()));
+        }
+        if let Some(cache) = &toc.odt_cached {
+            let mut ids = cache
+                .title_paragraphs
+                .iter()
+                .chain(toc.entries.iter().map(|e| &e.paragraph));
+            let mut previous = None;
+            for id in &mut ids {
+                let index = s
+                    .blocks
+                    .iter()
+                    .position(|b| matches!(b, Block::Paragraph(p) if p.id == *id))
+                    .ok_or_else(|| Error::Invalid("ODT index title paragraph".into()))?;
+                if previous.is_some_and(|p| index != p + 1) {
+                    return Err(Error::Invalid("non-contiguous ODT index".into()));
+                }
+                previous = Some(index);
+            }
+            if cache.title_xml.is_some() != !cache.title_paragraphs.is_empty() {
+                return Err(Error::Invalid("ODT index title".into()));
+            }
         }
         let positions = toc
             .entries
@@ -800,6 +893,11 @@ impl RichDocument {
         selection: Selection,
     ) -> Result<bool, Error> {
         self.transact(|s| {
+            if cached_toc_paragraph(s, paragraph) {
+                return Err(Error::Unsupported(
+                    "update the imported TOC before editing its cached entries".into(),
+                ));
+            }
             if s.revisions
                 .iter()
                 .any(|x| x.start.paragraph == paragraph || x.end.paragraph == paragraph)
@@ -866,6 +964,11 @@ impl RichDocument {
         selection: Selection,
     ) -> Result<bool, Error> {
         self.transact(|s| {
+            if cached_toc_paragraph(s, paragraph) {
+                return Err(Error::Unsupported(
+                    "update the imported TOC before editing its cached entries".into(),
+                ));
+            }
             paragraph_mut(s, paragraph)
                 .ok_or_else(|| Error::Invalid("paragraph not found".into()))?
                 .style = style;
@@ -873,6 +976,16 @@ impl RichDocument {
             Ok(())
         })
     }
+}
+fn cached_toc_paragraph(s: &State, id: u64) -> bool {
+    s.tables_of_contents.iter().any(|toc| {
+        toc.odt_cached
+            .as_ref()
+            .is_some_and(|c| c.title_paragraphs.contains(&id))
+            || ((toc.docx_cached.is_some()
+                || toc.odt_cached.as_ref().is_some_and(|c| !c.needs_refresh))
+                && toc.entries.iter().any(|e| e.paragraph == id))
+    })
 }
 fn paragraph_mut(s: &mut State, id: u64) -> Option<&mut Paragraph> {
     for block in &mut s.blocks {
@@ -1130,6 +1243,11 @@ impl RichDocument {
         selection: Selection,
     ) -> Result<bool, Error> {
         self.transact(|s| {
+            if cached_toc_paragraph(s, paragraph) {
+                return Err(Error::Unsupported(
+                    "update the imported TOC before editing its cached entries".into(),
+                ));
+            }
             let p = paragraph_mut(s, paragraph)
                 .ok_or_else(|| Error::Invalid("paragraph not found".into()))?;
             let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
@@ -1262,6 +1380,7 @@ impl RichDocument {
         view.odt_source_header_fields = None;
         view.comments.clear();
         view.footnotes.clear();
+        view.bookmarks.clear();
         let header_ids = self.header_field_ids();
         view.fields
             .retain(|f| !header_ids.contains(&f.at.paragraph));
@@ -1354,6 +1473,7 @@ impl RichDocument {
         if !old.comments.is_empty()
             || !old.footnotes.is_empty()
             || !old.tables_of_contents.is_empty()
+            || !old.bookmarks.is_empty()
         {
             matching.fill(None);
             let mut a = 0usize;
@@ -1504,7 +1624,37 @@ impl RichDocument {
         parsed.odt_source_headers = old.odt_source_headers.clone();
         parsed.odt_source_header_fields = old.odt_source_header_fields.clone();
         let mut anchor_source = old.clone();
+        for bookmark in &old.bookmarks {
+            anchor_source.comments.push(Annotation {
+                id: 0,
+                start: bookmark.start.clone(),
+                end: bookmark.end.clone(),
+                author: String::new(),
+                text: String::new(),
+                resolved: false,
+                date: None,
+                initials: None,
+            });
+        }
         for toc in &old.tables_of_contents {
+            if let Some(cache) = &toc.odt_cached {
+                for paragraph in &cache.title_paragraphs {
+                    let at = Position {
+                        paragraph: *paragraph,
+                        offset: 0,
+                    };
+                    anchor_source.comments.push(Annotation {
+                        id: 0,
+                        start: at.clone(),
+                        end: at,
+                        author: String::new(),
+                        text: String::new(),
+                        resolved: false,
+                        date: None,
+                        initials: None,
+                    });
+                }
+            }
             for entry in &toc.entries {
                 for paragraph in [entry.paragraph, entry.heading] {
                     let at = Position {
@@ -1527,8 +1677,25 @@ impl RichDocument {
         annotations::remap_projection(&anchor_source, &mut parsed)?;
         let mapped = parsed.comments.split_off(old.comments.len());
         let mut mapped = mapped.into_iter();
+        parsed.bookmarks = old.bookmarks.clone();
+        for bookmark in &mut parsed.bookmarks {
+            let mapped = mapped
+                .next()
+                .ok_or_else(|| Error::Invalid("bookmark anchor".into()))?;
+            bookmark.start = mapped.start;
+            bookmark.end = mapped.end;
+        }
         parsed.tables_of_contents = old.tables_of_contents.clone();
         for toc in &mut parsed.tables_of_contents {
+            if let Some(cache) = &mut toc.odt_cached {
+                for paragraph in &mut cache.title_paragraphs {
+                    *paragraph = mapped
+                        .next()
+                        .ok_or_else(|| Error::Invalid("ODT index title anchor".into()))?
+                        .start
+                        .paragraph;
+                }
+            }
             for entry in &mut toc.entries {
                 entry.paragraph = mapped
                     .next()
@@ -1580,6 +1747,63 @@ impl RichDocument {
                 }
                 if !parsed.blocks.iter().any(|b| matches!(b, Block::Paragraph(p) if p.id == after_entry.heading && p.style.outline_level.is_some())) {
                     return Err(Error::Unsupported("editing removed a TOC heading; update or remove the table of contents first".into()));
+                }
+            }
+        }
+        for (before_toc, after_toc) in old
+            .tables_of_contents
+            .iter()
+            .zip(&parsed.tables_of_contents)
+        {
+            if let (Some(a), Some(b)) = (&before_toc.odt_cached, &after_toc.odt_cached) {
+                for (&before, &after) in a.title_paragraphs.iter().zip(&b.title_paragraphs) {
+                    let find = |state: &State, id| {
+                        state.blocks.iter().find_map(|block| match block {
+                            Block::Paragraph(p) if p.id == id => {
+                                Some((p.style.clone(), p.runs.clone()))
+                            }
+                            _ => None,
+                        })
+                    };
+                    if find(old, before) != find(&parsed, after) {
+                        return Err(Error::Unsupported(
+                            "update the imported TOC before editing its cached title".into(),
+                        ));
+                    }
+                }
+            }
+            if before_toc.docx_cached.is_none()
+                && before_toc
+                    .odt_cached
+                    .as_ref()
+                    .is_none_or(|c| c.needs_refresh)
+            {
+                continue;
+            }
+            for (before_entry, after_entry) in before_toc.entries.iter().zip(&after_toc.entries) {
+                fn find(state: &State, id: u64) -> Option<&Paragraph> {
+                    state.blocks.iter().find_map(|b| match b {
+                        Block::Paragraph(p) if p.id == id => Some(p),
+                        _ => None,
+                    })
+                }
+                let a = find(old, before_entry.paragraph)
+                    .ok_or_else(|| Error::Invalid("cached TOC entry".into()))?;
+                let b = find(&parsed, after_entry.paragraph)
+                    .ok_or_else(|| Error::Invalid("cached TOC entry".into()))?;
+                fn same_contents(a: &Paragraph, b: &Paragraph) -> bool {
+                    a.runs
+                        .iter()
+                        .flat_map(|r| r.text.chars().map(move |c| (c, &r.style)))
+                        .eq(b
+                            .runs
+                            .iter()
+                            .flat_map(|r| r.text.chars().map(move |c| (c, &r.style))))
+                }
+                if a.style != b.style || !same_contents(a, b) {
+                    return Err(Error::Unsupported(
+                        "update the imported TOC before editing its cached entries".into(),
+                    ));
                 }
             }
         }

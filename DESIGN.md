@@ -51,7 +51,12 @@ replacement of the whole bundle. Async open retains the existing document/sessio
 and progress. The UI provides canvas drawing, rich text and scaled images, asynchronous jobs with generation-based
 cancellation, and printing using twips and DPI. DOC42 separates its editable RichEdit model from the read-only
 paginated preview. PDF password retries use the captured source bytes; async open rechecks identity before replacing the prior session.
-DOC42 reserves note space in preview/print and refreshes linked TOC entries explicitly. Scene transforms rotate objects
+DOC42 reserves note space in preview/print and explicitly refreshes linked TOC entries, invalidating cached page numbers.
+XLS42 maps visible grid positions to physical cells for filtered, hidden and frozen areas. Typed clipboard preserves
+source cells and styles, translates formulas per destination and validates the whole sparse paste as one history step.
+Its registered payload is bound to the published Unicode text; invalid or mismatched payloads fall back to text.
+SCN42 shares immutable pixel/OCR data across history, bounds retained snapshots and OCR allocations, and commits a
+successful batch OCR as one undo step. Scene transforms rotate objects
 and groups; where a printer lacks `SB_PIXEL_ALPHA`, scene printing uses a bounded white raster fallback at up to
 200 DPI. Common controls v6 and PerMonitorV2 are declared in the application manifest.
 

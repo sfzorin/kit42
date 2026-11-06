@@ -13,6 +13,7 @@ struct Doc {
     doc: RichDocument,
     selection: (usize, usize),
     requested_selection: Option<(usize, usize)>,
+    external_url: Option<String>,
     zoom_percent: u16,
     next_revision: u64,
     snapshots: HashMap<u64, State>,
@@ -23,6 +24,7 @@ impl Doc {
             doc: RichDocument::new(),
             selection: (0, 0),
             requested_selection: None,
+            external_url: None,
             zoom_percent: 100,
             next_revision: 1,
             snapshots: HashMap::new(),
@@ -841,6 +843,12 @@ impl App for Doc {
             (347, "Update table of contents", None),
             (348, "Remove table of contents", None),
             (349, "Go to TOC heading", None),
+            (350, "Insert or edit link…", None),
+            (351, "Remove link", None),
+            (352, "Add bookmark…", None),
+            (353, "Go to bookmark…", None),
+            (354, "Follow link", None),
+            (355, "Delete bookmark…", None),
         ]
         .into_iter()
         .map(|(id, title, accelerator)| CommandSpec {
@@ -967,6 +975,25 @@ impl App for Doc {
         matches!(id, 335 | 336 | 338 | 340 | 341 | 342 | 344)
     }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 350 {
+            return Some(win42::InputRequest {
+                title: "Insert or edit link",
+                fields: vec![(
+                    "Address (https://, http://, mailto:, or #bookmark)",
+                    String::new(),
+                )],
+            });
+        }
+        if matches!(id, 352 | 353 | 355) {
+            return Some(win42::InputRequest {
+                title: match id {
+                    352 => "Add bookmark",
+                    353 => "Go to bookmark",
+                    _ => "Delete bookmark",
+                },
+                fields: vec![("Bookmark name", String::new())],
+            });
+        }
         if id == 340 || id == 341 {
             return Some(win42::InputRequest {
                 title: if id == 340 {
@@ -1227,6 +1254,62 @@ impl App for Doc {
         }
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id == 350 {
+            let target = values.first().ok_or("Missing link target")?.trim();
+            if !target.is_ascii() {
+                return Err("Use an ASCII or percent-encoded link address".into());
+            }
+            if target.len() > 4096
+                || target.chars().any(|c| c.is_control() || c.is_whitespace())
+                || !(target.starts_with("https://")
+                    || target.starts_with("http://")
+                    || target.starts_with("mailto:")
+                    || target.starts_with('#'))
+            {
+                return Err("Use an http, https, mailto, or #bookmark address".into());
+            }
+            let (p, range, _, selection) = self.selection_style()?;
+            self.doc
+                .set_link(p, range, Some(target.into()), selection)
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if matches!(id, 352 | 353 | 355) {
+            let name = values.first().ok_or("Missing bookmark name")?.trim();
+            if name.is_empty() {
+                return Err("Enter a bookmark name".into());
+            }
+            if id == 352 {
+                let start = self
+                    .doc
+                    .position_from_utf16(self.selection.0.min(self.selection.1))
+                    .map_err(|e| e.to_string())?;
+                let end = self
+                    .doc
+                    .position_from_utf16(self.selection.0.max(self.selection.1))
+                    .map_err(|e| e.to_string())?;
+                self.doc
+                    .add_bookmark(name.into(), start, end)
+                    .map_err(|e| e.to_string())?;
+            } else if id == 355 {
+                self.doc.remove_bookmark(name).map_err(|e| e.to_string())?;
+            } else {
+                let bookmark = self
+                    .doc
+                    .state()
+                    .bookmarks
+                    .iter()
+                    .find(|b| b.name == name)
+                    .ok_or("Bookmark not found")?;
+                let offset = self
+                    .doc
+                    .position_to_utf16(&bookmark.start)
+                    .map_err(|e| e.to_string())?;
+                self.selection = (offset, offset);
+                self.requested_selection = Some((offset, offset));
+            }
+            return Ok(());
+        }
         if id == 340 || id == 341 {
             if values.len() != 1 {
                 return Err("Invalid note".into());
@@ -1993,7 +2076,7 @@ impl App for Doc {
             .iter()
             .any(|s| !s.header.is_empty() || !s.footer.is_empty());
         format!(
-            "{} words · {}%{}{}",
+            "{} words · {}%{}{}{}",
             self.visible_text().split_whitespace().count(),
             self.zoom_percent,
             if headers {
@@ -2013,6 +2096,20 @@ impl App for Doc {
                     " · {} notes (markers shown in print)",
                     self.doc.state().footnotes.len()
                 )
+            },
+            if self
+                .doc
+                .state()
+                .tables_of_contents
+                .iter()
+                .any(|t| t.docx_cached.is_some()
+                    || t.odt_cached
+                        .as_ref()
+                        .is_some_and(|c| c.has_pages && !c.needs_refresh))
+            {
+                " · TOC page numbers are imported cache"
+            } else {
+                ""
             }
         )
     }
@@ -2123,8 +2220,70 @@ impl App for Doc {
             .map_err(|e| e.to_string())
     }
     fn select(&mut self, _: usize) {}
+    fn take_external_url(&mut self) -> Option<String> {
+        self.external_url.take()
+    }
     fn action(&mut self, id: u16) -> Result<(), String> {
         match id {
+            351 => {
+                let (p, range, _, selection) = self.selection_style()?;
+                self.doc
+                    .set_link(p, range, None, selection)
+                    .map_err(|e| e.to_string())?;
+            }
+            354 => {
+                let position = self
+                    .doc
+                    .position_from_utf16(self.selection.0)
+                    .map_err(|e| e.to_string())?;
+                let paragraph = self
+                    .doc
+                    .state()
+                    .blocks
+                    .iter()
+                    .find_map(|b| match b {
+                        Block::Paragraph(p) if p.id == position.paragraph => Some(p),
+                        _ => None,
+                    })
+                    .ok_or("Place the caret in a link")?;
+                let mut offset = 0;
+                let target = paragraph
+                    .runs
+                    .iter()
+                    .find_map(|r| {
+                        let start = offset;
+                        offset += r.text.len();
+                        (position.offset >= start && position.offset < offset)
+                            .then_some(r.link.as_deref())
+                            .flatten()
+                    })
+                    .ok_or("Place the caret in a link")?
+                    .to_owned();
+                if let Some(name) = target.strip_prefix('#') {
+                    let bookmark = self
+                        .doc
+                        .state()
+                        .bookmarks
+                        .iter()
+                        .find(|b| b.name == name)
+                        .map(|b| b.start.clone())
+                        .or_else(|| self.doc.toc_target(position.paragraph))
+                        .ok_or("Bookmark not found")?;
+                    let at = self
+                        .doc
+                        .position_to_utf16(&bookmark)
+                        .map_err(|e| e.to_string())?;
+                    self.selection = (at, at);
+                    self.requested_selection = Some((at, at));
+                } else if target.starts_with("https://")
+                    || target.starts_with("http://")
+                    || target.starts_with("mailto:")
+                {
+                    self.external_url = Some(target);
+                } else {
+                    return Err("This link uses an unsupported scheme".into());
+                }
+            }
             346 => {
                 let at = self
                     .doc
@@ -2334,6 +2493,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn link_and_bookmark_commands_follow_only_on_explicit_action() {
+        let mut app = Doc::new();
+        app.doc.set_plain_editor_text("Hello target").unwrap();
+        app.selection = (6, 12);
+        app.input_action(352, &["target".into()]).unwrap();
+        app.selection = (0, 5);
+        app.input_action(350, &["#target".into()]).unwrap();
+        app.selection = (1, 1);
+        app.action(354).unwrap();
+        assert_eq!(app.selection, (6, 6));
+        app.selection = (0, 5);
+        app.input_action(350, &["https://example.com".into()])
+            .unwrap();
+        assert!(app.take_external_url().is_none());
+        app.selection = (1, 1);
+        app.action(354).unwrap();
+        assert_eq!(
+            app.take_external_url().as_deref(),
+            Some("https://example.com")
+        );
+        assert!(app
+            .input_action(350, &["file:///tmp/example".into()])
+            .is_err());
+    }
     #[test]
     fn toc_commands_insert_navigate_refresh_remove_and_undo() {
         let mut app = Doc::new();

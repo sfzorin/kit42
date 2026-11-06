@@ -32,6 +32,8 @@ struct SlideSource {
     background: [u8; 3],
     decorations: Vec<SlideObject>,
     objects: Vec<ObjectSource>,
+    timing: SlideTiming,
+    timing_editable: bool,
 }
 pub struct Source {
     bytes: Vec<u8>,
@@ -41,6 +43,12 @@ pub struct Source {
     can_delete: bool,
 }
 impl Source {
+    pub fn can_edit_timing(&self, slide: u64) -> bool {
+        self.slides
+            .iter()
+            .find(|s| s.slide_id == slide)
+            .is_none_or(|s| s.timing_editable)
+    }
     pub fn can_rotate(&self, slide: u64, object: u64) -> bool {
         let transform = self
             .slides
@@ -143,6 +151,73 @@ fn attr<'a>(node: roxmltree::Node<'a, 'a>, name: &str) -> Option<&'a str> {
 }
 fn num(node: roxmltree::Node<'_, '_>, name: &str) -> Option<f64> {
     attr(node, name)?.parse().ok()
+}
+fn parse_timing(root: roxmltree::Node<'_, '_>) -> Option<SlideTiming> {
+    let Some(node) = root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "transition")
+    else {
+        return Some(SlideTiming::default());
+    };
+    if node
+        .attributes()
+        .any(|a| !matches!(a.name(), "advTm" | "spd" | "dur" | "advClick"))
+        || matches!(attr(node, "advClick"), Some("0" | "false"))
+    {
+        return None;
+    }
+    let children = node
+        .children()
+        .filter(|n| n.is_element())
+        .collect::<Vec<_>>();
+    let transition = match children.as_slice() {
+        [] => Transition::Cut,
+        [n] if n.tag_name().name() == "cut" && n.attributes().len() == 0 => Transition::Cut,
+        [n] if n.tag_name().name() == "fade" && n.attributes().len() == 0 => Transition::Fade,
+        [n] if n.tag_name().name() == "push"
+            && matches!(attr(*n, "dir"), Some("l"))
+            && n.attributes().len() == 1 =>
+        {
+            Transition::PushLeft
+        }
+        _ => return None,
+    };
+    let advance_ms = attr(node, "advTm")
+        .map(str::parse::<u32>)
+        .transpose()
+        .ok()?;
+    let duration_ms = if let Some(d) = attr(node, "dur") {
+        d.parse().ok()?
+    } else {
+        match attr(node, "spd").unwrap_or("med") {
+            "slow" => 1000,
+            "med" => 500,
+            "fast" => 250,
+            _ => return None,
+        }
+    };
+    if advance_ms.is_some_and(|v| !(100..=86_400_000).contains(&v))
+        || !(100..=10_000).contains(&duration_ms)
+    {
+        return None;
+    }
+    Some(SlideTiming {
+        advance_ms,
+        transition,
+        duration_ms,
+    })
+}
+fn timing_xml(t: SlideTiming) -> String {
+    let advance = t
+        .advance_ms
+        .map(|v| format!(" advTm=\"{v}\""))
+        .unwrap_or_default();
+    let effect = match t.transition {
+        Transition::Cut => "<p:cut/>",
+        Transition::PushLeft => "<p:push dir=\"l\"/>",
+        Transition::Fade => "<p:fade/>",
+    };
+    format!("<p:transition xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\" p14:dur=\"{}\"{advance}>{effect}</p:transition>", t.duration_ms)
 }
 fn group_transform(node: roxmltree::Node<'_, '_>) -> Option<[f64; 4]> {
     let (mut sx, mut sy, mut tx, mut ty) = (1.0, 1.0, 0.0, 0.0);
@@ -510,6 +585,9 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
         }
         let slide_bytes = read(&mut z, &path)?;
         let tree = xml(&slide_bytes)?;
+        let parsed_timing = parse_timing(tree.root_element());
+        let timing = parsed_timing.unwrap_or_default();
+        deck.set_timing(timing)?;
         let mut objects = Vec::new();
         let mut group_ids: HashMap<usize, u64> = HashMap::new();
         let (directory, filename) = path.rsplit_once('/').ok_or("Invalid slide path")?;
@@ -934,6 +1012,8 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
             background,
             decorations,
             objects,
+            timing,
+            timing_editable: parsed_timing.is_some(),
         });
     }
     deck.select(0)?;
@@ -1421,7 +1501,8 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
             let (fragments, relationships, media) =
                 appended_objects(slide, &slide.objects, 1, source.width, source.height)?;
             let group="<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>";
-            let xml=format!("<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><p:cSld><p:spTree>{group}{fragments}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>");
+            let transition = timing_xml(slide.timing);
+            let xml=format!("<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><p:cSld><p:spTree>{group}{fragments}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>{transition}</p:sld>");
             let rels=format!("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"layout\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"{}\"/>{relationships}</Relationships>",escape(layout));
             let (dir, file) = path.rsplit_once('/').ok_or("Invalid slide path")?;
             added_files.push((format!("{dir}/_rels/{file}.rels"), rels.into_bytes()));
@@ -1452,6 +1533,27 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
         let content = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
         let tree = xml(&bytes)?;
         let mut patches = Vec::new();
+        if slide.timing != record.timing {
+            if !record.timing_editable {
+                return Err("This PPTX transition cannot be safely edited".into());
+            }
+            let transition = timing_xml(slide.timing);
+            if let Some(node) = tree
+                .root_element()
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "transition")
+            {
+                patches.push((node.range(), transition));
+            } else {
+                let root = tree.root_element();
+                let insertion = root
+                    .children()
+                    .find(|n| n.is_element() && matches!(n.tag_name().name(), "timing" | "extLst"))
+                    .map(|n| n.range().start)
+                    .unwrap_or_else(|| content.rfind("</").unwrap_or(root.range().end));
+                patches.push((insertion..insertion, transition));
+            }
+        }
         let mut added_fragment = String::new();
         if !extras.is_empty() {
             let max_id = tree
@@ -1835,6 +1937,74 @@ fn retarget_relationship(bytes: &[u8], suffix: &str, value: &str) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timing_roundtrip_and_source_overlay() {
+        use super::*;
+        let mut deck = Presentation::new();
+        let timing = SlideTiming {
+            advance_ms: Some(2500),
+            transition: Transition::PushLeft,
+            duration_ms: 700,
+        };
+        deck.set_timing(timing).unwrap();
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].timing, SlideTiming::default());
+        assert!(deck.redo());
+        let (mut opened, source) = import(&export_new(&deck).unwrap()).unwrap();
+        assert_eq!(opened.slides()[0].timing, timing);
+        let modified = SlideTiming {
+            advance_ms: None,
+            transition: Transition::Fade,
+            duration_ms: 300,
+        };
+        opened.set_timing(modified).unwrap();
+        let (again, _) = import(&export(&opened, &source).unwrap()).unwrap();
+        assert_eq!(again.slides()[0].timing, modified);
+    }
+
+    #[test]
+    fn unsupported_transition_is_preserved_and_locked() {
+        use super::*;
+        let original = export_new(&Presentation::new()).unwrap();
+        let mut input = ZipArchive::new(Cursor::new(original)).unwrap();
+        let mut output = ZipWriter::new(Cursor::new(Vec::new()));
+        for i in 0..input.len() {
+            let mut part = input.by_index(i).unwrap();
+            let name = part.name().to_owned();
+            let mut bytes = Vec::new();
+            part.read_to_end(&mut bytes).unwrap();
+            if name == "ppt/slides/slide1.xml" {
+                let xml = String::from_utf8(bytes).unwrap();
+                let tree = roxmltree::Document::parse(&xml).unwrap();
+                let range = tree
+                    .root_element()
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "transition")
+                    .unwrap()
+                    .range();
+                let mut changed = xml.clone();
+                changed.replace_range(range, "<p:transition><p:dissolve/></p:transition>");
+                bytes = changed.into_bytes();
+            }
+            output
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&bytes).unwrap();
+        }
+        let bytes = output.finish().unwrap().into_inner();
+        let (mut deck, source) = import(&bytes).unwrap();
+        assert!(!source.can_edit_timing(deck.slides()[0].source_identity()));
+        let saved = export(&deck, &source).unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let xml = String::from_utf8(read(&mut zip, "ppt/slides/slide1.xml").unwrap()).unwrap();
+        assert!(xml.contains("<p:dissolve/>"));
+        deck.set_timing(SlideTiming {
+            advance_ms: Some(1000),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(export(&deck, &source).is_err());
+    }
     #[test]
     fn rotation_roundtrips_new_and_source_overlay_with_history() {
         use super::*;
@@ -2301,7 +2471,8 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
             let xml=format!("<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"{id}\" name=\"Group {id}\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"9144000\" cy=\"5143500\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"9144000\" cy=\"5143500\"/></a:xfrm></p:grpSpPr>{children}</p:grpSp>");
             shapes = shapes.replace(&format!("<!--suite42-group-{group_id}-->"), &xml);
         }
-        parts.push((format!("ppt/slides/slide{n}.xml"),format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><p:sld xmlns:p=\"{pns}\" xmlns:a=\"{ans}\" xmlns:r=\"{rns}\"><p:cSld><p:spTree>{group}{shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>").into_bytes()));
+        let transition = timing_xml(slide.timing);
+        parts.push((format!("ppt/slides/slide{n}.xml"),format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><p:sld xmlns:p=\"{pns}\" xmlns:a=\"{ans}\" xmlns:r=\"{rns}\"><p:cSld><p:spTree>{group}{shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>{transition}</p:sld>").into_bytes()));
         parts.push((
             format!("ppt/slides/_rels/slide{n}.xml.rels"),
             format!("<Relationships xmlns=\"{pkg}\">{rels}</Relationships>").into_bytes(),

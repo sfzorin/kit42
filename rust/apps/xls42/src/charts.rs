@@ -245,6 +245,26 @@ pub fn print_scene(data: &ChartData, width: f64, height: f64) -> CanvasScene {
     let mut pending: Vec<&mut SceneItem> = scene.items.iter_mut().collect();
     while let Some(item) = pending.pop() {
         match item {
+            SceneItem::ClippedOffset {
+                clip,
+                offset,
+                items,
+            } => {
+                clip.x *= scale;
+                clip.y *= scale;
+                clip.width *= scale;
+                clip.height *= scale;
+                offset.x *= scale;
+                offset.y *= scale;
+                pending.extend(items.iter_mut());
+            }
+            SceneItem::OpacityLayer { bounds, items, .. } => {
+                bounds.x *= scale;
+                bounds.y *= scale;
+                bounds.width *= scale;
+                bounds.height *= scale;
+                pending.extend(items.iter_mut());
+            }
             SceneItem::Transform { center, items, .. } => {
                 center.x *= scale;
                 center.y *= scale;

@@ -36,7 +36,9 @@ pub(super) fn target(bytes: &[u8]) -> Result<String, Error> {
     let first = tail
         .find('"')
         .ok_or_else(|| Error::Unsupported("RTF hyperlink target".into()))?;
-    if !tail[..first].trim().is_empty() {
+    let prefix = tail[..first].trim();
+    let internal = matches!(prefix, "\\l" | "\\\\l");
+    if !prefix.is_empty() && !internal {
         return Err(Error::Unsupported("RTF hyperlink switches".into()));
     }
     let after = &tail[first + 1..];
@@ -52,11 +54,22 @@ pub(super) fn target(bytes: &[u8]) -> Result<String, Error> {
     {
         return Err(Error::Unsupported("RTF hyperlink target".into()));
     }
-    Ok(url.to_owned())
+    Ok(if internal {
+        format!("#{url}")
+    } else {
+        url.to_owned()
+    })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn internal_hyperlink_switch_is_retained() {
+        assert_eq!(
+            target(br#"{\*\fldinst HYPERLINK \\l "Target"}"#).unwrap(),
+            "#Target"
+        );
+    }
     #[test]
     fn hyperlink_field_survives_edit_projection() {
         let mut d = RichDocument::new();

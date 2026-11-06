@@ -1,7 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod ocr_batch;
 mod ocr_settings;
 mod pdf_import;
 mod wia;
+mod windows_ocr;
 use scn42_core::ScanDocument;
 use std::path::Path;
 struct Scn {
@@ -27,15 +29,20 @@ struct Scn {
     ocr_language: String,
     language_discovery: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     print_pending: Option<std::sync::mpsc::Receiver<(u64, Result<win42::PrintJob, String>)>>,
+    ocr_displayed: usize,
     ocr: Option<(
-        std::sync::mpsc::Receiver<(
-            u64,
-            usize,
-            scn42_core::Page,
-            Result<Vec<scn42_core::OcrWord>, String>,
-        )>,
+        ocr_batch::Receiver,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        usize,
     )>,
+}
+impl Scn {
+    fn invalidate_ocr(&self) {
+        if let Some((_, cancel, _, _)) = &self.ocr {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 impl win42::App for Scn {
     fn take_pending_print_job(&mut self) -> Option<Result<win42::PrintJob, String>> {
@@ -69,6 +76,8 @@ impl win42::App for Scn {
             } else {
                 match result.and_then(|pages| self.doc.add_pages_with_dpi(pages)) {
                     Ok(()) => {
+                        self.invalidate_ocr();
+                        self.generation = self.generation.wrapping_add(1);
                         self.index = self.doc.pages().len().saturating_sub(1);
                         "PDF pages imported".into()
                     }
@@ -86,18 +95,45 @@ impl win42::App for Scn {
             self.scan_status = result.unwrap_or_else(|e| e);
             return true;
         }
-        let ocr_result = self.ocr.as_ref().and_then(|(rx, _)| rx.try_recv().ok());
-        if let Some((generation, index, page, result)) = ocr_result {
+        let ocr_result = self
+            .ocr
+            .as_ref()
+            .and_then(|(rx, _, _, _)| match rx.try_recv() {
+                Ok(v) => Some(v),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(_) => Some((
+                    self.generation,
+                    Err("OCR worker stopped; no pages changed".into()),
+                )),
+            });
+        if let Some((generation, result)) = ocr_result {
+            let cancelled = self
+                .ocr
+                .as_ref()
+                .is_some_and(|(_, flag, _, _)| flag.load(std::sync::atomic::Ordering::Relaxed));
             self.ocr = None;
-            self.scan_status = if generation != self.generation {
+            self.scan_status = if cancelled {
+                "Recognition cancelled; no pages changed".into()
+            } else if generation != self.generation {
                 "OCR result discarded because the project changed".into()
             } else {
-                match result.and_then(|words| self.doc.apply_ocr(index, &page, words)) {
-                    Ok(()) => "Recognition complete".into(),
+                match result.and_then(|batch| self.doc.apply_ocr_batch(batch)) {
+                    Ok(()) => {
+                        self.invalidate_ocr();
+                        self.generation = self.generation.wrapping_add(1);
+                        "Recognition complete".into()
+                    }
                     Err(e) => e,
                 }
             };
             return true;
+        }
+        if let Some((_, _, progress, _)) = &self.ocr {
+            let current = progress.load(std::sync::atomic::Ordering::Relaxed);
+            if current != self.ocr_displayed {
+                self.ocr_displayed = current;
+                return true;
+            }
         }
         let result = self.scan.as_ref().and_then(|rx| match rx.try_recv() {
             Ok(v) => Some(v),
@@ -118,6 +154,8 @@ impl win42::App for Scn {
             }
             Ok(pages) => match self.doc.add_pages_with_dpi(pages) {
                 Ok(()) => {
+                    self.invalidate_ocr();
+                    self.generation = self.generation.wrapping_add(1);
                     self.index = self.doc.pages().len() - 1;
                     self.scan_status = "Pages acquired".into();
                 }
@@ -170,6 +208,7 @@ impl win42::App for Scn {
         true
     }
     fn new_document(&mut self) -> Result<(), String> {
+        self.invalidate_ocr();
         self.generation = self.generation.wrapping_add(1);
         self.doc = ScanDocument::new();
         self.index = 0;
@@ -237,6 +276,7 @@ impl win42::App for Scn {
     }
     fn file_action(&mut self, id: u16, p: &Path) -> Result<(), String> {
         if id == 20 {
+            self.invalidate_ocr();
             self.generation = self.generation.wrapping_add(1);
         }
         match id {
@@ -292,7 +332,7 @@ impl win42::App for Scn {
                         img42_core::ImageDocument::from_rgba(
                             page.width,
                             page.height,
-                            page.pixels.clone(),
+                            page.pixels.to_vec(),
                             Some((page.dpi_x, page.dpi_y)),
                         )
                         .map_err(|e| e.to_string())
@@ -348,6 +388,8 @@ impl win42::App for Scn {
             (19, "From &Scanner..."),
             (23, "Recognize &Text..."),
             (24, "Cancel Recognition"),
+            (37, "Recognize page range..."),
+            (38, "Recognize using Windows OCR..."),
             (25, "Find Installed OCR Languages..."),
             (26, "Page Resolution..."),
             (27, "Print all pages..."),
@@ -385,6 +427,27 @@ impl win42::App for Scn {
             return Some(win42::InputRequest {
                 title: "Find installed Tesseract languages",
                 fields: vec![("Tesseract executable path", self.tesseract_path.clone())],
+            });
+        }
+        if id == 38 {
+            return Some(win42::InputRequest {
+                title: "Windows OCR (large pages are scaled; installed language required)",
+                fields: vec![
+                    ("Language tag (auto, en-US, ru-RU...)", "auto".into()),
+                    ("First page (1-based)", "1".into()),
+                    ("Last page (0 = all)", "0".into()),
+                ],
+            });
+        }
+        if id == 37 {
+            return Some(win42::InputRequest {
+                title: "Recognize page range (all-or-nothing)",
+                fields: vec![
+                    ("Tesseract executable", self.tesseract_path.clone()),
+                    ("Language codes (e.g. eng+rus)", self.ocr_language.clone()),
+                    ("First page (1-based)", "1".into()),
+                    ("Last page (0 = all)", "0".into()),
+                ],
             });
         }
         if id == 23 {
@@ -523,27 +586,75 @@ impl win42::App for Scn {
             self.scan_status = "Finding installed OCR languages…".into();
             return Ok(());
         }
-        if id == 23 {
-            let executable = values.first().ok_or("Missing executable path")?.clone();
-            let language = values.get(1).ok_or("Missing language")?.clone();
-            self.tesseract_path = executable.clone();
-            self.ocr_language = language.clone();
-            ocr_settings::save(&ocr_settings::Settings {
-                executable: executable.clone(),
-                language: language.clone(),
-            })
-            .map_err(|e| format!("Cannot save OCR settings: {e}"))?;
-            let page = self.doc.pages().get(self.index).ok_or("No page")?.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
+        if id == 23 || id == 37 || id == 38 {
+            if self.ocr.is_some() {
+                return Err("Recognition already running".into());
+            }
+            let use_windows = id == 38;
+            let executable = if use_windows {
+                String::new()
+            } else {
+                values.first().ok_or("Missing executable path")?.clone()
+            };
+            let language = values
+                .get(if use_windows { 0 } else { 1 })
+                .ok_or("Missing language")?
+                .clone();
+            let (first, last) = if id == 23 {
+                (self.index, self.index + 1)
+            } else {
+                let first = values
+                    .get(if use_windows { 1 } else { 2 })
+                    .ok_or("Missing first page")?
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid first page")?;
+                let last = values
+                    .get(if use_windows { 2 } else { 3 })
+                    .ok_or("Missing last page")?
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid last page")?;
+                if first == 0
+                    || first > self.doc.pages().len()
+                    || (last != 0 && (last < first || last > self.doc.pages().len()))
+                {
+                    return Err("Invalid page range".into());
+                }
+                (
+                    first - 1,
+                    if last == 0 {
+                        self.doc.pages().len()
+                    } else {
+                        last
+                    },
+                )
+            };
+            if first >= last || last > self.doc.pages().len() {
+                return Err("No pages selected".into());
+            }
+            if !use_windows {
+                ocr_settings::save(&ocr_settings::Settings {
+                    executable: executable.clone(),
+                    language: language.clone(),
+                })
+                .map_err(|e| format!("Cannot save OCR settings: {e}"))?;
+                self.tesseract_path = executable.clone();
+                self.ocr_language = language.clone();
+            }
+            let pages = self.doc.pages()[first..last].to_vec();
+            let total = pages.len();
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let flag = cancel.clone();
-            let generation = self.generation;
-            let index = self.index;
-            std::thread::spawn(move || {
-                let result = ScanDocument::recognize_page(&page, &executable, &language, &flag);
-                let _ = tx.send((generation, index, page, result));
-            });
-            self.ocr = Some((rx, cancel));
+            let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let rx = ocr_batch::start(
+                self.generation,
+                pages,
+                executable,
+                language,
+                use_windows,
+                cancel.clone(),
+                progress.clone(),
+            );
+            self.ocr_displayed = 0;
+            self.ocr = Some((rx, cancel, progress, total));
             self.scan_status = "Recognizing text…".into();
             return Ok(());
         }
@@ -553,9 +664,11 @@ impl win42::App for Scn {
                 .ok_or("Missing angle")?
                 .parse::<f64>()
                 .map_err(|_| "Invalid angle")?;
+            self.invalidate_ocr();
             self.generation = self.generation.wrapping_add(1);
             return self.doc.deskew(self.index, angle);
         }
+        self.invalidate_ocr();
         self.generation = self.generation.wrapping_add(1);
         let n: Vec<u32> = values
             .iter()
@@ -605,7 +718,7 @@ impl win42::App for Scn {
         self.doc
             .pages()
             .get(self.index)
-            .map(|p| (p.width, p.height, p.pixels.clone()))
+            .map(|p| (p.width, p.height, p.pixels.to_vec()))
     }
     fn status(&self) -> String {
         let progress = self
@@ -618,11 +731,23 @@ impl win42::App for Scn {
                 )
             })
             .unwrap_or_default();
+        let ocr_progress = self
+            .ocr
+            .as_ref()
+            .map(|(_, _, p, total)| {
+                format!(
+                    " | OCR {}/{} pages",
+                    p.load(std::sync::atomic::Ordering::Relaxed),
+                    total
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "{} pages | {}{}",
+            "{} pages | {}{}{}",
             self.doc.pages().len(),
             self.scan_status,
-            progress
+            progress,
+            ocr_progress
         )
     }
     fn dirty(&self) -> bool {
@@ -639,7 +764,8 @@ impl win42::App for Scn {
         match id {
             10 | 11 | 14 | 15 | 16 | 17 | 18 | 21 | 22 => n > 0,
             19 => self.scan.is_none(),
-            23 => n > 0 && self.ocr.is_none(),
+            23 | 37 => n > 0 && self.ocr.is_none(),
+            38 => cfg!(windows) && n > 0 && self.ocr.is_none(),
             24 => self.ocr.is_some(),
             25 => self.language_discovery.is_none(),
             26 | 28 | 29 | 30 | 31 | 32 => n > 0,
@@ -653,6 +779,7 @@ impl win42::App for Scn {
     }
     fn open(&mut self, p: &Path) -> Result<(), String> {
         let doc = ScanDocument::open_project(p)?;
+        self.invalidate_ocr();
         self.generation = self.generation.wrapping_add(1);
         self.doc = doc;
         self.index = 0;
@@ -672,6 +799,7 @@ impl win42::App for Scn {
             return Err("Command unavailable".into());
         }
         if matches!(id, 4 | 5 | 10..=17) {
+            self.invalidate_ocr();
             self.generation = self.generation.wrapping_add(1);
         }
         match id {
@@ -679,6 +807,7 @@ impl win42::App for Scn {
                 if let Some((_, cancel, _)) = &self.pdf_import {
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                self.invalidate_ocr();
                 self.generation = self.generation.wrapping_add(1);
                 self.scan_status = "Cancelling PDF import…".into();
             }
@@ -724,7 +853,7 @@ impl win42::App for Scn {
                                     height,
                                     pixel_width: page.width,
                                     pixel_height: page.height,
-                                    rgba: page.pixels,
+                                    rgba: page.pixels.to_vec(),
                                 }],
                             };
                             out.push(win42::PrintPage { geometry, scene });
@@ -736,15 +865,26 @@ impl win42::App for Scn {
                 self.print_pending = Some(rx);
             }
             24 => {
+                self.invalidate_ocr();
                 self.generation = self.generation.wrapping_add(1);
-                if let Some((_, cancel)) = &self.ocr {
+                if let Some((_, cancel, _, _)) = &self.ocr {
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 self.scan_status = "Cancelling recognition…".into();
             }
             19 => {
+                self.invalidate_ocr();
                 self.generation = self.generation.wrapping_add(1);
-                self.scan = Some(wia::start(self.generation, self.window));
+                let (byte_budget, page_budget) = self.doc.acquisition_capacity();
+                if byte_budget == 0 || page_budget == 0 {
+                    return Err("Document is at the acquisition limit".into());
+                }
+                self.scan = Some(wia::start(
+                    self.generation,
+                    self.window,
+                    byte_budget,
+                    page_budget,
+                ));
                 self.scan_status = "Scanner dialog open; cancel in that dialog".into();
             }
             12 if self.index > 0 => {
@@ -782,6 +922,7 @@ fn main() {
         ocr_language: settings.language,
         language_discovery: None,
         print_pending: None,
+        ocr_displayed: 0,
         ocr: None,
     }))
 }
@@ -789,6 +930,117 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+    #[test]
+    fn new_and_open_cancel_stale_batch() {
+        for reopen in [false, true] {
+            let mut app = Scn {
+                pending: None,
+                next_save: 0,
+                doc: ScanDocument::new(),
+                index: 0,
+                window: 0,
+                generation: 1,
+                scan: None,
+                scan_status: String::new(),
+                pdf_import: None,
+                pdf_first: 1,
+                pdf_last: 0,
+                pdf_dpi: 150,
+                jpeg_quality: 90,
+                compress_pdf: true,
+                tesseract_path: "tesseract".into(),
+                ocr_language: "eng".into(),
+                language_discovery: None,
+                print_pending: None,
+                ocr_displayed: 0,
+                ocr: None,
+            };
+            app.doc.add_rgba(1, 1, vec![255; 4]).unwrap();
+            let source = app.doc.pages()[0].clone();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("source.scn42");
+            app.doc.save_project(&path).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            app.ocr = Some((
+                rx,
+                cancel.clone(),
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                1,
+            ));
+            if reopen {
+                app.open(&path).unwrap();
+            } else {
+                app.new_document().unwrap();
+            }
+            assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+            let words = vec![scn42_core::OcrWord {
+                text: "late".into(),
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }];
+            tx.send((1, Ok(vec![(source, words, "eng".into())])))
+                .unwrap();
+            assert!(app.poll_background());
+            assert!(app.doc.pages().iter().all(|p| p.words.is_empty()));
+        }
+    }
+    #[test]
+    fn deleted_page_cancels_running_batch_and_discards_all_results() {
+        let mut app = Scn {
+            pending: None,
+            next_save: 0,
+            doc: ScanDocument::new(),
+            index: 0,
+            window: 0,
+            generation: 1,
+            scan: None,
+            scan_status: String::new(),
+            pdf_import: None,
+            pdf_first: 1,
+            pdf_last: 0,
+            pdf_dpi: 150,
+            jpeg_quality: 90,
+            compress_pdf: true,
+            tesseract_path: "tesseract".into(),
+            ocr_language: "eng".into(),
+            language_discovery: None,
+            print_pending: None,
+            ocr_displayed: 0,
+            ocr: None,
+        };
+        app.doc.add_rgba(1, 1, vec![255; 4]).unwrap();
+        app.doc.add_rgba(1, 1, vec![250; 4]).unwrap();
+        let old = app.doc.pages().to_vec();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        app.ocr = Some((rx, cancel.clone(), progress, 2));
+        assert!(app.poll_background());
+        assert!(app.status().contains("OCR 1/2 pages"));
+        app.action(11).unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        let words = vec![scn42_core::OcrWord {
+            text: "late".into(),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }];
+        tx.send((
+            1,
+            Ok(vec![
+                (old[0].clone(), words.clone(), "eng".into()),
+                (old[1].clone(), words, "eng".into()),
+            ]),
+        ))
+        .unwrap();
+        assert!(app.poll_background());
+        assert_eq!(app.doc.pages().len(), 1);
+        assert!(app.doc.pages()[0].words.is_empty());
+    }
     #[test]
     fn adapter_project_and_export_are_distinct() {
         let dir = std::env::temp_dir().join(format!("scn42-adapter-{}", std::process::id()));
@@ -813,6 +1065,7 @@ mod tests {
             ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
+            ocr_displayed: 0,
             ocr: None,
         };
         app.doc
@@ -856,6 +1109,7 @@ mod tests {
             ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
+            ocr_displayed: 0,
             ocr: None,
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -887,6 +1141,7 @@ mod tests {
             ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
+            ocr_displayed: 0,
             ocr: None,
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -920,6 +1175,7 @@ mod tests {
             ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
+            ocr_displayed: 0,
             ocr: None,
         };
         for id in 10..=13 {

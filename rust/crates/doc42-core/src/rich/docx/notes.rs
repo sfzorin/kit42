@@ -164,7 +164,7 @@ pub(super) fn write(
             xml.push_str(&format!("<w:{kind} w:id=\"{}\">", note.id));
             for (i, paragraph) in note.paragraphs.iter().enumerate() {
                 let mut p = String::new();
-                write_paragraph(&mut p, paragraph, &[], &[], &[])?;
+                write_paragraph(&mut p, paragraph, &[], &[], &[], &[])?;
                 if i == 0 {
                     let at =
                         p.find("</w:pPr>").ok_or_else(|| bad("note paragraph"))? + "</w:pPr>".len();

@@ -1,9 +1,15 @@
 //! Image-page workflow with project/PDF export and optional external Tesseract OCR.
 use lopdf::{dictionary, Document, Object, Stream};
+use std::sync::Arc;
 use std::{io::Read, path::Path};
-use suite42_core::{write_new, SnapshotHistory};
+use suite42_core::write_new;
 const MAX_PAGES: usize = 32;
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+// Each current document holds at most 224 MiB of RGBA pixels. Retained unique
+// pixel/word history targets 512 MiB; pending snapshots and work buffers are separate.
+const MAX_BYTES: usize = 224 * 1024 * 1024;
+const MAX_OCR_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DOCUMENT_PAYLOAD: usize = 256 * 1024 * 1024 - 64 * 1024;
+const MAX_RETAINED_BYTES: usize = 512 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub struct OcrWord {
     pub text: String,
@@ -14,17 +20,150 @@ pub struct OcrWord {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
+    pub id: u64,
+    pub ocr_language: String,
     pub width: u32,
     pub height: u32,
     pub dpi_x: u32,
     pub dpi_y: u32,
-    pub pixels: Vec<u8>,
-    pub words: Vec<OcrWord>,
+    pub pixels: Arc<[u8]>,
+    pub words: Arc<[OcrWord]>,
+}
+/// SCN-specific snapshots share immutable payloads and evict oldest history if
+/// distinct retained raster/word allocations exceed the budget.
+struct PageHistory {
+    current: Vec<Page>,
+    saved: Vec<Page>,
+    undo: Vec<Vec<Page>>,
+    redo: Vec<Vec<Page>>,
+    limit: usize,
+    budget: usize,
+}
+impl PageHistory {
+    fn new(initial: Vec<Page>, limit: usize) -> Self {
+        Self {
+            current: initial.clone(),
+            saved: initial,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            limit,
+            budget: MAX_RETAINED_BYTES,
+        }
+    }
+    fn current(&self) -> &Vec<Page> {
+        &self.current
+    }
+    fn snapshot(&self) -> Vec<Page> {
+        self.current.clone()
+    }
+    fn retained_bytes(&self) -> usize {
+        Self::measure(
+            std::iter::once(&self.current)
+                .chain(std::iter::once(&self.saved))
+                .chain(self.undo.iter())
+                .chain(self.redo.iter()),
+        )
+    }
+    fn measure<'a>(snapshots: impl Iterator<Item = &'a Vec<Page>>) -> usize {
+        let mut pixel_ids = std::collections::HashSet::new();
+        let mut word_ids = std::collections::HashSet::new();
+        let mut total = 0usize;
+        for pages in snapshots {
+            total = total.saturating_add(pages.capacity() * std::mem::size_of::<Page>());
+            for p in pages {
+                total = total.saturating_add(p.ocr_language.capacity());
+                if pixel_ids.insert(Arc::as_ptr(&p.pixels) as *const u8 as usize) {
+                    total = total
+                        .saturating_add(p.pixels.len())
+                        .saturating_add(2 * std::mem::size_of::<usize>());
+                }
+                if word_ids.insert(Arc::as_ptr(&p.words) as *const OcrWord as usize) {
+                    total = total
+                        .saturating_add(p.words.len() * std::mem::size_of::<OcrWord>())
+                        .saturating_add(2 * std::mem::size_of::<usize>());
+                    for word in p.words.iter() {
+                        total = total.saturating_add(word.text.capacity());
+                    }
+                }
+            }
+        }
+        total
+    }
+    fn trim(&mut self) {
+        while self.retained_bytes() > self.budget {
+            if !self.undo.is_empty() {
+                self.undo.remove(0);
+            } else if !self.redo.is_empty() {
+                self.redo.remove(0);
+            } else {
+                break;
+            }
+        }
+    }
+    fn apply(&mut self, value: Vec<Page>) -> bool {
+        if value == self.current {
+            return false;
+        }
+        if self.limit > 0 {
+            if self.undo.len() == self.limit {
+                self.undo.remove(0);
+            }
+            self.undo.push(self.current.clone());
+        }
+        self.current = value;
+        self.redo.clear();
+        self.trim();
+        true
+    }
+    fn undo(&mut self) -> bool {
+        if let Some(v) = self.undo.pop() {
+            if self.limit > 0 {
+                if self.redo.len() == self.limit {
+                    self.redo.remove(0);
+                }
+                self.redo.push(self.current.clone());
+            }
+            self.current = v;
+            self.trim();
+            true
+        } else {
+            false
+        }
+    }
+    fn redo(&mut self) -> bool {
+        if let Some(v) = self.redo.pop() {
+            if self.limit > 0 {
+                if self.undo.len() == self.limit {
+                    self.undo.remove(0);
+                }
+                self.undo.push(self.current.clone());
+            }
+            self.current = v;
+            self.trim();
+            true
+        } else {
+            false
+        }
+    }
+    fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+    fn is_dirty(&self) -> bool {
+        self.current != self.saved
+    }
+    fn mark_saved_snapshot(&mut self, snapshot: Vec<Page>) {
+        self.saved = snapshot;
+        self.trim();
+    }
 }
 pub struct SaveState(Vec<Page>);
 
 pub struct ScanDocument {
-    history: SnapshotHistory<Vec<Page>>,
+    history: PageHistory,
+    next_id: u64,
 }
 impl Default for ScanDocument {
     fn default() -> Self {
@@ -34,12 +173,25 @@ impl Default for ScanDocument {
 impl ScanDocument {
     pub fn new() -> Self {
         Self {
-            history: SnapshotHistory::new(Vec::new(), 5),
+            history: PageHistory::new(Vec::new(), 5),
+            next_id: 1,
         }
     }
     pub fn pages(&self) -> &[Page] {
         self.history.current()
     }
+    /// Remaining acquisition budget before transient processing buffers.
+    pub fn acquisition_capacity(&self) -> (usize, usize) {
+        let pixels = self.pages().iter().map(|p| p.pixels.len()).sum::<usize>();
+        let overhead = std::mem::size_of::<Page>() * MAX_PAGES + 65536;
+        let bytes = MAX_BYTES.saturating_sub(pixels).min(
+            MAX_DOCUMENT_PAYLOAD
+                .saturating_sub(PageHistory::measure(std::iter::once(&self.history.current)))
+                .saturating_sub(overhead),
+        );
+        (bytes, MAX_PAGES.saturating_sub(self.pages().len()))
+    }
+
     pub fn add_rgba(&mut self, width: u32, height: u32, pixels: Vec<u8>) -> Result<(), String> {
         let len = (width as usize)
             .checked_mul(height as usize)
@@ -57,25 +209,38 @@ impl ScanDocument {
             return Err("invalid image or page/memory limit exceeded".into());
         }
         let mut pages = self.pages().to_vec();
+        let id = self.next_id;
+        let next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or("page identity limit exceeded")?;
         pages.push(Page {
+            id,
+            ocr_language: String::new(),
             width,
             height,
             dpi_x: 150,
             dpi_y: 150,
-            pixels,
-            words: Vec::new(),
+            pixels: pixels.into(),
+            words: Arc::from([]),
         });
+        if PageHistory::measure(std::iter::once(&pages)) > MAX_DOCUMENT_PAYLOAD {
+            return Err("document memory limit exceeded".into());
+        }
+        self.next_id = next_id;
         self.history.apply(pages);
         Ok(())
     }
     /// Validate and add acquired pages as one history entry.
     pub fn add_pages(&mut self, pages: Vec<(u32, u32, Vec<u8>)>) -> Result<(), String> {
         let mut candidate = Self {
-            history: SnapshotHistory::new(self.pages().to_vec(), 5),
+            history: PageHistory::new(self.pages().to_vec(), 5),
+            next_id: self.next_id,
         };
         for (width, height, pixels) in pages {
             candidate.add_rgba(width, height, pixels)?;
         }
+        self.next_id = candidate.next_id;
         self.history.apply(candidate.pages().to_vec());
         Ok(())
     }
@@ -85,13 +250,15 @@ impl ScanDocument {
         pages: Vec<(u32, u32, Vec<u8>, u32, u32)>,
     ) -> Result<(), String> {
         let mut candidate = Self {
-            history: SnapshotHistory::new(self.pages().to_vec(), 5),
+            history: PageHistory::new(self.pages().to_vec(), 5),
+            next_id: self.next_id,
         };
         for (w, h, pixels, x, y) in pages {
             candidate.add_rgba(w, h, pixels)?;
             let i = candidate.pages().len() - 1;
             candidate.set_dpi(i, x, y)?;
         }
+        self.next_id = candidate.next_id;
         self.history.apply(candidate.pages().to_vec());
         Ok(())
     }
@@ -141,8 +308,9 @@ impl ScanDocument {
         page.width = h as u32;
         page.height = w as u32;
         std::mem::swap(&mut page.dpi_x, &mut page.dpi_y);
-        page.pixels = out;
-        page.words.clear();
+        page.pixels = out.into();
+        page.words = Arc::from([]);
+        page.ocr_language.clear();
         self.history.apply(p);
         Ok(())
     }
@@ -164,16 +332,19 @@ impl ScanDocument {
     /// Save an editable, versioned project to a new destination.
     pub fn save_snapshot(&self) -> (Vec<u8>, SaveState) {
         let state = self.history.snapshot();
-        let mut bytes = b"SCN42\0\x03\0".to_vec();
+        let mut bytes = b"SCN42\0\x04\0".to_vec();
         bytes.extend_from_slice(&(self.pages().len() as u32).to_le_bytes());
         for page in self.pages() {
+            bytes.extend_from_slice(&page.id.to_le_bytes());
             bytes.extend_from_slice(&page.width.to_le_bytes());
             bytes.extend_from_slice(&page.height.to_le_bytes());
             bytes.extend_from_slice(&page.dpi_x.to_le_bytes());
             bytes.extend_from_slice(&page.dpi_y.to_le_bytes());
             bytes.extend_from_slice(&page.pixels);
+            bytes.extend_from_slice(&(page.ocr_language.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(page.ocr_language.as_bytes());
             bytes.extend_from_slice(&(page.words.len() as u32).to_le_bytes());
-            for word in &page.words {
+            for word in page.words.iter() {
                 for n in [
                     word.x,
                     word.y,
@@ -199,7 +370,8 @@ impl ScanDocument {
     }
     /// Validate the complete input before returning a new clean document.
     pub fn open_project(path: &Path) -> Result<Self, String> {
-        const LIMIT: u64 = (MAX_BYTES * 2 + MAX_PAGES * 12 + 12) as u64;
+        // v4 projects created before this release may contain up to 64 MiB of OCR data.
+        const LIMIT: u64 = (MAX_BYTES + 64 * 1024 * 1024 + MAX_PAGES * 64 + 12) as u64;
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         file.take(LIMIT + 1)
@@ -209,7 +381,7 @@ impl ScanDocument {
             || bytes.len() < 12
             || !matches!(
                 &bytes[..8],
-                b"SCN42\0\x01\0" | b"SCN42\0\x02\0" | b"SCN42\0\x03\0"
+                b"SCN42\0\x01\0" | b"SCN42\0\x02\0" | b"SCN42\0\x03\0" | b"SCN42\0\x04\0"
             )
         {
             return Err("invalid or oversized SCN42 project".into());
@@ -230,7 +402,25 @@ impl ScanDocument {
         }
         let mut pos = 12usize;
         let mut doc = Self::new();
+        let mut ids = std::collections::HashSet::new();
         for _ in 0..count {
+            let id = if version >= 4 {
+                let end = pos.checked_add(8).ok_or("invalid id")?;
+                let id = u64::from_le_bytes(
+                    bytes
+                        .get(pos..end)
+                        .ok_or("truncated project")?
+                        .try_into()
+                        .unwrap(),
+                );
+                pos = end;
+                id
+            } else {
+                doc.next_id
+            };
+            if id == 0 || !ids.insert(id) {
+                return Err("invalid or duplicate page identity".into());
+            }
             let width = read_u32(pos)?;
             let height = read_u32(pos + 4)?;
             pos += 8;
@@ -255,8 +445,38 @@ impl ScanDocument {
             let end = pos.checked_add(len).ok_or("invalid length")?;
             let pixels = bytes.get(pos..end).ok_or("truncated project")?.to_vec();
             doc.add_rgba(width, height, pixels)?;
+            {
+                let mut pages = doc.pages().to_vec();
+                pages.last_mut().unwrap().id = id;
+                doc.history.apply(pages);
+            }
+            doc.next_id = doc
+                .next_id
+                .max(id.checked_add(1).ok_or("page identity limit exceeded")?);
             doc.set_dpi(doc.pages().len() - 1, dpi_x, dpi_y)?;
             pos = end;
+            if version >= 4 {
+                let n = read_u32(pos)? as usize;
+                pos += 4;
+                if n > 256 {
+                    return Err("OCR language too long".into());
+                }
+                let end = pos.checked_add(n).ok_or("invalid OCR language")?;
+                let language =
+                    std::str::from_utf8(bytes.get(pos..end).ok_or("truncated OCR language")?)
+                        .map_err(|e| e.to_string())?
+                        .to_string();
+                if !language
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-')
+                {
+                    return Err("invalid OCR language".into());
+                }
+                let mut pages = doc.pages().to_vec();
+                pages.last_mut().unwrap().ocr_language = language;
+                doc.history.apply(pages);
+                pos = end;
+            }
             if version >= 2 {
                 let count = read_u32(pos)? as usize;
                 pos += 4;
@@ -292,14 +512,17 @@ impl ScanDocument {
                     pos = end;
                 }
                 let mut pages = doc.pages().to_vec();
-                pages.last_mut().unwrap().words = words;
+                pages.last_mut().unwrap().words = words.into();
                 doc.history.apply(pages);
             }
         }
         if pos != bytes.len() {
             return Err("trailing project data".into());
         }
-        doc.history = SnapshotHistory::new(doc.pages().to_vec(), 5);
+        if PageHistory::measure(std::iter::once(&doc.history.current)) > MAX_DOCUMENT_PAYLOAD {
+            return Err("document memory limit exceeded".into());
+        }
+        doc.history = PageHistory::new(doc.pages().to_vec(), 5);
         Ok(doc)
     }
     pub fn flip(&mut self, index: usize, horizontal: bool) -> Result<(), String> {
@@ -319,8 +542,9 @@ impl ScanDocument {
                 pixels[dst..dst + 4].copy_from_slice(&page.pixels[src..src + 4]);
             }
         }
-        page.pixels = pixels;
-        page.words.clear();
+        page.pixels = pixels.into();
+        page.words = Arc::from([]);
+        page.ocr_language.clear();
         self.history.apply(pages);
         Ok(())
     }
@@ -349,8 +573,9 @@ impl ScanDocument {
         }
         p.width = width;
         p.height = height;
-        p.pixels = pixels;
-        p.words.clear();
+        p.pixels = pixels.into();
+        p.words = Arc::from([]);
+        p.ocr_language.clear();
         self.history.apply(pages);
         Ok(())
     }
@@ -371,21 +596,28 @@ impl ScanDocument {
             .sum();
         let mut pages = self.pages().to_vec();
         let page = pages.get_mut(index).ok_or("page index out of range")?;
-        if u64::from(width) * u64::from(height) * 4 + other_bytes as u64 > MAX_BYTES as u64 {
+        if width < 2 || height < 2 || width > 10_000 || height > 10_000 {
+            return Err("Invalid correction bounds".into());
+        }
+        let output_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("Invalid correction dimensions")?;
+        if output_len > MAX_BYTES
+            || other_bytes
+                .checked_add(output_len)
+                .is_none_or(|n| n > MAX_BYTES)
+        {
             return Err("Page memory limit exceeded".into());
         }
-        if width < 2
-            || height < 2
-            || u64::from(width) * u64::from(height) * 4 > MAX_BYTES as u64
-            || corners.iter().any(|(x, y)| {
-                !x.is_finite()
-                    || !y.is_finite()
-                    || *x < 0.0
-                    || *y < 0.0
-                    || *x > (page.width - 1) as f64
-                    || *y > (page.height - 1) as f64
-            })
-        {
+        if corners.iter().any(|(x, y)| {
+            !x.is_finite()
+                || !y.is_finite()
+                || *x < 0.0
+                || *y < 0.0
+                || *x > (page.width - 1) as f64
+                || *y > (page.height - 1) as f64
+        }) {
             return Err("Invalid correction bounds".into());
         }
         // Solve destination-to-source projective transform with h22=1.
@@ -424,7 +656,7 @@ impl ScanDocument {
             }
         }
         let h: Vec<f64> = a.iter().map(|r| r[8]).collect();
-        let mut pixels = vec![255u8; width as usize * height as usize * 4];
+        let mut pixels = vec![255u8; output_len];
         for y in 0..height {
             for x in 0..width {
                 let (x, y) = (x as f64, y as f64);
@@ -461,8 +693,12 @@ impl ScanDocument {
         }
         page.width = width;
         page.height = height;
-        page.pixels = pixels;
-        page.words.clear();
+        page.pixels = pixels.into();
+        page.words = Arc::from([]);
+        page.ocr_language.clear();
+        if PageHistory::measure(std::iter::once(&pages)) > MAX_DOCUMENT_PAYLOAD {
+            return Err("document memory limit exceeded".into());
+        }
         self.history.apply(pages);
         Ok(())
     }
@@ -492,8 +728,9 @@ impl ScanDocument {
     pub fn document_cleanup(&mut self, index: usize, threshold: Option<u8>) -> Result<(), String> {
         let mut pages = self.pages().to_vec();
         let page = pages.get_mut(index).ok_or("page index out of range")?;
-        page.words.clear();
-        for p in page.pixels.chunks_exact_mut(4) {
+        page.words = Arc::from([]);
+        page.ocr_language.clear();
+        for p in Arc::make_mut(&mut page.pixels).chunks_exact_mut(4) {
             let gray =
                 ((u32::from(p[0]) * 2126 + u32::from(p[1]) * 7152 + u32::from(p[2]) * 722 + 5000)
                     / 10000) as u8;
@@ -505,24 +742,86 @@ impl ScanDocument {
         self.history.apply(pages);
         Ok(())
     }
-    /// Apply recognition only to the exact page that was submitted.
+    /// Commit all pages as one history entry, only if every submitted page still matches.
+    pub fn apply_ocr_batch(
+        &mut self,
+        batch: Vec<(Page, Vec<OcrWord>, String)>,
+    ) -> Result<(), String> {
+        if batch.is_empty() {
+            return Err("No pages to recognize".into());
+        }
+        let mut pages = self.pages().to_vec();
+        let mut ids = std::collections::HashSet::new();
+        let mut ocr_bytes = 0usize;
+        for (source, words, language) in batch {
+            for word in &words {
+                ocr_bytes = ocr_bytes
+                    .checked_add(word.text.len() + 20)
+                    .ok_or("OCR output too large")?;
+            }
+            if ocr_bytes > MAX_OCR_BYTES {
+                return Err("OCR output too large".into());
+            }
+            if !ids.insert(source.id) {
+                return Err("Duplicate OCR page".into());
+            }
+            if language.is_empty()
+                || language.len() > 256
+                || !language
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '+' || c == '-')
+            {
+                return Err("Invalid OCR language".into());
+            }
+            let page = pages
+                .iter_mut()
+                .find(|p| p.id == source.id)
+                .ok_or("page no longer exists")?;
+            if *page != source {
+                return Err("page changed while recognition was running".into());
+            }
+            if words.len() > 100_000
+                || words.iter().any(|w| {
+                    w.text.is_empty()
+                        || w.width == 0
+                        || w.height == 0
+                        || w.x.checked_add(w.width).is_none_or(|v| v > page.width)
+                        || w.y.checked_add(w.height).is_none_or(|v| v > page.height)
+                })
+            {
+                return Err("Invalid OCR result".into());
+            }
+            page.words = words.into();
+            page.ocr_language = language;
+        }
+        let stored_bytes = pages
+            .iter()
+            .try_fold(0usize, |sum, p| {
+                p.words
+                    .iter()
+                    .try_fold(sum.checked_add(p.ocr_language.len())?, |n, w| {
+                        n.checked_add(w.text.len())?.checked_add(20)
+                    })
+            })
+            .ok_or("OCR output too large")?;
+        if stored_bytes > MAX_OCR_BYTES
+            || PageHistory::measure(std::iter::once(&pages)) > MAX_DOCUMENT_PAYLOAD
+        {
+            return Err("OCR output exceeds document memory limit".into());
+        }
+        self.history.apply(pages);
+        Ok(())
+    }
     pub fn apply_ocr(
         &mut self,
         index: usize,
         source: &Page,
         words: Vec<OcrWord>,
     ) -> Result<(), String> {
-        let mut pages = self.pages().to_vec();
-        let page = pages.get_mut(index).ok_or("page no longer exists")?;
-        if page.width != source.width
-            || page.height != source.height
-            || page.pixels != source.pixels
-        {
+        if self.pages().get(index).map(|p| p.id) != Some(source.id) {
             return Err("page changed while recognition was running".into());
         }
-        page.words = words;
-        self.history.apply(pages);
-        Ok(())
+        self.apply_ocr_batch(vec![(source.clone(), words, "und".into())])
     }
     pub fn recognized_text(&self) -> String {
         self.pages()
@@ -571,21 +870,36 @@ impl ScanDocument {
             }
         }
         let mut stdin = child.stdin.take().ok_or("OCR input unavailable")?;
-        let mut stdout = child.stdout.take().ok_or("OCR output unavailable")?;
-        let mut stderr = child.stderr.take().ok_or("OCR diagnostics unavailable")?;
+        let stdout = child.stdout.take().ok_or("OCR output unavailable")?;
+        let stderr = child.stderr.take().ok_or("OCR diagnostics unavailable")?;
         let writer = std::thread::spawn(move || stdin.write_all(&ppm));
         let reader = std::thread::spawn(move || {
             let mut data = Vec::new();
-            stdout.read_to_end(&mut data).map(|_| data)
+            stdout
+                .take(32 * 1024 * 1024 + 1)
+                .read_to_end(&mut data)
+                .map(|_| data)
         });
         let errors = std::thread::spawn(move || {
             let mut data = Vec::new();
-            stderr.read_to_end(&mut data).map(|_| data)
+            stderr
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut data)
+                .map(|_| data)
         });
         let start = std::time::Instant::now();
         let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = writer.join();
+                    let _ = reader.join();
+                    let _ = errors.join();
+                    return Err(format!("OCR process monitoring failed: {e}"));
+                }
             }
             if cancel.load(std::sync::atomic::Ordering::Relaxed)
                 || start.elapsed() >= std::time::Duration::from_secs(60)
@@ -608,6 +922,9 @@ impl ScanDocument {
             .join()
             .map_err(|_| "OCR diagnostics worker failed")?
             .map_err(|e| e.to_string())?;
+        if output.len() > 32 * 1024 * 1024 || diagnostics.len() > 1024 * 1024 {
+            return Err("OCR output exceeds limits".into());
+        }
         if !status.success() {
             return Err(format!(
                 "Tesseract failed: {}",
@@ -679,7 +996,7 @@ impl ScanDocument {
             let w = page.width as f32 * 72.0 / page.dpi_x as f32;
             let h = page.height as f32 * 72.0 / page.dpi_y as f32;
             let mut commands = format!("q {w} 0 0 {h} 0 0 cm /Im0 Do Q\n");
-            for word in &page.words {
+            for word in page.words.iter() {
                 let x = word.x as f32 * 72.0 / page.dpi_x as f32;
                 let y = (page.height - word.y - word.height) as f32 * 72.0 / page.dpi_y as f32;
                 let size = word.height as f32 * 72.0 / page.dpi_y as f32;
@@ -726,6 +1043,190 @@ impl ScanDocument {
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn perspective_limits_are_atomic_and_boundary_roundtrips() {
+        let mut d = ScanDocument::new();
+        d.add_rgba(2, 2, vec![255; 16]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let before = dir.path().join("before.scn42");
+        d.save_project(&before).unwrap();
+        let source = d.pages().to_vec();
+        let can_undo = d.can_undo();
+        let can_redo = d.can_redo();
+        let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        for (w, h) in [
+            (10001, 2),
+            (2, 10001),
+            (u32::MAX, u32::MAX),
+            (u32::MAX, 2),
+            (2, u32::MAX),
+        ] {
+            assert!(d.perspective(0, corners, w, h).is_err());
+            assert_eq!(d.pages(), source);
+            assert!(!d.is_dirty());
+            assert_eq!(d.can_undo(), can_undo);
+            assert_eq!(d.can_redo(), can_redo);
+        }
+        d.perspective(0, corners, 10000, 2).unwrap();
+        let path = dir.path().join("boundary.scn42");
+        d.save_project(&path).unwrap();
+        let reopened = ScanDocument::open_project(&path).unwrap();
+        assert_eq!(reopened.pages(), d.pages());
+    }
+    #[test]
+    fn multiple_a4_pages_share_snapshots_and_pixel_edits_are_isolated() {
+        let (width, height) = (2480, 3508);
+        let len = width as usize * height as usize * 4;
+        let mut first = vec![255; len];
+        first[1] = 0;
+        let mut d = ScanDocument::new();
+        d.add_rgba(width, height, first).unwrap();
+        d.add_rgba(width, height, vec![255; len]).unwrap();
+        let (remaining, slots) = d.acquisition_capacity();
+        assert_eq!(remaining, MAX_BYTES - 2 * len);
+        assert_eq!(slots, 30);
+        let original0 = d.pages()[0].pixels.clone();
+        let original1 = d.pages()[1].pixels.clone();
+        d.set_dpi(0, 300, 300).unwrap();
+        d.set_dpi(1, 300, 300).unwrap();
+        let source = d.pages().to_vec();
+        let words = vec![OcrWord {
+            text: "hello".into(),
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }];
+        d.apply_ocr_batch(vec![(source[0].clone(), words, "eng".into())])
+            .unwrap();
+        assert!(Arc::ptr_eq(&original0, &d.pages()[0].pixels));
+        assert!(Arc::ptr_eq(&original1, &d.pages()[1].pixels));
+        assert!(d.history.retained_bytes() < len * 2 + 1024 * 1024);
+        d.document_cleanup(0, None).unwrap();
+        assert!(!Arc::ptr_eq(&original0, &d.pages()[0].pixels));
+        assert!(Arc::ptr_eq(&original1, &d.pages()[1].pixels));
+        assert_eq!(&original0[..4], &[255, 0, 255, 255]);
+        assert_ne!(&d.pages()[0].pixels[..4], &original0[..4]);
+        assert!(d.undo());
+        assert!(Arc::ptr_eq(&original0, &d.pages()[0].pixels));
+        assert!(d.redo());
+        assert_ne!(&d.pages()[0].pixels[..4], &original0[..4]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multipage.scn42");
+        d.save_project(&path).unwrap();
+        let reopened = ScanDocument::open_project(&path).unwrap();
+        assert_eq!(reopened.pages(), d.pages());
+        assert!(!reopened.is_dirty());
+    }
+    #[test]
+    fn history_evicts_oldest_snapshots_to_fit_budget() {
+        let mut d = ScanDocument::new();
+        let mut pixels = vec![255; 64 * 64 * 4];
+        pixels[0] = 0;
+        d.add_rgba(64, 64, pixels).unwrap();
+        let saved = d.history.snapshot();
+        d.history.mark_saved_snapshot(saved);
+        let initial = d.history.retained_bytes();
+        d.history.budget = initial + 2 * 64 * 64 * 4 + 4096;
+        for _ in 0..5 {
+            d.flip(0, true).unwrap();
+        }
+        assert!(d.history.retained_bytes() <= d.history.budget);
+        assert!(d.history.undo.len() < 5);
+        assert!(d.can_undo());
+        let before = d.pages()[0].pixels.clone();
+        assert!(d.undo());
+        assert!(!Arc::ptr_eq(&before, &d.pages()[0].pixels));
+        assert!(d.redo());
+        assert!(Arc::ptr_eq(&before, &d.pages()[0].pixels));
+    }
+    #[test]
+    fn batch_ocr_is_one_history_entry_with_stable_ids_and_project_roundtrip() {
+        let mut d = ScanDocument::new();
+        d.add_rgba(2, 1, vec![255; 8]).unwrap();
+        d.add_rgba(2, 1, vec![250; 8]).unwrap();
+        let ids: Vec<_> = d.pages().iter().map(|p| p.id).collect();
+        assert_ne!(ids[0], ids[1]);
+        let dir = tempfile::tempdir().unwrap();
+        let initial = dir.path().join("before.scn42");
+        d.save_project(&initial).unwrap();
+        let pages = d.pages().to_vec();
+        let word = |text: &str| {
+            vec![OcrWord {
+                text: text.into(),
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+            }]
+        };
+        d.apply_ocr_batch(vec![
+            (pages[0].clone(), word("Hello"), "eng".into()),
+            (pages[1].clone(), word("Привет"), "rus".into()),
+        ])
+        .unwrap();
+        assert!(d.is_dirty());
+        assert_eq!(d.pages()[0].ocr_language, "eng");
+        assert_eq!(d.pages()[1].ocr_language, "rus");
+        let project = dir.path().join("after.scn42");
+        d.save_project(&project).unwrap();
+        let reopened = ScanDocument::open_project(&project).unwrap();
+        assert_eq!(reopened.pages(), d.pages());
+        assert!(d.undo());
+        assert!(d
+            .pages()
+            .iter()
+            .all(|p| p.words.is_empty() && p.ocr_language.is_empty()));
+        assert!(d.redo());
+        assert_eq!(d.pages(), reopened.pages());
+        let stale = d.pages().to_vec();
+        d.delete(0).unwrap();
+        d.add_rgba(2, 1, vec![255; 8]).unwrap();
+        assert!(!ids.contains(&d.pages()[1].id));
+        let before = d.pages().to_vec();
+        assert!(d
+            .apply_ocr_batch(vec![
+                (stale[0].clone(), word("late"), "eng".into()),
+                (stale[1].clone(), word("late"), "eng".into())
+            ])
+            .is_err());
+        assert_eq!(d.pages(), before);
+    }
+    #[test]
+    fn legacy_projects_migrate_with_stable_page_ids_and_words() {
+        let dir = tempfile::tempdir().unwrap();
+        for version in 1u8..=3 {
+            let path = dir.path().join(format!("v{version}.scn42"));
+            let mut bytes = b"SCN42\0".to_vec();
+            bytes.extend_from_slice(&[version, 0]);
+            bytes.extend_from_slice(&2u32.to_le_bytes());
+            for _ in 0..2 {
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                if version >= 3 {
+                    bytes.extend_from_slice(&300u32.to_le_bytes());
+                    bytes.extend_from_slice(&150u32.to_le_bytes());
+                }
+                bytes.extend_from_slice(&[255; 4]);
+                if version >= 2 {
+                    bytes.extend_from_slice(&1u32.to_le_bytes());
+                    for v in [0u32, 0, 1, 1, 1] {
+                        bytes.extend_from_slice(&v.to_le_bytes());
+                    }
+                    bytes.push(b'a');
+                }
+            }
+            std::fs::write(&path, bytes).unwrap();
+            let mut d = ScanDocument::open_project(&path).unwrap();
+            assert_ne!(d.pages()[0].id, d.pages()[1].id);
+            assert!(d.pages().iter().all(|p| p.ocr_language.is_empty()));
+            assert_eq!(d.pages()[0].words.len(), if version >= 2 { 1 } else { 0 });
+            let output = dir.path().join(format!("migrated{version}.scn42"));
+            d.save_project(&output).unwrap();
+            let reopened = ScanDocument::open_project(&output).unwrap();
+            assert_eq!(d.pages(), reopened.pages());
+        }
+    }
     #[test]
     fn compressed_pdf_keeps_page_and_text() {
         let dir = tempfile::tempdir().unwrap();
@@ -814,7 +1315,7 @@ mod tests {
         let project = dir.path().join("ocr.scn42");
         d.save_project(&project).unwrap();
         let mut reopened = ScanDocument::open_project(&project).unwrap();
-        assert_eq!(reopened.pages()[0].words, words);
+        assert_eq!(reopened.pages()[0].words.as_ref(), words.as_slice());
         reopened
             .export_pdf(&dir.path().join("searchable.pdf"))
             .unwrap();
@@ -846,13 +1347,13 @@ mod tests {
         reopened.rotate(0).unwrap();
         assert!(reopened.pages()[0].words.is_empty());
         assert!(reopened.undo());
-        assert_eq!(reopened.pages()[0].words, words);
+        assert_eq!(reopened.pages()[0].words.as_ref(), words.as_slice());
         reopened.document_cleanup(0, Some(128)).unwrap();
         assert!(reopened
             .apply_ocr(
                 0,
                 &Page {
-                    pixels: vec![0; 16],
+                    pixels: vec![0; 16].into(),
                     ..source
                 },
                 words
@@ -888,7 +1389,7 @@ mod tests {
         for bytes in [
             raw[..raw.len() - 1].to_vec(),
             [raw.clone(), vec![0]].concat(),
-            b"SCN42\0\x04\0\0\0\0\0".to_vec(),
+            b"SCN42\0\x05\0\0\0\0\0".to_vec(),
         ] {
             let bad = dir.path().join("bad.scn42");
             fs::write(&bad, bytes).unwrap();
@@ -902,14 +1403,14 @@ mod tests {
             .unwrap();
         d.crop(0, 0, 0, 1, 1).unwrap();
         d.document_cleanup(0, Some(128)).unwrap();
-        assert_eq!(d.pages()[0].pixels, vec![0, 0, 0, 255]);
+        assert_eq!(d.pages()[0].pixels.as_ref(), &[0, 0, 0, 255]);
         assert!(d.undo());
-        assert_eq!(d.pages()[0].pixels, vec![255, 0, 0, 255]);
+        assert_eq!(d.pages()[0].pixels.as_ref(), &[255, 0, 0, 255]);
         assert!(d.undo());
         assert_eq!(d.pages()[0].width, 2);
         assert!(d.redo());
         assert!(d.redo());
-        assert_eq!(d.pages()[0].pixels, vec![0, 0, 0, 255]);
+        assert_eq!(d.pages()[0].pixels.as_ref(), &[0, 0, 0, 255]);
     }
     #[test]
     fn pages_history_and_pdf() {

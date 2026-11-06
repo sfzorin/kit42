@@ -58,6 +58,9 @@ pub trait App {
     fn poll_background(&mut self) -> bool {
         false
     }
+    fn background_poll_ms(&self) -> u32 {
+        100
+    }
     /// Consume a finished background print render on the UI thread.
     fn take_pending_print_job(&mut self) -> Option<Result<PrintJob, String>> {
         None
@@ -133,6 +136,10 @@ pub trait App {
     fn presentation_size(&self) -> Option<(f64, f64)> {
         None
     }
+    /// Consumed only after an explicit application command.
+    fn take_external_url(&mut self) -> Option<String> {
+        None
+    }
     fn canvas_event(&mut self, _event: CanvasEvent) -> Result<(), String> {
         Ok(())
     }
@@ -183,6 +190,10 @@ pub trait App {
     /// Mask the first native input field and clear the returned buffers after dispatch.
     fn password_input(&self, _id: u16) -> bool {
         false
+    }
+    /// Pick folders for the specified input field indices before displaying the form.
+    fn input_folder_fields(&self, _id: u16) -> Vec<(usize, &'static str)> {
+        vec![]
     }
     fn input_request(&self, _id: u16) -> Option<InputRequest> {
         None
@@ -259,6 +270,9 @@ pub trait App {
     fn grid_selection(&self) -> Option<GridRange> {
         None
     }
+    fn grid_frozen_panes(&self) -> (usize, usize) {
+        (0, 0)
+    }
     fn select_grid_range(&mut self, _range: GridRange) {}
     fn select_grid_range_with_focus(&mut self, range: GridRange, _focus: (usize, usize)) {
         self.select_grid_range(range)
@@ -320,6 +334,8 @@ pub trait App {
 }
 #[cfg(windows)]
 mod clipboard;
+#[cfg(any(windows, test))]
+mod clipboard_envelope;
 #[cfg(windows)]
 mod dialogs;
 #[cfg(windows)]
@@ -573,6 +589,18 @@ pub enum CanvasEvent {
 /// Device-independent scene in document coordinates. Colors are RGB bytes.
 #[derive(Clone, Debug)]
 pub enum SceneItem {
+    /// Composite a bounded opaque scene over its destination at constant opacity.
+    OpacityLayer {
+        bounds: CanvasRect,
+        opacity: u8,
+        items: Vec<SceneItem>,
+    },
+    /// Clip to a logical rectangle, translating all nested items by offset.
+    ClippedOffset {
+        clip: CanvasRect,
+        offset: Point,
+        items: Vec<SceneItem>,
+    },
     /// Rotate nested scene items clockwise around `center` in logical scene units.
     Transform {
         center: Point,
@@ -817,7 +845,16 @@ pub enum ClipboardRequest {
     ReadText,
     WriteText(String),
     ReadData(String),
-    WriteData { format: String, bytes: Vec<u8> },
+    WriteData {
+        format: String,
+        bytes: Vec<u8>,
+    },
+    WriteDataAndText {
+        format: String,
+        bytes: Vec<u8>,
+        text: String,
+    },
+    ReadDataOrText(String),
 }
 
 /// Paper and margins in hundredths of a millimetre.

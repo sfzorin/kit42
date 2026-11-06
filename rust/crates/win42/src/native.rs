@@ -10,7 +10,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
+    System::{
+        Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED},
+        LibraryLoader::{GetModuleHandleW, LoadLibraryW},
+    },
     UI::{
         Controls::{Dialogs::*, *},
         HiDpi::*,
@@ -18,6 +21,7 @@ use windows_sys::Win32::{
             EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL,
             VK_SHIFT,
         },
+        Shell::ShellExecuteW,
         WindowsAndMessaging::*,
     },
 };
@@ -67,10 +71,48 @@ struct State {
     ruler_format: Option<(crate::PrintGeometry, u16, i32, i32, i32)>,
     fullscreen: Option<(isize, WINDOWPLACEMENT)>,
 }
-thread_local! { static STATE:RefCell<Option<State>>=const { RefCell::new(None) }; static REFRESHING:Cell<bool>=const {Cell::new(false)}; static DRAGGING:Cell<bool>=const {Cell::new(false)}; }
+thread_local! { static STATE:RefCell<Option<State>>=const { RefCell::new(None) }; static REFRESHING:Cell<bool>=const {Cell::new(false)}; static DRAGGING:Cell<bool>=const {Cell::new(false)}; static POLL_MS:Cell<u32>=const {Cell::new(100)}; }
 
 unsafe fn msg(hwnd: HWND, s: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
     MessageBoxW(hwnd, wide(s).as_ptr(), wide("Suite42").as_ptr(), flags)
+}
+unsafe fn pick_folder(hwnd: HWND, title: &str) -> Option<String> {
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::HWND as WinHwnd,
+            System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
+            UI::Shell::{
+                FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR,
+                FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+            },
+        },
+    };
+    let initialized = CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
+    if initialized < 0 {
+        return None;
+    }
+    let result = (|| -> windows::core::Result<String> {
+        let picker: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+        let flags = picker.GetOptions()?
+            | FOS_PICKFOLDERS
+            | FOS_FORCEFILESYSTEM
+            | FOS_PATHMUSTEXIST
+            | FOS_NOCHANGEDIR;
+        picker.SetOptions(flags)?;
+        let title = wide(title);
+        picker.SetTitle(PCWSTR(title.as_ptr()))?;
+        picker.Show(Some(WinHwnd(hwnd)))?;
+        let item = picker.GetResult()?;
+        let path = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+        let result = path.to_string();
+        CoTaskMemFree(path.0.cast());
+        Ok(result?)
+    })()
+    .ok();
+    CoUninitialize();
+    result
 }
 unsafe fn dialog(
     hwnd: HWND,
@@ -1480,6 +1522,30 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                     crate::ClipboardRequest::WriteData { format, bytes } => {
                         crate::clipboard::write_data(hwnd, &format, &bytes)
                     }
+                    crate::ClipboardRequest::WriteDataAndText {
+                        format,
+                        bytes,
+                        text,
+                    } => crate::clipboard::write_data_and_text(hwnd, &format, &bytes, &text),
+                    crate::ClipboardRequest::ReadDataOrText(format) => {
+                        match crate::clipboard::read_data_or_text(hwnd, &format) {
+                            Ok(crate::clipboard::ClipboardValue::Data(bytes)) => STATE.with(|s| {
+                                s.borrow_mut()
+                                    .as_mut()
+                                    .unwrap()
+                                    .app
+                                    .clipboard_data(id, bytes)
+                            }),
+                            Ok(crate::clipboard::ClipboardValue::Text(text)) => STATE.with(|s| {
+                                s.borrow_mut()
+                                    .as_mut()
+                                    .unwrap()
+                                    .app
+                                    .clipboard_text(id, text)
+                            }),
+                            Err(error) => Err(error),
+                        }
+                    }
                     crate::ClipboardRequest::ReadData(format) => {
                         crate::clipboard::read_data(hwnd, &format).and_then(|bytes| {
                             STATE.with(|s| {
@@ -1552,7 +1618,18 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 refresh();
                 return;
             }
-            if let Some(req) = request {
+            if let Some(mut req) = request {
+                let folders =
+                    STATE.with(|s| s.borrow().as_ref().unwrap().app.input_folder_fields(id));
+                for (index, title) in folders {
+                    let Some(path) = pick_folder(hwnd, title) else {
+                        return;
+                    };
+                    let Some(field) = req.fields.get_mut(index) else {
+                        return;
+                    };
+                    field.1 = path;
+                }
                 let (multiline, password) = STATE.with(|s| {
                     let s = s.borrow();
                     let a = &s.as_ref().unwrap().app;
@@ -1611,6 +1688,35 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             if let Err(e) = r {
                 msg(hwnd, &e, MB_OK | MB_ICONERROR);
             } else {
+                let url = STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.take_external_url());
+                if let Some(url) = url {
+                    let valid = url.len() <= 4096
+                        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+                        && (url.starts_with("https://")
+                            || url.starts_with("http://")
+                            || url.starts_with("mailto:"));
+                    if !valid {
+                        msg(
+                            hwnd,
+                            "This link has an unsupported or invalid address.",
+                            MB_OK | MB_ICONERROR,
+                        );
+                    } else {
+                        let target = wide(&url);
+                        if ShellExecuteW(
+                            hwnd,
+                            null(),
+                            target.as_ptr(),
+                            null(),
+                            null(),
+                            SW_SHOWNORMAL,
+                        ) as isize
+                            <= 32
+                        {
+                            msg(hwnd, "Could not open this link.", MB_OK | MB_ICONERROR);
+                        }
+                    }
+                }
                 let pending =
                     STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.take_pending_open());
                 if let Some(path) = pending {
@@ -1761,6 +1867,17 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
             if changed {
                 refresh();
             }
+            let interval = STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map_or(100, |s| s.app.background_poll_ms().clamp(16, 1000))
+            });
+            POLL_MS.with(|previous| {
+                if previous.get() != interval {
+                    SetTimer(h, 42, interval, None);
+                    previous.set(interval);
+                }
+            });
             sync_rulers(h);
             let pending = STATE.with(|s| {
                 s.borrow_mut()
@@ -2889,6 +3006,53 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
     let rgb = |c: [u8; 3]| c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16;
     for item in items {
         match item {
+            SceneItem::OpacityLayer {
+                bounds,
+                opacity,
+                items,
+            } => {
+                crate::scene_transform::opacity_layer(
+                    dc,
+                    viewport,
+                    *bounds,
+                    *opacity,
+                    |memory, view| draw_scene_items(memory, view, items),
+                );
+            }
+            SceneItem::ClippedOffset {
+                clip,
+                offset,
+                items,
+            } => {
+                if [clip.x, clip.y, clip.width, clip.height, offset.x, offset.y]
+                    .iter()
+                    .all(|v| v.is_finite())
+                    && clip.width > 0.0
+                    && clip.height > 0.0
+                {
+                    let a = cv(Point {
+                        x: clip.x,
+                        y: clip.y,
+                    });
+                    let b = cv(Point {
+                        x: clip.x + clip.width,
+                        y: clip.y + clip.height,
+                    });
+                    let saved = SaveDC(dc);
+                    if saved != 0 {
+                        IntersectClipRect(dc, a.x as i32, a.y as i32, b.x as i32, b.y as i32);
+                        let shifted = crate::Viewport {
+                            zoom: viewport.zoom,
+                            pan: Point {
+                                x: viewport.pan.x + offset.x * viewport.zoom,
+                                y: viewport.pan.y + offset.y * viewport.zoom,
+                            },
+                        };
+                        draw_scene_items(dc, shifted, items);
+                        RestoreDC(dc, saved);
+                    }
+                }
+            }
             SceneItem::Transform {
                 center,
                 degrees,
@@ -3568,6 +3732,7 @@ pub(super) fn grid_snapshot() -> Option<crate::grid::Snapshot> {
             labels,
             selected: s.app.selected_cell(),
             range: s.app.grid_selection(),
+            frozen: s.app.grid_frozen_panes(),
             readonly: s.app.text_readonly(),
             clipboard: s.app.grid_clipboard_commands(),
         })
