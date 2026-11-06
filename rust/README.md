@@ -1,4 +1,4 @@
-# Suite42 for Windows
+# off42 for Windows
 
 This separate Rust workspace implements six native Windows apps; the macOS Swift apps remain separate. The current
 implementation is a work in progress, not a feature-parity or Windows release claim. Native interaction, printing,

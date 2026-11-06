@@ -1,6 +1,6 @@
-# Suite42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42 · SCN42
+# off42 — PDF42 · DOC42 · XLS42 · IMG42 · PPT42 · SCN42
 
-Suite42 is a suite of six native apps for **macOS and Windows**, covering documents, spreadsheets, presentations,
+off42 brings together six native apps for **macOS and Windows**, covering documents, spreadsheets, presentations,
 PDFs, images and scanning. The macOS apps are written in Swift and share Kit42 for menus, toolbars, language
 selection, signatures and stamps. The Windows apps use a separate Rust implementation and native Windows controls.
 Available features, file-format support and runtime dependencies depend on the platform.

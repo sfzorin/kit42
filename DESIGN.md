@@ -1,6 +1,6 @@
-# Suite42 — design system
+# off42 — design system
 
-Suite42 has native macOS and Windows implementations of PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42.
+off42 has native macOS and Windows implementations of PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42.
 The Swift/macOS apps share **Kit42** (`Sources/Kit42`); the Rust/Windows apps share native Windows infrastructure.
 The Kit42, AppKit and Swift contracts below describe macOS; the Windows workspace has its own implementation
 and feature scope. Shared product names do not imply identical capabilities.
