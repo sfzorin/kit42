@@ -69,6 +69,12 @@ scanner hardware and PDFium interoperability have not been verified on a Windows
 
 <a id="install"></a>
 
+## Download for macOS
+
+The off42 1.0 preview DMG contains all six apps for Apple Silicon Macs running macOS 14 or later.
+The apps use ad hoc signatures and the preview has no Apple notarization.
+[Download the preview from GitHub Releases](https://github.com/sfzorin/off42/releases/tag/v1.0.0-preview.1).
+
 ## Build and install on macOS
 
 ```bash

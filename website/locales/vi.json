@@ -52,7 +52,7 @@
       },
       {
         "q": "OFF42 hỗ trợ những máy Mac nào?",
-        "a": "OFF42 dành cho macOS 14 trở lên. Bộ cài công khai chưa được phát hành; bạn có thể tự biên dịch các ứng dụng từ mã nguồn bằng Xcode Command Line Tools."
+        "a": "Có bản xem trước dạng DMG cho máy Mac dùng Apple Silicon và macOS 14 trở lên."
       },
       {
         "q": "Có phiên bản Windows không?",
@@ -327,7 +327,7 @@
     "sourceText": "Lấy mã nguồn có giấy phép MIT trên GitHub. Biên dịch trên macOS cần Xcode Command Line Tools. Bản dựng cục bộ dùng chữ ký ad-hoc, trừ khi bạn cấu hình ký để phân phối.",
     "checkReleases": "Xem bản phát hành",
     "buildGuide": "Hướng dẫn biên dịch",
-    "releaseNote": "Nút tải xuống xuất hiện khi có tệp phát hành công khai. Không bộ cài nào được ghi là đã ký hay được Apple chứng thực nếu chưa có bằng chứng từ bản phát hành.",
+    "releaseNote": "Bản xem trước cho Mac dùng chữ ký ad hoc. Bản này chưa được Apple công chứng và macOS có thể yêu cầu cho phép mở lần đầu.",
     "buildTitle": "Biên dịch OFF42 trên Mac của bạn",
     "buildText": "Trong khi chờ bộ cài có chữ ký được phát hành, bạn có thể tự biên dịch các ứng dụng chỉ trong vài phút. Hãy chạy các lệnh sau trong Terminal.",
     "buildStep1": "Cài đặt Xcode Command Line Tools của Apple.",

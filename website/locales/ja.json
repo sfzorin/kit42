@@ -52,7 +52,7 @@
       },
       {
         "q": "どの Mac に対応していますか？",
-        "a": "OFF42 は macOS 14 以降を対象としています。公開インストーラはまだリリースされていません。Xcode Command Line Tools を使ってソースからアプリをビルドできます。"
+        "a": "Appleシリコン搭載でmacOS 14以降のMac向けに、プレビュー版のDMGを提供しています。"
       },
       {
         "q": "Windows 版はありますか？",
@@ -327,7 +327,7 @@
     "sourceText": "MIT ライセンスのソースを GitHub で入手できます。macOS でのビルドには Xcode Command Line Tools が必要です。配布用署名を設定しない場合、ローカルビルドはアドホック署名を使います。",
     "checkReleases": "リリースを確認",
     "buildGuide": "ビルド手順",
-    "releaseNote": "公開済みの配布ファイルがある場合にダウンロードボタンが表示されます。リリースの裏付けがないインストーラを、署名済み・公証済みとは表示しません。",
+    "releaseNote": "Mac向けプレビュー版はアドホック署名を使用しています。Appleの公証は受けていないため、初回起動時にmacOSから許可を求められる場合があります。",
     "buildTitle": "Mac で OFF42 をビルド",
     "buildText": "署名済みインストーラが公開されるまでは、数分でアプリを自分でビルドできます。ターミナルで次のコマンドを実行してください。",
     "buildStep1": "Apple の Xcode Command Line Tools をインストールします。",

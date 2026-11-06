@@ -52,7 +52,7 @@
       },
       {
         "q": "Quels Mac sont compatibles avec OFF42 ?",
-        "a": "OFF42 cible macOS 14 ou ultérieur. Aucun programme d'installation public n'est encore disponible ; vous pouvez compiler les apps depuis le code source avec les Xcode Command Line Tools."
+        "a": "Une version préliminaire au format DMG est disponible pour les Mac équipés d’une puce Apple et de macOS 14 ou version ultérieure."
       },
       {
         "q": "Existe-t-il une version Windows ?",
@@ -327,7 +327,7 @@
     "sourceText": "Retrouvez le code sous licence MIT sur GitHub. La compilation sur macOS nécessite Xcode Command Line Tools. Les compilations locales utilisent une signature ad-hoc sauf si vous configurez une signature de distribution.",
     "checkReleases": "Voir les versions",
     "buildGuide": "Instructions de compilation",
-    "releaseNote": "Les boutons de téléchargement apparaissent lorsque des fichiers de version sont publiés. Aucun programme d'installation n'est présenté comme signé ou notarié sans preuve dans la publication.",
+    "releaseNote": "La version préliminaire pour Mac utilise une signature ad hoc. Elle n’est pas notariée par Apple et macOS peut demander une autorisation à la première ouverture.",
     "buildTitle": "Compilez OFF42 sur votre Mac",
     "buildText": "En attendant la publication d'un programme d'installation signé, vous pouvez compiler les apps vous-même en quelques minutes. Exécutez ces commandes dans le Terminal.",
     "buildStep1": "Installez les Xcode Command Line Tools d'Apple.",

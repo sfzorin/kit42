@@ -52,7 +52,7 @@
       },
       {
         "q": "Na jakich Macach działa OFF42?",
-        "a": "OFF42 jest przeznaczony dla macOS 14 lub nowszego. Publiczny instalator nie został jeszcze wydany; aplikacje możesz zbudować z kodu źródłowego za pomocą Xcode Command Line Tools."
+        "a": "Podglądowy obraz DMG jest dostępny dla komputerów Mac z Apple Silicon i systemem macOS 14 lub nowszym."
       },
       {
         "q": "Czy jest wersja dla Windows?",
@@ -327,7 +327,7 @@
     "sourceText": "Pobierz kod na licencji MIT z GitHub. Budowanie na macOS wymaga Xcode Command Line Tools. Lokalne kompilacje korzystają z podpisu ad-hoc, chyba że skonfigurujesz podpisywanie dystrybucyjne.",
     "checkReleases": "Sprawdź wydania",
     "buildGuide": "Instrukcja budowania",
-    "releaseNote": "Przyciski pobierania pojawiają się, gdy dostępne są opublikowane pliki wydania. Żaden instalator nie jest przedstawiany jako podpisany lub notaryzowany bez potwierdzenia dla tego wydania.",
+    "releaseNote": "Wersja podglądowa dla Maca ma podpis ad hoc. Nie przeszła notaryzacji Apple, a macOS może poprosić o zgodę przy pierwszym uruchomieniu.",
     "buildTitle": "Zbuduj OFF42 na swoim Macu",
     "buildText": "Dopóki nie zostanie opublikowany podpisany instalator, możesz w kilka minut samodzielnie zbudować aplikacje. Uruchom te polecenia w Terminalu.",
     "buildStep1": "Zainstaluj Xcode Command Line Tools od Apple.",

@@ -52,7 +52,7 @@
       },
       {
         "q": "Aling mga Mac ang sinusuportahan ng OFF42?",
-        "a": "Para sa macOS 14 o mas bago ang OFF42. Wala pang inilalabas na pampublikong installer; maaari mong i-build ang mga app mula sa source gamit ang Xcode Command Line Tools."
+        "a": "May preview na DMG para sa mga Mac na may Apple Silicon at macOS 14 o mas bago."
       },
       {
         "q": "May bersyon ba para sa Windows?",
@@ -327,7 +327,7 @@
     "sourceText": "Kunin sa GitHub ang source code na may lisensyang MIT. Kailangan ang Xcode Command Line Tools para mag-build sa macOS. Gumagamit ng ad-hoc signing ang lokal na build maliban kung mag-configure ka ng distribution signing.",
     "checkReleases": "Tingnan ang mga release",
     "buildGuide": "Mga tagubilin sa pag-build",
-    "releaseNote": "Lilitaw ang mga download button kapag may available nang nailathalang release file. Walang installer na ilalarawang signed o notarized nang walang ebidensya sa release.",
+    "releaseNote": "Ad hoc ang lagda ng preview para sa Mac. Hindi ito notarized ng Apple, at maaaring humingi ang macOS ng pahintulot sa unang pagbukas.",
     "buildTitle": "I-build ang OFF42 sa iyong Mac",
     "buildText": "Habang wala pang naka-sign na installer, maaari mong i-build mismo ang mga app sa loob ng ilang minuto. Patakbuhin ang mga command na ito sa Terminal.",
     "buildStep1": "I-install ang Xcode Command Line Tools ng Apple.",

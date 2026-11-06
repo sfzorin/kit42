@@ -52,7 +52,7 @@
       },
       {
         "q": "OFF42 支持哪些 Mac？",
-        "a": "OFF42 面向 macOS 14 及更高版本。公开安装程序尚未发布；你可以使用 Xcode Command Line Tools 从源代码构建这些应用。"
+        "a": "搭载 Apple 芯片并运行 macOS 14 或更高版本的 Mac 可以下载预览版 DMG。"
       },
       {
         "q": "有 Windows 版本吗？",
@@ -327,7 +327,7 @@
     "sourceText": "在 GitHub 获取 MIT 许可的源代码。在 macOS 上构建需要 Xcode Command Line Tools。除非配置分发签名，否则本地构建使用临时签名。",
     "checkReleases": "查看发布版本",
     "buildGuide": "构建说明",
-    "releaseNote": "有已发布的安装文件后才会显示下载按钮。没有发布证据时，不会将安装程序标示为已签名或已公证。",
+    "releaseNote": "Mac 预览版采用临时签名（ad hoc），未经 Apple 公证。首次打开时，macOS 可能会要求你授权。",
     "buildTitle": "在你的 Mac 上构建 OFF42",
     "buildText": "在签名安装程序发布之前，你可以在几分钟内自行构建这些应用。请在“终端”中运行以下命令。",
     "buildStep1": "安装 Apple 的 Xcode Command Line Tools。",

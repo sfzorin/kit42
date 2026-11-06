@@ -52,7 +52,7 @@
       },
       {
         "q": "Milyen Maceken fut az OFF42?",
-        "a": "Az OFF42 macOS 14 vagy újabb rendszerre készül. Nyilvános telepítő még nem jelent meg; az alkalmazásokat forráskódból fordíthatod le az Xcode Command Line Tools segítségével."
+        "a": "Az előzetes DMG Apple Silicon chipet és macOS 14 vagy újabb rendszert használó Mac gépekhez érhető el."
       },
       {
         "q": "Van Windows-verzió?",
@@ -327,7 +327,7 @@
     "sourceText": "Szerezd be az MIT-licencű forráskódot a GitHubon. A macOS-en történő fordításhoz Xcode Command Line Tools szükséges. A helyi fordítások ad-hoc aláírást használnak, hacsak nem állítasz be terjesztési aláírást.",
     "checkReleases": "Kiadások megtekintése",
     "buildGuide": "Fordítási útmutató",
-    "releaseNote": "A letöltési gombok akkor jelennek meg, amikor közzétett kiadási fájlok érhetők el. Kiadási bizonyíték nélkül egy telepítőt sem jelölünk aláírtnak vagy Apple által hitelesítettnek.",
+    "releaseNote": "A Mac-előzetes ad hoc aláírást használ. Az Apple nem hitelesítette, ezért a macOS az első megnyitáskor jóváhagyást kérhet.",
     "buildTitle": "Fordítsd le az OFF42-t a Maceden",
     "buildText": "Amíg nem jelenik meg aláírt telepítő, néhány perc alatt magad is lefordíthatod az alkalmazásokat. Futtasd ezeket a parancsokat a Terminálban.",
     "buildStep1": "Telepítsd az Apple Xcode Command Line Tools csomagját.",

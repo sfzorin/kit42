@@ -52,7 +52,7 @@
       },
       {
         "q": "Mac manakah yang disokong OFF42?",
-        "a": "OFF42 menyasarkan macOS 14 atau lebih baharu. Pemasang awam belum dikeluarkan; anda boleh membina aplikasi daripada kod sumber dengan Xcode Command Line Tools."
+        "a": "DMG pratonton tersedia untuk Mac dengan Apple Silicon yang menjalankan macOS 14 atau versi lebih baharu."
       },
       {
         "q": "Adakah versi Windows tersedia?",
@@ -327,7 +327,7 @@
     "sourceText": "Dapatkan kod sumber berlesen MIT di GitHub. Pembinaan pada macOS memerlukan Xcode Command Line Tools. Binaan setempat menggunakan tandatangan ad-hoc melainkan anda mengkonfigurasi tandatangan pengedaran.",
     "checkReleases": "Semak keluaran",
     "buildGuide": "Arahan pembinaan",
-    "releaseNote": "Butang muat turun muncul apabila fail keluaran yang diterbitkan tersedia. Tiada pemasang dinyatakan sebagai ditandatangani atau dinotarisasi tanpa bukti keluaran.",
+    "releaseNote": "Pratonton Mac menggunakan tandatangan ad hoc. Apple belum menotarikannya, dan macOS mungkin meminta kebenaran ketika pertama kali dibuka.",
     "buildTitle": "Bina OFF42 pada Mac anda",
     "buildText": "Sementara pemasang bertandatangan belum diterbitkan, anda boleh membina aplikasi sendiri dalam beberapa minit. Jalankan arahan ini dalam Terminal.",
     "buildStep1": "Pasang Xcode Command Line Tools daripada Apple.",

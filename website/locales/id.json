@@ -52,7 +52,7 @@
       },
       {
         "q": "Mac mana saja yang didukung OFF42?",
-        "a": "OFF42 menargetkan macOS 14 atau lebih baru. Penginstal publik belum dirilis; Anda dapat membangun aplikasinya dari kode sumber dengan Xcode Command Line Tools."
+        "a": "Pratinjau dalam format DMG tersedia untuk Mac dengan Apple Silicon dan macOS 14 atau yang lebih baru."
       },
       {
         "q": "Apakah ada versi Windows?",
@@ -327,7 +327,7 @@
     "sourceText": "Dapatkan kode sumber berlisensi MIT di GitHub. Pembuatan di macOS memerlukan Xcode Command Line Tools. Build lokal memakai penandatanganan ad-hoc kecuali Anda mengatur penandatanganan distribusi.",
     "checkReleases": "Periksa rilis",
     "buildGuide": "Petunjuk build",
-    "releaseNote": "Tombol unduh muncul saat file rilis yang dipublikasikan tersedia. Tidak ada penginstal yang dinyatakan ditandatangani atau dinotarisasi tanpa bukti rilis.",
+    "releaseNote": "Pratinjau untuk Mac ditandatangani secara ad hoc. Apple belum melakukan notarisasi untuk build ini, dan macOS mungkin meminta persetujuan saat pertama kali dibuka.",
     "buildTitle": "Bangun OFF42 di Mac Anda",
     "buildText": "Sampai penginstal bertanda tangan diterbitkan, Anda dapat membangun aplikasinya sendiri dalam beberapa menit. Jalankan perintah berikut di Terminal.",
     "buildStep1": "Instal Xcode Command Line Tools dari Apple.",

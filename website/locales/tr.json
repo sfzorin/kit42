@@ -52,7 +52,7 @@
       },
       {
         "q": "OFF42 hangi Mac'leri destekler?",
-        "a": "OFF42, macOS 14 ve üzerini hedefler. Herkese açık bir yükleyici henüz yayımlanmadı; uygulamaları Xcode Command Line Tools ile kaynak koddan derleyebilirsiniz."
+        "a": "Apple Silicon işlemcili ve macOS 14 veya üzeri yüklü Mac’ler için bir önizleme DMG’si sunuluyor."
       },
       {
         "q": "Windows sürümü var mı?",
@@ -327,7 +327,7 @@
     "sourceText": "MIT lisanslı kaynak kodunu GitHub'dan edinin. macOS üzerinde derleme için Xcode Command Line Tools gerekir. Dağıtım imzası ayarlamadıkça yerel derlemeler ad-hoc imzalama kullanır.",
     "checkReleases": "Sürümleri kontrol edin",
     "buildGuide": "Derleme talimatları",
-    "releaseNote": "Yayımlanmış sürüm dosyaları hazır olduğunda indirme düğmeleri görünür. Sürüm kanıtı olmadan hiçbir yükleyici imzalı veya noter onaylı olarak sunulmaz.",
+    "releaseNote": "Mac önizlemesi ad hoc olarak imzalanmıştır. Apple noter onayı yoktur ve macOS ilk açılışta izin isteyebilir.",
     "buildTitle": "OFF42'yi Mac'inizde derleyin",
     "buildText": "İmzalı bir yükleyici yayımlanana kadar uygulamaları birkaç dakikada kendiniz derleyebilirsiniz. Bu komutları Terminal'de çalıştırın.",
     "buildStep1": "Apple'ın Xcode Command Line Tools paketini yükleyin.",
