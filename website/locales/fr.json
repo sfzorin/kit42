@@ -10,27 +10,27 @@
     "home": "Accueil"
   },
   "home": {
-    "eyebrow": "VOS FICHIERS. VOS OUTILS. VOS RÈGLES.",
-    "title": "Faites place à votre meilleur travail.",
-    "intro": "Découvrez OFF42. Six applications dédiées aux documents, tableaux, présentations, PDF, images et numérisations. Une suite bureautique open source, sur votre Mac.",
+    "eyebrow": "Gratuit · Open source · macOS et Windows",
+    "title": "Tout votre bureau. Sans abonnement.",
+    "intro": "OFF42 réunit six applications natives pour macOS et Windows : PDF, documents, tableurs, présentations, images et numérisation. Gratuites et open source, avec des implémentations distinctes et des limites documentées pour chaque plateforme.",
     "primary": "Obtenir OFF42",
     "secondary": "Découvrir les outils",
-    "note": "Gratuit · Open source · macOS 14+ · 20 langues",
+    "note": "Gratuit · Open source · macOS 14+ · Windows",
     "suiteTitle": "Tout un bureau. L'esprit plus léger.",
     "suiteIntro": "Du premier brouillon au PDF signé, retrouvez vos tâches quotidiennes dans une même famille d'outils familiers.",
     "featureEyebrow": "PETITS DÉTAILS. GRANDE DIFFÉRENCE.",
     "featureTitle": "Plus de possibilités dans chaque fichier.",
     "featureIntro": "Modifiez un PDF. Allégez une pièce jointe. Transformez une page papier en texte interrogeable. Trouvez l'outil adapté.",
     "privacyTitle": "Votre bureau. Pas le serveur d'un autre.",
-    "privacyText": "L'édition courante se fait sur votre Mac. Travaillez sur des fichiers locaux sans les envoyer à un éditeur en ligne. Les fonctions réseau, dont l'horodatage de confiance des signatures, nécessitent une connexion.",
+    "privacyText": "La retouche et l’édition de base se font sur votre ordinateur, sans téléverser vos fichiers. Les fonctions en ligne facultatives nécessitent une connexion ; leur disponibilité dépend de la plateforme.",
     "privacyLabel": "Pensé pour le travail local",
     "languageTitle": "Une voix familière, en 20 langues.",
     "languageText": "Le site et l'interface des applications parlent votre langue. Choisissez-la et gardez les mêmes outils à portée de main.",
     "openTitle": "Un bureau ouvert, à tous les sens du terme.",
     "openText": "OFF42 est distribué sous licence MIT. Consultez le code, compilez-le, signalez un bogue ou contribuez à améliorer la prochaine version.",
     "openLink": "Découvrir sur GitHub",
-    "endTitle": "Un bon travail commence par les bons outils.",
-    "endText": "Découvrez votre nouvelle suite bureautique au quotidien.",
+    "endTitle": "Abonnements : off. Le bureau reste à vous.",
+    "endText": "Gratuit · Open source · macOS et Windows",
     "formatsLabel": "FORMATS OFFICE ET OUVERTS",
     "formatsTitle": "Compatible avec les fichiers que vous avez déjà.",
     "formatsText": "Ouvrez ce que vos collègues vous envoient et enregistrez dans le format qu'ils attendent. Les mises en page complexes peuvent différer : vérifiez les fichiers importants après l'import.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "OFF42 fonctionne-t-il hors ligne ?",
-        "a": "L'édition courante fonctionne sur votre Mac sans connexion Internet, et vos fichiers ne sont envoyés nulle part. Les fonctions réseau, comme l'horodatage de confiance des signatures ou l'ouverture de liens web, nécessitent une connexion."
+        "a": "La retouche et l’édition de base se font sur votre ordinateur, sans téléverser vos fichiers. Les fonctions en ligne facultatives nécessitent une connexion ; leur disponibilité dépend de la plateforme."
       },
       {
         "q": "OFF42 ouvre-t-il les fichiers Microsoft Office ?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "Existe-t-il une version Windows ?",
-        "a": "Une version préliminaire pour Windows est développée dans le même dépôt ouvert. Aucun programme d'installation Windows n'a encore été publié."
+        "a": "Les applications Windows natives sont implémentées et disponibles sous forme de code source. Consultez les fonctions et limites documentées. Aucun programme d’installation Windows public n’a encore été publié."
       }
     ]
+  },
+  "name": {
+    "label": "QU'Y A-T-IL DANS UN NOM ?",
+    "title": "OFF comme office. Et comme tout ce qu'on peut éteindre.",
+    "officeTitle": "Une suite bureautique complète",
+    "officeText": "Six applications pour tous les fichiers de votre bureau : PDF, fichiers Word et Excel, diapositives, photos et numérisations.",
+    "offlineTitle": "Fonctionne hors ligne",
+    "offlineText": "L’édition se fait sur votre ordinateur. Sans compte ni téléversement de fichiers.",
+    "offTitle": "Abonnements : off",
+    "offText": "Pas d'abonnement, pas de période d'essai, pas de publicité. Sous licence MIT et gratuit, aujourd'hui comme demain.",
+    "answerTitle": "Et 42 ?",
+    "answerText": "La réponse à la grande question sur la vie, l'univers et le reste. Nous l'avons simplement appliquée au bureau.",
+    "stats": [
+      "applications en une suite",
+      "formats de fichiers",
+      "langues d'interface",
+      "abonnement",
+      "envoi de vos fichiers"
+    ]
+  },
+  "marks": {
+    "label": "SIGNATURES ET TAMPONS",
+    "title": "Signez et tamponnez comme sur papier. Sans imprimante ni scanner.",
+    "text": "OFF42 trace une signature manuscrite à partir d'un nom, appose le tampon de l'entreprise et place le tout directement dans le document. Chaque empreinte est légèrement différente, comme de la vraie encre sur du papier.",
+    "points": [
+      "Signatures au stylo bille, stylo gel, stylo plume ou feutre",
+      "132 styles de tampons : cachets ronds, tampons d'entreprise, « Payé » et « Reçu »",
+      "Apprend votre propre signature à partir de quelques exemples",
+      "Fonctionne dans les PDF, documents, présentations, tableurs, images et numérisations"
+    ],
+    "note": "Une signature dessinée n'est pas une signature numérique par certificat. Quand il vous en faut une, PDF42 signe avec votre certificat.",
+    "signedCaption": "Un contrat signé et tamponné dans PDF42. Les noms et les entreprises sont fictifs."
+  },
+  "show": {
+    "label": "EN SITUATION",
+    "title": "De vraies apps. De vrais documents.",
+    "text": "Chaque image ici est une capture d'écran d'OFF42 sur Mac, avec des documents d'exemple d'entreprises fictives ouverts dans les apps. Aucune maquette."
   },
   "labels": {
     "learn": "Découvrir",
@@ -88,7 +125,8 @@
     "notFound": "Cette page a quitté le bureau.",
     "notFoundText": "Essayez l'accueil ou choisissez une langue pour poursuivre la découverte.",
     "copy": "Copier",
-    "copied": "Copié"
+    "copied": "Copié",
+    "screenshot": "Capture d'écran sur macOS. Documents d'exemple, entreprises fictives."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "OFF42 pour macOS",
     "macText": "Le code source cible macOS 14 ou ultérieur. Aucun programme d'installation DMG public n'a encore été publié.",
     "windows": "OFF42 pour Windows",
-    "windowsText": "Le code d’une version préliminaire pour Windows est disponible sur GitHub. Le programme d’installation EXE reste à publier.",
+    "windowsText": "Les applications Windows natives sont implémentées et disponibles sous forme de code source. Consultez les fonctions et limites documentées. Aucun programme d’installation Windows public n’a encore été publié.",
     "sourceTitle": "Compilez. Explorez. Appropriez-vous le code.",
     "sourceText": "Retrouvez le code sous licence MIT sur GitHub. La compilation sur macOS nécessite Xcode Command Line Tools. Les compilations locales utilisent une signature ad-hoc sauf si vous configurez une signature de distribution.",
     "checkReleases": "Voir les versions",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Un bureau qui n'a rien à cacher.",
-    "intro": "OFF42 est une famille indépendante et open source de six applications natives macOS. Le projet rassemble le travail quotidien sur les fichiers dans une interface et des outils communs.",
+    "intro": "OFF42 réunit six applications natives pour macOS et Windows : PDF, documents, tableurs, présentations, images et numérisation. Gratuites et open source, avec des implémentations distinctes et des limites documentées pour chaque plateforme.",
     "licenseTitle": "Sous licence MIT. Libre à vous d'explorer.",
     "licenseText": "Utilisez, étudiez, modifiez et redistribuez le logiciel sous licence MIT. Le dépôt contient les conditions de licence et le code source.",
     "contributeTitle": "Les meilleurs outils se construisent ensemble.",
@@ -314,20 +352,20 @@
     "siteTitle": "Un site simple",
     "siteText": "Le site ne contient ni publicité, ni scripts d'analyse, ni système de comptes. Les hébergeurs peuvent traiter les informations des requêtes pour diffuser et protéger le site.",
     "appTitle": "Des documents traités localement",
-    "appText": "L'édition courante dans OFF42 s'exécute localement sur votre Mac. Les fonctions réseau facultatives, les liens externes et les services d'horodatage font appel à leurs fournisseurs respectifs.",
+    "appText": "La retouche et l’édition de base se font sur votre ordinateur, sans téléverser vos fichiers. Les fonctions en ligne facultatives nécessitent une connexion ; leur disponibilité dépend de la plateforme.",
     "linksTitle": "Liens externes",
     "linksText": "GitHub et les autres services liés ont leurs propres politiques de confidentialité. La visite de ce site n'envoie pas vos fichiers."
   },
   "seo": {
-    "homeTitle": "OFF42 — suite bureautique gratuite et open source pour Mac",
-    "homeDescription": "Bureautique gratuite et open source pour macOS : éditeur PDF, DOCX, tableurs XLSX, présentations PPTX, retouche d'images et scanner avec OCR. Hors ligne.",
+    "homeTitle": "OFF42 — Suite bureautique gratuite pour macOS et Windows, sans abonnement",
+    "homeDescription": "Applications bureautiques natives, gratuites et open source pour macOS et Windows : PDF, DOCX, XLSX, PPTX, images et numérisation. Fonctions et tests varient selon la plateforme.",
     "featuresTitle": "Fonctions : PDF, documents, tableurs, scans | OFF42",
     "featuresDescription": "Modifiez et signez vos PDF, réduisez les gros fichiers, numérisez avec OCR, travaillez en DOCX, XLSX et PPTX. Tout ce que fait la suite gratuite OFF42 sur Mac.",
-    "downloadTitle": "Télécharger OFF42 pour Mac — bureautique gratuite",
-    "downloadDescription": "OFF42 pour macOS 14 ou ultérieur : état des versions, préversion Windows et instructions pas à pas pour compiler les apps gratuites sous licence MIT.",
+    "downloadTitle": "Télécharger OFF42 pour macOS et Windows — bureautique gratuite",
+    "downloadDescription": "OFF42 pour macOS et Windows : code source, état des versions, compilation et limites des plateformes. Vérifiez ce qui est implémenté et testé avant l’installation.",
     "aboutTitle": "Suite bureautique open source sous licence MIT | OFF42",
-    "aboutDescription": "OFF42 est une famille indépendante de six apps Mac natives sous licence MIT. Lisez le code sur GitHub, signalez des problèmes, aidez à traduire ou contribuez.",
-    "privacyTitle": "Confidentialité : vos fichiers restent sur Mac | OFF42",
-    "privacyDescription": "Le site OFF42 n'a ni publicité, ni statistiques, ni comptes ; les apps modifient vos fichiers en local sur Mac. Ce qui reste local, ce qui passe par le réseau."
+    "aboutDescription": "OFF42 réunit six applications natives pour macOS et Windows sous licence MIT. Consultez le code, les plateformes prises en charge et leurs limites sur GitHub.",
+    "privacyTitle": "Confidentialité : vos fichiers restent sur votre ordinateur | OFF42",
+    "privacyDescription": "La retouche et l’édition de base se font sur votre ordinateur, sans téléverser vos fichiers. Les fonctions en ligne facultatives nécessitent une connexion ; leur disponibilité dépend de la plateforme."
   }
 }

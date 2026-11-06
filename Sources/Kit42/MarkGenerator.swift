@@ -90,6 +90,22 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
             c.showWindow(nil)
         }
         c.refresh()
+        // K42_GENERATOR_LAYOUT_AUDIT=1 (UI audit): no label or pop-up in the generator may be clipped. Regression for
+        // the Form/Pen/Ink row, which used to squeeze "Form:" to nothing and truncate the pop-ups in long languages.
+        if ProcessInfo.processInfo.environment["K42_GENERATOR_LAYOUT_AUDIT"] != nil, let window = c.window {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                window.contentView?.layoutSubtreeIfNeeded()
+                func all(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(all) }
+                var clipped: [String] = []
+                for v in all(window.contentView ?? NSView()) where !v.isHiddenOrHasHiddenAncestor {
+                    if let p = v as? NSPopUpButton, let title = p.titleOfSelectedItem, !title.isEmpty, !p.pullsDown,
+                       p.bounds.width + 1 < p.intrinsicContentSize.width { clipped.append("pop-up \(title)") }
+                    else if let f = v as? NSTextField, !f.isEditable, f.cell?.wraps == false, !f.stringValue.isEmpty,
+                            f.bounds.width + 1 < f.intrinsicContentSize.width { clipped.append("label \(f.stringValue)") }
+                }
+                print("Generator layout: \(clipped.isEmpty ? "PASS" : "FAIL") \(Language.current.rawValue) \(clipped.joined(separator: "; "))")
+            }
+        }
     }
 
     private let mode: Mode
@@ -192,6 +208,40 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         return root
     }
 
+    /// "Label: control" pairs on one line. Longer translations (Russian, Italian, Portuguese, Turkish…) do not fit the
+    /// 600-point content width and the stack used to squeeze labels to nothing and truncate the pop-ups; then the
+    /// pairs wrap onto further lines instead, each at its natural width.
+    private func labelledRow(_ pairs: [(String, NSView)]) -> NSView {
+        func line(_ part: ArraySlice<(String, NSView)>) -> NSStackView {
+            var views: [NSView] = []
+            for (text, control) in part {
+                let label = NSTextField(labelWithString: text)
+                label.setContentCompressionResistancePriority(.required, for: .horizontal)
+                control.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+                views += [label, control]
+            }
+            let row = NSStackView(views: views)
+            for (_, control) in part.dropLast() { row.setCustomSpacing(18, after: control) }
+            return row
+        }
+        let single = line(pairs[...])
+        let available: CGFloat = 600
+        guard single.fittingSize.width > available else { return single }
+        // Greedy wrap: as many pairs per line as fit.
+        var lines: [NSStackView] = [], start = pairs.startIndex
+        while start < pairs.endIndex {
+            var end = start + 1
+            while end < pairs.endIndex, line(pairs[start...end]).fittingSize.width <= available { end += 1 }
+            lines.append(line(pairs[start..<end]))
+            start = end
+        }
+        let column = NSStackView(views: lines)
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        return column
+    }
+
     private func textArea(_ tv: NSTextView, height: CGFloat) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.borderType = .bezelBorder
@@ -222,11 +272,7 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         for form in SignatureForm.allCases { formPopup.addItem(withTitle: form.title); formPopup.lastItem?.tag = form.rawValue }
         formPopup.target = self
         formPopup.action = #selector(formChanged)
-        let inkRow = NSStackView(views: [NSTextField(labelWithString: L("Form:")), formPopup,
-                                         NSTextField(labelWithString: L("Pen:")), penPopup,
-                                         NSTextField(labelWithString: L("Ink:")), ink])
-        inkRow.setCustomSpacing(18, after: formPopup)
-        inkRow.setCustomSpacing(18, after: penPopup)
+        let inkRow = labelledRow([(L("Form:"), formPopup), (L("Pen:"), penPopup), (L("Ink:"), ink)])
         variantsStack.orientation = .vertical
         variantsStack.alignment = .leading
         variantsStack.spacing = 14
@@ -266,8 +312,7 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
         row.spacing = 8
         let samplesRow = NSStackView(views: [samplesLabel, removeLast])
         samplesRow.spacing = 10
-        let inkRow = NSStackView(views: [NSTextField(labelWithString: L("Pen:")), penPopup, NSTextField(labelWithString: L("Ink:")), ink])
-        inkRow.setCustomSpacing(18, after: penPopup)
+        let inkRow = labelledRow([(L("Pen:"), penPopup), (L("Ink:"), ink)])
         learnTiles.spacing = 10
         for _ in 0..<3 {
             let b = NSImageView()

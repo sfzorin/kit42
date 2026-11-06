@@ -10,27 +10,27 @@
     "home": "Kezdőlap"
   },
   "home": {
-    "eyebrow": "A TE FÁJLJAID. A TE ESZKÖZEID. A TE SZABÁLYAID.",
-    "title": "Adj teret a legjobb munkádnak.",
-    "intro": "Ismerd meg az OFF42-t. Hat célzott alkalmazás dokumentumokhoz, táblázatokhoz, bemutatókhoz, PDF-ekhez, képekhez és szkenneléshez. Egy nyílt forráskódú irodai csomag, közvetlenül a Maceden.",
+    "eyebrow": "Ingyenes · Nyílt forráskód · macOS és Windows rendszerre",
+    "title": "Teljes iroda. Előfizetés nélkül.",
+    "intro": "Az OFF42 hat natív alkalmazást fog össze macOS és Windows rendszeren: PDF-eket, dokumentumokat, táblázatokat, bemutatókat, képeket és beolvasott oldalakat kezel. Ingyenes és nyílt forráskódú, külön platformmegvalósításokkal és dokumentált korlátokkal.",
     "primary": "OFF42 beszerzése",
     "secondary": "Fedezd fel az eszközöket",
-    "note": "Ingyenes · Nyílt forráskód · macOS 14+ · 20 nyelv",
+    "note": "Ingyenes · Nyílt forráskód · macOS 14+ · Windows",
     "suiteTitle": "Teljes iroda. Könnyedebb munka.",
     "suiteIntro": "Az első vázlattól az aláírt PDF-ig végezd mindennapi munkádat egy ismerős eszközcsaláddal.",
     "featureEyebrow": "APRÓ RÉSZLETEK. NAGY KÜLÖNBSÉG.",
     "featureTitle": "Több lehetőség minden fájlban.",
     "featureIntro": "Szerkessz PDF-et. Csökkentsd egy nagy melléklet méretét. Alakítsd a papírlapot kereshető szöveggé. Találd meg a feladathoz illő eszközt.",
     "privacyTitle": "A te asztalod. Nem más szervere.",
-    "privacyText": "Az alapvető szerkesztés a Maceden történik. Dolgozz helyi fájlokon anélkül, hogy feltöltenéd őket egy online szerkesztőbe. A hálózati funkciókhoz, például a megbízható aláírás-időbélyegekhez internetkapcsolat kell.",
+    "privacyText": "Az alapvető szerkesztés helyben, a számítógépeden történik, fájlfeltöltés nélkül. Az opcionális online funkciókhoz kapcsolat kell; elérhetőségük platformonként eltér.",
     "privacyLabel": "Helyi munkára tervezve",
     "languageTitle": "Ismerős hang, 20 nyelven.",
     "languageText": "A webhely és az alkalmazások felülete a te nyelveden szól. Válaszd ki, és használd kényelmesen ugyanazokat az eszközöket.",
     "openTitle": "Nyitott iroda, minden értelemben.",
     "openText": "Az OFF42 MIT-licenccel érhető el. Olvasd a kódot, fordítsd le magadnak, jelents hibát, vagy segíts jobbá tenni a következő verziót.",
     "openLink": "Fedezd fel a GitHubon",
-    "endTitle": "A jó munka a megfelelő eszközökkel kezdődik.",
-    "endText": "Ismerd meg új, mindennapi irodai csomagodat.",
+    "endTitle": "Előfizetések: off. Az iroda a tiéd.",
+    "endText": "Ingyenes · Nyílt forráskód · macOS és Windows rendszerre",
     "formatsLabel": "OFFICE- ÉS NYÍLT FORMÁTUMOK",
     "formatsTitle": "Működik a meglévő fájljaiddal.",
     "formatsText": "Nyisd meg, amit a kollégáid küldenek, és mentsd olyan formátumban, amilyet várnak. Az összetett elrendezések eltérhetnek, ezért importálás után ellenőrizd a fontos fájlokat.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "Működik az OFF42 internet nélkül?",
-        "a": "Az alapvető szerkesztés internetkapcsolat nélkül is működik a Maceden, és a fájljaid nem kerülnek feltöltésre sehová. A hálózati funkciókhoz, például a megbízható aláírás-időbélyegekhez és a webes hivatkozások megnyitásához kapcsolat kell."
+        "a": "Az alapvető szerkesztés helyben, a számítógépeden történik, fájlfeltöltés nélkül. Az opcionális online funkciókhoz kapcsolat kell; elérhetőségük platformonként eltér."
       },
       {
         "q": "Meg tudja nyitni az OFF42 a Microsoft Office-fájlokat?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "Van Windows-verzió?",
-        "a": "Ugyanabban a nyílt tárolóban egy előzetes Windows-verzió készül. Windows-telepítő még nem jelent meg."
+        "a": "A natív Windows-alkalmazások megvalósultak, és forráskódként elérhetők. Nézd meg a dokumentált funkciókat és korlátokat. Nyilvános Windows-telepítő még nem jelent meg."
       }
     ]
+  },
+  "name": {
+    "label": "MI VAN A NÉVBEN?",
+    "title": "Az OFF az office-ból jön. És mindenből, amit ki lehet kapcsolni.",
+    "officeTitle": "Teljes iroda",
+    "officeText": "Hat alkalmazás az asztalodon lévő összes fájlhoz: PDF-ek, Word- és Excel-fájlok, diák, fotók és szkennelt anyagok.",
+    "offlineTitle": "Offline is működik",
+    "offlineText": "A szerkesztés a számítógépeden történik. Fiók és fájlfeltöltés nélkül.",
+    "offTitle": "Előfizetés: off",
+    "offText": "Nincs előfizetés, nincs próbaidőszak, nincsenek hirdetések. MIT-licenc és ingyenes – ma és holnap is.",
+    "answerTitle": "És a 42?",
+    "answerText": "A válasz az életre, a világmindenségre meg mindenre vonatkozó végső kérdésre. Mi csak alkalmaztuk az irodára.",
+    "stats": [
+      "alkalmazás egy csomagban",
+      "fájlformátum",
+      "felületnyelv",
+      "előfizetés",
+      "fájlfeltöltés"
+    ]
+  },
+  "marks": {
+    "label": "ALÁÍRÁSOK ÉS BÉLYEGZŐK",
+    "title": "Aláírás és bélyegző, mint papíron. Nyomtató és szkenner nélkül.",
+    "text": "Az OFF42 egy névből kézzel írt aláírást készít, rányomja a cégbélyegzőt, és mindkettőt egyenesen a dokumentumba helyezi. Minden lenyomat kicsit más, akár a valódi tinta a papíron.",
+    "points": [
+      "Aláírás golyóstollal, zselés tollal, töltőtollal vagy filctollal",
+      "132 bélyegzőstílus: körbélyegzők, cégbélyegzők, „Fizetve” és „Átvéve”",
+      "Néhány mintából megtanulja a saját aláírásodat",
+      "Működik PDF-ekben, dokumentumokban, diákban, táblázatokban, képekben és szkennelt anyagokban"
+    ],
+    "note": "A rajzolt aláírás nem tanúsítványalapú digitális aláírás. Ha ilyenre van szükséged, a PDF42 a saját tanúsítványoddal ír alá.",
+    "signedCaption": "PDF42-ben aláírt és lebélyegzett szerződés. A nevek és a cégek kitaláltak."
+  },
+  "show": {
+    "label": "MŰKÖDÉS KÖZBEN",
+    "title": "Valódi appok. Valódi dokumentumok.",
+    "text": "Minden kép itt az OFF42 képernyőképe Macen, kitalált cégek mintadokumentumaival az appokban. Semmi látványterv."
   },
   "labels": {
     "learn": "Felfedezés",
@@ -88,7 +125,8 @@
     "notFound": "Ez az oldal lekerült az asztalról.",
     "notFoundText": "Próbáld a kezdőlapot, vagy válassz nyelvet a további böngészéshez.",
     "copy": "Másolás",
-    "copied": "Másolva"
+    "copied": "Másolva",
+    "screenshot": "Képernyőkép macOS-en. Mintadokumentumok, kitalált cégek."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "OFF42 macOS-re",
     "macText": "A forráskód macOS 14 vagy újabb rendszerhez készült. Nyilvános DMG-telepítő még nem jelent meg.",
     "windows": "OFF42 Windowsra",
-    "windowsText": "A Windows-verzió korai forráskódja elérhető a GitHubon. Az EXE-telepítő még nem jelent meg.",
+    "windowsText": "A natív Windows-alkalmazások megvalósultak, és forráskódként elérhetők. Nézd meg a dokumentált funkciókat és korlátokat. Nyilvános Windows-telepítő még nem jelent meg.",
     "sourceTitle": "Építsd meg. Olvasd el. Alakítsd magadra.",
     "sourceText": "Szerezd be az MIT-licencű forráskódot a GitHubon. A macOS-en történő fordításhoz Xcode Command Line Tools szükséges. A helyi fordítások ad-hoc aláírást használnak, hacsak nem állítasz be terjesztési aláírást.",
     "checkReleases": "Kiadások megtekintése",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Iroda, titkok nélkül.",
-    "intro": "Az OFF42 hat natív macOS-alkalmazás független, nyílt forráskódú családja. A projekt közös felülettel és eszközökkel fogja össze a mindennapi fájlmunkát.",
+    "intro": "Az OFF42 hat natív alkalmazást fog össze macOS és Windows rendszeren: PDF-eket, dokumentumokat, táblázatokat, bemutatókat, képeket és beolvasott oldalakat kezel. Ingyenes és nyílt forráskódú, külön platformmegvalósításokkal és dokumentált korlátokkal.",
     "licenseTitle": "MIT-licenccel. Szabadon felfedezhető.",
     "licenseText": "Használd, tanulmányozd, módosítsd és terjeszd tovább a szoftvert az MIT-licenc feltételei szerint. A tároló tartalmazza a licencet és a forráskódot.",
     "contributeTitle": "A jobb eszközök közös munka eredményei.",
@@ -314,20 +352,20 @@
     "siteTitle": "Egyszerű webhely",
     "siteText": "A webhelyen nincs reklám, elemzőszkript vagy fiókrendszer. A tárhelyszolgáltatók a webhely kiszolgálásához és védelméhez feldolgozhatják a kérések adatait.",
     "appTitle": "Helyi dokumentumkezelés",
-    "appText": "Az OFF42 alapvető szerkesztése helyben, a Maceden fut. Az opcionális hálózati funkciók, külső hivatkozások és tanúsítvány-időbélyegzési szolgáltatások az adott szolgáltatókat veszik igénybe.",
+    "appText": "Az alapvető szerkesztés helyben, a számítógépeden történik, fájlfeltöltés nélkül. Az opcionális online funkciókhoz kapcsolat kell; elérhetőségük platformonként eltér.",
     "linksTitle": "Külső hivatkozások",
     "linksText": "A GitHubnak és más hivatkozott szolgáltatásoknak saját adatvédelmi szabályzatuk van. A webhely meglátogatása nem tölti fel a fájljaidat."
   },
   "seo": {
-    "homeTitle": "OFF42 — ingyenes, nyílt forráskódú irodai csomag Macre",
-    "homeDescription": "Ingyenes, nyílt forráskódú iroda macOS-re: PDF-szerkesztő, DOCX-dokumentumok, XLSX-táblázatok, PPTX-diák, képszerkesztő és OCR-es szkenner. Offline is működik.",
+    "homeTitle": "OFF42 — ingyenes iroda macOS és Windows rendszerre",
+    "homeDescription": "Ingyenes, nyílt forráskódú, natív irodai alkalmazások macOS és Windows rendszerre: PDF, DOCX, XLSX, PPTX, képek és szkennelés. A funkciók és tesztek platformonként eltérnek.",
     "featuresTitle": "Funkciók: PDF, dokumentumok, táblázatok, szkennelés | OFF42",
     "featuresDescription": "Szerkessz és írj alá PDF-et, kicsinyíts nagy fájlokat, szkennelj OCR-rel, írj DOCX-et, kezelj XLSX- és PPTX-fájlt. Nézd meg, mit tud az ingyenes OFF42 Macen.",
-    "downloadTitle": "OFF42 letöltése Macre — ingyenes irodai csomag",
-    "downloadDescription": "OFF42 macOS 14 vagy újabb rendszerre: kiadási állapot, Windows-előzetes és lépésenkénti útmutató az ingyenes, MIT-licencű alkalmazások lefordításához.",
+    "downloadTitle": "OFF42 letöltése macOS és Windows rendszerre",
+    "downloadDescription": "OFF42 macOS és Windows rendszerre: forráskód, kiadási állapot, fordítási útmutatók és platformkorlátok. Telepítés előtt nézd meg, mi készült el és mit teszteltek.",
     "aboutTitle": "Nyílt forráskódú irodai csomag, MIT-licenc | OFF42",
-    "aboutDescription": "Az OFF42 hat natív Mac-alkalmazás független, MIT-licencű családja. Olvasd a kódot a GitHubon, jelents hibát, segíts a fordításban, vagy járulj hozzá.",
-    "privacyTitle": "Adatvédelem: a fájljaid a Maceden maradnak | OFF42",
-    "privacyDescription": "Az OFF42 webhelyén nincs reklám, analitika vagy fiók, az alkalmazások helyben szerkesztik a fájljaidat. Tudd meg, mi marad helyben, és mihez kell hálózat."
+    "aboutDescription": "Az OFF42 hat natív alkalmazás macOS és Windows rendszerre, MIT-licenccel. A forráskód, a platformtámogatás és a korlátok a GitHubon olvashatók.",
+    "privacyTitle": "Adatvédelem: a fájljaid a számítógépeden maradnak | OFF42",
+    "privacyDescription": "Az alapvető szerkesztés helyben, a számítógépeden történik, fájlfeltöltés nélkül. Az opcionális online funkciókhoz kapcsolat kell; elérhetőségük platformonként eltér."
   }
 }

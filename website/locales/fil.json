@@ -10,27 +10,27 @@
     "home": "Home"
   },
   "home": {
-    "eyebrow": "IYONG MGA FILE. IYONG MGA TOOL. IYONG MGA PATAKARAN.",
-    "title": "Bigyang-puwang ang pinakamagaling mong gawa.",
-    "intro": "Kilalanin ang OFF42. Anim na app para sa mga dokumento, spreadsheet, presentasyon, PDF, larawan, at scan. Isang open-source office suite, mismo sa iyong Mac.",
+    "eyebrow": "Libre · Open source · macOS at Windows",
+    "title": "Buong opisina mo. Walang subscription.",
+    "intro": "Pinagsasama ng OFF42 ang anim na native app para sa macOS at Windows: PDF, mga dokumento, spreadsheet, presentasyon, larawan, at scan. Libre at open source, na may magkahiwalay na implementasyon at dokumentadong limitasyon sa bawat platform.",
     "primary": "Kunin ang OFF42",
     "secondary": "Tuklasin ang mga tool",
-    "note": "Libre · Open source · macOS 14+ · 20 wika",
+    "note": "Libre · Open source · macOS 14+ · Windows",
     "suiteTitle": "Kumpletong opisina. Mas magaan ang trabaho.",
     "suiteIntro": "Mula sa unang burador hanggang sa pirmadong PDF, gawin ang pang-araw-araw mong trabaho sa isang pamilyar na pangkat ng mga tool.",
     "featureEyebrow": "MALILIIT NA DETALYE. MALAKING PAGKAKAIBA.",
     "featureTitle": "Mas maraming magagawa sa bawat file.",
     "featureIntro": "Mag-edit ng PDF. Paliitin ang malaking attachment. Gawing nahahanap na teksto ang pahinang papel. Hanapin ang tool para sa iyong gawain.",
     "privacyTitle": "Sa iyong mesa, hindi sa server ng iba.",
-    "privacyText": "Sa iyong Mac ginagawa ang pangunahing pag-edit. Magtrabaho sa mga lokal na file nang hindi ina-upload sa online editor. Kailangan ng koneksyon ang mga network feature, kabilang ang pinagkakatiwalaang timestamp ng lagda.",
+    "privacyText": "Ang pangunahing pag-edit ay ginagawa sa iyong computer nang hindi ina-upload ang mga file. Kailangan ng koneksyon ang mga opsyonal na online feature; nag-iiba ang availability ayon sa platform.",
     "privacyLabel": "Para sa lokal na trabaho",
     "languageTitle": "Pamilyar na karanasan, sa 20 wika.",
     "languageText": "Nagsasalita ng iyong wika ang website at interface ng mga app. Piliin ang sa iyo at gamitin ang parehong mga tool nang komportable.",
     "openTitle": "Bukas na opisina, sa lahat ng kahulugan.",
     "openText": "Inilalabas ang OFF42 sa ilalim ng lisensyang MIT. Basahin ang code, buuin ito, mag-ulat ng bug, o tumulong sa pagpapahusay ng susunod na bersyon.",
     "openLink": "Tuklasin sa GitHub",
-    "endTitle": "Nagsisimula ang mahusay na trabaho sa tamang mga tool.",
-    "endText": "Tuklasin ang susunod mong office suite para sa araw-araw.",
+    "endTitle": "I-off ang mga subscription. Panatilihin ang opisina.",
+    "endText": "Libre · Open source · macOS at Windows",
     "formatsLabel": "OFFICE AT MGA OPEN FORMAT",
     "formatsTitle": "Gumagana sa mga file na mayroon ka na.",
     "formatsText": "Buksan ang ipinapadala ng mga kasamahan at i-save sa format na inaasahan nila. Maaaring mag-iba ang hitsura ng mga kumplikadong layout, kaya suriin ang mahahalagang file pagkatapos mag-import.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "Gumagana ba offline ang OFF42?",
-        "a": "Gumagana sa iyong Mac ang pangunahing pag-edit kahit walang internet, at hindi ina-upload kahit saan ang iyong mga file. Kailangan ng koneksyon ang mga network feature, gaya ng pinagkakatiwalaang timestamp ng lagda at pagbubukas ng web link."
+        "a": "Ang pangunahing pag-edit ay ginagawa sa iyong computer nang hindi ina-upload ang mga file. Kailangan ng koneksyon ang mga opsyonal na online feature; nag-iiba ang availability ayon sa platform."
       },
       {
         "q": "Nabubuksan ba ng OFF42 ang mga Microsoft Office file?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "May bersyon ba para sa Windows?",
-        "a": "May paunang bersyon para sa Windows na dine-develop sa parehong open repository. Hindi pa naipa-publish ang Windows installer."
+        "a": "Naipatupad na ang mga native Windows app at makukuha ang source code. Tingnan ang dokumentadong mga feature at limitasyon. Wala pang inilalabas na pampublikong Windows installer."
       }
     ]
+  },
+  "name": {
+    "label": "ANO ANG NASA PANGALAN",
+    "title": "OFF, mula sa office. At sa lahat ng puwede mong i-off.",
+    "officeTitle": "Kumpletong opisina",
+    "officeText": "Anim na app para sa bawat file sa iyong mesa: PDF, mga Word at Excel file, slide, larawan, at scan.",
+    "offlineTitle": "Gumagana offline",
+    "offlineText": "Sa iyong computer ginagawa ang pag-edit. Walang account o pag-upload ng file.",
+    "offTitle": "Subscription: off",
+    "offText": "Walang subscription, walang trial period, walang ads. May lisensyang MIT at libre, ngayon at bukas.",
+    "answerTitle": "At ang 42?",
+    "answerText": "Ang sagot sa pinakadakilang tanong tungkol sa buhay, sa sansinukob, at sa lahat ng bagay. Inilapat lang namin ito sa opisina.",
+    "stats": [
+      "app sa iisang suite",
+      "format ng file",
+      "wika ng interface",
+      "subscription",
+      "upload ng iyong mga file"
+    ]
+  },
+  "marks": {
+    "label": "MGA LAGDA AT STAMP",
+    "title": "Pumirma at mag-stamp na parang sa papel. Walang printer, walang scanner.",
+    "text": "Gumagawa ang OFF42 ng lagdang sulat-kamay mula sa isang pangalan at nagtatatak ng stamp ng kompanya, saka inilalagay ang dalawa mismo sa dokumento. Bahagyang naiiba ang bawat paglalagay, gaya ng totoong tinta sa papel.",
+    "points": [
+      "Lagda gamit ang ballpen, gel pen, fountain pen o felt-tip pen",
+      "132 estilo ng stamp: bilog na seal, stamp ng kompanya, “Bayad na” at “Natanggap”",
+      "Natututuhan ang sarili mong lagda mula sa ilang sample",
+      "Gumagana sa PDF, dokumento, slide, spreadsheet, larawan at scan"
+    ],
+    "note": "Ang iginuhit na lagda ay hindi digital signature na nakabatay sa certificate. Kapag kailangan mo iyon, pumipirma ang PDF42 gamit ang iyong certificate.",
+    "signedCaption": "Kontratang nilagdaan at tinatakan sa PDF42. Kathang-isip ang mga pangalan at kompanya."
+  },
+  "show": {
+    "label": "TINGNAN SA AKTWAL",
+    "title": "Totoong app. Totoong dokumento.",
+    "text": "Bawat larawan dito ay screenshot ng OFF42 sa Mac, na may mga sample na dokumento ng kathang-isip na kompanya na nakabukas sa mga app. Walang mock-up."
   },
   "labels": {
     "learn": "Tuklasin",
@@ -88,7 +125,8 @@
     "notFound": "Wala sa mesa ang pahinang ito.",
     "notFoundText": "Subukan ang homepage o pumili ng wika para magpatuloy.",
     "copy": "Kopyahin",
-    "copied": "Nakopya na"
+    "copied": "Nakopya na",
+    "screenshot": "Screenshot sa macOS. Mga sample na dokumento, kathang-isip na kompanya."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "OFF42 para sa macOS",
     "macText": "Para sa macOS 14 o mas bago ang source code. Wala pang pampublikong DMG installer na inilalabas.",
     "windows": "OFF42 para sa Windows",
-    "windowsText": "Available sa GitHub ang source code ng paunang bersyon para sa Windows. Wala pang inilalabas na EXE installer.",
+    "windowsText": "Naipatupad na ang mga native Windows app at makukuha ang source code. Tingnan ang dokumentadong mga feature at limitasyon. Wala pang inilalabas na pampublikong Windows installer.",
     "sourceTitle": "Buuin. Basahin. Iangkop sa iyo.",
     "sourceText": "Kunin sa GitHub ang source code na may lisensyang MIT. Kailangan ang Xcode Command Line Tools para mag-build sa macOS. Gumagamit ng ad-hoc signing ang lokal na build maliban kung mag-configure ka ng distribution signing.",
     "checkReleases": "Tingnan ang mga release",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Isang opisinang walang itinatago.",
-    "intro": "Ang OFF42 ay isang malayang open-source na pamilya ng anim na native macOS app. Pinagsasama ng proyekto ang pang-araw-araw na gawain sa mga file gamit ang iisang interface at mga karaniwang tool.",
+    "intro": "Pinagsasama ng OFF42 ang anim na native app para sa macOS at Windows: PDF, mga dokumento, spreadsheet, presentasyon, larawan, at scan. Libre at open source, na may magkahiwalay na implementasyon at dokumentadong limitasyon sa bawat platform.",
     "licenseTitle": "May lisensyang MIT. Malayang tuklasin.",
     "licenseText": "Gamitin, pag-aralan, baguhin, at muling ipamahagi ang software sa ilalim ng lisensyang MIT. Nasa repository ang mga tuntunin ng lisensya at source code.",
     "contributeTitle": "Sama-samang pagsisikap para sa mas mahusay na mga tool.",
@@ -314,20 +352,20 @@
     "siteTitle": "Isang simpleng website",
     "siteText": "Walang patalastas, analytics script, o sistema ng account ang site. Maaaring magproseso ng impormasyon ng request ang hosting provider upang maihatid at maprotektahan ang website.",
     "appTitle": "Lokal na trabaho sa dokumento",
-    "appText": "Lokal na tumatakbo sa iyong Mac ang pangunahing pag-edit sa OFF42. Kabilang ang kani-kanilang provider sa mga opsyonal na network feature, panlabas na link, at serbisyo ng timestamp ng certificate.",
+    "appText": "Ang pangunahing pag-edit ay ginagawa sa iyong computer nang hindi ina-upload ang mga file. Kailangan ng koneksyon ang mga opsyonal na online feature; nag-iiba ang availability ayon sa platform.",
     "linksTitle": "Mga panlabas na link",
     "linksText": "May sariling mga patakaran sa privacy ang GitHub at iba pang naka-link na serbisyo. Hindi ina-upload ang iyong mga file kapag bumisita ka sa website na ito."
   },
   "seo": {
-    "homeTitle": "OFF42 — Libreng Open-Source Office Suite para sa Mac",
-    "homeDescription": "Libreng open-source office para sa macOS: PDF editor, DOCX na dokumento, XLSX na spreadsheet, PPTX na slide, image editor at OCR scanner. Gumagana offline.",
+    "homeTitle": "OFF42 — Libreng Office para sa macOS at Windows, Walang Subscription",
+    "homeDescription": "Libre at open-source na native office app para sa macOS at Windows: PDF, DOCX, XLSX, PPTX, larawan, at scan. Magkakaiba ang mga feature at saklaw ng pagsubok sa bawat platform.",
     "featuresTitle": "Mga Tampok: PDF, Dokumento, Spreadsheet, Scan | OFF42",
     "featuresDescription": "Mag-edit at pumirma ng PDF, paliitin ang malalaking file, mag-scan na may OCR, gumamit ng DOCX, XLSX at PPTX. Tingnan ang kaya ng libreng OFF42 sa Mac.",
-    "downloadTitle": "I-download ang OFF42 para sa Mac — Libreng Office Suite",
-    "downloadDescription": "Kunin ang OFF42 para sa macOS 14+: katayuan ng release, Windows preview, at sunud-sunod na gabay sa pag-build ng libreng MIT-licensed na app mula sa source.",
+    "downloadTitle": "I-download ang OFF42 para sa macOS at Windows — Libreng Office Suite",
+    "downloadDescription": "OFF42 para sa macOS at Windows: source code, status ng release, gabay sa pag-build, at mga limitasyon. Suriin kung ano ang naipatupad at nasubok bago mag-install.",
     "aboutTitle": "Open-Source Office Suite na may MIT License | OFF42",
-    "aboutDescription": "Independiyente at MIT-licensed na pamilya ng anim na native na Mac app ang OFF42. Basahin ang code sa GitHub, mag-ulat ng isyu, tumulong magsalin o mag-ambag.",
-    "privacyTitle": "Privacy: Nasa Mac Mo Lang ang Iyong mga File | OFF42",
-    "privacyDescription": "Walang ad, analytics o account sa website ng OFF42, at sa Mac mo lang ine-edit ng mga app ang file. Alamin kung ano ang lokal at ano ang kailangan ng network."
+    "aboutDescription": "Ang OFF42 ay anim na native app para sa macOS at Windows na may lisensyang MIT. Tingnan sa GitHub ang source code, suporta sa platform, at mga limitasyon.",
+    "privacyTitle": "Privacy: Nananatili ang mga File sa Iyong Computer | OFF42",
+    "privacyDescription": "Ang pangunahing pag-edit ay ginagawa sa iyong computer nang hindi ina-upload ang mga file. Kailangan ng koneksyon ang mga opsyonal na online feature; nag-iiba ang availability ayon sa platform."
   }
 }

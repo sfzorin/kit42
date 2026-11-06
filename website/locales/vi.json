@@ -10,27 +10,27 @@
     "home": "Trang chủ"
   },
   "home": {
-    "eyebrow": "TỆP CỦA BẠN. CÔNG CỤ CỦA BẠN. THEO CÁCH CỦA BẠN.",
-    "title": "Dành chỗ cho những ý tưởng hay.",
-    "intro": "Khám phá OFF42. Sáu ứng dụng chuyên biệt cho tài liệu, bảng tính, bài trình chiếu, PDF, hình ảnh và bản quét. Một bộ công cụ văn phòng mã nguồn mở, ngay trên Mac của bạn.",
+    "eyebrow": "Miễn phí · Mã nguồn mở · macOS và Windows",
+    "title": "Trọn bộ văn phòng. Không thuê bao.",
+    "intro": "OFF42 tập hợp sáu ứng dụng gốc cho macOS và Windows: PDF, tài liệu, bảng tính, trình chiếu, hình ảnh và bản quét. Miễn phí, mã nguồn mở, với cách triển khai riêng và giới hạn được ghi rõ cho từng nền tảng.",
     "primary": "Tải OFF42",
     "secondary": "Khám phá công cụ",
-    "note": "Miễn phí · Mã nguồn mở · macOS 14+ · 20 ngôn ngữ",
+    "note": "Miễn phí · Mã nguồn mở · macOS 14+ · Windows",
     "suiteTitle": "Đủ bộ công cụ. Nhẹ nhàng làm việc.",
     "suiteIntro": "Từ bản nháp đầu tiên đến tệp PDF đã ký, xử lý công việc hằng ngày bằng một bộ công cụ quen thuộc.",
     "featureEyebrow": "CHI TIẾT NHỎ. KHÁC BIỆT LỚN.",
     "featureTitle": "Thêm khả năng cho từng tệp.",
     "featureIntro": "Chỉnh sửa PDF. Giảm dung lượng tệp đính kèm. Biến trang giấy thành văn bản có thể tìm kiếm. Chọn công cụ phù hợp với việc cần làm.",
     "privacyTitle": "Làm việc ngay trên Mac của bạn.",
-    "privacyText": "Các thao tác chỉnh sửa chính diễn ra trên Mac. Làm việc với tệp cục bộ mà không cần tải lên trình chỉnh sửa trực tuyến. Các tính năng mạng, gồm dấu thời gian chữ ký đáng tin cậy, cần kết nối Internet.",
+    "privacyText": "Các thao tác chỉnh sửa chính chạy ngay trên máy tính của bạn, không tải tệp lên mạng. Tính năng trực tuyến tùy chọn cần kết nối; khả năng sử dụng khác nhau theo nền tảng.",
     "privacyLabel": "Dành cho công việc cục bộ",
     "languageTitle": "Quen thuộc hơn với 20 ngôn ngữ.",
     "languageText": "Trang web và giao diện ứng dụng đều hỗ trợ ngôn ngữ của bạn. Chọn ngôn ngữ quen thuộc và tiếp tục sử dụng cùng bộ công cụ.",
     "openTitle": "Một bộ văn phòng thực sự rộng mở.",
     "openText": "OFF42 được phát hành theo giấy phép MIT. Đọc mã nguồn, tự biên dịch, báo lỗi hoặc cùng cải thiện phiên bản tiếp theo.",
     "openLink": "Khám phá trên GitHub",
-    "endTitle": "Công việc tốt bắt đầu từ công cụ phù hợp.",
-    "endText": "Khám phá bộ văn phòng mới cho mỗi ngày.",
+    "endTitle": "Thuê bao — off. Văn phòng — của bạn.",
+    "endText": "Miễn phí · Mã nguồn mở · macOS và Windows",
     "formatsLabel": "ĐỊNH DẠNG OFFICE VÀ ĐỊNH DẠNG MỞ",
     "formatsTitle": "Làm việc với chính những tệp bạn đang có.",
     "formatsText": "Mở tệp đồng nghiệp gửi và lưu đúng định dạng họ cần. Bố cục phức tạp có thể hiển thị khác, vì vậy hãy kiểm tra các tệp quan trọng sau khi nhập.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "OFF42 có dùng được ngoại tuyến không?",
-        "a": "Các thao tác chỉnh sửa chính chạy trên Mac mà không cần kết nối Internet, và tệp của bạn không bị tải lên đâu cả. Các tính năng mạng, như dấu thời gian chữ ký đáng tin cậy và mở liên kết web, cần có kết nối."
+        "a": "Các thao tác chỉnh sửa chính chạy ngay trên máy tính của bạn, không tải tệp lên mạng. Tính năng trực tuyến tùy chọn cần kết nối; khả năng sử dụng khác nhau theo nền tảng."
       },
       {
         "q": "OFF42 có mở được tệp Microsoft Office không?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "Có phiên bản Windows không?",
-        "a": "Một phiên bản sơ bộ cho Windows đang được phát triển trong cùng kho mã mở. Bộ cài cho Windows chưa được phát hành."
+        "a": "Các ứng dụng gốc cho Windows đã được triển khai và có sẵn mã nguồn. Hãy xem tính năng và giới hạn được ghi trong tài liệu. Bộ cài Windows công khai chưa được phát hành."
       }
     ]
+  },
+  "name": {
+    "label": "Ý NGHĨA CÁI TÊN",
+    "title": "OFF là từ office. Và từ mọi thứ bạn có thể tắt đi.",
+    "officeTitle": "Trọn bộ văn phòng",
+    "officeText": "Sáu ứng dụng cho mọi tệp trên bàn làm việc: PDF, tệp Word và Excel, trang trình chiếu, ảnh và bản quét.",
+    "offlineTitle": "Chạy ngoại tuyến",
+    "offlineText": "Chỉnh sửa ngay trên máy tính của bạn. Không cần tài khoản hay tải tệp lên mạng.",
+    "offTitle": "Thuê bao: off",
+    "offText": "Không thuê bao, không thời gian dùng thử, không quảng cáo. Giấy phép MIT và miễn phí, hôm nay và cả ngày mai.",
+    "answerTitle": "Còn 42?",
+    "answerText": "Câu trả lời cho câu hỏi tối thượng về sự sống, vũ trụ và vạn vật. Chúng tôi chỉ áp dụng nó vào văn phòng.",
+    "stats": [
+      "ứng dụng trong một bộ",
+      "định dạng tệp",
+      "ngôn ngữ giao diện",
+      "thuê bao",
+      "lần tải tệp của bạn lên"
+    ]
+  },
+  "marks": {
+    "label": "CHỮ KÝ VÀ CON DẤU",
+    "title": "Ký tên, đóng dấu như trên giấy. Không cần máy in hay máy quét.",
+    "text": "Chỉ từ một cái tên, OFF42 viết ra chữ ký tay, đóng dấu công ty rồi đặt cả hai ngay vào tài liệu. Mỗi lần chèn lại hơi khác một chút, như mực thật trên giấy.",
+    "points": [
+      "Chữ ký bằng bút bi, bút gel, bút máy hoặc bút dạ",
+      "132 kiểu con dấu: dấu tròn, dấu công ty, “Đã thanh toán” và “Đã nhận”",
+      "Học chữ ký của chính bạn từ vài mẫu",
+      "Dùng được trong PDF, văn bản, trang chiếu, bảng tính, hình ảnh và bản quét"
+    ],
+    "note": "Chữ ký vẽ tay không phải chữ ký số dựa trên chứng thư số. Khi cần, PDF42 ký bằng chứng thư số của bạn.",
+    "signedCaption": "Hợp đồng được ký và đóng dấu trong PDF42. Tên người và công ty là hư cấu."
+  },
+  "show": {
+    "label": "XEM THỰC TẾ",
+    "title": "Ứng dụng thật. Tài liệu thật.",
+    "text": "Mọi hình ảnh ở đây đều là ảnh chụp màn hình OFF42 trên Mac, với tài liệu mẫu của các công ty hư cấu mở trong ứng dụng. Không phải ảnh dựng."
   },
   "labels": {
     "learn": "Khám phá",
@@ -88,7 +125,8 @@
     "notFound": "Không tìm thấy trang này.",
     "notFoundText": "Về trang chủ hoặc chọn một ngôn ngữ để tiếp tục khám phá.",
     "copy": "Sao chép",
-    "copied": "Đã sao chép"
+    "copied": "Đã sao chép",
+    "screenshot": "Ảnh chụp màn hình trên macOS. Tài liệu mẫu, công ty hư cấu."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "OFF42 cho macOS",
     "macText": "Mã nguồn dành cho macOS 14 trở lên. Bộ cài DMG công khai chưa được phát hành.",
     "windows": "OFF42 cho Windows",
-    "windowsText": "Mã nguồn phiên bản sơ bộ dành cho Windows có sẵn trên GitHub. Bộ cài EXE chưa được phát hành.",
+    "windowsText": "Các ứng dụng gốc cho Windows đã được triển khai và có sẵn mã nguồn. Hãy xem tính năng và giới hạn được ghi trong tài liệu. Bộ cài Windows công khai chưa được phát hành.",
     "sourceTitle": "Biên dịch. Tìm hiểu. Biến thành công cụ của bạn.",
     "sourceText": "Lấy mã nguồn có giấy phép MIT trên GitHub. Biên dịch trên macOS cần Xcode Command Line Tools. Bản dựng cục bộ dùng chữ ký ad-hoc, trừ khi bạn cấu hình ký để phân phối.",
     "checkReleases": "Xem bản phát hành",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Một bộ văn phòng không giấu điều gì.",
-    "intro": "OFF42 là dự án mã nguồn mở độc lập gồm sáu ứng dụng gốc cho macOS. Giao diện và công cụ chung kết nối các tác vụ tệp hằng ngày.",
+    "intro": "OFF42 tập hợp sáu ứng dụng gốc cho macOS và Windows: PDF, tài liệu, bảng tính, trình chiếu, hình ảnh và bản quét. Miễn phí, mã nguồn mở, với cách triển khai riêng và giới hạn được ghi rõ cho từng nền tảng.",
     "licenseTitle": "Giấy phép MIT. Tự do khám phá.",
     "licenseText": "Sử dụng, nghiên cứu, sửa đổi và phân phối lại phần mềm theo giấy phép MIT. Kho mã có đầy đủ điều khoản cấp phép và mã nguồn.",
     "contributeTitle": "Cùng nhau tạo nên công cụ tốt hơn.",
@@ -314,20 +352,20 @@
     "siteTitle": "Một trang web đơn giản",
     "siteText": "Không có quảng cáo, mã phân tích hay hệ thống tài khoản. Nhà cung cấp lưu trữ có thể xử lý thông tin yêu cầu để cung cấp và bảo vệ trang web.",
     "appTitle": "Xử lý tài liệu cục bộ",
-    "appText": "Các thao tác chỉnh sửa chính của OFF42 chạy cục bộ trên Mac. Tính năng mạng tùy chọn, liên kết ngoài và dịch vụ dấu thời gian chứng thư số có sự tham gia của các nhà cung cấp tương ứng.",
+    "appText": "Các thao tác chỉnh sửa chính chạy ngay trên máy tính của bạn, không tải tệp lên mạng. Tính năng trực tuyến tùy chọn cần kết nối; khả năng sử dụng khác nhau theo nền tảng.",
     "linksTitle": "Liên kết ngoài",
     "linksText": "GitHub và các dịch vụ được liên kết khác có chính sách quyền riêng tư riêng. Truy cập trang web này không tải lên các tệp của bạn."
   },
   "seo": {
-    "homeTitle": "OFF42 — Bộ văn phòng miễn phí, mã nguồn mở cho Mac",
-    "homeDescription": "Bộ văn phòng miễn phí, mã nguồn mở cho macOS: chỉnh sửa PDF, tài liệu DOCX, bảng tính XLSX, trình chiếu PPTX, chỉnh sửa ảnh và quét có OCR. Dùng được ngoại tuyến.",
+    "homeTitle": "OFF42 — Phần mềm văn phòng miễn phí cho macOS và Windows, không thuê bao",
+    "homeDescription": "Ứng dụng văn phòng gốc miễn phí, mã nguồn mở cho macOS và Windows: PDF, DOCX, XLSX, PPTX, hình ảnh và bản quét. Tính năng và phạm vi kiểm thử khác nhau theo nền tảng.",
     "featuresTitle": "Tính năng: PDF, tài liệu, bảng tính, bản quét | OFF42",
     "featuresDescription": "Chỉnh sửa và ký PDF, nén tệp lớn, quét có OCR, soạn DOCX, làm việc với XLSX và PPTX. Xem mọi việc bộ văn phòng miễn phí OFF42 làm được trên Mac.",
-    "downloadTitle": "Tải OFF42 cho Mac — Bộ văn phòng miễn phí",
-    "downloadDescription": "OFF42 dành cho macOS 14 trở lên: trạng thái phát hành, bản xem trước cho Windows và hướng dẫn từng bước để tự biên dịch các ứng dụng miễn phí, giấy phép MIT.",
+    "downloadTitle": "Tải OFF42 cho macOS và Windows — Bộ văn phòng miễn phí",
+    "downloadDescription": "OFF42 cho macOS và Windows: mã nguồn, trạng thái phát hành, hướng dẫn biên dịch và giới hạn nền tảng. Kiểm tra phần đã triển khai và thử nghiệm trước khi cài đặt.",
     "aboutTitle": "Bộ văn phòng mã nguồn mở, giấy phép MIT | OFF42",
-    "aboutDescription": "OFF42 là dự án độc lập theo giấy phép MIT gồm sáu ứng dụng gốc cho Mac. Đọc mã nguồn trên GitHub, báo lỗi, hỗ trợ dịch thuật hoặc đóng góp mã.",
-    "privacyTitle": "Quyền riêng tư: tệp luôn ở trên Mac | OFF42",
-    "privacyDescription": "Trang web OFF42 không có quảng cáo, công cụ phân tích hay tài khoản; ứng dụng chỉnh sửa tệp ngay trên Mac. Tìm hiểu điều gì ở lại máy và điều gì cần mạng."
+    "aboutDescription": "OFF42 gồm sáu ứng dụng gốc cho macOS và Windows theo giấy phép MIT. Xem mã nguồn, hỗ trợ nền tảng và giới hạn trên GitHub.",
+    "privacyTitle": "Quyền riêng tư: tệp luôn ở trên máy tính của bạn | OFF42",
+    "privacyDescription": "Các thao tác chỉnh sửa chính chạy ngay trên máy tính của bạn, không tải tệp lên mạng. Tính năng trực tuyến tùy chọn cần kết nối; khả năng sử dụng khác nhau theo nền tảng."
   }
 }

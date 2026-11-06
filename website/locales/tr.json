@@ -10,27 +10,27 @@
     "home": "Ana sayfa"
   },
   "home": {
-    "eyebrow": "DOSYALARINIZ. ARAÇLARINIZ. KURALLARINIZ.",
-    "title": "En iyi çalışmalarınıza yer açın.",
-    "intro": "OFF42 ile tanışın. Belgeler, hesap tabloları, sunumlar, PDF'ler, görseller ve taramalar için altı odaklı uygulama. Mac'inizde açık kaynaklı bir ofis.",
+    "eyebrow": "Ücretsiz · Açık kaynak · macOS ve Windows",
+    "title": "Eksiksiz ofis. Abonelik yok.",
+    "intro": "OFF42, macOS ve Windows için altı yerel uygulamayı bir araya getirir: PDF, belge, tablo, sunum, görsel ve tarama. Ücretsiz ve açık kaynaklıdır; platformlar ayrı uygulanır ve sınırlamaları belgelenmiştir.",
     "primary": "OFF42'yi edinin",
     "secondary": "Araçları keşfedin",
-    "note": "Ücretsiz · Açık kaynak · macOS 14+ · 20 dil",
+    "note": "Ücretsiz · Açık kaynak · macOS 14+ · Windows",
     "suiteTitle": "Eksiksiz bir ofis. Daha hafif bir deneyim.",
     "suiteIntro": "İlk taslaktan imzalanmış PDF'ye kadar günlük işlerinizi tanıdık bir araç ailesiyle tamamlayın.",
     "featureEyebrow": "KÜÇÜK AYRINTILAR. BÜYÜK FARK.",
     "featureTitle": "Her dosyada daha fazla olanak.",
     "featureIntro": "PDF düzenleyin. Büyük bir eki küçültün. Kâğıt sayfayı aranabilir metne dönüştürün. İşinize uygun aracı bulun.",
     "privacyTitle": "Sizin masanız. Başkasının sunucusu değil.",
-    "privacyText": "Temel düzenleme işlemleri Mac'inizde yapılır. Dosyalarınızı çevrimiçi bir düzenleyiciye yüklemeden çalışın. Güvenilir imza zaman damgaları dâhil ağ özellikleri bağlantı gerektirir.",
+    "privacyText": "Temel düzenleme, dosyalar yüklenmeden bilgisayarınızda yerel olarak yapılır. İsteğe bağlı çevrimiçi özellikler bağlantı gerektirir; kullanılabilirlik platforma göre değişir.",
     "privacyLabel": "Yerel çalışma için tasarlandı",
     "languageTitle": "20 dilde tanıdık bir ses.",
     "languageText": "Web sitesi ve uygulama arayüzü sizin dilinizi konuşur. Dilinizi seçin, aynı araçlar elinizin altında olsun.",
     "openTitle": "Her anlamıyla açık bir ofis.",
     "openText": "OFF42, MIT lisansıyla sunulur. Kodu inceleyin, kendiniz derleyin, hata bildirin veya sonraki sürümü geliştirmeye yardımcı olun.",
     "openLink": "GitHub'da keşfedin",
-    "endTitle": "İyi işler doğru araçlarla başlar.",
-    "endText": "Günlük işleriniz için yeni ofisinizi keşfedin.",
+    "endTitle": "Abonelikler off. Ofis sizde.",
+    "endText": "Ücretsiz · Açık kaynak · macOS ve Windows",
     "formatsLabel": "OFFICE VE AÇIK BİÇİMLER",
     "formatsTitle": "Elinizdeki dosyalarla çalışır.",
     "formatsText": "Çalışma arkadaşlarınızın gönderdiklerini açın, bekledikleri biçimde kaydedin. Karmaşık düzenler farklı görünebilir; önemli dosyaları içe aktardıktan sonra kontrol edin.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "OFF42 çevrimdışı çalışır mı?",
-        "a": "Temel düzenleme Mac'inizde internet bağlantısı olmadan çalışır ve dosyalarınız hiçbir yere yüklenmez. Güvenilir imza zaman damgaları ve web bağlantılarını açma gibi ağ özellikleri bağlantı gerektirir."
+        "a": "Temel düzenleme, dosyalar yüklenmeden bilgisayarınızda yerel olarak yapılır. İsteğe bağlı çevrimiçi özellikler bağlantı gerektirir; kullanılabilirlik platforma göre değişir."
       },
       {
         "q": "OFF42, Microsoft Office dosyalarını açabilir mi?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "Windows sürümü var mı?",
-        "a": "Aynı açık depoda ön sürüm niteliğinde bir Windows sürümü geliştiriliyor. Windows yükleyicisi henüz yayımlanmadı."
+        "a": "Yerel Windows uygulamaları geliştirilmiş ve kaynak koduyla sunulmuştur. Belgelenen özellikleri ve sınırlamaları inceleyin. Henüz herkese açık bir Windows yükleyicisi yayımlanmamıştır."
       }
     ]
+  },
+  "name": {
+    "label": "İSMİN ARDINDA NE VAR",
+    "title": "OFF, office'ten gelir. Bir de kapatabileceğiniz her şeyden.",
+    "officeTitle": "Eksiksiz bir ofis",
+    "officeText": "Masanızdaki her dosya için altı uygulama: PDF'ler, Word ve Excel dosyaları, slaytlar, fotoğraflar ve taramalar.",
+    "offlineTitle": "Çevrimdışı çalışır",
+    "offlineText": "Düzenleme bilgisayarınızda yapılır. Hesap veya dosya yükleme gerekmez.",
+    "offTitle": "Abonelikler: off",
+    "offText": "Abonelik yok, deneme süresi yok, reklam yok. MIT lisanslı ve ücretsiz; bugün de, yarın da.",
+    "answerTitle": "Peki ya 42?",
+    "answerText": "Hayat, Evren ve Her Şey hakkındaki Nihai Soru'nun cevabı. Biz sadece onu ofise uyguladık.",
+    "stats": [
+      "uygulama, tek pakette",
+      "dosya biçimi",
+      "arayüz dili",
+      "abonelik",
+      "dosya yüklemesi"
+    ]
+  },
+  "marks": {
+    "label": "İMZALAR VE KAŞELER",
+    "title": "Kâğıttaki gibi imzalayın ve kaşeleyin. Yazıcısız, tarayıcısız.",
+    "text": "OFF42 bir isimden el yazısı imza oluşturur, şirket kaşesini basar ve ikisini doğrudan belgeye yerleştirir. Her baskı biraz farklı çıkar; tıpkı kâğıttaki gerçek mürekkep gibi.",
+    "points": [
+      "Tükenmez, jel, dolma veya keçeli kalemle imzalar",
+      "132 kaşe stili: yuvarlak mühürler, şirket kaşeleri, “Ödendi” ve “Teslim Alındı”",
+      "Birkaç örnekten kendi imzanızı öğrenir",
+      "PDF'lerde, belgelerde, slaytlarda, tablolarda, görsellerde ve taramalarda çalışır"
+    ],
+    "note": "Çizilmiş bir imza, sertifika tabanlı dijital imza değildir. Gerektiğinde PDF42 sizin sertifikanızla imzalar.",
+    "signedCaption": "PDF42'de imzalanmış ve kaşelenmiş bir sözleşme. İsimler ve şirketler kurgusaldır."
+  },
+  "show": {
+    "label": "İŞ BAŞINDA",
+    "title": "Gerçek uygulamalar. Gerçek belgeler.",
+    "text": "Buradaki her görsel, OFF42'nin Mac'teki ekran görüntüsüdür; uygulamalarda kurgusal şirketlere ait örnek belgeler açıktır. Maket yok."
   },
   "labels": {
     "learn": "Keşfedin",
@@ -88,7 +125,8 @@
     "notFound": "Bu sayfa masadan kalkmış.",
     "notFoundText": "Keşfetmeye devam etmek için ana sayfaya gidin veya bir dil seçin.",
     "copy": "Kopyala",
-    "copied": "Kopyalandı"
+    "copied": "Kopyalandı",
+    "screenshot": "macOS'ta ekran görüntüsü. Örnek belgeler, kurgusal şirketler."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "macOS için OFF42",
     "macText": "Kaynak kodu macOS 14 veya üzerini hedefler. Herkese açık bir DMG yükleyicisi henüz yayımlanmadı.",
     "windows": "Windows için OFF42",
-    "windowsText": "Windows için erken sürümün kaynak kodu GitHub’da erişime açıktır. EXE yükleyicisi henüz yayımlanmadı.",
+    "windowsText": "Yerel Windows uygulamaları geliştirilmiş ve kaynak koduyla sunulmuştur. Belgelenen özellikleri ve sınırlamaları inceleyin. Henüz herkese açık bir Windows yükleyicisi yayımlanmamıştır.",
     "sourceTitle": "Derleyin. İnceleyin. Kendinize uyarlayın.",
     "sourceText": "MIT lisanslı kaynak kodunu GitHub'dan edinin. macOS üzerinde derleme için Xcode Command Line Tools gerekir. Dağıtım imzası ayarlamadıkça yerel derlemeler ad-hoc imzalama kullanır.",
     "checkReleases": "Sürümleri kontrol edin",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Saklayacak şeyi olmayan bir ofis.",
-    "intro": "OFF42, macOS için altı yerel uygulamadan oluşan bağımsız ve açık kaynaklı bir ailedir. Ortak arayüz ve araçlarla günlük dosya işlerini bir araya getirir.",
+    "intro": "OFF42, macOS ve Windows için altı yerel uygulamayı bir araya getirir: PDF, belge, tablo, sunum, görsel ve tarama. Ücretsiz ve açık kaynaklıdır; platformlar ayrı uygulanır ve sınırlamaları belgelenmiştir.",
     "licenseTitle": "MIT lisanslı. Keşfetmeye açık.",
     "licenseText": "Yazılımı MIT lisansı kapsamında kullanın, inceleyin, değiştirin ve yeniden dağıtın. Lisans koşulları ve kaynak kodu depoda bulunur.",
     "contributeTitle": "Daha iyi araçlar ortak emekle oluşur.",
@@ -314,20 +352,20 @@
     "siteTitle": "Sade bir web sitesi",
     "siteText": "Sitede reklam, analiz betikleri veya hesap sistemi yoktur. Barındırma sağlayıcıları, siteyi sunmak ve korumak için istek bilgilerini işleyebilir.",
     "appTitle": "Yerel belgelerle çalışma",
-    "appText": "OFF42'de temel düzenleme işlemleri Mac'inizde yerel olarak yürütülür. İsteğe bağlı ağ özellikleri, dış bağlantılar ve sertifika zaman damgası hizmetleri ilgili sağlayıcıları kullanır.",
+    "appText": "Temel düzenleme, dosyalar yüklenmeden bilgisayarınızda yerel olarak yapılır. İsteğe bağlı çevrimiçi özellikler bağlantı gerektirir; kullanılabilirlik platforma göre değişir.",
     "linksTitle": "Dış bağlantılar",
     "linksText": "GitHub ve bağlantı verilen diğer hizmetlerin kendi gizlilik politikaları vardır. Bu siteyi ziyaret etmeniz dosyalarınızı yüklemez."
   },
   "seo": {
-    "homeTitle": "OFF42 — Mac için Ücretsiz, Açık Kaynak Ofis Paketi",
-    "homeDescription": "macOS için ücretsiz, açık kaynak ofis: PDF düzenleyici, DOCX belgeler, XLSX tablolar, PPTX slaytlar, görsel düzenleyici ve OCR'li tarayıcı. Çevrimdışı çalışır.",
+    "homeTitle": "OFF42 — macOS ve Windows için Ücretsiz Ofis Paketi, Abonelik Yok",
+    "homeDescription": "macOS ve Windows için ücretsiz, açık kaynaklı yerel ofis uygulamaları: PDF, DOCX, XLSX, PPTX, görseller ve taramalar. Özellik kapsamı ve doğrulama platforma göre değişir.",
     "featuresTitle": "Özellikler: PDF, Belgeler, Tablolar, Tarama | OFF42",
     "featuresDescription": "PDF düzenleyin ve imzalayın, büyük dosyaları küçültün, OCR ile tarayın, DOCX yazın, XLSX ve PPTX ile çalışın. Ücretsiz OFF42'nin Mac'te yapabildiklerini görün.",
-    "downloadTitle": "OFF42'yi Mac için İndirin — Ücretsiz Ofis Paketi",
-    "downloadDescription": "macOS 14 ve üzeri için OFF42: sürüm durumu, Windows önizlemesi ve ücretsiz, MIT lisanslı uygulamaları kaynak koddan derlemek için adım adım talimatlar.",
+    "downloadTitle": "OFF42'yi macOS ve Windows için İndirin — Ücretsiz Ofis Paketi",
+    "downloadDescription": "macOS ve Windows için OFF42: kaynak kodu, sürüm durumu, derleme yönergeleri ve platform sınırlamaları. Kurmadan önce nelerin uygulandığını ve test edildiğini kontrol edin.",
     "aboutTitle": "Açık Kaynak Ofis Paketi, MIT Lisanslı | OFF42",
-    "aboutDescription": "OFF42, MIT lisanslı altı yerel Mac uygulamasından oluşan bağımsız bir ailedir. Kodu GitHub'da inceleyin, sorun bildirin, çeviriye yardım edin ya da katkı verin.",
-    "privacyTitle": "Gizlilik: Dosyalarınız Mac'inizde Kalır | OFF42",
-    "privacyDescription": "OFF42 sitesinde reklam, analiz veya hesap yoktur; uygulamalar dosyalarınızı Mac'inizde yerel olarak düzenler. Nelerin yerelde kalıp nelerin ağ istediğini görün."
+    "aboutDescription": "OFF42, macOS ve Windows için MIT lisanslı altı yerel uygulamadan oluşur. Kaynak kodunu, platform desteğini ve sınırlamaları GitHub’da inceleyin.",
+    "privacyTitle": "Gizlilik: Dosyalarınız Bilgisayarınızda Kalır | OFF42",
+    "privacyDescription": "Temel düzenleme, dosyalar yüklenmeden bilgisayarınızda yerel olarak yapılır. İsteğe bağlı çevrimiçi özellikler bağlantı gerektirir; kullanılabilirlik platforma göre değişir."
   }
 }

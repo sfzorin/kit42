@@ -10,27 +10,27 @@
     "home": "Beranda"
   },
   "home": {
-    "eyebrow": "FILE ANDA. ALAT ANDA. ATURAN ANDA.",
-    "title": "Ruang untuk karya terbaik Anda.",
-    "intro": "Inilah OFF42. Enam aplikasi khusus untuk dokumen, spreadsheet, presentasi, PDF, gambar, dan pemindaian. Satu paket perkantoran sumber terbuka, langsung di Mac Anda.",
+    "eyebrow": "Gratis · Sumber terbuka · macOS dan Windows",
+    "title": "Seluruh kantor Anda. Tanpa langganan.",
+    "intro": "OFF42 menyatukan enam aplikasi native untuk macOS dan Windows: PDF, dokumen, spreadsheet, presentasi, gambar, dan pemindaian. Gratis dan bersumber terbuka, dengan implementasi platform terpisah serta batasan yang didokumentasikan.",
     "primary": "Dapatkan OFF42",
     "secondary": "Jelajahi alatnya",
-    "note": "Gratis · Sumber terbuka · macOS 14+ · 20 bahasa",
+    "note": "Gratis · Sumber terbuka · macOS 14+ · Windows",
     "suiteTitle": "Kantor lengkap. Kerja terasa ringan.",
     "suiteIntro": "Dari draf pertama hingga PDF bertanda tangan, kerjakan tugas sehari-hari dalam satu keluarga alat yang familier.",
     "featureEyebrow": "DETAIL KECIL. PERBEDAAN BESAR.",
     "featureTitle": "Lebih banyak kemungkinan di setiap file.",
     "featureIntro": "Edit PDF. Perkecil lampiran besar. Ubah halaman kertas menjadi teks yang dapat dicari. Temukan alat yang sesuai.",
     "privacyTitle": "Di meja Anda, bukan server orang lain.",
-    "privacyText": "Pengeditan utama dilakukan di Mac Anda. Kerjakan file lokal tanpa mengunggahnya ke editor daring. Fitur jaringan, termasuk stempel waktu tanda tangan tepercaya, memerlukan koneksi.",
+    "privacyText": "Penyuntingan utama berjalan secara lokal di komputer Anda tanpa mengunggah file. Fitur daring opsional memerlukan koneksi; ketersediaannya berbeda menurut platform.",
     "privacyLabel": "Dibuat untuk bekerja secara lokal",
     "languageTitle": "Terasa akrab, dalam 20 bahasa.",
     "languageText": "Situs dan antarmuka aplikasi berbicara dalam bahasa Anda. Pilih bahasa Anda dan gunakan alat yang sama dengan nyaman.",
     "openTitle": "Terbuka dalam setiap arti.",
     "openText": "OFF42 dirilis dengan lisensi MIT. Baca kodenya, bangun sendiri, laporkan bug, atau bantu menyempurnakan versi berikutnya.",
     "openLink": "Jelajahi di GitHub",
-    "endTitle": "Kerja yang baik dimulai dari alat yang tepat.",
-    "endText": "Temukan paket perkantoran untuk keseharian Anda.",
+    "endTitle": "Langganan: off. Kantor tetap milik Anda.",
+    "endText": "Gratis · Sumber terbuka · macOS dan Windows",
     "formatsLabel": "FORMAT OFFICE DAN TERBUKA",
     "formatsTitle": "Bekerja dengan file yang sudah Anda miliki.",
     "formatsText": "Buka file kiriman rekan kerja dan simpan dalam format yang mereka harapkan. Tata letak yang rumit bisa tampak berbeda, jadi periksa file penting setelah diimpor.",
@@ -44,7 +44,7 @@
       },
       {
         "q": "Apakah OFF42 bisa digunakan offline?",
-        "a": "Pengeditan utama berjalan di Mac Anda tanpa koneksi internet, dan file Anda tidak diunggah ke mana pun. Fitur jaringan, seperti stempel waktu tanda tangan tepercaya dan membuka tautan web, memerlukan koneksi."
+        "a": "Penyuntingan utama berjalan secara lokal di komputer Anda tanpa mengunggah file. Fitur daring opsional memerlukan koneksi; ketersediaannya berbeda menurut platform."
       },
       {
         "q": "Bisakah OFF42 membuka file Microsoft Office?",
@@ -56,9 +56,46 @@
       },
       {
         "q": "Apakah ada versi Windows?",
-        "a": "Versi awal untuk Windows sedang dikembangkan di repositori terbuka yang sama. Penginstal Windows belum diterbitkan."
+        "a": "Aplikasi native Windows sudah diimplementasikan dan tersedia sebagai kode sumber. Periksa fitur dan batasan yang didokumentasikan. Penginstal publik Windows belum dirilis."
       }
     ]
+  },
+  "name": {
+    "label": "APALAH ARTI SEBUAH NAMA",
+    "title": "OFF berasal dari office. Juga dari semua yang bisa dimatikan.",
+    "officeTitle": "Kantor yang lengkap",
+    "officeText": "Enam aplikasi untuk setiap file di meja Anda: PDF, file Word dan Excel, slide, foto, dan hasil pindaian.",
+    "offlineTitle": "Bekerja secara offline",
+    "offlineText": "Penyuntingan berjalan di komputer Anda. Tanpa akun atau unggahan file.",
+    "offTitle": "Langganan: off",
+    "offText": "Tanpa langganan, tanpa masa uji coba, tanpa iklan. Berlisensi MIT dan gratis, hari ini dan seterusnya.",
+    "answerTitle": "Lalu 42?",
+    "answerText": "Jawaban atas Pertanyaan Pamungkas tentang Kehidupan, Alam Semesta, dan Segalanya. Kami hanya menerapkannya pada urusan kantor.",
+    "stats": [
+      "aplikasi dalam satu paket",
+      "format file",
+      "bahasa antarmuka",
+      "langganan",
+      "unggahan file Anda"
+    ]
+  },
+  "marks": {
+    "label": "TANDA TANGAN DAN STEMPEL",
+    "title": "Tanda tangan dan stempel seperti di kertas. Tanpa printer, tanpa pemindai.",
+    "text": "OFF42 menulis tanda tangan tulisan tangan dari sebuah nama, membubuhkan stempel perusahaan, lalu menaruh keduanya langsung di dokumen. Setiap bubuhan sedikit berbeda, seperti tinta asli di atas kertas.",
+    "points": [
+      "Tanda tangan dengan pulpen, pena gel, pena tinta, atau spidol",
+      "132 gaya stempel: stempel bulat, stempel perusahaan, “Lunas” dan “Diterima”",
+      "Mempelajari tanda tangan Anda sendiri dari beberapa contoh",
+      "Berfungsi di PDF, dokumen, slide, spreadsheet, gambar, dan hasil pindaian"
+    ],
+    "note": "Tanda tangan yang digambar bukan tanda tangan digital berbasis sertifikat. Saat Anda memerlukannya, PDF42 menandatangani dengan sertifikat Anda.",
+    "signedCaption": "Kontrak yang ditandatangani dan distempel di PDF42. Nama dan perusahaan adalah fiktif."
+  },
+  "show": {
+    "label": "LIHAT CARA KERJANYA",
+    "title": "Aplikasi nyata. Dokumen nyata.",
+    "text": "Setiap gambar di sini adalah tangkapan layar OFF42 di Mac, dengan contoh dokumen perusahaan fiktif yang dibuka di aplikasi. Bukan mock-up."
   },
   "labels": {
     "learn": "Jelajahi",
@@ -88,7 +125,8 @@
     "notFound": "Halaman ini tidak ada di meja.",
     "notFoundText": "Coba beranda atau pilih bahasa untuk terus menjelajah.",
     "copy": "Salin",
-    "copied": "Tersalin"
+    "copied": "Tersalin",
+    "screenshot": "Tangkapan layar di macOS. Contoh dokumen, perusahaan fiktif."
   },
   "apps": {
     "pdf": {
@@ -284,7 +322,7 @@
     "mac": "OFF42 untuk macOS",
     "macText": "Kode sumber menargetkan macOS 14 atau lebih baru. Penginstal DMG publik belum dirilis.",
     "windows": "OFF42 untuk Windows",
-    "windowsText": "Kode sumber versi awal untuk Windows tersedia di GitHub. Penginstal EXE belum diterbitkan.",
+    "windowsText": "Aplikasi native Windows sudah diimplementasikan dan tersedia sebagai kode sumber. Periksa fitur dan batasan yang didokumentasikan. Penginstal publik Windows belum dirilis.",
     "sourceTitle": "Bangun. Baca. Sesuaikan untuk Anda.",
     "sourceText": "Dapatkan kode sumber berlisensi MIT di GitHub. Pembuatan di macOS memerlukan Xcode Command Line Tools. Build lokal memakai penandatanganan ad-hoc kecuali Anda mengatur penandatanganan distribusi.",
     "checkReleases": "Periksa rilis",
@@ -298,7 +336,7 @@
   },
   "about": {
     "title": "Kantor tanpa hal yang disembunyikan.",
-    "intro": "OFF42 adalah keluarga independen berisi enam aplikasi native macOS bersumber terbuka. Proyek ini menyatukan pekerjaan file sehari-hari melalui antarmuka dan alat bersama.",
+    "intro": "OFF42 menyatukan enam aplikasi native untuk macOS dan Windows: PDF, dokumen, spreadsheet, presentasi, gambar, dan pemindaian. Gratis dan bersumber terbuka, dengan implementasi platform terpisah serta batasan yang didokumentasikan.",
     "licenseTitle": "Berlisensi MIT. Bebas Anda jelajahi.",
     "licenseText": "Gunakan, pelajari, ubah, dan distribusikan kembali perangkat lunak sesuai lisensi MIT. Repositori menyertakan ketentuan lisensi dan kode sumber.",
     "contributeTitle": "Alat yang lebih baik lahir dari kerja bersama.",
@@ -314,20 +352,20 @@
     "siteTitle": "Situs sederhana",
     "siteText": "Situs tidak memiliki iklan, skrip analitik, atau sistem akun. Penyedia hosting dapat memproses informasi permintaan untuk menyediakan dan melindungi situs.",
     "appTitle": "Pengerjaan dokumen secara lokal",
-    "appText": "Pengeditan utama OFF42 berjalan lokal di Mac Anda. Fitur jaringan opsional, tautan eksternal, dan layanan stempel waktu sertifikat melibatkan penyedia masing-masing.",
+    "appText": "Penyuntingan utama berjalan secara lokal di komputer Anda tanpa mengunggah file. Fitur daring opsional memerlukan koneksi; ketersediaannya berbeda menurut platform.",
     "linksTitle": "Tautan eksternal",
     "linksText": "GitHub dan layanan tertaut lainnya memiliki kebijakan privasi sendiri. File Anda tidak diunggah saat mengunjungi situs ini."
   },
   "seo": {
-    "homeTitle": "OFF42 — Aplikasi Office Gratis Sumber Terbuka untuk Mac",
-    "homeDescription": "Paket perkantoran gratis dan sumber terbuka untuk macOS: editor PDF, dokumen DOCX, spreadsheet XLSX, slide PPTX, editor gambar, dan pemindai OCR. Bisa offline.",
+    "homeTitle": "OFF42 — Aplikasi Office Gratis untuk macOS dan Windows Tanpa Langganan",
+    "homeDescription": "Aplikasi perkantoran native, gratis, dan sumber terbuka untuk macOS dan Windows: PDF, DOCX, XLSX, PPTX, gambar, dan pemindaian. Cakupan fitur dan pengujian berbeda menurut platform.",
     "featuresTitle": "Fitur: PDF, Dokumen, Spreadsheet, Pemindaian | OFF42",
     "featuresDescription": "Edit dan tanda tangani PDF, perkecil file besar, pindai dengan OCR, tulis DOCX, serta olah XLSX dan PPTX. Lihat semua yang bisa dilakukan OFF42 gratis di Mac.",
-    "downloadTitle": "Unduh OFF42 untuk Mac — Aplikasi Office Gratis",
-    "downloadDescription": "Dapatkan OFF42 untuk macOS 14 atau lebih baru: status rilis, pratinjau Windows, dan panduan langkah demi langkah membangun aplikasi gratis berlisensi MIT.",
+    "downloadTitle": "Unduh OFF42 untuk macOS dan Windows — Aplikasi Office Gratis",
+    "downloadDescription": "OFF42 untuk macOS dan Windows: kode sumber, status rilis, petunjuk build, dan batasan platform. Periksa apa yang telah diimplementasikan dan diuji sebelum memasang.",
     "aboutTitle": "Paket Office Sumber Terbuka, Berlisensi MIT | OFF42",
-    "aboutDescription": "OFF42 adalah keluarga independen berisi enam aplikasi native Mac berlisensi MIT. Baca kodenya di GitHub, laporkan masalah, bantu terjemahan, atau berkontribusi.",
-    "privacyTitle": "Privasi: File Anda Tetap di Mac Anda | OFF42",
-    "privacyDescription": "Situs OFF42 tanpa iklan, analitik, atau akun, dan aplikasinya mengedit file secara lokal di Mac Anda. Pelajari apa yang tetap lokal dan apa yang perlu jaringan."
+    "aboutDescription": "OFF42 terdiri dari enam aplikasi native untuk macOS dan Windows dengan lisensi MIT. Lihat kode sumber, dukungan platform, dan batasannya di GitHub.",
+    "privacyTitle": "Privasi: File Tetap di Komputer Anda | OFF42",
+    "privacyDescription": "Penyuntingan utama berjalan secara lokal di komputer Anda tanpa mengunggah file. Fitur daring opsional memerlukan koneksi; ketersediaannya berbeda menurut platform."
   }
 }
