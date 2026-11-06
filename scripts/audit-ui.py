@@ -227,6 +227,7 @@ if args.mode in ('all', 'tests'):
         ('PDF42', 'pdf-core', (out / 'sample.pdf',), {'K42_AUDIT': 'core'}, 'PDF core UI regressions:', True),
         ('PDF42', 'pdf-files', (out / 'sample.pdf',), {'K42_AUDIT': 'files'}, 'PDF document lifecycle regressions:', True),
         ('PDF42', 'mark-samples', ('--mark-samples', out / 'marks'), {}, 'Mark samples: ', False),
+        ('PDF42', 'signature-fidelity', ('--signature-fidelity-synthetic', out / 'signature-fidelity'), {}, 'Synthetic checks: passed', False),
         ('PPT42', 'ppt-notes', (), {'K42_NEW': '1', 'K42_DO': 'auditnotes', 'K42_AUDIT_RECENT': '1'}, 'PPT notes UI regressions: 6/6 passed', True),
         ('PPT42', 'ppt-editing', (), {'K42_NEW': '1', 'K42_DO': 'auditediting', 'K42_PASTEBOARD': '1'}, 'PPT editing UI regressions:', True),
         ('PPT42', 'ppt-text', (), {'K42_NEW': '1', 'K42_DO': 'audittext', 'K42_PASTEBOARD': '1'}, 'PPT text/table/show UI regressions:', True),
@@ -239,7 +240,7 @@ if args.mode in ('all', 'tests'):
     for app, name, arguments, settings, marker, snapshot in tests:
         if app in binaries and (not args.case or name in args.case):
             # The mark sample sheet renders ~240 signatures and stamps in a debug build.
-            timeout = 300 if name == 'mark-samples' else 180 if name in ('img-vision', 'scn-vision', 'scn-scanner') else 60
+            timeout = 300 if name in ('mark-samples', 'signature-fidelity') else 180 if name in ('img-vision', 'scn-vision', 'scn-scanner') else 60
             results.append(run(app, name, arguments, settings, marker, snapshot, timeout=timeout))
 
 if args.mode in ('all', 'screenshots'):

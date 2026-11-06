@@ -58,7 +58,8 @@ enum PenRenderer {
                 // Downstrokes are pressed harder (wider, darker); fast upstrokes and joins are lighter.
                 case .ballpoint:
                     wd = pen * (1.0 - 0.16 * v + 0.2 * down)
-                    a = 1.0 - 0.1 * v + 0.1 * down
+                    // Tone follows the movement: fast joins lighter, slow turns and downstrokes darker (about 0.7–1).
+                    a = 0.95 - 0.25 * v + 0.12 * down
                 case .gel:
                     wd = pen * 1.25 * (1.0 - 0.08 * v + 0.1 * down)
                     a = 1.0 - 0.06 * v
@@ -132,7 +133,7 @@ enum PenRenderer {
         var texture: InkTexture.Strength
         switch type {
         // Ballpoint ink is dense: grain and fibres show only at the edges of the line, not as faded stretches.
-        case .ballpoint: texture = .init(pressure: rng.range(0.03...0.07), gaps: rng.range(0.004...0.012), bleed: 0.3, alongX: rng.range(0.02...0.05))
+        case .ballpoint: texture = .init(pressure: rng.range(0.05...0.1), gaps: rng.range(0.004...0.012), bleed: 0.3, alongX: rng.range(0.03...0.07))
         case .gel: texture = .init(pressure: 0.04, gaps: 0.004, bleed: 0.35, alongX: 0.03)
         case .fountain: texture = .init(pressure: 0.08, gaps: 0.006, bleed: 0.55, alongX: 0.05)
         case .felt: texture = .init(pressure: 0.12, gaps: 0.02, bleed: 0.9, alongX: 0.08)

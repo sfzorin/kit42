@@ -316,22 +316,24 @@ public final class MarkGeneratorController: NSWindowController, NSWindowDelegate
     @objc private func openPicture() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, .pdf]
-        panel.message = L("Choose a scan or photo of your signature (dark ink on light paper)")
+        panel.message = L("Choose a scan or photo of your signature, or of a sheet you signed several times (dark ink on light paper)")
         guard let window, panel.runModal() == .OK, let url = panel.url,
               let image = StampLibrary.image(at: url) ?? StampLibrary.rasterize(url) else { return }
         _ = window
         addPicture(image)
     }
 
+    /// A picture with one signature, or a photo of a sheet signed many times: every signature on it becomes a sample.
     private func addPicture(_ image: CGImage) {
-        guard let traced = SignatureLearning.trace(image) else {
+        let found = SignatureSheet.samples(from: image)
+        guard !found.isEmpty else {
             let alert = NSAlert()
             alert.messageText = L("No signature found in the picture")
-            alert.informativeText = L("Use dark ink on light paper, cropped close to the signature.")
+            alert.informativeText = L("Use dark ink on light paper. A sheet with several signatures works too: leave space between them.")
             alert.runModal()
             return
         }
-        samples.append(traced)
+        samples += found
         updateSamplesLabel()
         refresh()
     }

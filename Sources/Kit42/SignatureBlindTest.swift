@@ -16,21 +16,41 @@ public enum SignatureBlindTest {
         var sources: [String]   // real file each cell came from (or was learned from)
     }
 
-    public static func make(real folder: URL, to out: URL, copies: Int = 2) throws -> String {
+    /// `pooled`: one hand learned from all pictures together (as "My Signature" does with several samples) instead of
+    /// one hand per picture.
+    public static func make(real folder: URL, to out: URL, copies: Int = 2, pooled: Bool = false) throws -> String {
         let files = (try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))
             .filter { ["png", "jpg", "jpeg", "heic", "tif", "tiff"].contains($0.pathExtension.lowercased()) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !files.isEmpty else { throw NSError(domain: "SignatureBlindTest", code: 1, userInfo: [NSLocalizedDescriptionKey: "no images in \(folder.path)"]) }
         var cells: [(image: CGImage, generated: Bool, source: String)] = []
         var seed: UInt64 = 0x5EED
+        var all: [SignatureSample] = []
         for file in files {
             guard let picture = StampLibrary.rasterize(file) else { continue }
             cells.append((picture, false, file.lastPathComponent))
-            guard let traced = SignatureLearning.trace(picture) else { continue }
+            guard let traced = SignatureSample.from(picture: picture) else { continue }
+            all.append(traced)
+            if pooled { continue }
             let learned = LearnedSignature(samples: [traced])
             for _ in 0..<max(1, copies) {
                 seed = seed &* 6364136223846793005 &+ 1442695040888963407
                 if let image = learned.render(impression: seed, ink: .black, pen: .ballpoint) { cells.append((image, true, file.lastPathComponent)) }
+            }
+        }
+        // Generated pictures go through the same "camera" as the real ones (size and lens softness).
+        let realPictures = cells.filter { !$0.generated }.map(\.image)
+        if !pooled {
+            let generated = cells.indices.filter { cells[$0].generated }
+            let scanned = SignatureFidelity.scanned(generated.map { cells[$0].image }, like: realPictures)
+            for (k, i) in generated.enumerated() { cells[i].image = scanned[k] }
+        }
+        if pooled, !all.isEmpty {
+            let learned = LearnedSignature(samples: all)
+            for _ in 0..<(max(1, copies) * all.count) {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                if let image = learned.render(impression: seed, ink: .black, pen: .ballpoint),
+                   let scan = SignatureFidelity.scanned([image], like: realPictures).first { cells.append((scan, true, "pooled")) }
             }
         }
         guard cells.contains(where: \.generated) else { throw NSError(domain: "SignatureBlindTest", code: 2, userInfo: [NSLocalizedDescriptionKey: "no signature could be traced"]) }
@@ -41,6 +61,8 @@ public enum SignatureBlindTest {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted]
         try encoder.encode(key).write(to: out.appendingPathComponent("key.json"))
         try sheet(cells.map(\.image), to: out.appendingPathComponent("sheet.pdf"))
+        // The traced strokes of every real picture, for checking what learning saw.
+        try encoder.encode(all).write(to: out.appendingPathComponent("traced.json"))
         try "# Numbers of the signatures you think are generated, e.g.: 2, 5, 11\n"
             .write(to: out.appendingPathComponent("answers.txt"), atomically: true, encoding: .utf8)
         let generated = key.cells.filter { $0 }.count
@@ -49,6 +71,19 @@ public enum SignatureBlindTest {
 
     /// Cells of the same size on A4; each signature drawn as grey ink at the same height, so colour, scale or scan
     /// noise does not give away which is which.
+    /// Shuffled sheet and key from pictures already at hand (used by the fidelity check).
+    static func write(real: [CGImage], generated: [CGImage], to out: URL) throws {
+        var cells = real.map { ($0, false) } + generated.map { ($0, true) }
+        var rng = SeededRandom(0xB11D)
+        for i in stride(from: cells.count - 1, to: 0, by: -1) { cells.swapAt(i, Int(rng.next() % UInt64(i + 1))) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted]
+        try encoder.encode(Key(cells: cells.map(\.1), sources: cells.map { $0.1 ? "generated" : "real" }))
+            .write(to: out.appendingPathComponent("key.json"))
+        try sheet(cells.map(\.0), to: out.appendingPathComponent("sheet.pdf"))
+        try "# Numbers of the signatures you think are generated, e.g.: 2, 5, 11\n"
+            .write(to: out.appendingPathComponent("answers.txt"), atomically: true, encoding: .utf8)
+    }
+
     private static func sheet(_ images: [CGImage], to url: URL) throws {
         var box = CGRect(x: 0, y: 0, width: 595, height: 842)
         guard let ctx = CGContext(url as CFURL, mediaBox: &box, nil) else { throw CocoaError(.fileWriteUnknown) }
@@ -61,7 +96,9 @@ public enum SignatureBlindTest {
             let label = NSAttributedString(string: "\(i + 1)", attributes: [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.gray])
             let line = CTLineCreateWithAttributedString(label)
             ctx.textPosition = CGPoint(x: cell.minX + 4, y: cell.maxY - 11); CTLineDraw(line, ctx)
-            guard let mono = monochrome(image) else { continue }
+            // Cropped to the ink: a scan's margins would make it look smaller and lighter than a generated copy.
+            guard let full = monochrome(image) else { continue }
+            let mono = InkDraw.trim(full)
             let area = cell.insetBy(dx: 12, dy: 16)
             let k = min(area.width / CGFloat(mono.width), area.height / CGFloat(mono.height))
             let size = CGSize(width: CGFloat(mono.width) * k, height: CGFloat(mono.height) * k)
@@ -79,10 +116,10 @@ public enum SignatureBlindTest {
         guard let ctx = InkDraw.context(w, h), let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         ctx.setFillColor(.white); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        func coverage(_ i: Int) -> Double {
-            let lum = (0.3 * Double(data[i * 4]) + 0.59 * Double(data[i * 4 + 1]) + 0.11 * Double(data[i * 4 + 2])) / 255
-            return min(1, max(0, (0.92 - lum) / 0.7))
-        }
+        // Darkness against the local paper, so a grey photographed sheet becomes white like a scan.
+        let lum = (0..<(w * h)).map { i in 0.3 * Double(data[i * 4]) + 0.59 * Double(data[i * 4 + 1]) + 0.11 * Double(data[i * 4 + 2]) }
+        let dark = SignatureLearning.darkness(lum, w, h)
+        func coverage(_ i: Int) -> Double { min(1, max(0, (dark[i] - 12) / 120)) }
         let inked = (0..<(w * h)).map(coverage).filter { $0 > 0.05 }.sorted()
         let full = inked.isEmpty ? 1 : max(0.2, inked[Int(Double(inked.count - 1) * 0.9)])
         for i in 0..<(w * h) {

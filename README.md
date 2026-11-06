@@ -818,9 +818,16 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   angle; paper fibres under every pen.
   **My Signature…** learns your own signature: sign in the box a few times (trackpad or mouse, recorded with time and
   pressure), open a scan or photo, or take a sketch or photo from an iPhone or iPad (Continuity). New copies combine
-  compatible samples with small variations in movement and ink. Pad input supplies stroke timing; pictures supply
-  traced shapes with modelled timing, and their measured line width (ink area ÷ centre-line length) guides the
-  pen width of the copies. Samples and the chosen pen are stored locally in the library recipe.
+  compatible samples with small variations in movement and ink. Pad input supplies stroke timing, and copies are
+  re-drawn from it by the pen model. Copies of a signature learned from pictures are made from the ink of the samples
+  themselves: one sample (larger, sharper ones more often) is bent the way a hand varies — slant, width, a slight
+  turn, a smooth bend — inked again in the chosen colour with the pen's texture, so tips, loops and dense crossings
+  stay as written. The sample pictures are kept with the recipe in the local library (grey, at most 400 px tall). A
+  copy cannot be sharper than its sample: a signature cut from a photo of a whole sheet looks soft when placed
+  large; scans or close-up photos work best, and 5–10 different samples give the variety. A photo of a sheet
+  signed many times is split into its signatures automatically (ink found against the local paper, only on the
+  paper; fragments, two signatures written into each other and ones cut by the edge are left out), and each becomes
+  a sample. Samples and the chosen pen are stored locally in the library recipe.
   Horizontal and nearly horizontal strokes retain their proportions and are scaled before rendering. Invalid or
   excessive geometry/timing is rejected before allocating stroke samples; a failed recipe does not produce an image.
   `PDF42 --signature-bench DIR [designs copies] [--check]` measures the generator with metrics from handwriting
@@ -832,6 +839,13 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   generated are shuffled into numbered cells of `sheet.pdf` with the same grey ink, size and darkness; `key.json`
   keeps the answers. `PDF42 --signature-blindtest-score key.json answers.txt` scores the numbers a tester marked as
   generated: accuracy, hits, false alarms and d′ (0 = no measured separation in this test). Results do not establish realism for people generally.
+  `PDF42 --signature-fidelity INPUT… OUT [--check]` measures learning on a person's sample sheet(s): every third
+  signature is held out, the rest are learned, and copies are compared with the held-out real ones after the same
+  tracing at the same ink size — shape ratio (copies vs real distance to unseen signatures), variation ratio, outliers
+  unlike any real signature, and proportions, slant, line width, path length, strokes and sharp turns in units of the
+  real spread (wobble is reported only: on photos it is dominated by the camera). It writes the split signatures,
+  the copies, a blind-test sheet and `report.md`. `PDF42 --signature-fidelity-synthetic OUT` runs the same on a
+  generated sheet with traps (no real person's data) and is part of `audit-ui.py --mode tests --app PDF42`.
   **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,
   USA and Canada, Hong Kong and Taiwan — including the company chop with a signature line and the small round
   chop —, mainland China, Japan, Korea, India, Middle East, Latin America, office stamps, date and registration

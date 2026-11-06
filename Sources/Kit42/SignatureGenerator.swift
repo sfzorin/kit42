@@ -422,7 +422,9 @@ public enum SignatureGenerator {
     ///   movement, real durations when recorded), perturbed for this copy; speed drives width and ink.
     static func draw(strokes raw: [[CGPoint]], hand: SigmaLognormal.Hand, slant baseSlant: CGFloat, penRatio: CGFloat,
                      pen: PenType, ink: NSColor, pixelHeight: CGFloat, copy: inout SeededRandom, variation: Double = 1,
-                     durations: [[Double]]? = nil, capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
+                     durations: [[Double]]? = nil, runOut: Bool = true, smoothing: CGFloat? = nil, sharpCorners: Bool = false,
+                     merge: CGFloat = 0.012, layout: Double? = nil, strokeShift: CGFloat = 0,
+                     capture: (([[PenSample]]) -> Void)? = nil) -> CGImage? {
         guard pixelHeight.isFinite, pixelHeight > 0, pixelHeight <= 1_024,
               baseSlant.isFinite, penRatio.isFinite, penRatio > 0, penRatio <= 1,
               variation.isFinite, (0...2).contains(variation), raw.count <= 1_024 else { return nil }
@@ -437,7 +439,10 @@ public enum SignatureGenerator {
         let driftA = copy.range(0.02...0.045) * vary, driftX = copy.range(1.1...2.2), driftY = copy.range(0.9...1.8)
         let driftP1 = copy.range(0...6.28), driftP2 = copy.range(0...6.28)
         let size = pixelHeight * copy.range(0.93...1.07)
-        let slant = baseSlant + copy.range(-0.08...0.08) * vary, angle = copy.range(-0.06...0.06) * vary
+        // Layout (slant, angle) varies on its own scale: a learned hand keeps its letter shapes (small `variation`)
+        // but its copies still lean and climb differently.
+        let lay = CGFloat(layout ?? variation)
+        let slant = baseSlant + copy.range(-0.08...0.08) * lay, angle = copy.range(-0.06...0.06) * lay
         let xStretch = copy.range(0.94...1.06)
         let ca = cos(angle), sa = sin(angle)
         let width = max(2, size * penRatio * copy.range(0.95...1.05))
@@ -449,23 +454,35 @@ public enum SignatureGenerator {
         var spatialBudget = maximumRenderSamples, timedBudget = maximumRenderSamples
         var timingWorkBudget: Double = 5_000_000
         for (index, stroke) in raw.enumerated() {
+            // After a pen lift the next part lands a little elsewhere each time.
+            let shift = CGPoint(x: copy.range(-1...1) * strokeShift, y: copy.range(-1...1) * strokeShift)
             var via: [CGPoint] = []
             var corners = Set<Int>()
             for p in stroke {
-                if let last = via.last, hypot(last.x - p.x, last.y - p.y) < 0.012 { corners.insert(via.count - 1); continue }
+                if let last = via.last, hypot(last.x - p.x, last.y - p.y) < merge { corners.insert(via.count - 1); continue }
                 via.append(p)
             }
             via = via.map { p in
-                CGPoint(x: p.x + driftA * sin(p.y / driftY * 2 * .pi + driftP1) + copy.range(-jitter...jitter),
-                        y: p.y + driftA * sin(p.x / driftX * 2 * .pi + driftP2) + copy.range(-jitter...jitter))
+                CGPoint(x: p.x + shift.x + driftA * sin(p.y / driftY * 2 * .pi + driftP1) + copy.range(-jitter...jitter),
+                        y: p.y + shift.y + driftA * sin(p.x / driftX * 2 * .pi + driftP2) + copy.range(-jitter...jitter))
             }
             guard via.count > 1 else {
                 if let p = via.first { trajectories.append([PenSample(p: toPixels(p), t: 0, speed: 0, direction: 0)]) }
                 continue
             }
             // Geometry: smooth line in pixels, about one pixel between samples.
-            guard let line = fastHand(splineThrough(via).map(toPixels), smoothing: max(width * 3, size * 0.03),
-                                      pointBudget: spatialBudget) else { return nil }
+            // Sharp corners (learned signatures): the spline is broken at cusps, which a real hand makes by reversing.
+            var path: [CGPoint] = []
+            if sharpCorners, !corners.isEmpty {
+                var start = 0
+                for c in corners.sorted() + [via.count - 1] where c > start {
+                    let piece = splineThrough(Array(via[start...c]))
+                    path += path.isEmpty ? piece : Array(piece.dropFirst())
+                    start = c
+                }
+            } else { path = splineThrough(via) }
+            guard let line = fastHand(path.map(toPixels), smoothing: smoothing.map { size * $0 } ?? max(width * 3, size * 0.03),
+                                      runOut: runOut, pointBudget: spatialBudget) else { return nil }
             spatialBudget -= line.count
             guard line.count > 2 else { continue }
             var lengths: [CGFloat] = [0]
@@ -516,13 +533,13 @@ public enum SignatureGenerator {
 
     /// The hand at speed: even spacing along the path (about one pixel), a short straight run-out where the pen
     /// lifts, and a low-pass filter over a few pen widths — fast movements carry no small wobbles.
-    private static func fastHand(_ path: [CGPoint], smoothing: CGFloat, pointBudget: Int) -> [CGPoint]? {
+    private static func fastHand(_ path: [CGPoint], smoothing: CGFloat, runOut: Bool = true, pointBudget: Int) -> [CGPoint]? {
         guard path.allSatisfy({ $0.x.isFinite && $0.y.isFinite }), smoothing.isFinite,
               smoothing >= 0, smoothing <= 1_024, pointBudget >= 2 else { return nil }
         guard path.count >= 2 else { return path }
         var p = path
         let a = p[p.count - 2], b = p[p.count - 1], d = max(0.001, hypot(b.x - a.x, b.y - a.y))
-        p.append(CGPoint(x: b.x + (b.x - a.x) / d * smoothing * 3, y: b.y + (b.y - a.y) / d * smoothing * 3))
+        if runOut { p.append(CGPoint(x: b.x + (b.x - a.x) / d * smoothing * 3, y: b.y + (b.y - a.y) / d * smoothing * 3)) }
         guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
               let minY = p.map(\.y).min(), let maxY = p.map(\.y).max(),
               maxX - minX < 6_000, maxY - minY < 4_000 else { return nil }

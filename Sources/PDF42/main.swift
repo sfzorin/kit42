@@ -27,8 +27,21 @@ if args.count >= 3, args[1] == "--mark-overlay" {
 // PDF42 --signature-blindtest-score key.json answers.txt: how well testers told them apart.
 if args.count >= 4, args[1] == "--signature-blindtest" {
     print(try SignatureBlindTest.make(real: URL(fileURLWithPath: args[2]), to: URL(fileURLWithPath: args[3]),
-                                      copies: args.count > 4 ? Int(args[4]) ?? 2 : 2))
+                                      copies: args.count > 4 ? Int(args[4]) ?? 2 : 2, pooled: args.contains("--pooled")))
     exit(0)
+}
+// PDF42 --signature-fidelity-synthetic OUT: the same on a generated sample sheet with traps (regression, no real data).
+if args.count >= 3, args[1] == "--signature-fidelity-synthetic" {
+    let result = try SignatureFidelity.runSynthetic(to: URL(fileURLWithPath: args[2]))
+    print(result.report)
+    exit(result.failures.isEmpty ? 0 : 1)
+}
+// PDF42 --signature-fidelity INPUT… OUT [--check]: learned copies measured against held-out real signatures.
+if args.count >= 4, args[1] == "--signature-fidelity" {
+    let paths = args.dropFirst(2).filter { $0 != "--check" }
+    let result = try SignatureFidelity.run(inputs: paths.dropLast().map { URL(fileURLWithPath: $0) }, to: URL(fileURLWithPath: paths.last!))
+    print(result.report)
+    exit(args.contains("--check") && !result.failures.isEmpty ? 1 : 0)
 }
 if args.count >= 4, args[1] == "--signature-blindtest-score" {
     print(try SignatureBlindTest.score(key: URL(fileURLWithPath: args[2]), answers: URL(fileURLWithPath: args[3])))

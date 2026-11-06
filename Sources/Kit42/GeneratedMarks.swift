@@ -192,7 +192,7 @@ public enum MarkSamples {
             }
         }
         // Learning: three recorded samples of one hand (with timing, as from the trackpad) → four new copies;
-        // and the same hand from a picture (as a scan or an iPhone sketch) traced into strokes → four copies.
+        // and the same hand from a picture (as a scan or an iPhone sketch) → four copies made from its ink.
         let design = SignatureGenerator.design(form: .initialSurname, variant: 1, seed: 501)
         let recorded = (0..<3).compactMap { SignatureGenerator.recordedSample("Sergey Zorin", design: design, impression: UInt64(900 + $0)) }
         guard recorded.count == 3 else { throw failure("three timed recordings") }
@@ -202,7 +202,7 @@ public enum MarkSamples {
             throw failure("render learned-source-picture")
         }
         try save(picture, "learned-source-picture")
-        guard let traced = SignatureLearning.trace(picture) else { throw failure("trace learned-source-picture") }
+        guard let traced = SignatureSample.from(picture: picture) else { throw failure("trace learned-source-picture") }
         let fromPicture = LearnedSignature(samples: [traced])
         for c in 0..<4 { try save(fromPicture.render(impression: UInt64(c + 11) &* 6151, ink: InkColor.blue.pen, pen: .ballpoint), "learned-traced-copy\(c)") }
         // Pens: one signature in each pen type.
