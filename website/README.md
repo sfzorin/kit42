@@ -39,12 +39,21 @@ advertising, account system, cookies or file uploads are implemented by the site
 Cloudflare may process requests to serve and protect it.
 
 Deployment metadata is recorded in `deployment.json`; detailed local audit evidence is in the root `STATUS.md`.
-The initial deployment uses direct upload, not a Git-connected auto-deploy pipeline.
-A source edit needs rebuild, verification and a fresh upload to take effect. For redeployment,
-run the build and checks above, package the contents of `dist/` (not its parent directory),
-and upload them to the existing `off42` Worker using the dashboard's static-files flow. Keep
-the existing asset settings and canonical redirect rule, then verify the canonical and `www`
-hosts, redirects and representative routes. Record the deployed version and checks in `STATUS.md`.
+The Worker supports direct upload and Git-based deployment. For Cloudflare Workers Builds,
+connect `sfzorin/off42` to the existing `off42` Worker with these settings:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` |
+| Root directory | `website` |
+| Build command | `npm run build && npm run check` |
+| Deploy command | `npx --yes wrangler@4.145.0 deploy` |
+| Build watch paths | `website/**` |
+
+`wrangler.jsonc` deploys only `dist/` and keeps the existing HTML and 404 handling.
+For a manual update, build and check the site, package the contents of `dist/`, and upload
+that archive to the existing Worker. Verify the canonical and `www` hosts, redirects and
+representative routes after either deployment method.
 
 ## GitHub repository
 
