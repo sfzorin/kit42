@@ -3001,5 +3001,9 @@
   "timestamped": "időbélyeggel",
   "undo your changes first: the timestamp is added to the signed version": "előbb vonja vissza a módosításait: az időbélyeg az aláírt verzióhoz kerül",
   "undo your changes first: validation data is added to the signed version": "előbb vonja vissza a módosításait: az érvényesítési adatok az aláírt verzióhoz kerülnek",
-  "“%@” has no OCSP or CRL address": "A(z) „%@” tanúsítványban nincs OCSP- vagy CRL-cím"
+  "“%@” has no OCSP or CRL address": "A(z) „%@” tanúsítványban nincs OCSP- vagy CRL-cím",
+  "Print a signature or stamp into the page": "Aláírás vagy bélyegző nyomtatása az oldalba",
+  "Signature or stamp being placed": "Elhelyezés alatt álló aláírás vagy bélyegző",
+  "Drag to place, drag a corner to resize": "Húzza a helyére, a sarkát húzva méretezze át",
+  "Print into Page": "Nyomtatás az oldalba"
 }

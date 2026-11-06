@@ -3001,5 +3001,9 @@
   "timestamped": "diberi stempel waktu",
   "undo your changes first: the timestamp is added to the signed version": "urungkan perubahan terlebih dahulu: stempel waktu ditambahkan ke versi yang ditandatangani",
   "undo your changes first: validation data is added to the signed version": "urungkan perubahan terlebih dahulu: data validasi ditambahkan ke versi yang ditandatangani",
-  "“%@” has no OCSP or CRL address": "“%@” tidak memiliki alamat OCSP atau CRL"
+  "“%@” has no OCSP or CRL address": "“%@” tidak memiliki alamat OCSP atau CRL",
+  "Print a signature or stamp into the page": "Cetak tanda tangan atau stempel ke halaman",
+  "Signature or stamp being placed": "Tanda tangan atau stempel yang sedang ditempatkan",
+  "Drag to place, drag a corner to resize": "Seret untuk menempatkan, seret sudut untuk mengubah ukuran",
+  "Print into Page": "Cetak ke Halaman"
 }

@@ -732,6 +732,13 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   Saving writes a snapshot: later scans, edits or OCR results remain unsaved. Close is blocked while scanning or image
   processing is pending; after that, Close → Save closes only after a successful save with no remaining changes.
   Each output file is replaced only after successful encoding; a multi-file export is not one atomic transaction.
+- Signature or Stamp ⇧⌘K (Tools menu, optional toolbar item): pick a signature or stamp from the shared library or
+  generator (each insertion is a new impression), place it over the shown page — drag to move, drag a corner to resize
+  keeping proportions, arrows nudge — and press Return or **Print into Page** (Esc cancels). The mark is printed into
+  the page pixels with multiply blending, like ink on paper: text under it stays visible, and it becomes part of the
+  scan in every saved format, including PDF (no annotation or separate layer). Both the shown page and the original
+  behind clean-up get it, so changing clean-up/colour or Crop and Straighten Again keeps the mark; gray pages stay gray
+  and B&W pages stay 1-bit. One Undo step removes it. Showing another page drops an unfinished placement.
 - History (⌥⌘3): saved scans with thumbnails; double-click opens, right-click reveals or removes.
 - Command line (headless, nothing scans for real): `--make-test-inputs dir` (skewed page on a grey glass with a shadow,
   three photos on the glass, feeder pages: blank with noise, skewed, upside down, yellowed, sideways), `--process in out.png|out.jpg
@@ -748,7 +755,7 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
 
 ## Common
 
-- Signature and stamp generator (in the Signatures and Stamps popover of PDF42, DOC42, IMG42, PPT42 and XLS42).
+- Signature and stamp generator (in the Signatures and Stamps popover of PDF42, DOC42, IMG42, PPT42 and XLS42; SCN42 prints marks into the page pixels).
   **Create Signature…**: one or more names (one per line), a form — full name, initial and surname, surname,
   initials and a scribble, capital and a scribble, or any — and three styles out of 1320 (plan × flourish × capital variant × how
   the initial joins), New Variants (⌘R) for three more, and a pen: ballpoint, gel, fountain or felt-tip.

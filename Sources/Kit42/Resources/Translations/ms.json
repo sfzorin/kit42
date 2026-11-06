@@ -3001,5 +3001,9 @@
   "timestamped": "diberi cap masa",
   "undo your changes first: the timestamp is added to the signed version": "buat asal perubahan dahulu: cap masa ditambah pada versi yang ditandatangani",
   "undo your changes first: validation data is added to the signed version": "buat asal perubahan dahulu: data pengesahan ditambah pada versi yang ditandatangani",
-  "“%@” has no OCSP or CRL address": "“%@” tiada alamat OCSP atau CRL"
+  "“%@” has no OCSP or CRL address": "“%@” tiada alamat OCSP atau CRL",
+  "Print a signature or stamp into the page": "Cetak tandatangan atau cop ke dalam halaman",
+  "Signature or stamp being placed": "Tandatangan atau cop yang sedang diletakkan",
+  "Drag to place, drag a corner to resize": "Seret untuk meletakkan, seret sudut untuk mengubah saiz",
+  "Print into Page": "Cetak ke Halaman"
 }

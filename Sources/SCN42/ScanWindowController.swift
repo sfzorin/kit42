@@ -242,6 +242,7 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
                 : L("Press Scan. Every scan adds pages here; save them as one PDF when you are done.")
             preview.show(shownPage?.image)
         }
+        dropStalePlacement()
         viewSwitch.selectedSegment = showingGlass ? 0 : 1
         viewSwitch.isHidden = !(scanner?.sources.contains(.flatbed) ?? false)
     }
@@ -405,6 +406,7 @@ final class ScanWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
              #selector(restraightenAction(_:)):
             return hasTarget && busyText == nil
         case #selector(copy(_:)): return hasTarget
+        case #selector(showStampsAction(_:)): return shownPage != nil && busyText == nil
         case #selector(selectAll(_:)): return hasPages
         case #selector(rescanPageAction(_:)): return hasTarget && canScan && pendingProcessing == 0 && targetPages.count == 1
         case #selector(insertHereAction(_:)): return hasTarget || insertionIndex != nil

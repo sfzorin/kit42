@@ -1,5 +1,12 @@
 // SCN42 UI strings: [English, Русский, Türkçe].
 let scn42Strings: [[String]] = [
+    // Signatures and stamps printed into the page
+    ["Signature or Stamp…", "Подпись или печать…", "İmza veya Kaşe…"],
+    ["Signature or Stamp", "Подпись или печать", "İmza veya Kaşe"],
+    ["Print a signature or stamp into the page", "Впечатать подпись или печать в страницу", "Sayfaya imza veya kaşe bas"],
+    ["Signature or stamp being placed", "Размещаемая подпись или печать", "Yerleştirilen imza veya kaşe"],
+    ["Drag to place, drag a corner to resize", "Перетащите на место, за угол — изменить размер", "Yerleştirmek için sürükleyin, boyut için köşeden sürükleyin"],
+    ["Print into Page", "Впечатать", "Sayfaya Bas"],
     ["Wait for scanning and processing to finish before closing.", "Дождитесь окончания сканирования и обработки перед закрытием.", "Kapatmadan önce tarama ve işlemenin bitmesini bekleyin."],
     // App, welcome, window
     ["Scan documents, photos and receipts", "Сканирование документов, фото и чеков", "Belge, fotoğraf ve fiş tarama"],

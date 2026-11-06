@@ -78,6 +78,14 @@ final class ScanPage {
         cachedThumbnail = nil
     }
 
+    /// Same geometry, new pixels (a signature or stamp printed into the page); the recognised text stays valid.
+    func replacePixels(base newBase: CGImage, image newImage: CGImage) {
+        base = newBase
+        image = newImage
+        report.outputSize = CGSize(width: newImage.width, height: newImage.height)
+        cachedThumbnail = nil
+    }
+
     /// State for undo of rotation and clean-up.
     struct Snapshot {
         let base: CGImage, image: CGImage, options: ProcessOptions, text: [TextLine]?

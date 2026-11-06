@@ -3001,5 +3001,9 @@
   "timestamped": "may timestamp",
   "undo your changes first: the timestamp is added to the signed version": "i-undo muna ang iyong mga pagbabago: idinaragdag ang timestamp sa nilagdaang bersiyon",
   "undo your changes first: validation data is added to the signed version": "i-undo muna ang iyong mga pagbabago: idinaragdag ang datos ng pagpapatunay sa nilagdaang bersiyon",
-  "“%@” has no OCSP or CRL address": "Walang address ng OCSP o CRL ang “%@”"
+  "“%@” has no OCSP or CRL address": "Walang address ng OCSP o CRL ang “%@”",
+  "Print a signature or stamp into the page": "I-print ang lagda o tatak sa pahina",
+  "Signature or stamp being placed": "Lagda o tatak na inilalagay",
+  "Drag to place, drag a corner to resize": "I-drag para ilagay, i-drag ang sulok para baguhin ang laki",
+  "Print into Page": "I-print sa Pahina"
 }

@@ -23,3 +23,24 @@ so it was raised; learned signatures use 0.6–0.68 and corners 0.3. `--check` t
 0.5 px, intra ≥ 0.02, inter/intra ≥ 3 — passed on a 4 × 4 run. Vision legibility uses 72 images per run, so ±10 points
 is noise; it reads Latin full names best and Cyrillic signatures poorly. Not done: comparison with real signature data
 (research datasets need licences), human blind test.
+
+## SCN42 signatures and stamps printed into pages — 2026-11-06
+
+- New: Tools › Signature or Stamp… (⇧⌘K, optional toolbar item). A mark from the shared library/generator is placed
+  over the shown page (drag, corner resize with fixed proportions, arrow nudge; it can be grabbed in a background
+  window), then Return / Print into Page multiplies it into the page pixels — the shown image and the
+  geometry-corrected original, so clean-up, colour changes and Crop and Straighten Again keep it. Gray pages stay gray,
+  B&W pages stay 1-bit. One Undo step. Saved files carry the mark inside the page image; PDFs get no annotation.
+  The six new strings are translated into all 20 languages.
+- Checked on this commit's tree (`.build/debug/SCN42`, SHA-256
+  `aeb67f5250a5f78cfdf00733b41dd78de66d3b26e6d049217fff035919bca0ac`): `--selftest` 0 failures; `--uitest` 0 failures,
+  including 20/20 mark checks — native command opens the library popover; disabled on the scanner glass; drag, corner
+  resize, click outside, Esc and Return through `NSWindow.sendEvent`; multiply pixels (paper turns blue, text under
+  the mark stays black, outside untouched) in the image and in the original; clean-up re-run keeps the mark; Undo and
+  Redo to the identical pixel objects; saved PDF rendered back with the mark and no annotations; gray and 1-bit pages;
+  switching page drops an unfinished placement.
+- The same scenario also passed (20/20, plus 9/9 `audit-ui.py --app SCN42` runs) on a newer local SCN42 tree whose
+  document model also clears the unsaved marker on Undo; this commit's older document model keeps the marker after
+  Undo, so the shared check asserts restored pixels only.
+- Not run: `audit-scans-cli.py` (no import/export code changed). Not checked: clicking an item inside the library
+  popover (the audit calls the same placement entry its callback uses) and visual review of the placement bar.

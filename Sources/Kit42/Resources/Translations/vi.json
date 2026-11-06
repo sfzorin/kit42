@@ -3001,5 +3001,9 @@
   "timestamped": "đã gắn dấu thời gian",
   "undo your changes first: the timestamp is added to the signed version": "hãy hoàn tác thay đổi trước: dấu thời gian được thêm vào phiên bản đã ký",
   "undo your changes first: validation data is added to the signed version": "hãy hoàn tác thay đổi trước: dữ liệu xác minh được thêm vào phiên bản đã ký",
-  "“%@” has no OCSP or CRL address": "“%@” không có địa chỉ OCSP hoặc CRL"
+  "“%@” has no OCSP or CRL address": "“%@” không có địa chỉ OCSP hoặc CRL",
+  "Print a signature or stamp into the page": "In chữ ký hoặc con dấu vào trang",
+  "Signature or stamp being placed": "Chữ ký hoặc con dấu đang đặt",
+  "Drag to place, drag a corner to resize": "Kéo để đặt, kéo góc để đổi kích thước",
+  "Print into Page": "In vào trang"
 }
