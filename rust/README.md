@@ -50,6 +50,23 @@ keeps the existing document and session until the new identity is verified and l
 native commands and toolbars, document history, asynchronous work and cancellation. Format support is a subset, and
 preservation varies by feature and source file; test important documents before relying on round trips.
 
+## Labels, barcodes and signatures
+
+- In PDF42, DOC42 and XLS42, **Production → Create Barcode** saves a PNG with physical resolution metadata.
+  Choose QR, Data Matrix, Code 128 or Aztec. Code 128 accepts printable ASCII. Check the final size after
+  inserting a PNG into another application.
+- **Production → Create Label Sheet** exports a vector A4 PDF. Set label dimensions and gaps in millimetres,
+  a copy count, and the first slot to skip used positions. PDF42 and DOC42 can start with selected text.
+  XLS42 uses the displayed values of selected visible rows. Column numbers are relative to the selection.
+  Enter 0 to omit the barcode or copy-count column, and 1 in the header field to skip the first visible row.
+  Print at actual size (100%). Label text uses the bundled Noto Sans glyphs; scripts that require text shaping
+  and characters absent from that font need another text workflow.
+- In XLS42, select part of one column and use **Production → Fill Serial Numbers** to enter literal identifiers
+  such as `0007` or `PCB-0007`. Filtered or hidden rows are skipped. Undo restores the whole operation.
+- In PDF42, DOC42 and PPT42, **Signatures & Stamps** imports PNG or JPEG copies into the shared local library
+  in `%LOCALAPPDATA%/off42/Signatures and Stamps`. Use **Insert from Library** to place an image.
+  PNG imports retain transparency. These are visual marks.
+
 ## Validation boundary
 
 Workspace tests and cross-build checks do not establish native event dispatch, controls, rendered output, DPI,

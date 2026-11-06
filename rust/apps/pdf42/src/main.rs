@@ -273,6 +273,25 @@ impl Pdf {
     }
 }
 impl win42::App for Pdf {
+    fn supports_production(&self) -> bool {
+        true
+    }
+    fn label_source(&self) -> Result<win42::LabelSource, String> {
+        #[cfg(windows)]
+        let text = self
+            .selected_text
+            .as_ref()
+            .filter(|selection| {
+                self.doc
+                    .as_ref()
+                    .is_some_and(|doc| doc.current() == selection.page)
+            })
+            .map(|selection| selection.text.clone())
+            .unwrap_or_default();
+        #[cfg(not(windows))]
+        let text = String::new();
+        Ok(win42::LabelSource::Text(text))
+    }
     fn begin_async_open(&mut self, path: &Path) -> Result<bool, String> {
         self.cancel_async_open();
         self.opening_path = Some(path.to_path_buf());
@@ -1386,6 +1405,9 @@ impl win42::App for Pdf {
             .set_metadata(&pairs)?;
         self.branch();
         self.request_render()
+    }
+    fn mark_file_action(&self) -> Option<u16> {
+        Some(74)
     }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[

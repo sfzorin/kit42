@@ -453,6 +453,24 @@ impl Doc {
     }
 }
 impl App for Doc {
+    fn supports_production(&self) -> bool {
+        true
+    }
+    fn label_source(&self) -> Result<win42::LabelSource, String> {
+        let (start, end) = self.selection;
+        let text = if end > start {
+            let units: Vec<u16> = self
+                .visible_text()
+                .encode_utf16()
+                .skip(start)
+                .take((end - start).min(4096))
+                .collect();
+            String::from_utf16(&units).map_err(|_| "Select complete text characters.")?
+        } else {
+            String::new()
+        };
+        Ok(win42::LabelSource::Text(text))
+    }
     fn name(&self) -> &'static str {
         "DOC42"
     }
@@ -464,6 +482,9 @@ impl App for Doc {
     }
     fn actions(&self) -> &'static [(u16, &'static str)] {
         &[]
+    }
+    fn mark_file_action(&self) -> Option<u16> {
+        Some(310)
     }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[win42::FileAction {

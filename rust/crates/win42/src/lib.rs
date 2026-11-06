@@ -19,6 +19,12 @@ pub struct FileAction {
     pub pattern: &'static str,
 }
 
+pub enum LabelSource {
+    Text(String),
+    /// Original one-based row number and rendered values from the selected columns.
+    Rows(Vec<(usize, Vec<String>)>),
+}
+
 /// Portable contract between a document model and the native Windows host.
 pub trait App {
     /// Native top-level window handle, when a Windows host is available.
@@ -155,6 +161,16 @@ pub trait App {
     }
     fn file_actions(&self) -> &'static [FileAction] {
         &[]
+    }
+    fn supports_production(&self) -> bool {
+        false
+    }
+    fn label_source(&self) -> Result<LabelSource, String> {
+        Ok(LabelSource::Text(String::new()))
+    }
+    /// Existing import action that can insert a saved PNG signature or stamp.
+    fn mark_file_action(&self) -> Option<u16> {
+        None
     }
     fn file_action(&mut self, _id: u16, _path: &Path) -> Result<(), String> {
         Err("Unsupported file action".into())
@@ -342,10 +358,14 @@ mod dialogs;
 mod grid;
 #[cfg(any(windows, test))]
 mod grid_geometry;
+#[cfg(any(windows, test))]
+mod marks;
 #[cfg(windows)]
 mod native;
 #[cfg(any(windows, test))]
 mod note_pagination;
+#[cfg(windows)]
+mod production;
 #[cfg(windows)]
 mod prompt;
 #[cfg(windows)]

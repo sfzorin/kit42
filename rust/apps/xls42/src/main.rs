@@ -82,6 +82,27 @@ impl Xls {
     }
 }
 impl win42::App for Xls {
+    fn supports_production(&self) -> bool {
+        true
+    }
+    fn label_source(&self) -> Result<win42::LabelSource, String> {
+        let range = self.selection_range();
+        if range.right - range.left >= 200 || range.bottom - range.top >= 5000 {
+            return Err("Select up to 5,000 rows and 200 columns.".into());
+        }
+        let grid = self.book.display_grid();
+        let rows = self
+            .book
+            .visible_rows_from_grid(&grid)
+            .into_iter()
+            .filter(|row| *row >= range.top && *row <= range.bottom)
+            .map(|row| (row + 1, grid[row][range.left..=range.right].to_vec()))
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return Err("Select visible cells to create labels.".into());
+        }
+        Ok(win42::LabelSource::Rows(rows))
+    }
     fn save_formats(&self) -> Vec<win42::FileFormat> {
         vec![
             win42::FileFormat {
@@ -181,13 +202,18 @@ impl win42::App for Xls {
             (72, "Unhide selected rows"),
             (73, "Hide selected columns"),
             (74, "Unhide selected columns"),
+            (75, "Fill Serial Numbers…"),
         ]
         .into_iter()
         .map(|(id, title)| win42::CommandSpec {
             id,
             title,
             accelerator: None,
-            group: if id < 25 { "Sheets" } else { "Cells" },
+            group: match id {
+                0..=24 => "Sheets",
+                75 => "Production",
+                _ => "Cells",
+            },
         })
         .collect()
     }
@@ -326,6 +352,15 @@ impl win42::App for Xls {
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let (title, fields) = match id {
             20 | 21 | 22 => ("Sheet name", vec![("Name", String::new())]),
+            75 => (
+                "Fill Serial Numbers",
+                vec![
+                    ("Prefix (optional)", String::new()),
+                    ("Start", "1".into()),
+                    ("Step", "1".into()),
+                    ("Minimum number of digits", "4".into()),
+                ],
+            ),
             70 => (
                 "Freeze panes",
                 vec![
@@ -523,6 +558,42 @@ impl win42::App for Xls {
                 .ok_or_else(|| "Enter a positive integer".into())
         };
         match id {
+            75 => {
+                let range = self.selection_range();
+                if range.left != range.right
+                    || self.book.sheet_view().hidden_columns.contains(&range.left)
+                {
+                    return Err("Select a single visible column or part of it.".into());
+                }
+                let [prefix, start, step, digits] = v else {
+                    return Err("Invalid serial settings.".into());
+                };
+                let rows = self
+                    .book
+                    .visible_rows()
+                    .into_iter()
+                    .filter(|row| *row >= range.top && *row <= range.bottom)
+                    .collect::<Vec<_>>();
+                self.book
+                    .fill_serials(
+                        &rows,
+                        range.left,
+                        prefix,
+                        start
+                            .trim()
+                            .parse()
+                            .map_err(|_| "Enter a whole starting number.")?,
+                        step.trim()
+                            .parse()
+                            .map_err(|_| "Enter a positive whole step.")?,
+                        digits
+                            .trim()
+                            .parse()
+                            .map_err(|_| "Enter the minimum number of digits.")?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.clear_visible_cache();
+            }
             20 => {
                 self.book.add_sheet(&v[0]).map_err(|e| e.to_string())?;
             }
@@ -1172,6 +1243,7 @@ impl win42::App for Xls {
         match id {
             10 => self.book.can_add_row(),
             11 => self.book.can_add_column(),
+            75 => !self.book.is_read_only() && !self.book.is_protected(),
             _ => true,
         }
     }

@@ -2374,6 +2374,59 @@ impl Workbook {
         cols: &[usize],
         text: &str,
     ) -> Result<bool, Error> {
+        self.paste_tsv_mapped_as(rows, cols, text, CellContent::from_raw)
+    }
+
+    /// Fill the selected physical rows with literal serials in one undoable edit.
+    pub fn fill_serials(
+        &mut self,
+        rows: &[usize],
+        column: usize,
+        prefix: &str,
+        start: u64,
+        step: u64,
+        digits: usize,
+    ) -> Result<bool, Error> {
+        if prefix.len() > 64
+            || prefix.chars().any(char::is_control)
+            || !(1..=20).contains(&digits)
+            || step == 0
+        {
+            return Err(Error::Invalid(
+                "Use a short prefix, a positive step and 1–20 digits",
+            ));
+        }
+        if rows.is_empty() || rows.len() > 5000 {
+            return Err(Error::Invalid("Select 1–5,000 rows"));
+        }
+        let mut writer = csv::WriterBuilder::new()
+            .delimiter(b'\t')
+            .from_writer(Vec::new());
+        for index in 0..rows.len() {
+            let number = (index as u64)
+                .checked_mul(step)
+                .and_then(|n| start.checked_add(n))
+                .ok_or(Error::Invalid(
+                    "The serial sequence exceeds the supported number range",
+                ))?;
+            writer.write_record([format!("{prefix}{number:0digits$}")])?;
+        }
+        let bytes = writer
+            .into_inner()
+            .map_err(|_| Error::Invalid("Could not encode serials"))?;
+        let tsv = std::str::from_utf8(&bytes).map_err(|_| Error::Invalid("Invalid serial text"))?;
+        self.paste_tsv_mapped_as(rows, &[column], tsv, |value| {
+            CellContent::Text(TextValue::from_raw(value))
+        })
+    }
+
+    fn paste_tsv_mapped_as(
+        &mut self,
+        rows: &[usize],
+        cols: &[usize],
+        text: &str,
+        parse_cell: impl Fn(String) -> CellContent,
+    ) -> Result<bool, Error> {
         self.require_editable()?;
         if text.len() > MAX_INPUT {
             return Err(Error::Limit);
@@ -2436,7 +2489,7 @@ impl Workbook {
                     sheet.cells.insert(
                         key,
                         Cell {
-                            text: CellContent::from_raw(text.to_string()),
+                            text: parse_cell(text.to_string()),
                             style,
                         },
                     );
@@ -2462,6 +2515,23 @@ impl Workbook {
 #[cfg(test)]
 mod more_regressions {
     use super::*;
+    #[test]
+    fn serial_fill_keeps_leading_zeroes_in_visible_rows_and_undoes_as_one_edit() {
+        let mut book = Workbook::new(4, 2).unwrap();
+        book.set_cell(1, 0, "hidden".into()).unwrap();
+        book.fill_serials(&[0, 2, 3], 0, "", 7, 2, 4).unwrap();
+        assert_eq!(book.display_grid()[0][0], "0007");
+        assert_eq!(book.display_grid()[1][0], "hidden");
+        assert_eq!(book.display_grid()[2][0], "0009");
+        assert_eq!(book.display_grid()[3][0], "0011");
+        assert!(book.undo());
+        assert_eq!(book.cell(0, 0), Some(""));
+        assert_eq!(book.cell(2, 0), Some(""));
+        assert_eq!(book.cell(1, 0), Some("hidden"));
+        assert!(book.fill_serials(&[0, 1], 0, "", u64::MAX, 1, 4).is_err());
+        assert_eq!(book.cell(0, 0), Some(""));
+    }
+
     #[test]
     fn mapped_paste_rejects_invalid_destination_atomically() {
         let mut book = Workbook::new(5, 4).unwrap();

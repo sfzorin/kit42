@@ -3,8 +3,8 @@ use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
     mem::{size_of, zeroed},
-    os::windows::ffi::OsStringExt,
-    path::PathBuf,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+    path::{Path, PathBuf},
     ptr::{null, null_mut},
 };
 use windows_sys::Win32::{
@@ -40,6 +40,10 @@ const EDIT: usize = 101;
 const TABLE: usize = 102;
 const TOOLBAR_MORE: u16 = 65520;
 const CANCEL_OPEN: u16 = 65519;
+const CREATE_LABEL_SHEET: u16 = 65518;
+const CREATE_BARCODE: u16 = 65517;
+const IMPORT_MARK: u16 = 65516;
+const INSERT_MARK: u16 = 65515;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -121,6 +125,16 @@ unsafe fn dialog(
     format: &str,
     pattern: &str,
 ) -> Option<PathBuf> {
+    file_dialog(hwnd, save, ext, format, pattern, None)
+}
+unsafe fn file_dialog(
+    hwnd: HWND,
+    save: bool,
+    ext: &str,
+    format: &str,
+    pattern: &str,
+    private_title: Option<&str>,
+) -> Option<PathBuf> {
     let mut buf = vec![0u16; 32768];
     let filter: Vec<u16> = format!("{format}\0{pattern}\0\0").encode_utf16().collect();
     let extw = wide(ext);
@@ -135,6 +149,12 @@ unsafe fn dialog(
         | OFN_NOCHANGEDIR
         | OFN_PATHMUSTEXIST
         | if save { 0 } else { OFN_FILEMUSTEXIST };
+    let title;
+    if let Some(name) = private_title {
+        title = wide(name);
+        f.lpstrTitle = title.as_ptr();
+        f.Flags |= OFN_DONTADDTORECENT;
+    }
     if (if save {
         GetSaveFileNameW(&mut f)
     } else {
@@ -505,6 +525,22 @@ unsafe fn refresh() {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
+    let can_insert_mark = STATE.with(|s| {
+        let s = s.borrow();
+        let app = &s.as_ref().unwrap().app;
+        app.mark_file_action()
+            .is_some_and(|id| app.command_state(id).enabled)
+    });
+    EnableMenuItem(
+        menu,
+        INSERT_MARK as u32,
+        MF_BYCOMMAND
+            | if can_insert_mark {
+                MF_ENABLED
+            } else {
+                MF_GRAYED
+            },
+    );
     let opening = STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()));
     EnableMenuItem(
         menu,
@@ -1200,6 +1236,144 @@ unsafe fn apply_requested_rich_selection() {
         }
     }
 }
+unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
+    use crate::{production, LabelSource};
+    let is_sheet = id == CREATE_LABEL_SHEET;
+    let source = if is_sheet {
+        STATE.with(|state| state.borrow().as_ref().unwrap().app.label_source())?
+    } else {
+        LabelSource::Text(String::new())
+    };
+    let request = if is_sheet {
+        production::sheet_request(&source)
+    } else {
+        production::barcode_request(String::new())
+    };
+    let multiline = is_sheet && matches!(&source, LabelSource::Text(_));
+    let Some(fields) = crate::prompt::show_options(hwnd, &request, multiline, false) else {
+        return Ok(());
+    };
+    let (output, ext, name, pattern) = if is_sheet {
+        (
+            production::sheet_output(source, &fields)?,
+            "pdf",
+            "PDF label sheet",
+            "*.pdf",
+        )
+    } else {
+        (
+            production::barcode_output(&fields)?,
+            "png",
+            "PNG barcode",
+            "*.png",
+        )
+    };
+    if let Some(path) = dialog(hwnd, true, ext, name, pattern) {
+        if !path
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case(ext))
+        {
+            return Err(format!("Choose a file name ending in .{ext}."));
+        }
+        suite42_core::write_new(&path, &output).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "This file already exists. Choose a new name.".into()
+            } else {
+                format!("Could not save the file: {error}")
+            }
+        })?;
+    }
+    Ok(())
+}
+
+unsafe fn pick_library_image(hwnd: HWND, directory: &Path) -> Result<Option<PathBuf>, String> {
+    use windows::{
+        core::{w, PCWSTR},
+        Win32::{
+            Foundation::HWND as WinHwnd,
+            System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
+            UI::Shell::{
+                Common::COMDLG_FILTERSPEC, FileOpenDialog, IFileOpenDialog, IShellItem,
+                SHCreateItemFromParsingName, FOS_DONTADDTORECENT, FOS_FORCEFILESYSTEM,
+                FOS_NOCHANGEDIR, SIGDN_FILESYSPATH,
+            },
+        },
+    };
+    if CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) < 0 {
+        return Err("Could not open the Windows image picker.".into());
+    }
+    let result = (|| -> windows::core::Result<Option<PathBuf>> {
+        let picker: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+        picker.SetOptions(
+            picker.GetOptions()? | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT,
+        )?;
+        picker.SetTitle(w!("Insert Signature or Stamp from Library"))?;
+        picker.SetFileTypes(&[COMDLG_FILTERSPEC {
+            pszName: w!("Library images"),
+            pszSpec: w!("*.png"),
+        }])?;
+        let folder = directory
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(folder.as_ptr()), None)?;
+        picker.SetFolder(&item)?;
+        match picker.Show(Some(WinHwnd(hwnd))) {
+            Err(error) if error.code().0 as u32 == 0x800704c7 => return Ok(None),
+            other => other?,
+        }
+        let path = picker.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+        let path_buf = PathBuf::from(OsString::from_wide(path.as_wide()));
+        CoTaskMemFree(path.0.cast());
+        Ok(Some(path_buf))
+    })();
+    CoUninitialize();
+    result.map_err(|error| format!("Could not open the signature and stamp library: {error}"))
+}
+
+unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
+    let target = STATE.with(|state| {
+        let state = state.borrow();
+        let app = &state.as_ref().unwrap().app;
+        let action = app.mark_file_action()?;
+        (id == IMPORT_MARK || app.command_state(action).enabled).then_some(action)
+    });
+    let Some(target) = target else {
+        return Ok(());
+    };
+    let directory = crate::marks::library_directory()?;
+    if id == IMPORT_MARK {
+        if let Some(source) = file_dialog(
+            hwnd,
+            false,
+            "",
+            "PNG or JPEG image",
+            "*.png;*.jpg;*.jpeg",
+            Some("Import Your Signature or Stamp"),
+        ) {
+            crate::marks::import_image(&source, &directory)?;
+            msg(
+                hwnd,
+                "Saved to the shared signature and stamp library.",
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    } else if let Some(path) = pick_library_image(hwnd, &directory)? {
+        let path = crate::marks::library_image(&path, &directory)?;
+        STATE.with(|state| {
+            state
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .app
+                .file_action(target, &path)
+        })?;
+    }
+    Ok(())
+}
+
 unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
     if id == TOOLBAR_MORE {
         let (button, items) = STATE.with(|s| {
@@ -1475,6 +1649,22 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                         .app
                         .set_rich_selection(selection)
                 });
+            }
+            if matches!(
+                id,
+                CREATE_LABEL_SHEET | CREATE_BARCODE | IMPORT_MARK | INSERT_MARK
+            ) {
+                let result = match id {
+                    CREATE_LABEL_SHEET | CREATE_BARCODE => production_command(hwnd, id),
+                    _ => mark_command(hwnd, id),
+                };
+                if let Err(error) = result {
+                    msg(hwnd, &error, MB_OK | MB_ICONERROR);
+                }
+                if id == INSERT_MARK {
+                    refresh();
+                }
+                return;
             }
             let (file_action, request, enabled) = STATE.with(|s| {
                 let s = s.borrow();
@@ -2327,8 +2517,31 @@ pub fn run(app: Box<dyn App>) {
             };
             item(menu, spec.id, &title);
         }
+        if app.supports_production() {
+            let menu =
+                if let Some((_, menu)) = groups.iter().find(|(name, _)| *name == "Production") {
+                    *menu
+                } else {
+                    let menu = CreatePopupMenu();
+                    groups.push(("Production", menu));
+                    menu
+                };
+            item(menu, CREATE_BARCODE, "Create Barcode…");
+            item(menu, CREATE_LABEL_SHEET, "Create Label Sheet…");
+        }
         for (name, menu) in groups {
             AppendMenuW(bar, MF_POPUP, menu as usize, wide(name).as_ptr());
+        }
+        if app.mark_file_action().is_some() {
+            let menu = CreatePopupMenu();
+            item(menu, IMPORT_MARK, "Import to Library…");
+            item(menu, INSERT_MARK, "Insert from Library…");
+            AppendMenuW(
+                bar,
+                MF_POPUP,
+                menu as usize,
+                wide("Signatures && Stamps").as_ptr(),
+            );
         }
         let help = CreatePopupMenu();
         item(help, ABOUT, "&About");

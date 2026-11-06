@@ -1,6 +1,7 @@
 name: Rust Windows
 on:
   push:
+    tags: ['v*-windows-preview.*']
     paths: ['rust/**', '.github/workflows/rust-windows.yml']
   pull_request:
     paths: ['rust/**', '.github/workflows/rust-windows.yml']
@@ -56,3 +57,41 @@ jobs:
         with:
           name: Suite42-windows-x64
           path: rust/build/Suite42-windows-x64.zip
+
+  publish-preview:
+    if: startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-windows-preview.')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Suite42-windows-x64
+      - name: Publish the tested ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          asset="off42-${TAG#v}-x64.zip"
+          mv Suite42-windows-x64.zip "$asset"
+          unzip -tq "$asset"
+          digest=$(sha256sum "$asset" | cut -d' ' -f1)
+          cat > release-notes.md <<EOF
+          Windows x64 preview of off42 with PDF42, DOC42, XLS42, IMG42, PPT42 and SCN42.
+
+          PDF42, DOC42 and XLS42 can export A4 label sheets and PNG barcodes in four formats.
+          XLS42 can fill serial numbers with leading zeroes. PDF42, DOC42 and PPT42 share a local signature and stamp library.
+
+          Extract the entire ZIP and run the app you want. Keep \`pdfium.dll\` alongside \`PDF42.exe\`.
+          The executables are unsigned. If Windows reports a missing Visual C++ runtime, install the
+          [Microsoft Visual C++ Redistributable for x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/).
+
+          [Windows build and automated tests]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID) · [Features and limits]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/rust/README.md)
+
+          SHA-256 \`$digest\`
+          EOF
+          gh release create "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "off42 ${TAG#v} (x64)" --notes-file release-notes.md

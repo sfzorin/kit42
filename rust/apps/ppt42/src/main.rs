@@ -974,6 +974,9 @@ impl win42::App for Ppt {
             },
         ]
     }
+    fn mark_file_action(&self) -> Option<u16> {
+        Some(32)
+    }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[win42::FileAction {
             id: 32,
