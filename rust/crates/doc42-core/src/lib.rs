@@ -245,3 +245,6 @@ mod find_regression {
         assert_eq!(d.text(), "😀 dog\r\ndog");
     }
 }
+
+/// Structured document model and loss-aware byte codecs for native hosts.
+pub mod rich;

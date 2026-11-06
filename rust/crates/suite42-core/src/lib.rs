@@ -123,6 +123,9 @@ impl<T: Clone + PartialEq> SnapshotHistory<T> {
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
+    pub fn discard_redo(&mut self) {
+        self.redo.clear();
+    }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
@@ -131,6 +134,12 @@ impl<T: Clone + PartialEq> SnapshotHistory<T> {
     }
     pub fn mark_saved(&mut self) {
         self.saved = self.current.clone();
+    }
+    pub fn snapshot(&self) -> T {
+        self.current.clone()
+    }
+    pub fn mark_saved_snapshot(&mut self, snapshot: T) {
+        self.saved = snapshot;
     }
 }
 /// Write to a new destination only, without clobbering any existing file.
@@ -183,3 +192,5 @@ mod tests {
         assert_eq!(std::fs::read(p).unwrap(), b"one");
     }
 }
+
+pub mod session;

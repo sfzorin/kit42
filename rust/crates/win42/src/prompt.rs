@@ -58,6 +58,13 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
     }
 }
 pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
+    show_multiline(owner, req, false)
+}
+pub unsafe fn show_multiline(
+    owner: HWND,
+    req: &InputRequest,
+    multiline: bool,
+) -> Option<Vec<String>> {
     if PROMPT.with(|p| p.borrow().is_some()) {
         return None;
     }
@@ -76,7 +83,12 @@ pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
     let dpi = GetDpiForWindow(owner) as i32;
     let scale = |x: i32| x * dpi / 96;
     let width = scale(400);
-    let height = scale(110 + req.fields.len() as i32 * 58);
+    let extra = if multiline && !req.fields.is_empty() {
+        100
+    } else {
+        0
+    };
+    let height = scale(110 + req.fields.len() as i32 * 58 + extra);
     let h = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         class.as_ptr(),
@@ -97,7 +109,7 @@ pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
     let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
     let mut fields = Vec::new();
     for (i, (label, value)) in req.fields.iter().enumerate() {
-        let y = scale(12 + i as i32 * 58);
+        let y = scale(12 + i as i32 * 58 + if i > 0 { extra } else { 0 });
         let t = CreateWindowExW(
             0,
             wide("STATIC").as_ptr(),
@@ -116,11 +128,18 @@ pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
             WS_EX_CLIENTEDGE,
             wide("EDIT").as_ptr(),
             wide(value).as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | if multiline && i == 0 {
+                    WS_VSCROLL | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32
+                } else {
+                    ES_AUTOHSCROLL as u32
+                },
             scale(12),
             y + scale(21),
             scale(360),
-            scale(24),
+            scale(24 + if multiline && i == 0 { extra } else { 0 }),
             h,
             (100 + i) as HMENU,
             instance,
@@ -128,10 +147,15 @@ pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
         );
         SendMessageW(t, WM_SETFONT, font, 1);
         SendMessageW(e, WM_SETFONT, font, 1);
-        SendMessageW(e, EM_SETLIMITTEXT, 4096, 0);
+        SendMessageW(
+            e,
+            EM_SETLIMITTEXT,
+            if multiline && i == 0 { 65536 } else { 4096 },
+            0,
+        );
         fields.push(e);
     }
-    let y = scale(18 + req.fields.len() as i32 * 58);
+    let y = scale(18 + req.fields.len() as i32 * 58 + extra);
     for (id, title, x, style) in [
         (IDOK, "OK", 200, BS_DEFPUSHBUTTON),
         (IDCANCEL, "Cancel", 290, BS_PUSHBUTTON),
@@ -173,6 +197,16 @@ pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
                 PostQuitMessage(m.wParam as i32);
             }
             break;
+        }
+        if multiline
+            && m.message == WM_KEYDOWN
+            && m.wParam == VK_RETURN as usize
+            && fields.first().is_some_and(|f| *f == GetFocus())
+            && GetKeyState(VK_CONTROL as i32) >= 0
+        {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+            continue;
         }
         if m.message == WM_KEYDOWN
             && (m.wParam == VK_RETURN as usize || m.wParam == VK_ESCAPE as usize)

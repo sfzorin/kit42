@@ -63,17 +63,16 @@ it did not reproduce in three diagnostic sequences or subsequent full app checks
 the stronger fixture baseline and failure diagnostics remain. Hardware and external-provider limits are listed below.
 Local packages are ad-hoc signed; this source publication does not install apps or provide a notarized binary release.
 
-## Windows Rust foundation
+## Windows Rust workspace
 
-A separate, preliminary Rust foundation covers all six apps. Its base passed headless Windows MSVC tests and builds;
-interactive Windows menus, input, rendering, dialogs and DPI have not yet been tested. It does not have feature parity with the macOS
-apps described below. See [rust/README.md](rust/README.md) for build commands, per-app scope and the Windows handoff.
-The cross-build does not install apps or establish a notarized Windows release.
+The separate Rust workspace implements the six apps for Windows. Its formats, runtime dependencies, build commands
+and current limitations are described in [rust/README.md](rust/README.md). Native Windows interaction, printing,
+scanner hardware and PDFium interoperability have not been verified on a Windows desktop; it is not a parity claim.
 
 ## Install
 
 ```bash
-git clone https://github.com/sfzorin/kit42.git && cd kit42
+git clone https://github.com/sfzorin/off42.git && cd off42
 ./build.sh                  # all apps → build/*.app
 ./build.sh PDF42 install    # one app, plus a copy in /Applications
 SUITE42_BUILD_DIR=build/languages ./build.sh # isolated output directory for verification

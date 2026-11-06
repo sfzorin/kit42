@@ -5,6 +5,13 @@ edition = "2021"
 [dependencies]
 win42 = { path = "../../crates/win42" }
 pdf42-core = { path = "../../crates/pdf42-core" }
+lopdf = "0.47"
+flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+png = "0.18"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+tempfile = "3"
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Data_Pdf", "Storage_Streams", "Graphics_Imaging", "Foundation", "Win32_System_WinRT"] }
 [dev-dependencies]
 scn42-core = { path = "../../crates/scn42-core" }
-lopdf = "0.47"

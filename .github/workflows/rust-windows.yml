@@ -26,3 +26,26 @@ jobs:
           $env:RUSTFLAGS = "-C link-arg=$((Resolve-Path scripts/windows-app.res).Path)"
           cargo build --locked --release -p img42 -p doc42 -p xls42 -p ppt42 -p pdf42 -p scn42
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage PDFium runtime and licenses
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/Suite42 | Out-Null
+          python scripts/fetch-pdfium.py build/Suite42
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($app in @('img42','doc42','xls42','ppt42','pdf42','scn42')) {
+            Copy-Item "target/release/$app.exe" "build/Suite42/$($app.ToUpper()).exe"
+          }
+          cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc | Out-File -Encoding utf8 build/metadata.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/collect-licenses.py build/metadata.json build/Suite42/licenses
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $rustLicenses = Join-Path (rustc --print sysroot) 'share/doc/rust/licenses'
+          if (Test-Path $rustLicenses) { Copy-Item -Recurse $rustLicenses build/Suite42/licenses/rust-toolchain }
+          Copy-Item ../LICENSE build/Suite42/licenses/Suite42-LICENSE
+          Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/Suite42/licenses/NotoSans-OFL.txt
+          Compress-Archive -Path build/Suite42 -DestinationPath build/Suite42-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Suite42-windows-x64
+          path: rust/build/Suite42-windows-x64.zip

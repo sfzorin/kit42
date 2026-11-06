@@ -42,15 +42,16 @@ and scope; detailed build logs, executable identities and installation history a
   capturing each welcome window. It does not establish editing behavior or full dialog coverage.
   Interface language does not translate document content, add OCR languages or alter the accepted formula syntax.
 
-## Rust Windows foundation
+## Rust Windows workspace
 
-The separate Windows foundation uses `windows-rs` and shared `win42` native window, menu, dialog and control
-infrastructure. File, Edit and Help menus are shared, with View where implemented; Ctrl+O/S/Shift+S/Z/Y are shared; common controls v6 and
-PerMonitorV2 are declared in the application manifest. XLS42 uses a two-dimensional native grid. Dirty-document
-guards precede destructive lifecycle actions. App cores own undo/redo state, including text newline policy and PDF42 page-operation history;
-all outputs require a new path and refuse overwrite. Shared parameter and find dialogs and file actions use native controls; sparse computed-grid updates and selection events stay synchronized with the model. These contracts are implemented and cross-compiled, but native
-Windows event dispatch, control rendering, DPI, dialogs and lifecycle behavior remain to be exercised. The Windows
-foundation's scope and format boundaries are in [rust/README.md](rust/README.md).
+The separate Windows apps use `windows-rs` and shared `win42` native windows, command registry, menus, toolbars,
+dialogs and controls. App models own history and document state; shared save snapshots detect conflicts and use atomic
+replacement. The UI provides canvas drawing, rich text and scaled images, asynchronous jobs with generation-based
+cancellation, and printing using twips and DPI. DOC42 separates its editable RichEdit model from the read-only
+paginated preview. Common controls v6 and PerMonitorV2 are declared in the application manifest.
+
+These are implementation contracts, not evidence of native event dispatch, rendering, printing or lifecycle behavior.
+See [rust/README.md](rust/README.md) for formats, dependencies and verification limits.
 
 ## Window layout
 

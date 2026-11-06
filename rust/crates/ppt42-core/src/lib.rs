@@ -2,29 +2,130 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, io::Read, path::Path};
 use suite42_core::{write_new, SnapshotHistory, TextValue};
+pub mod odp;
+pub mod pptx;
 const MAX_SLIDES: usize = 200;
 const MAX_TEXT: usize = 32_768;
 const MAX_FILE: u64 = 512 * 1024;
+const MAX_MEDIA_FILE: u64 = 64 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 10;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Slide {
     pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<u64>,
     #[serde(skip)]
     pub title: String,
     #[serde(skip)]
     pub body: String,
     title_text: TextValue,
     body_text: TextValue,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<SlideObject>,
+    #[serde(default = "first_object_id")]
+    next_object_id: u64,
+}
+fn first_object_id() -> u64 {
+    1
+}
+/// Editable objects use slide-local stable identities and slide coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlideObject {
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub kind: ObjectKind,
+    pub fill: [u8; 3],
+    pub stroke: [u8; 3],
+    #[serde(default = "enabled", skip_serializing_if = "is_enabled")]
+    pub fill_visible: bool,
+    #[serde(default = "enabled", skip_serializing_if = "is_enabled")]
+    pub stroke_visible: bool,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "TextStyle::is_default")]
+    pub text_style: TextStyle,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<Vec<String>>,
+}
+fn enabled() -> bool {
+    true
+}
+fn is_enabled(value: &bool) -> bool {
+    *value
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextStyle {
+    pub family: String,
+    pub points: f64,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub color: [u8; 3],
+    pub align: TextAlign,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            family: "Arial".into(),
+            points: 16.0,
+            bold: false,
+            italic: false,
+            underline: false,
+            color: [0, 0, 0],
+            align: TextAlign::Left,
+        }
+    }
+}
+impl TextStyle {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ObjectKind {
+    Rectangle,
+    Ellipse,
+    Line,
+    Text,
+    Picture,
+    Table,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum ObjectAlignment {
+    Left,
+    Center,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+    DistributeHorizontal,
+    DistributeVertical,
 }
 impl Slide {
+    pub fn source_identity(&self) -> u64 {
+        self.origin.unwrap_or(self.id)
+    }
     fn new(id: u64, title: String, body: String) -> Self {
         Self {
             id,
+            origin: None,
             title_text: TextValue::from_raw(title.clone()),
             body_text: TextValue::from_raw(body.clone()),
             title,
             body,
+            objects: Vec::new(),
+            next_object_id: 1,
         }
     }
     fn edited(&self, title: &str, body: &str) -> Self {
@@ -32,10 +133,13 @@ impl Slide {
         let body_text = self.body_text.with_edited(body);
         Self {
             id: self.id,
+            origin: self.origin,
             title: title_text.raw().to_owned(),
             body: body_text.raw().to_owned(),
             title_text,
             body_text,
+            objects: self.objects.clone(),
+            next_object_id: self.next_object_id,
         }
     }
 }
@@ -63,8 +167,44 @@ impl Deck {
                     && s.body_text.policy_consistent()
                     && s.title_text.raw() == s.title
                     && s.body_text.raw() == s.body
+                    && {
+                        let mut object_ids = HashSet::new();
+                        s.next_object_id > 0
+                            && s.objects.iter().all(|o| {
+                                o.id > 0
+                                    && o.id < s.next_object_id
+                                    && object_ids.insert(o.id)
+                                    && o.x.is_finite()
+                                    && o.y.is_finite()
+                                    && o.width.is_finite()
+                                    && o.height.is_finite()
+                                    && o.width > 0.0
+                                    && o.height > 0.0
+                                    && o.text.len() <= MAX_TEXT
+                                    && o.text_style.points.is_finite()
+                                    && (1.0..=512.0).contains(&o.text_style.points)
+                                    && o.text_style.family.len() <= 256
+                                    && o.media.len() <= 16 * 1024 * 1024
+                                    && o.cells.len() <= 100
+                                    && o.cells.iter().all(|r| {
+                                        r.len() <= 100 && r.iter().all(|c| c.len() <= MAX_TEXT)
+                                    })
+                            })
+                    }
             })
-            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() as u64 <= MAX_FILE)
+            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() as u64 <= self.file_limit())
+    }
+    fn file_limit(&self) -> u64 {
+        if self
+            .slides
+            .iter()
+            .flat_map(|s| &s.objects)
+            .any(|o| !o.media.is_empty())
+        {
+            MAX_MEDIA_FILE
+        } else {
+            MAX_FILE
+        }
     }
 }
 #[derive(Clone)]
@@ -78,6 +218,8 @@ impl PartialEq for State {
         self.deck == other.deck
     }
 }
+pub struct SaveState(State);
+
 pub struct Presentation {
     history: SnapshotHistory<State>,
 }
@@ -137,9 +279,234 @@ impl Presentation {
         let mut state = self.history.current().clone();
         let index = self.current();
         let id = state.deck.slides[index].id;
+        let objects = state.deck.slides[index].objects.clone();
+        let next_object_id = state.deck.slides[index].next_object_id;
         state.deck.slides[index] = Slide::new(id, title, body);
+        state.deck.slides[index].objects = objects;
+        state.deck.slides[index].next_object_id = next_object_id;
         if !state.deck.valid() {
             return Err("invalid slide text or deck exceeds size limit".into());
+        }
+        self.history.apply(state);
+        Ok(())
+    }
+    pub fn insert_object(&mut self, kind: ObjectKind, text: String) -> Result<u64, String> {
+        self.insert_content(kind, text, Vec::new(), Vec::new())
+    }
+    pub fn insert_picture(&mut self, bytes: Vec<u8>) -> Result<u64, String> {
+        if bytes.is_empty() {
+            return Err("Empty image".into());
+        }
+        self.insert_content(ObjectKind::Picture, String::new(), bytes, Vec::new())
+    }
+    pub fn insert_table(&mut self, rows: usize, columns: usize) -> Result<u64, String> {
+        if rows == 0 || columns == 0 || rows > 100 || columns > 100 {
+            return Err("Invalid table size".into());
+        }
+        self.insert_content(
+            ObjectKind::Table,
+            String::new(),
+            Vec::new(),
+            vec![vec![String::new(); columns]; rows],
+        )
+    }
+    fn insert_content(
+        &mut self,
+        kind: ObjectKind,
+        text: String,
+        media: Vec<u8>,
+        cells: Vec<Vec<String>>,
+    ) -> Result<u64, String> {
+        let mut state = self.history.current().clone();
+        let slide = &mut state.deck.slides[self.current()];
+        let id = slide.next_object_id;
+        slide.next_object_id = id.checked_add(1).ok_or("object identity exhausted")?;
+        slide.objects.push(SlideObject {
+            id,
+            x: 100.0,
+            y: 120.0,
+            width: 180.0,
+            height: 90.0,
+            kind,
+            fill: [220, 230, 245],
+            stroke: [40, 70, 110],
+            fill_visible: true,
+            stroke_visible: true,
+            text,
+            text_style: TextStyle::default(),
+            media,
+            cells,
+        });
+        if !state.deck.valid() {
+            return Err("deck exceeds limits".into());
+        }
+        self.history.apply(state);
+        Ok(id)
+    }
+    pub fn update_object(&mut self, object: SlideObject) -> Result<(), String> {
+        self.update_objects(vec![object])
+    }
+    pub fn update_objects(&mut self, objects: Vec<SlideObject>) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        let mut seen = HashSet::new();
+        for object in objects {
+            if !seen.insert(object.id) {
+                return Err("duplicate object identity".into());
+            }
+            let target = state.deck.slides[self.current()]
+                .objects
+                .iter_mut()
+                .find(|o| o.id == object.id)
+                .ok_or("object not found")?;
+            *target = object;
+        }
+        if !state.deck.valid() {
+            return Err("invalid object or deck exceeds limits".into());
+        }
+        self.history.apply(state);
+        Ok(())
+    }
+    pub fn align_objects(&mut self, ids: &[u64], mode: ObjectAlignment) -> Result<(), String> {
+        let selected = self.slides()[self.current()]
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.len() != ids.len() || selected.len() < 2 {
+            return Err("Select at least two objects".into());
+        }
+        let left = selected.iter().map(|o| o.x).fold(f64::INFINITY, f64::min);
+        let top = selected.iter().map(|o| o.y).fold(f64::INFINITY, f64::min);
+        let right = selected
+            .iter()
+            .map(|o| o.x + o.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let bottom = selected
+            .iter()
+            .map(|o| o.y + o.height)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut objects = selected;
+        match mode {
+            ObjectAlignment::Left => {
+                for o in &mut objects {
+                    o.x = left
+                }
+            }
+            ObjectAlignment::Center => {
+                for o in &mut objects {
+                    o.x = (left + right - o.width) / 2.0
+                }
+            }
+            ObjectAlignment::Right => {
+                for o in &mut objects {
+                    o.x = right - o.width
+                }
+            }
+            ObjectAlignment::Top => {
+                for o in &mut objects {
+                    o.y = top
+                }
+            }
+            ObjectAlignment::Middle => {
+                for o in &mut objects {
+                    o.y = (top + bottom - o.height) / 2.0
+                }
+            }
+            ObjectAlignment::Bottom => {
+                for o in &mut objects {
+                    o.y = bottom - o.height
+                }
+            }
+            ObjectAlignment::DistributeHorizontal | ObjectAlignment::DistributeVertical => {
+                if objects.len() < 3 {
+                    return Err("Select at least three objects to distribute".into());
+                }
+                let horizontal = matches!(mode, ObjectAlignment::DistributeHorizontal);
+                objects.sort_by(|a, b| {
+                    if horizontal {
+                        a.x.total_cmp(&b.x)
+                    } else {
+                        a.y.total_cmp(&b.y)
+                    }
+                });
+                let total = objects
+                    .iter()
+                    .map(|o| if horizontal { o.width } else { o.height })
+                    .sum::<f64>();
+                let (start, end) = if horizontal {
+                    (left, right)
+                } else {
+                    (top, bottom)
+                };
+                let gap = (end - start - total) / (objects.len() - 1) as f64;
+                let mut pos = start;
+                for o in &mut objects {
+                    if horizontal {
+                        o.x = pos;
+                        pos += o.width + gap
+                    } else {
+                        o.y = pos;
+                        pos += o.height + gap
+                    }
+                }
+            }
+        }
+        self.update_objects(objects)
+    }
+    pub fn duplicate_objects(&mut self, ids: &[u64]) -> Result<Vec<u64>, String> {
+        let mut state = self.history.current().clone();
+        let slide = &mut state.deck.slides[self.current()];
+        let selected = slide
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() || selected.len() != ids.len() {
+            return Err("Invalid selection".into());
+        }
+        let mut created = Vec::new();
+        for mut object in selected {
+            object.id = slide.next_object_id;
+            slide.next_object_id = slide
+                .next_object_id
+                .checked_add(1)
+                .ok_or("object identity exhausted")?;
+            object.x += 12.0;
+            object.y += 12.0;
+            created.push(object.id);
+            slide.objects.push(object);
+        }
+        if !state.deck.valid() {
+            return Err("deck exceeds limits".into());
+        }
+        self.history.apply(state);
+        Ok(created)
+    }
+    pub fn delete_object(&mut self, id: u64) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        let objects = &mut state.deck.slides[self.current()].objects;
+        let i = objects
+            .iter()
+            .position(|o| o.id == id)
+            .ok_or("object not found")?;
+        objects.remove(i);
+        self.history.apply(state);
+        Ok(())
+    }
+    pub fn arrange_object(&mut self, id: u64, front: bool) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        let objects = &mut state.deck.slides[self.current()].objects;
+        let index = objects
+            .iter()
+            .position(|o| o.id == id)
+            .ok_or("object not found")?;
+        let object = objects.remove(index);
+        if front {
+            objects.push(object);
+        } else {
+            objects.insert(0, object);
         }
         self.history.apply(state);
         Ok(())
@@ -177,6 +544,7 @@ impl Presentation {
         let id = state.deck.next_id;
         state.deck.next_id = id.checked_add(1).ok_or("slide identity exhausted")?;
         let mut slide = state.deck.slides[self.current()].clone();
+        slide.origin = Some(slide.origin.unwrap_or(slide.id));
         slide.id = id;
         state.deck.slides.insert(self.current() + 1, slide);
         state.selected = id;
@@ -230,26 +598,34 @@ impl Presentation {
     pub fn is_dirty(&self) -> bool {
         self.history.is_dirty()
     }
-    pub fn save_as(&mut self, path: &Path) -> Result<(), String> {
-        let bytes = serde_json::to_vec(&self.history.current().deck).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_FILE {
+    pub fn save_snapshot(&self) -> Result<(Vec<u8>, SaveState), String> {
+        let state = self.history.snapshot();
+        let bytes = serde_json::to_vec(&state.deck).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > state.deck.file_limit() {
             return Err("deck exceeds file limit".into());
         }
+        Ok((bytes, SaveState(state)))
+    }
+    pub fn mark_saved_snapshot(&mut self, state: SaveState) {
+        self.history.mark_saved_snapshot(state.0);
+    }
+    pub fn save_as(&mut self, path: &Path) -> Result<(), String> {
+        let (bytes, state) = self.save_snapshot()?;
         write_new(path, &bytes).map_err(|e| e.to_string())?;
-        self.history.mark_saved();
+        self.mark_saved_snapshot(state);
         Ok(())
     }
     pub fn open(path: &Path) -> Result<Self, String> {
-        if fs::metadata(path).map_err(|e| e.to_string())?.len() > MAX_FILE {
+        if fs::metadata(path).map_err(|e| e.to_string())?.len() > MAX_MEDIA_FILE {
             return Err("deck exceeds file limit".into());
         }
         let mut bytes = Vec::new();
         fs::File::open(path)
             .map_err(|e| e.to_string())?
-            .take(MAX_FILE + 1)
+            .take(MAX_MEDIA_FILE + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_FILE {
+        if bytes.len() as u64 > MAX_MEDIA_FILE {
             return Err("deck exceeds file limit".into());
         }
         let mut deck: Deck = serde_json::from_slice(&bytes)
@@ -257,6 +633,11 @@ impl Presentation {
         for slide in &mut deck.slides {
             slide.title = slide.title_text.raw().to_owned();
             slide.body = slide.body_text.raw().to_owned();
+            if let Some(max_id) = slide.objects.iter().map(|o| o.id).max() {
+                slide.next_object_id = slide
+                    .next_object_id
+                    .max(max_id.checked_add(1).ok_or("object identity exhausted")?);
+            }
         }
         if !deck.valid() {
             return Err("unsupported version or invalid deck".into());
@@ -269,6 +650,51 @@ impl Presentation {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alignment_and_duplicate_are_atomic_history_steps() {
+        let mut deck = super::Presentation::new();
+        let a = deck
+            .insert_object(super::ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let b = deck
+            .insert_object(super::ObjectKind::Ellipse, String::new())
+            .unwrap();
+        let mut second = deck.slides()[0].objects[1].clone();
+        second.x = 300.0;
+        deck.update_object(second).unwrap();
+        deck.align_objects(&[a, b], super::ObjectAlignment::Left)
+            .unwrap();
+        assert_eq!(deck.slides()[0].objects[1].x, 100.0);
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].objects[1].x, 300.0);
+        assert!(deck.redo());
+        let created = deck.duplicate_objects(&[a, b]).unwrap();
+        assert_eq!(created.len(), 2);
+        assert_eq!(deck.slides()[0].objects.len(), 4);
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].objects.len(), 2);
+    }
+    #[test]
+    fn object_edit_history_and_persistence() {
+        let mut deck = super::Presentation::new();
+        let id = deck
+            .insert_object(super::ObjectKind::Rectangle, "hello".into())
+            .unwrap();
+        let mut object = deck.slides()[0].objects[0].clone();
+        object.x = 245.0;
+        deck.update_object(object).unwrap();
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].objects[0].x, 100.0);
+        assert!(deck.redo());
+        let (bytes, _) = deck.save_snapshot().unwrap();
+        let path =
+            std::env::temp_dir().join(format!("ppt42-object-{}-{}.json", std::process::id(), id));
+        std::fs::write(&path, bytes).unwrap();
+        let opened = super::Presentation::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(opened.slides()[0].objects[0].x, 245.0);
+        assert_eq!(opened.slides()[0].objects[0].text, "hello");
+    }
     use super::*;
     #[test]
     fn duplicate_preserves_identity_policy_history_and_reopen() {
