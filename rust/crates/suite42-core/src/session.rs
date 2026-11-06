@@ -119,7 +119,10 @@ pub fn publish(
                     "Destination changed since it was opened or confirmed",
                 ));
             }
-            replace_existing(temporary.path(), path)?;
+            // ReplaceFileW opens the replacement with exclusive access. Close the
+            // NamedTempFile handle first while retaining TempPath's cleanup guard.
+            let temporary_path = temporary.into_temp_path();
+            replace_existing(&temporary_path, path)?;
         }
     }
     FileIdentity::read(path)
@@ -131,13 +134,20 @@ fn replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{os::windows::ffi::OsStrExt, ptr::null};
-    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+    use windows_sys::Win32::Storage::FileSystem::{
+        ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
+    };
     let src: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let dst: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect();
+    // NamedTempFile creates Windows files with FILE_ATTRIBUTE_TEMPORARY;
+    // normalize it before publication, as tempfile's own persist does.
+    if unsafe { SetFileAttributesW(src.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
     let ok = unsafe { ReplaceFileW(dst.as_ptr(), src.as_ptr(), null(), 0, null(), null()) };
     if ok == 0 {
         Err(io::Error::last_os_error())
