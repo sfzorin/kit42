@@ -996,6 +996,7 @@ dependencies = [
  "kamadak-exif",
  "resvg",
  "roxmltree",
+ "suite42-core",
  "tempfile",
  "tiff",
 ]

@@ -14,6 +14,7 @@ crc32fast = "1"
 resvg = "=0.45.1"
 roxmltree = "0.20"
 tempfile = "3"
+suite42-core = { path = "../suite42-core" }
 
 [dev-dependencies]
 base64 = "0.22"

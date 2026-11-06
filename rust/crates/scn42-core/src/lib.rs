@@ -979,9 +979,12 @@ impl ScanDocument {
             .flat_map(|p| p.words.iter())
             .map(|w| w.text.as_str())
             .collect();
-        let embedded = suite42_pdf_text::PdfFont::embed(&mut doc, &text)?;
-        let chars = &embedded.chars;
-        let font = embedded.id;
+        // Image-only scans need no font; OCR text gets a glyph subset.
+        let embedded = if text.is_empty() {
+            None
+        } else {
+            Some(suite42_pdf_text::PdfFont::embed_subset(&mut doc, &text)?)
+        };
         let pages_id = doc.new_object_id();
         let mut kids = Vec::new();
         for page in self.pages() {
@@ -996,29 +999,35 @@ impl ScanDocument {
             let w = page.width as f32 * 72.0 / page.dpi_x as f32;
             let h = page.height as f32 * 72.0 / page.dpi_y as f32;
             let mut commands = format!("q {w} 0 0 {h} 0 0 cm /Im0 Do Q\n");
-            for word in page.words.iter() {
-                let x = word.x as f32 * 72.0 / page.dpi_x as f32;
-                let y = (page.height - word.y - word.height) as f32 * 72.0 / page.dpi_y as f32;
-                let size = word.height as f32 * 72.0 / page.dpi_y as f32;
-                let hex: String = word
-                    .text
-                    .chars()
-                    .map(|c| format!("{:04X}", chars[&c].0))
-                    .collect();
-                let advance: u32 = word.text.chars().map(|c| chars[&c].2).sum();
-                let target = word.width as f32 * 72.0 / page.dpi_x as f32;
-                let scale = if advance == 0 {
-                    100.0
-                } else {
-                    target * 100000.0 / (advance as f32 * size)
-                };
-                commands.push_str(&format!(
-                    "BT /F1 {size} Tf {scale} Tz 3 Tr 1 0 0 1 {x} {y} Tm <{hex}> Tj ET\n"
-                ));
+            let font = embedded.as_ref().filter(|_| !page.words.is_empty());
+            if let Some(font) = font {
+                let chars = &font.chars;
+                for word in page.words.iter() {
+                    let x = word.x as f32 * 72.0 / page.dpi_x as f32;
+                    let y = (page.height - word.y - word.height) as f32 * 72.0 / page.dpi_y as f32;
+                    let size = word.height as f32 * 72.0 / page.dpi_y as f32;
+                    let hex: String = word
+                        .text
+                        .chars()
+                        .map(|c| format!("{:04X}", chars[&c].0))
+                        .collect();
+                    let advance: u32 = word.text.chars().map(|c| chars[&c].2).sum();
+                    let target = word.width as f32 * 72.0 / page.dpi_x as f32;
+                    let scale = if advance == 0 {
+                        100.0
+                    } else {
+                        target * 100000.0 / (advance as f32 * size)
+                    };
+                    commands.push_str(&format!(
+                        "BT /F1 {size} Tf {scale} Tz 3 Tr 1 0 0 1 {x} {y} Tm <{hex}> Tj ET\n"
+                    ));
+                }
             }
             let content = doc.add_object(Stream::new(dictionary! {}, commands.into_bytes()));
-            let resources =
-                dictionary! {"XObject"=>dictionary!{"Im0"=>image}, "Font"=>dictionary!{"F1"=>font}};
+            let mut resources = dictionary! {"XObject"=>dictionary!{"Im0"=>image}};
+            if let Some(font) = font {
+                resources.set("Font", dictionary! {"F1"=>font.id});
+            }
             let id=doc.add_object(dictionary!{"Type"=>"Page","Parent"=>pages_id,"MediaBox"=>vec![0.into(),0.into(),w.into(),h.into()],"Resources"=>resources,"Contents"=>content});
             kids.push(Object::Reference(id));
         }
@@ -1271,6 +1280,64 @@ mod tests {
                 output.stdout
             );
         }
+    }
+    #[test]
+    fn pdf_embeds_font_only_for_ocr_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = ScanDocument::new();
+        d.add_rgba(64, 32, vec![255; 64 * 32 * 4]).unwrap();
+        let image_only = dir.path().join("image-only.pdf");
+        d.export_pdf_compressed(&image_only, true).unwrap();
+        assert!(fs::metadata(&image_only).unwrap().len() < 8 * 1024);
+        let pdf = Document::load(&image_only).unwrap();
+        let page = *pdf.get_pages().values().next().unwrap();
+        let resources = pdf
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Resources")
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        assert!(resources.get(b"Font").is_err());
+        assert!(!pdf.objects.values().any(|o| o
+            .as_stream()
+            .is_ok_and(|s| s.dict.get(b"Length1").is_ok())));
+
+        d.add_rgba(64, 32, vec![255; 64 * 32 * 4]).unwrap();
+        let source = d.pages()[1].clone();
+        d.apply_ocr(
+            1,
+            &source,
+            vec![OcrWord {
+                text: "Searchable".into(),
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 20,
+            }],
+        )
+        .unwrap();
+        let searchable = dir.path().join("searchable.pdf");
+        d.export_pdf_compressed(&searchable, true).unwrap();
+        assert!(fs::metadata(&searchable).unwrap().len() < 64 * 1024);
+        let pdf = Document::load(&searchable).unwrap();
+        let fonts: Vec<_> = pdf
+            .get_pages()
+            .values()
+            .map(|&id| {
+                pdf.get_dictionary(id)
+                    .unwrap()
+                    .get(b"Resources")
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"Font")
+                    .is_ok()
+            })
+            .collect();
+        assert_eq!(fonts, [false, true]);
+        let text = pdf.extract_text(&[2]).unwrap();
+        assert!(text.contains("Searchable"), "{text:?}");
     }
     #[test]
     fn dpi_and_perspective_roundtrip_undo() {

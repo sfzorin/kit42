@@ -1885,11 +1885,11 @@ impl ImageDocument {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        let mut temp = tempfile::NamedTempFile::new_in(suite42_core::win32_path(parent)?)?;
         temp.write_all(&bytes)?;
         temp.flush()?;
         temp.as_file().sync_all()?;
-        match temp.persist_noclobber(path) {
+        match temp.persist_noclobber(suite42_core::win32_path(path)?) {
             Ok(_) => {
                 self.mark_saved_snapshot(state);
                 Ok(())

@@ -8,13 +8,17 @@ const EM_STREAMOUT: u32 = WM_USER + 74;
 const EM_EXGETSEL: u32 = WM_USER + 52;
 const EM_EXSETSEL: u32 = WM_USER + 55;
 const EM_SETUNDOLIMIT: u32 = WM_USER + 82;
+const EM_GETEVENTMASK: u32 = WM_USER + 59;
+const EM_SETEVENTMASK: u32 = WM_USER + 69;
+const ENM_CHANGE: usize = 1;
 const SF_RTF: usize = 2;
 #[repr(C)]
 struct CharRange {
     min: i32,
     max: i32,
 }
-#[repr(C)]
+// richedit.h declares EDITSTREAM under pack(4): the callback is at offset 12 on x64.
+#[repr(C, packed(4))]
 struct EditStream {
     cookie: usize,
     error: u32,
@@ -47,6 +51,11 @@ unsafe extern "system" fn write(cookie: usize, buffer: *mut u8, len: i32, done: 
 pub unsafe fn disable_undo(hwnd: HWND) {
     SendMessageW(hwnd, EM_SETUNDOLIMIT, 0, 0);
 }
+/// Unlike EDIT, RichEdit sends EN_CHANGE only when ENM_CHANGE is in its event mask.
+pub unsafe fn notify_changes(hwnd: HWND) {
+    let mask = SendMessageW(hwnd, EM_GETEVENTMASK, 0, 0) as usize;
+    SendMessageW(hwnd, EM_SETEVENTMASK, 0, (mask | ENM_CHANGE) as LPARAM);
+}
 pub unsafe fn selection(hwnd: HWND) -> (usize, usize) {
     let mut range = CharRange { min: 0, max: 0 };
     SendMessageW(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as LPARAM);
@@ -67,8 +76,9 @@ pub unsafe fn load(hwnd: HWND, bytes: &[u8]) -> Result<(), String> {
         callback: Some(read),
     };
     SendMessageW(hwnd, EM_STREAMIN, SF_RTF, &mut stream as *mut _ as LPARAM);
-    if stream.error != 0 {
-        Err(format!("RichEdit stream-in failed: {}", stream.error))
+    let error = stream.error;
+    if error != 0 {
+        Err(format!("RichEdit stream-in failed: {error}"))
     } else {
         Ok(())
     }
@@ -81,9 +91,23 @@ pub unsafe fn extract(hwnd: HWND) -> Result<Vec<u8>, String> {
         callback: Some(write),
     };
     SendMessageW(hwnd, EM_STREAMOUT, SF_RTF, &mut stream as *mut _ as LPARAM);
-    if stream.error != 0 {
-        Err(format!("RichEdit stream-out failed: {}", stream.error))
+    let error = stream.error;
+    if error != 0 {
+        Err(format!("RichEdit stream-out failed: {error}"))
     } else {
         Ok(bytes)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn edit_stream_matches_richedit_h_layout() {
+        assert_eq!(std::mem::offset_of!(EditStream, error), size_of::<usize>());
+        assert_eq!(
+            std::mem::offset_of!(EditStream, callback),
+            size_of::<usize>() + 4
+        );
+        assert_eq!(size_of::<EditStream>(), 2 * size_of::<usize>() + 4);
     }
 }

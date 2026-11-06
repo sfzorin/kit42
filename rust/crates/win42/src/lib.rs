@@ -391,6 +391,51 @@ pub fn from_native_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a4_page_fits_or_reflows_onto_letter_paper() {
+        use super::PrintGeometry;
+        let a4 = PrintGeometry {
+            width_twips: 11906,
+            height_twips: 16838,
+            margin_left_twips: 1440,
+            margin_top_twips: 1440,
+            margin_right_twips: 1440,
+            margin_bottom_twips: 1440,
+        };
+        let letter = PrintGeometry {
+            width_twips: 12240,
+            height_twips: 15840,
+            margin_left_twips: 0,
+            margin_top_twips: 0,
+            margin_right_twips: 0,
+            margin_bottom_twips: 0,
+        };
+        assert!(a4.fits_paper(a4));
+        assert!(!a4.fits_paper(letter));
+        let reflowed = a4.reflowed_onto(PrintGeometry {
+            margin_left_twips: 2000,
+            ..letter
+        });
+        assert_eq!((reflowed.width_twips, reflowed.height_twips), (12240, 15840));
+        assert_eq!((reflowed.margin_left_twips, reflowed.margin_top_twips), (2000, 1440));
+        assert!(reflowed.valid());
+    }
+    #[test]
+    fn print_content_keeps_place_when_it_fits_and_shrinks_centred_otherwise() {
+        assert_eq!(
+            super::fit_print_content((500.0, 400.0), (100, 50), (1000, 1000)),
+            (1.0, 100, 50)
+        );
+        // 16:9 slide wider than the printable width: scaled to the width, centred vertically.
+        let (s, x, y) = super::fit_print_content((2000.0, 1125.0), (0, 0), (1000, 1300));
+        assert!((s - 0.5).abs() < 1e-9);
+        assert_eq!((x, y), (0, 369));
+        // Never enlarged; moved inside when its preferred origin is off the printable area.
+        assert_eq!(
+            super::fit_print_content((300.0, 300.0), (-20, 0), (1000, 1000)),
+            (1.0, 350, 350)
+        );
+    }
+    #[test]
     fn native_text_round_trip_and_rejections() {
         for s in ["first\nsecond 😀", "first\r\nsecond 😀", "one line"] {
             assert!(super::validate_editable(s).is_ok());
@@ -749,6 +794,47 @@ impl PrintGeometry {
             && i64::from(self.margin_top_twips) + i64::from(self.margin_bottom_twips)
                 < i64::from(self.height_twips)
     }
+    /// Whether this page prints unchanged on `paper` (the printer's sheet, with its
+    /// unprintable edges as margins): same size within 60 twips, margins outside those edges.
+    pub fn fits_paper(self, paper: PrintGeometry) -> bool {
+        (self.width_twips - paper.width_twips).abs() <= 60
+            && (self.height_twips - paper.height_twips).abs() <= 60
+            && self.margin_left_twips >= paper.margin_left_twips
+            && self.margin_top_twips >= paper.margin_top_twips
+            && self.margin_right_twips >= paper.margin_right_twips
+            && self.margin_bottom_twips >= paper.margin_bottom_twips
+    }
+    /// This page reflowed onto `paper`: the paper's size, keeping this page's margins
+    /// but never inside the paper's unprintable edges.
+    pub fn reflowed_onto(self, paper: PrintGeometry) -> PrintGeometry {
+        PrintGeometry {
+            width_twips: paper.width_twips,
+            height_twips: paper.height_twips,
+            margin_left_twips: self.margin_left_twips.max(paper.margin_left_twips),
+            margin_top_twips: self.margin_top_twips.max(paper.margin_top_twips),
+            margin_right_twips: self.margin_right_twips.max(paper.margin_right_twips),
+            margin_bottom_twips: self.margin_bottom_twips.max(paper.margin_bottom_twips),
+        }
+    }
+}
+/// Scale (at most 1) and origin placing content of `content` device pixels in a printable
+/// area of `area` pixels: unchanged at `preferred` when it fits there, otherwise shrunk
+/// to fit and centred, keeping its aspect ratio.
+pub fn fit_print_content(
+    content: (f64, f64),
+    preferred: (i32, i32),
+    area: (i32, i32),
+) -> (f64, i32, i32) {
+    let (w, h) = (content.0.max(1.0), content.1.max(1.0));
+    let (aw, ah) = (f64::from(area.0.max(1)), f64::from(area.1.max(1)));
+    let (px, py) = (f64::from(preferred.0), f64::from(preferred.1));
+    if px >= 0.0 && py >= 0.0 && px + w <= aw + 0.5 && py + h <= ah + 0.5 {
+        return (1.0, preferred.0, preferred.1);
+    }
+    let scale = (aw / w).min(ah / h).min(1.0);
+    let x = ((aw - w * scale) / 2.0).round() as i32;
+    let y = ((ah - h * scale) / 2.0).round() as i32;
+    (scale, x.max(0), y.max(0))
 }
 #[derive(Clone, Debug)]
 pub struct PrintPage {

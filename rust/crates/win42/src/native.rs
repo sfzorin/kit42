@@ -1490,17 +1490,21 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             }
             if let Some(a) = file_action {
                 if let Some(p) = dialog(hwnd, a.save, a.extension, a.format, a.pattern) {
-                    if a.save
-                        && (p.exists()
-                            || p.extension()
-                                .and_then(|x| x.to_str())
-                                .is_none_or(|x| !x.eq_ignore_ascii_case(a.extension)))
+                    let problem = if !a.save {
+                        None
+                    } else if p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .is_none_or(|x| !x.eq_ignore_ascii_case(a.extension))
                     {
-                        msg(
-                            hwnd,
-                            "Choose a new file name with the required extension.",
-                            MB_OK | MB_ICONWARNING,
-                        );
+                        Some(format!("Choose a file name ending in .{}.", a.extension))
+                    } else if p.exists() {
+                        Some("A file with this name already exists. Exports never replace files; choose a new name.".into())
+                    } else {
+                        None
+                    };
+                    if let Some(problem) = problem {
+                        msg(hwnd, &problem, MB_OK | MB_ICONWARNING);
                         return;
                     }
                     let r =
@@ -2056,16 +2060,18 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                                             rgb(style.foreground.unwrap_or([0, 0, 0])),
                                         );
                                         let text: Vec<u16> = text.encode_utf16().collect();
-                                        ExtTextOutW(
-                                            draw.nmcd.hdc,
-                                            rect.left + 3,
-                                            rect.top + 2,
-                                            ETO_CLIPPED,
-                                            &rect,
-                                            text.as_ptr(),
-                                            text.len() as u32,
-                                            null(),
-                                        );
+                                        if !text.is_empty() {
+                                            ExtTextOutW(
+                                                draw.nmcd.hdc,
+                                                rect.left + 3,
+                                                rect.top + 2,
+                                                ETO_CLIPPED,
+                                                &rect,
+                                                text.as_ptr(),
+                                                text.len() as u32,
+                                                null(),
+                                            );
+                                        }
                                         SelectObject(draw.nmcd.hdc, old);
                                         DeleteObject(font as _);
                                         return CDRF_SKIPDEFAULT as isize;
@@ -2477,6 +2483,7 @@ pub fn run(app: Box<dyn App>) {
         SendMessageW(edit, EM_SETLIMITTEXT, 16777216, 0);
         if rich {
             crate::rich_edit::disable_undo(edit);
+            crate::rich_edit::notify_changes(edit);
         }
         let status = CreateWindowExW(
             0,
@@ -2493,7 +2500,9 @@ pub fn run(app: Box<dyn App>) {
             null(),
         );
         let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
-        for control in [list, table, edit, status] {
+        // Buttons otherwise draw in the bitmap System font, which lacks "…".
+        let buttons = toolbar.iter().map(|&(_, b)| b).chain([toolbar_more]);
+        for control in [list, table, edit, status].into_iter().chain(buttons) {
             SendMessageW(control, WM_SETFONT, font, 1);
         }
         let ruler_horizontal = if rich {
@@ -3117,6 +3126,9 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
                 }
             }
             SceneItem::Text { x, y, text, color } => {
+                if text.is_empty() {
+                    continue;
+                }
                 let p = cv(Point { x: *x, y: *y });
                 let t: Vec<u16> = text.encode_utf16().collect();
                 SetBkMode(dc, TRANSPARENT as i32);
@@ -3139,7 +3151,14 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
                     x: x + width,
                     y: y + height,
                 });
-                if b.x <= a.x || b.y <= a.y || !font.points.is_finite() || font.points <= 0.0 {
+                // DrawTextW reads the first character even for a zero count, and
+                // an empty Vec's pointer is dangling.
+                if text.is_empty()
+                    || b.x <= a.x
+                    || b.y <= a.y
+                    || !font.points.is_finite()
+                    || font.points <= 0.0
+                {
                     continue;
                 }
                 let family = wide(&font.family);
@@ -3549,7 +3568,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
     let (width, height) = (caps(PHYSICALWIDTH), caps(PHYSICALHEIGHT));
     let (offset_x, offset_y) = (caps(PHYSICALOFFSETX), caps(PHYSICALOFFSETY));
     let (print_w, print_h) = (caps(HORZRES), caps(VERTRES));
-    let geometry_error = if dpi_x <= 0
+    if dpi_x <= 0
         || dpi_y <= 0
         || width <= 0
         || height <= 0
@@ -3558,26 +3577,35 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
         || print_w <= 0
         || print_h <= 0
     {
-        Some("Printer reported invalid dimensions")
-    } else if geometries.iter().any(|g| {
-        let twips = |pixels: i32, dpi: i32| i64::from(pixels) * 1440 / i64::from(dpi);
-        let physical_w = twips(width, dpi_x);
-        let physical_h = twips(height, dpi_y);
-        (physical_w - i64::from(g.width_twips)).abs() > 60
-            || (physical_h - i64::from(g.height_twips)).abs() > 60
-            || i64::from(g.margin_left_twips) < twips(offset_x, dpi_x)
-            || i64::from(g.margin_top_twips) < twips(offset_y, dpi_y)
-            || i64::from(g.margin_right_twips) < twips((width - offset_x - print_w).max(0), dpi_x)
-            || i64::from(g.margin_bottom_twips) < twips((height - offset_y - print_h).max(0), dpi_y)
-    }) {
-        Some("Select the document's paper size and printable margins in the printer dialog")
-    } else {
-        None
-    };
-    if let Some(error) = geometry_error {
         DeleteDC(dc);
-        return Err(error.into());
+        return Err("Printer reported invalid dimensions".into());
     }
+    let twips = |pixels: i32, dpi: i32| (i64::from(pixels) * 1440 / i64::from(dpi)) as i32;
+    let paper = crate::PrintGeometry {
+        width_twips: twips(width, dpi_x),
+        height_twips: twips(height, dpi_y),
+        margin_left_twips: twips(offset_x, dpi_x),
+        margin_top_twips: twips(offset_y, dpi_y),
+        margin_right_twips: twips((width - offset_x - print_w).max(0), dpi_x),
+        margin_bottom_twips: twips((height - offset_y - print_h).max(0), dpi_y),
+    };
+    // A page that does not match the selected paper is reflowed onto it (rich text) or
+    // shrunk to fit and centred (scenes, below) rather than refused: the Windows print
+    // dialog offers no margins, and the default paper often differs from the document's.
+    let reflowed;
+    let job = match job {
+        crate::PrintJob::RichText(rich) if !rich.geometry.fits_paper(paper) => {
+            let mut rich = rich.clone();
+            rich.geometry = rich.geometry.reflowed_onto(paper);
+            if !rich.geometry.valid() {
+                DeleteDC(dc);
+                return Err("The selected paper is too small for this document's margins".into());
+            }
+            reflowed = crate::PrintJob::RichText(rich);
+            &reflowed
+        }
+        _ => job,
+    };
     let title = wide("Suite42 document");
     let info = DOCINFOW {
         cbSize: size_of::<DOCINFOW>() as i32,
@@ -3598,16 +3626,12 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                 if saved == 0 {
                     return Err("Could not save print device state".into());
                 }
-                SetMapMode(dc, MM_ANISOTROPIC);
-                SetWindowExtEx(dc, 72, 72, null_mut());
-                SetViewportExtEx(dc, dpi_x, dpi_y, null_mut());
                 let ox = (i64::from(page.geometry.margin_left_twips) * i64::from(dpi_x) / 1440)
                     as i32
                     - offset_x;
                 let oy = (i64::from(page.geometry.margin_top_twips) * i64::from(dpi_y) / 1440)
                     as i32
                     - offset_y;
-                SetViewportOrgEx(dc, ox, oy, null_mut());
                 let clip_w = (page.geometry.width_twips
                     - page.geometry.margin_left_twips
                     - page.geometry.margin_right_twips)
@@ -3616,6 +3640,22 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                     - page.geometry.margin_top_twips
                     - page.geometry.margin_bottom_twips)
                     / 20;
+                // Points to device pixels at `scale`; 1000x extents keep the scale precise.
+                let content = (
+                    f64::from(clip_w) * f64::from(dpi_x) / 72.0,
+                    f64::from(clip_h) * f64::from(dpi_y) / 72.0,
+                );
+                let (scale, ox, oy) =
+                    crate::fit_print_content(content, (ox, oy), (print_w, print_h));
+                SetMapMode(dc, MM_ANISOTROPIC);
+                SetWindowExtEx(dc, 72_000, 72_000, null_mut());
+                SetViewportExtEx(
+                    dc,
+                    (f64::from(dpi_x) * scale * 1000.0).round() as i32,
+                    (f64::from(dpi_y) * scale * 1000.0).round() as i32,
+                    null_mut(),
+                );
+                SetViewportOrgEx(dc, ox, oy, null_mut());
                 IntersectClipRect(dc, 0, 0, clip_w, clip_h);
                 let mut scene = page.scene.clone();
                 scene.viewport = crate::Viewport::default();
@@ -3624,7 +3664,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                         dc,
                         clip_w,
                         clip_h,
-                        dpi_x.min(dpi_y),
+                        ((f64::from(dpi_x.min(dpi_y)) * scale).round() as i32).max(1),
                         |memory, zoom| {
                             scene.viewport.zoom = zoom;
                             draw_scene(memory, &scene);

@@ -15,6 +15,10 @@ struct Group {
     link: Option<String>,
     font_table: bool,
     font_id: Option<i32>,
+    font_charset: Option<i32>,
+    font_codepage: Option<i32>,
+    /// Active `\fN`; `None` means the document default font.
+    font_index: Option<i32>,
     color_table: bool,
     skip: bool,
     optional_destination: bool,
@@ -33,6 +37,9 @@ struct CellBorderDef {
 struct Reader {
     groups: Vec<Group>,
     fonts: HashMap<i32, String>,
+    /// Per-font `\fcharset` and `\cpg`, used to decode `\'xx` bytes.
+    font_codepages: HashMap<i32, (Option<i32>, Option<i32>)>,
+    lead_byte: Option<u8>,
     font_text: Vec<u16>,
     pending: Vec<u16>,
     runs: Vec<Run>,
@@ -124,6 +131,9 @@ impl Reader {
                     String::from_utf16(&self.font_text).map_err(|_| fail("invalid font name"))?;
                 self.font_text.clear();
                 self.fonts.insert(id, name);
+                let g = self.groups.last_mut().unwrap();
+                let codepage = (g.font_charset.take(), g.font_codepage.take());
+                self.font_codepages.insert(id, codepage);
             } else {
                 self.font_text.push(u);
             }
@@ -370,8 +380,10 @@ impl Reader {
         if self.groups.last().ok_or_else(|| fail("group"))?.font_table {
             if word == "f" {
                 self.groups.last_mut().unwrap().font_id = arg;
-            } else if word == "fcharset" && !matches!(arg, Some(0 | 1)) {
-                return Err(Error::Unsupported("RTF font-specific codepage".into()));
+            } else if word == "fcharset" {
+                self.groups.last_mut().unwrap().font_charset = arg;
+            } else if word == "cpg" {
+                self.groups.last_mut().unwrap().font_codepage = arg;
             } else if !matches!(
                 word,
                 "fnil"
@@ -431,16 +443,17 @@ impl Reader {
                 if let Some(font) = self.fonts.get(&self.default_font) {
                     style.font = font.clone();
                 }
-                self.groups.last_mut().unwrap().style = style;
+                let g = self.groups.last_mut().unwrap();
+                g.style = style;
+                g.font_index = None;
             }
             "f" => {
                 self.flush()?;
                 let n = arg.ok_or_else(|| fail("font index"))?;
-                self.groups.last_mut().unwrap().style.font = self
-                    .fonts
-                    .get(&n)
-                    .ok_or_else(|| fail("unknown font"))?
-                    .clone();
+                let font = self.fonts.get(&n).ok_or_else(|| fail("unknown font"))?.clone();
+                let g = self.groups.last_mut().unwrap();
+                g.style.font = font;
+                g.font_index = Some(n);
             }
             "fs" => {
                 self.flush()?;
@@ -706,6 +719,73 @@ impl Reader {
         Ok(())
     }
 }
+fn codepage_encoding(codepage: i32) -> Option<&'static encoding_rs::Encoding> {
+    match codepage {
+        932 => Some(encoding_rs::SHIFT_JIS),
+        936 => Some(encoding_rs::GBK),
+        949 => Some(encoding_rs::EUC_KR),
+        950 => Some(encoding_rs::BIG5),
+        874 | 1250..=1258 => {
+            encoding_rs::Encoding::for_label(format!("windows-{codepage}").as_bytes())
+        }
+        _ => None,
+    }
+}
+impl Reader {
+    /// Encoding for `\'xx` bytes under the active font. RichEdit tags typed text with
+    /// the charset of the keyboard layout in use, e.g. `\fcharset204` for Russian.
+    fn byte_encoding(&self) -> Result<&'static encoding_rs::Encoding, Error> {
+        let font = self
+            .groups
+            .last()
+            .and_then(|g| g.font_index)
+            .unwrap_or(self.default_font);
+        let codepage = match self.font_codepages.get(&font) {
+            Some(&(_, Some(codepage))) => codepage,
+            Some(&(Some(charset), None)) => match charset {
+                0 | 1 => return Ok(self.encoding),
+                128 => 932,
+                129 => 949,
+                134 => 936,
+                136 => 950,
+                161 => 1253,
+                162 => 1254,
+                163 => 1258,
+                177 => 1255,
+                178 => 1256,
+                186 => 1257,
+                204 => 1251,
+                222 => 874,
+                238 => 1250,
+                other => return Err(Error::Unsupported(format!("RTF font charset {other}"))),
+            },
+            _ => return Ok(self.encoding),
+        };
+        codepage_encoding(codepage)
+            .ok_or_else(|| Error::Unsupported(format!("RTF font codepage {codepage}")))
+    }
+    fn decode_byte(&mut self, byte: u8) -> Result<(), Error> {
+        let encoding = self.byte_encoding()?;
+        let data = if encoding.is_single_byte() {
+            vec![byte]
+        } else if let Some(lead) = self.lead_byte.take() {
+            vec![lead, byte]
+        } else if byte >= 0x81 {
+            self.lead_byte = Some(byte);
+            return Ok(());
+        } else {
+            vec![byte]
+        };
+        let (decoded, bad) = encoding.decode_without_bom_handling(&data);
+        if bad {
+            return Err(fail("invalid codepage byte"));
+        }
+        for u in decoded.encode_utf16() {
+            self.emit(u)?
+        }
+        Ok(())
+    }
+}
 pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
     decode_inner(bytes, false)
 }
@@ -719,6 +799,8 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
     let mut r = Reader {
         groups: vec![],
         fonts: HashMap::new(),
+        font_codepages: HashMap::new(),
+        lead_byte: None,
         font_text: vec![],
         pending: vec![],
         runs: vec![],
@@ -842,7 +924,8 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
                     }
                 }
                 if r.groups.is_empty() {
-                    if bytes[i..].iter().any(|b| !b.is_ascii_whitespace()) {
+                    // RichEdit's EM_STREAMOUT (and files it writes) end with a NUL.
+                    if bytes[i..].iter().any(|b| !b.is_ascii_whitespace() && *b != 0) {
                         return Err(fail("trailing RTF data"));
                     }
                     break;
@@ -873,14 +956,7 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
                         r.fallback -= 1;
                         continue;
                     }
-                    let data = [v];
-                    let (decoded, _, bad) = r.encoding.decode(&data);
-                    if bad {
-                        return Err(fail("invalid codepage byte"));
-                    }
-                    for u in decoded.encode_utf16() {
-                        r.emit(u)?
-                    }
+                    r.decode_byte(v)?;
                     continue;
                 }
                 if matches!(c, b'\\' | b'{' | b'}') {
@@ -936,17 +1012,10 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
                     r.fallback -= 1;
                     continue;
                 }
-                if b.is_ascii() {
+                if b.is_ascii() && r.lead_byte.is_none() {
                     r.emit(b as u16)?
                 } else {
-                    let data = [b];
-                    let (decoded, _, bad) = r.encoding.decode(&data);
-                    if bad {
-                        return Err(fail("invalid codepage byte"));
-                    }
-                    for u in decoded.encode_utf16() {
-                        r.emit(u)?
-                    }
+                    r.decode_byte(b)?
                 }
             }
         }
@@ -980,6 +1049,35 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn font_charsets_decode_bytes_like_richedit_keyboard_layouts() {
+        // RichEdit output after typing with Russian, English and Chinese layouts.
+        let bytes = br"{\rtf1\ansi\ansicpg1252\deff0\nouicompat{\fonttbl{\f0\fnil\fcharset204 Arial;}{\f1\fnil Arial;}{\f2\fnil\fcharset134 SimSun;}}
+{\*\generator Riched20 10.0.26100}\viewkind4\uc1
+\pard\f0\fs24\lang1049 Hello \'cf\'f0\'e8\'e2\'e5\'f2\f1\lang1033  Caf\'e9 \f2\'d6\'d0\'ce\'c4\par
+}";
+        let mut bytes = bytes.to_vec();
+        bytes.push(0);
+        let state = decode_projection(&bytes).unwrap();
+        let Block::Paragraph(p) = &state.blocks[0] else {
+            panic!()
+        };
+        let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "Hello \u{41f}\u{440}\u{438}\u{432}\u{435}\u{442} Caf\u{e9} \u{4e2d}\u{6587}");
+        let symbol = br"{\rtf1\ansi{\fonttbl{\f0\fnil\fcharset2 Symbol;}}\f0 abc\par}";
+        assert!(decode(symbol).is_ok());
+        let symbol_byte = br"{\rtf1\ansi{\fonttbl{\f0\fnil\fcharset2 Symbol;}}\f0 \'b7\par}";
+        assert!(matches!(decode(symbol_byte), Err(Error::Unsupported(_))));
+    }
+    #[test]
+    fn richedit_trailing_nul_is_accepted_but_other_trailing_data_is_not() {
+        let state = decode(b"{\\rtf1\\ansi Hello\\par}\r\n\0").unwrap();
+        let Block::Paragraph(p) = &state.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(p.runs[0].text, "Hello");
+        assert!(decode(b"{\\rtf1\\ansi Hello\\par}\r\nx").is_err());
+    }
     #[test]
     fn independently_authored_horizontal_merge_controls_are_read() {
         let bytes = br"{\rtf1\ansi\trowd\clmgf\cellx1000\clmrg\cellx2000\pard\intbl First\par\cell\pard\intbl\par\cell\row}";

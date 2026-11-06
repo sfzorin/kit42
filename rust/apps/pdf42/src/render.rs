@@ -188,7 +188,9 @@ pub fn export_async(
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let mut temporary = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
+            let mut temporary = suite42_core::win32_path(dir)
+                .and_then(tempfile::NamedTempFile::new_in)
+                .map_err(|e| e.to_string())?;
             {
                 let mut zip = zip::ZipWriter::new(temporary.as_file_mut());
                 let mut total_encoded = 0usize;
@@ -260,7 +262,7 @@ pub fn export_async(
                 return Err("Image export cancelled".into());
             }
             temporary
-                .persist_noclobber(&output)
+                .persist_noclobber(suite42_core::win32_path(&output).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             Ok(())
         })();
