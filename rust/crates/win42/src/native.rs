@@ -1490,17 +1490,21 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             }
             if let Some(a) = file_action {
                 if let Some(p) = dialog(hwnd, a.save, a.extension, a.format, a.pattern) {
-                    if a.save
-                        && (p.exists()
-                            || p.extension()
-                                .and_then(|x| x.to_str())
-                                .is_none_or(|x| !x.eq_ignore_ascii_case(a.extension)))
+                    let problem = if !a.save {
+                        None
+                    } else if p
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .is_none_or(|x| !x.eq_ignore_ascii_case(a.extension))
                     {
-                        msg(
-                            hwnd,
-                            "Choose a new file name with the required extension.",
-                            MB_OK | MB_ICONWARNING,
-                        );
+                        Some(format!("Choose a file name ending in .{}.", a.extension))
+                    } else if p.exists() {
+                        Some("A file with this name already exists. Exports never replace files; choose a new name.".into())
+                    } else {
+                        None
+                    };
+                    if let Some(problem) = problem {
+                        msg(hwnd, &problem, MB_OK | MB_ICONWARNING);
                         return;
                     }
                     let r =
@@ -2056,16 +2060,18 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                                             rgb(style.foreground.unwrap_or([0, 0, 0])),
                                         );
                                         let text: Vec<u16> = text.encode_utf16().collect();
-                                        ExtTextOutW(
-                                            draw.nmcd.hdc,
-                                            rect.left + 3,
-                                            rect.top + 2,
-                                            ETO_CLIPPED,
-                                            &rect,
-                                            text.as_ptr(),
-                                            text.len() as u32,
-                                            null(),
-                                        );
+                                        if !text.is_empty() {
+                                            ExtTextOutW(
+                                                draw.nmcd.hdc,
+                                                rect.left + 3,
+                                                rect.top + 2,
+                                                ETO_CLIPPED,
+                                                &rect,
+                                                text.as_ptr(),
+                                                text.len() as u32,
+                                                null(),
+                                            );
+                                        }
                                         SelectObject(draw.nmcd.hdc, old);
                                         DeleteObject(font as _);
                                         return CDRF_SKIPDEFAULT as isize;
@@ -2477,6 +2483,7 @@ pub fn run(app: Box<dyn App>) {
         SendMessageW(edit, EM_SETLIMITTEXT, 16777216, 0);
         if rich {
             crate::rich_edit::disable_undo(edit);
+            crate::rich_edit::notify_changes(edit);
         }
         let status = CreateWindowExW(
             0,
@@ -2493,7 +2500,9 @@ pub fn run(app: Box<dyn App>) {
             null(),
         );
         let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
-        for control in [list, table, edit, status] {
+        // Buttons otherwise draw in the bitmap System font, which lacks "…".
+        let buttons = toolbar.iter().map(|&(_, b)| b).chain([toolbar_more]);
+        for control in [list, table, edit, status].into_iter().chain(buttons) {
             SendMessageW(control, WM_SETFONT, font, 1);
         }
         let ruler_horizontal = if rich {
@@ -3117,6 +3126,9 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
                 }
             }
             SceneItem::Text { x, y, text, color } => {
+                if text.is_empty() {
+                    continue;
+                }
                 let p = cv(Point { x: *x, y: *y });
                 let t: Vec<u16> = text.encode_utf16().collect();
                 SetBkMode(dc, TRANSPARENT as i32);
@@ -3139,7 +3151,14 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
                     x: x + width,
                     y: y + height,
                 });
-                if b.x <= a.x || b.y <= a.y || !font.points.is_finite() || font.points <= 0.0 {
+                // DrawTextW reads the first character even for a zero count, and
+                // an empty Vec's pointer is dangling.
+                if text.is_empty()
+                    || b.x <= a.x
+                    || b.y <= a.y
+                    || !font.points.is_finite()
+                    || font.points <= 0.0
+                {
                     continue;
                 }
                 let family = wide(&font.family);

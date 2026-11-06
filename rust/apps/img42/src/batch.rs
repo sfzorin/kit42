@@ -130,14 +130,16 @@ fn convert(path: &Path, options: &Options, cancel: &AtomicBool) -> Result<(), St
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled before publication".into());
     }
-    let mut temp = tempfile::NamedTempFile::new_in(&options.output).map_err(|e| e.to_string())?;
+    let mut temp = suite42_core::win32_path(&options.output)
+        .and_then(tempfile::NamedTempFile::new_in)
+        .map_err(|e| e.to_string())?;
     temp.write_all(&bytes)
         .and_then(|_| temp.flush())
         .map_err(|e| e.to_string())?;
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled before publication".into());
     }
-    temp.persist_noclobber(&destination)
+    temp.persist_noclobber(suite42_core::win32_path(&destination).map_err(|e| e.to_string())?)
         .map_err(|e| format!("publication failed: {}", e.error))?;
     Ok(())
 }

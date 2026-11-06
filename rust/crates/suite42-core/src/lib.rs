@@ -1,8 +1,41 @@
 //! Shared bounded history and non-destructive file publication.
 use std::{
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+/// Path for Win32 move/replace calls (tempfile's persist, ReplaceFileW), which
+/// stop at MAX_PATH unless the path is verbatim; std's own file APIs add the
+/// prefix themselves. Apply it to both the temporary's directory and the
+/// destination, since the move reads both paths. Elsewhere the path is unchanged.
+pub fn win32_path(path: &Path) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::OsString,
+            os::windows::ffi::{OsStrExt, OsStringExt},
+            path::{Component, Prefix},
+        };
+        let absolute = std::path::absolute(path)?;
+        let prefix: &str = match absolute.components().next() {
+            Some(Component::Prefix(p)) => match p.kind() {
+                Prefix::Disk(_) => r"\\?\",
+                Prefix::UNC(..) => r"\\?\UNC",
+                _ => return Ok(absolute),
+            },
+            _ => return Ok(absolute),
+        };
+        // `\\server\share` becomes `\\?\UNC\server\share`.
+        let skip = if prefix.ends_with("UNC") { 1 } else { 0 };
+        let wide: Vec<u16> = prefix
+            .encode_utf16()
+            .chain(absolute.as_os_str().encode_wide().skip(skip))
+            .collect();
+        Ok(OsString::from_wide(&wide).into())
+    }
+    #[cfg(not(windows))]
+    Ok(path.to_path_buf())
+}
 
 /// Raw text and the line-ending policy retained across editor transactions.
 /// Files with no newline cannot encode their former policy on disk.
@@ -149,17 +182,45 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(win32_path(parent)?)?;
     temp.write_all(bytes)?;
     temp.flush()?;
     temp.as_file().sync_all()?;
-    temp.persist_noclobber(path)
+    temp.persist_noclobber(win32_path(path)?)
         .map(|_| ())
         .map_err(|e| e.error)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn write_new_publishes_beyond_max_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut folder = root.path().to_path_buf();
+        for n in 0..5 {
+            folder.push(format!("{}{}", "long-path-component-".repeat(3), n));
+        }
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("note.txt");
+        assert!(path.to_string_lossy().len() > 260);
+        write_new(&path, b"42").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"42");
+        assert!(write_new(&path, b"43").is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn win32_path_is_verbatim_for_disk_and_unc() {
+        assert_eq!(
+            win32_path(Path::new(r"C:\a\..\b\c.txt")).unwrap(),
+            PathBuf::from(r"\\?\C:\b\c.txt")
+        );
+        assert_eq!(
+            win32_path(Path::new(r"\\server\share\d.txt")).unwrap(),
+            PathBuf::from(r"\\?\UNC\server\share\d.txt")
+        );
+        let verbatim = PathBuf::from(r"\\?\C:\e.txt");
+        assert_eq!(win32_path(&verbatim).unwrap(), verbatim);
+    }
     #[test]
     fn bounded_history_and_saved_state() {
         let mut h = SnapshotHistory::new(1, 2);

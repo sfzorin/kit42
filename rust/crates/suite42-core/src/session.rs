@@ -135,13 +135,15 @@ fn publish_bytes(path: &Path, bytes: &[u8], expected: Option<&FileIdentity>) -> 
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(crate::win32_path(parent)?)?;
     temporary.write_all(bytes)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
     match expected {
         None => {
-            temporary.persist_noclobber(path).map_err(|e| e.error)?;
+            temporary
+                .persist_noclobber(crate::win32_path(path)?)
+                .map_err(|e| e.error)?;
         }
         Some(expected) => {
             if FileIdentity::read(path)? != *expected {
@@ -304,6 +306,7 @@ fn replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         ReplaceFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
     };
+    let (source, destination) = (crate::win32_path(source)?, crate::win32_path(destination)?);
     let src: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let dst: Vec<u16> = destination
         .as_os_str()

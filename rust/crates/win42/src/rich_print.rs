@@ -149,6 +149,10 @@ unsafe fn draw_lines(
         for fragment in &line.fragments {
             let value = text(&fragment.text, page, count);
             let data: Vec<u16> = value.encode_utf16().collect();
+            // GDI text calls may read an empty Vec's dangling pointer.
+            if data.is_empty() {
+                continue;
+            }
             let font = font(&fragment.font, dpi)?;
             let old = SelectObject(dc, font as _);
             let mut extent: SIZE = zeroed();
