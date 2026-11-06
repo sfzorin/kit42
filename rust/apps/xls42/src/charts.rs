@@ -242,8 +242,14 @@ pub fn scene(data: &ChartData) -> CanvasScene {
 pub fn print_scene(data: &ChartData, width: f64, height: f64) -> CanvasScene {
     let mut scene = scene(data);
     let scale = (width / 700.0).min(height / 440.0).min(1.0);
-    for item in &mut scene.items {
+    let mut pending: Vec<&mut SceneItem> = scene.items.iter_mut().collect();
+    while let Some(item) = pending.pop() {
         match item {
+            SceneItem::Transform { center, items, .. } => {
+                center.x *= scale;
+                center.y *= scale;
+                pending.extend(items.iter_mut());
+            }
             SceneItem::Rect {
                 x,
                 y,

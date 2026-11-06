@@ -61,8 +61,25 @@ unsafe fn render(edit: HWND, job: &RichPrint) -> Result<Vec<Page>, String> {
         ReleaseDC(null_mut(), screen);
         return Err("Preview page exceeds display limits".into());
     }
+    let (print_edit, temporary) = match crate::rich_notes::temporary_edit(edit, job) {
+        Ok(v) => v,
+        Err(e) => {
+            DeleteDC(dc);
+            ReleaseDC(null_mut(), screen);
+            return Err(e);
+        }
+    };
     let result = (|| {
-        let ranges = crate::rich_print::paginate(edit, dc, geometry, (0, 0))?;
+        let note_layout = if job.notes.is_empty() {
+            None
+        } else {
+            Some(crate::rich_notes::paginate(print_edit, dc, job, (0, 0))?)
+        };
+        let ranges = if let Some(layout) = &note_layout {
+            layout.pages.iter().map(|p| (p.start, p.end)).collect()
+        } else {
+            crate::rich_print::paginate(print_edit, dc, geometry, (0, 0))?
+        };
         if ranges.len() > 128
             || ranges
                 .len()
@@ -91,11 +108,15 @@ unsafe fn render(edit: HWND, job: &RichPrint) -> Result<Vec<Page>, String> {
             }
             let previous = SelectObject(dc, bitmap as _);
             PatBlt(dc, 0, 0, w, h, WHITENESS);
-            let next = crate::rich_print::body(edit, dc, geometry, (0, 0), start);
-            let drawn = if next != end {
-                Err("Preview pagination changed while rendering".into())
+            let drawn = if let Some(layout) = &note_layout {
+                crate::rich_notes::draw_page(print_edit, dc, job, layout, index, (0, 0), (0, 0))
             } else {
-                crate::rich_print::decorations(dc, job, (0, 0), index, ranges.len())
+                let next = crate::rich_print::body(print_edit, dc, geometry, (0, 0), start);
+                if next != end {
+                    Err("Preview pagination changed while rendering".into())
+                } else {
+                    crate::rich_print::decorations(dc, job, (0, 0), index, ranges.len())
+                }
             };
             GdiFlush();
             let pixels = if drawn.is_ok() {
@@ -115,7 +136,10 @@ unsafe fn render(edit: HWND, job: &RichPrint) -> Result<Vec<Page>, String> {
         }
         Ok(pages)
     })();
-    crate::rich_print::release(edit);
+    crate::rich_print::release(print_edit);
+    if temporary {
+        DestroyWindow(print_edit);
+    }
     DeleteDC(dc);
     ReleaseDC(null_mut(), screen);
     result

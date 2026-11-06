@@ -1,9 +1,12 @@
 //! Strict WordprocessingML subset: paragraphs, direct run formatting and page geometry.
 use super::*;
+mod comments;
 mod headers;
 mod images;
+mod notes;
 mod numbering;
 mod styles;
+mod toc;
 use std::io::{Cursor, Read, Write};
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -31,8 +34,6 @@ fn package(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Result<Vec<u8
 }
 pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     if s.sections.len() != 1
-        || !s.comments.is_empty()
-        || !s.footnotes.is_empty()
         || !s.revisions.is_empty()
         || s.blocks
             .iter()
@@ -54,10 +55,91 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     }) {
         return Err(Error::Unsupported("DOCX body or custom field".into()));
     }
+    let body_ids: std::collections::HashSet<_> = s
+        .blocks
+        .iter()
+        .flat_map(|b| match b {
+            Block::Paragraph(p) => vec![p.id],
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flatten()
+                .flat_map(|c| c.paragraphs.iter().map(|p| p.id))
+                .collect(),
+            _ => vec![],
+        })
+        .collect();
+    if s.comments
+        .iter()
+        .any(|c| !body_ids.contains(&c.start.paragraph) || !body_ids.contains(&c.end.paragraph))
+    {
+        return Err(Error::Unsupported("DOCX comments outside body text".into()));
+    }
+    if s.footnotes
+        .iter()
+        .any(|n| !body_ids.contains(&n.at.paragraph))
+    {
+        return Err(Error::Unsupported("DOCX note anchors outside body".into()));
+    }
     let mut body = String::new();
     for b in &s.blocks {
         match b {
-            Block::Paragraph(p) => write_paragraph(&mut body, p, &s.fields)?,
+            Block::Paragraph(p) => {
+                let entry = s
+                    .tables_of_contents
+                    .iter()
+                    .flat_map(|t| &t.entries)
+                    .find(|e| e.paragraph == p.id);
+                let mut copy = p.clone();
+                if entry.is_some() {
+                    if s.comments
+                        .iter()
+                        .any(|c| c.start.paragraph == p.id || c.end.paragraph == p.id)
+                        || s.footnotes.iter().any(|n| n.at.paragraph == p.id)
+                        || s.fields.iter().any(|f| f.at.paragraph == p.id)
+                    {
+                        return Err(Error::Unsupported("annotations on DOCX TOC entries".into()));
+                    }
+                    for run in &mut copy.runs {
+                        run.link = None;
+                    }
+                }
+                let mut xml = String::new();
+                write_paragraph(&mut xml, &copy, &s.fields, &s.comments, &s.footnotes)?;
+                let pos = xml
+                    .find("</w:pPr>")
+                    .ok_or_else(|| bad("DOCX paragraph properties"))?
+                    + "</w:pPr>".len();
+                if s.tables_of_contents
+                    .iter()
+                    .flat_map(|t| &t.entries)
+                    .any(|e| e.heading == p.id)
+                {
+                    xml.insert_str(pos, &format!("<w:bookmarkStart w:id=\"{}\" w:name=\"DOC42_H{}\"/><w:bookmarkEnd w:id=\"{}\"/>", p.id, p.id, p.id));
+                }
+                if let Some(entry) = entry {
+                    xml.insert_str(
+                        pos,
+                        &format!("<w:hyperlink w:anchor=\"DOC42_H{}\">", entry.heading),
+                    );
+                    let close = xml.rfind("</w:p>").ok_or_else(|| bad("DOCX paragraph"))?;
+                    xml.insert_str(close, "</w:hyperlink>");
+                    if s.tables_of_contents
+                        .iter()
+                        .any(|t| t.entries.first().is_some_and(|e| e.paragraph == p.id))
+                    {
+                        xml.insert_str(pos, "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> TOC \\o &quot;1-9&quot; \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>");
+                    }
+                    if s.tables_of_contents
+                        .iter()
+                        .any(|t| t.entries.last().is_some_and(|e| e.paragraph == p.id))
+                    {
+                        let close = xml.rfind("</w:p>").ok_or_else(|| bad("DOCX paragraph"))?;
+                        xml.insert_str(close, "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>");
+                    }
+                }
+                body.push_str(&xml);
+            }
             Block::Table(t) => {
                 body.push_str("<w:tbl>");
                 if !t.column_widths_twips.is_empty() {
@@ -132,7 +214,13 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                         }
                         if row_index == owner_row {
                             for p in &cell.paragraphs {
-                                write_paragraph(&mut body, p, &s.fields)?;
+                                write_paragraph(
+                                    &mut body,
+                                    p,
+                                    &s.fields,
+                                    &s.comments,
+                                    &s.footnotes,
+                                )?;
                             }
                         } else {
                             body.push_str("<w:p/>");
@@ -170,10 +258,18 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         .or_insert_with(|| rel.into_bytes());
     numbering::add_parts(&mut parts, &s.blocks)?;
     images::add_parts(&mut parts, &s.blocks)?;
+    comments::write(&mut parts, &s.comments)?;
+    notes::write(&mut parts, &s.footnotes)?;
     parts.insert("word/document.xml".into(), doc.into_bytes());
     package(&parts)
 }
-fn write_paragraph(body: &mut String, p: &Paragraph, fields: &[Field]) -> Result<(), Error> {
+fn write_paragraph(
+    body: &mut String,
+    p: &Paragraph,
+    fields: &[Field],
+    comments: &[Annotation],
+    notes: &[Footnote],
+) -> Result<(), Error> {
     if !p.style.odt_extra.is_empty() || p.runs.iter().any(|r| !r.style.odt_extra.is_empty()) {
         return Err(Error::Unsupported(
             "DOCX cannot preserve OpenDocument style attributes".into(),
@@ -233,41 +329,79 @@ fn write_paragraph(body: &mut String, p: &Paragraph, fields: &[Field]) -> Result
         format!("w:firstLine=\"{}\"", p.style.first_line_twips)
     };
     body.push_str(&format!("<w:p><w:pPr>{style_ref}{list_ref}{extras}{tabs}<w:jc w:val=\"{a}\"/><w:ind w:left=\"{}\" w:right=\"{}\" {first}/><w:spacing w:before=\"{}\" w:after=\"{}\" w:line=\"{}\"/></w:pPr>",p.style.left_twips,p.style.right_twips,p.style.before_twips,p.style.after_twips,p.style.line_twips));
-    let mut markers = fields
+    enum Marker<'a> {
+        Field(&'a Field),
+        Start(u64),
+        End(u64),
+        Note(&'a Footnote),
+    }
+    let mut markers: Vec<(usize, u8, Marker<'_>)> = fields
         .iter()
         .filter(|f| f.at.paragraph == p.id)
-        .collect::<Vec<_>>();
-    markers.sort_by_key(|f| f.at.offset);
+        .map(|f| (f.at.offset, 1, Marker::Field(f)))
+        .collect();
+    for comment in comments {
+        if comment.start.paragraph == p.id {
+            markers.push((comment.start.offset, 0, Marker::Start(comment.id)));
+        }
+        if comment.end.paragraph == p.id {
+            markers.push((comment.end.offset, 2, Marker::End(comment.id)));
+        }
+    }
+    for note in notes {
+        if note.at.paragraph == p.id {
+            markers.push((note.at.offset, 1, Marker::Note(note)));
+        }
+    }
+    markers.sort_by_key(|(offset, priority, _)| (*offset, *priority));
     let mut index = 0;
     let mut base = 0;
-    for r in &p.runs {
-        let end = base + r.text.len();
+    let emit = |body: &mut String, marker: &Marker<'_>| -> Result<(), Error> {
+        match marker {
+            Marker::Field(field) => write_field(body, &field.kind)?,
+            Marker::Start(id) => body.push_str(&format!("<w:commentRangeStart w:id=\"{id}\"/>")),
+            Marker::End(id) => body.push_str(&format!(
+                "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
+            )),
+            Marker::Note(note) => {
+                let tag = if note.endnote {
+                    "endnoteReference"
+                } else {
+                    "footnoteReference"
+                };
+                body.push_str(&format!("<w:r><w:{tag} w:id=\"{}\"/></w:r>", note.id));
+            }
+        }
+        Ok(())
+    };
+    for run in &p.runs {
+        let end = base + run.text.len();
         let mut cursor = base;
-        while index < markers.len() && markers[index].at.offset <= end {
-            let field = markers[index];
-            let piece = r
+        while index < markers.len() && markers[index].0 <= end {
+            let at = markers[index].0;
+            let piece = run
                 .text
-                .get(cursor - base..field.at.offset - base)
-                .ok_or_else(|| bad("DOCX field boundary"))?;
-            write_run(body, r, piece)?;
-            write_field(body, &field.kind)?;
-            cursor = field.at.offset;
+                .get(cursor - base..at - base)
+                .ok_or_else(|| bad("DOCX anchor boundary"))?;
+            write_run(body, run, piece)?;
+            emit(body, &markers[index].2)?;
+            cursor = at;
             index += 1;
         }
         write_run(
             body,
-            r,
-            r.text
+            run,
+            run.text
                 .get(cursor - base..)
-                .ok_or_else(|| bad("DOCX field boundary"))?,
+                .ok_or_else(|| bad("DOCX anchor boundary"))?,
         )?;
         base = end;
     }
     while index < markers.len() {
-        if markers[index].at.offset != base {
-            return Err(bad("DOCX field position"));
+        if markers[index].0 != base {
+            return Err(bad("DOCX anchor position"));
         }
-        write_field(body, &markers[index].kind)?;
+        emit(body, &markers[index].2)?;
         index += 1;
     }
     body.push_str("</w:p>");
@@ -368,6 +502,11 @@ fn safe_part_name(name: &str) -> bool {
             || name.starts_with("docProps/")
             || name.starts_with("word/theme/")
             || name.starts_with("word/media/")
+            || ((name.starts_with("word/footnotes") || name.starts_with("word/endnotes"))
+                && name.ends_with(".xml")
+                && !name[5..].contains('/'))
+            || ((name.starts_with("word/comments") && name.ends_with(".xml"))
+                && !name[5..].contains('/'))
             || ((name.starts_with("word/header") || name.starts_with("word/footer"))
                 && name.ends_with(".xml")
                 && !name[5..].contains('/')))
@@ -422,6 +561,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                 "/image",
                 "/header",
                 "/footer",
+                "/comments",
+                "/footnotes",
+                "/endnotes",
                 "/stylesWithEffects",
             ]
             .iter()
@@ -432,6 +574,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             }
         }
     }
+    let (xml, toc_scan) = toc::normalize(&xml)?;
     let doc = roxmltree::Document::parse(&xml).map_err(bad)?;
     for n in doc.descendants().filter(|n| n.is_element()) {
         if n.has_tag_name((W, "drawing")) || n.ancestors().any(|a| a.has_tag_name((W, "drawing"))) {
@@ -444,6 +587,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             "gridCol" => &["w"],
             "vMerge" => &["val"],
             "fldSimple" => &["instr"],
+            "commentRangeStart" | "commentRangeEnd" | "commentReference" | "footnoteReference"
+            | "endnoteReference" => &["id"],
             "fldChar" => &["fldCharType", "dirty", "fldLock"],
             "instrText" => &["space"],
             "jc" | "sz" | "b" | "i" | "u" | "strike" | "pStyle" | "rStyle" | "ilvl" | "numId"
@@ -522,7 +667,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
     };
     s.blocks.clear();
     let mut markers: Vec<(u64, usize, FieldKind)> = Vec::new();
-    for node in body.children().filter(|n| n.is_element()) {
+    let mut comment_marks: Vec<(u64, usize, u64, u8)> = Vec::new();
+    let mut note_marks: Vec<(u64, usize, u64, bool)> = Vec::new();
+    let mut body_ids = std::collections::BTreeMap::new();
+    for (body_index, node) in body.children().filter(|n| n.is_element()).enumerate() {
+        if node.has_tag_name((W, "p")) {
+            body_ids.insert(body_index, s.next_id);
+        }
         match node.tag_name().name() {
             "p" if node.descendants().any(|n| n.has_tag_name((W, "drawing"))) => {
                 let id = s.next_id;
@@ -539,6 +690,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                     &styles,
                     &numbering,
                     &mut markers,
+                    &mut comment_marks,
+                    &mut note_marks,
                 )?));
             }
             "tbl" => {
@@ -664,6 +817,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                                 &styles,
                                 &numbering,
                                 &mut markers,
+                                &mut comment_marks,
+                                &mut note_marks,
                             )?);
                         }
                         if paragraphs.is_empty() {
@@ -784,7 +939,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             for p in root.children().filter(|n| n.is_element()) {
                 let id = s.next_id;
                 s.next_id += 1;
-                paras.push(read_paragraph(p, id, &styles, &numbering, &mut markers)?);
+                let mut header_comments = Vec::new();
+                let mut header_notes = Vec::new();
+                paras.push(read_paragraph(
+                    p,
+                    id,
+                    &styles,
+                    &numbering,
+                    &mut markers,
+                    &mut header_comments,
+                    &mut header_notes,
+                )?);
+                if !header_comments.is_empty() || !header_notes.is_empty() {
+                    return Err(Error::Unsupported("DOCX header comments or notes".into()));
+                }
             }
             if footer {
                 s.sections[0].footer = paras
@@ -792,6 +960,65 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                 s.sections[0].header = paras
             }
         }
+    }
+    let mut note_data = notes::read(&s.docx_parts, &styles, &numbering, &mut s.next_id)?;
+    for (paragraph, offset, external, endnote) in note_marks {
+        let paragraphs = note_data
+            .remove(&(endnote, external))
+            .ok_or_else(|| bad("missing DOCX note"))?;
+        let id = s.next_id;
+        s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
+        s.footnotes.push(Footnote {
+            id,
+            at: Position { paragraph, offset },
+            paragraphs,
+            endnote,
+            citation: None,
+        });
+    }
+    if !note_data.is_empty() {
+        return Err(Error::Unsupported("unanchored DOCX notes".into()));
+    }
+    let mut data = comments::read(&s.docx_parts)?;
+    let mut grouped: std::collections::BTreeMap<
+        u64,
+        (Option<Position>, Option<Position>, Option<Position>),
+    > = std::collections::BTreeMap::new();
+    for (paragraph, offset, external, kind) in comment_marks {
+        let entry = grouped.entry(external).or_default();
+        let slot = match kind {
+            0 => &mut entry.0,
+            1 => &mut entry.1,
+            _ => &mut entry.2,
+        };
+        if slot.replace(Position { paragraph, offset }).is_some() {
+            return Err(bad("duplicate DOCX comment marker"));
+        }
+    }
+    for (external, (start, end, reference)) in grouped {
+        let item = data
+            .remove(&external)
+            .ok_or_else(|| bad("comment marker without comment"))?;
+        let (start, end) = match (start, end, reference) {
+            (Some(start), Some(end), _) => (start, end),
+            (None, None, Some(at)) => (at.clone(), at),
+            _ => return Err(bad("incomplete DOCX comment range")),
+        };
+        let id = s.next_id;
+        s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
+        s.comments.push(Annotation {
+            id,
+            start,
+            end,
+            author: item.author,
+            text: item.text,
+            resolved: false,
+            date: item.date,
+            initials: item.initials,
+        });
+    }
+    if !data.is_empty() {
+        return Err(Error::Unsupported("unanchored DOCX comments".into()));
     }
     for (paragraph, offset, kind) in markers {
         let id = s.next_id;
@@ -801,6 +1028,31 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
             at: Position { paragraph, offset },
             kind,
         });
+    }
+    if let Some(scan) = toc_scan {
+        for table in scan.tables {
+            let id = s.next_id;
+            s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
+            let mut entries = Vec::new();
+            for (index, name) in table {
+                let paragraph = *body_ids
+                    .get(&index)
+                    .ok_or_else(|| bad("Word TOC paragraph"))?;
+                let heading_index = scan
+                    .bookmarks
+                    .get(&name)
+                    .ok_or_else(|| bad("Word TOC heading"))?;
+                let heading = *body_ids
+                    .get(heading_index)
+                    .ok_or_else(|| bad("Word TOC heading paragraph"))?;
+                let p = paragraph_mut(&mut s, paragraph).ok_or_else(|| bad("Word TOC entry"))?;
+                for run in &mut p.runs {
+                    run.link = Some(format!("#DOC42_H{heading}"));
+                }
+                entries.push(TocEntry { paragraph, heading });
+            }
+            s.tables_of_contents.push(TableOfContents { id, entries });
+        }
     }
     Ok(s)
 }
@@ -830,8 +1082,19 @@ fn read_paragraph(
     styles: &styles::Styles,
     numbering: &numbering::Numbering,
     markers: &mut Vec<(u64, usize, FieldKind)>,
+    comment_marks: &mut Vec<(u64, usize, u64, u8)>,
+    note_marks: &mut Vec<(u64, usize, u64, bool)>,
 ) -> Result<Paragraph, Error> {
-    allowed(p, &["pPr", "r", "fldSimple"])?;
+    allowed(
+        p,
+        &[
+            "pPr",
+            "r",
+            "fldSimple",
+            "commentRangeStart",
+            "commentRangeEnd",
+        ],
+    )?;
     let props = p.children().find(|n| n.has_tag_name((W, "pPr")));
     if let Some(n) = props {
         allowed(
@@ -878,6 +1141,25 @@ fn read_paragraph(
         .children()
         .filter(|n| n.is_element() && !n.has_tag_name((W, "pPr")))
     {
+        if r.has_tag_name((W, "commentRangeStart")) || r.has_tag_name((W, "commentRangeEnd")) {
+            allowed(r, &[])?;
+            let external = val(r, "id")
+                .ok_or_else(|| bad("comment id"))?
+                .parse::<u64>()
+                .map_err(bad)?;
+            let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
+            comment_marks.push((
+                id,
+                offset,
+                external,
+                if r.has_tag_name((W, "commentRangeStart")) {
+                    0
+                } else {
+                    1
+                },
+            ));
+            continue;
+        }
         if r.has_tag_name((W, "fldSimple")) {
             if field.is_some() {
                 return Err(Error::Unsupported("nested DOCX field".into()));
@@ -897,7 +1179,20 @@ fn read_paragraph(
             markers.push((id, offset, kind));
             continue;
         }
-        allowed(r, &["rPr", "t", "fldChar", "instrText"])?;
+        allowed(
+            r,
+            &[
+                "rPr",
+                "t",
+                "fldChar",
+                "instrText",
+                "commentReference",
+                "footnoteReference",
+                "endnoteReference",
+                "footnoteRef",
+                "endnoteRef",
+            ],
+        )?;
         let rp = r.children().find(|n| n.has_tag_name((W, "rPr")));
         if let Some(n) = rp {
             allowed(
@@ -905,7 +1200,25 @@ fn read_paragraph(
                 &["rStyle", "rFonts", "sz", "b", "i", "u", "strike", "color"],
             )?;
         }
-        let run_style = styles.run(rp, &base)?;
+        let reference_only = r
+            .children()
+            .filter(|n| n.is_element() && !n.has_tag_name((W, "rPr")))
+            .all(|n| {
+                [
+                    "commentReference",
+                    "footnoteReference",
+                    "endnoteReference",
+                    "footnoteRef",
+                    "endnoteRef",
+                ]
+                .iter()
+                .any(|tag| n.has_tag_name((W, *tag)))
+            });
+        let run_style = if reference_only {
+            base.clone()
+        } else {
+            styles.run(rp, &base)?
+        };
         for child in r
             .children()
             .filter(|n| n.is_element() && !n.has_tag_name((W, "rPr")))
@@ -940,6 +1253,34 @@ fn read_paragraph(
                     Some((instruction, false)) => instruction.push_str(child.text().unwrap_or("")),
                     _ => return Err(bad("DOCX instruction outside field")),
                 },
+                "footnoteRef" | "endnoteRef" => {}
+                "footnoteReference" | "endnoteReference" => {
+                    if field.is_some() {
+                        return Err(Error::Unsupported("note in DOCX field".into()));
+                    }
+                    let external = val(child, "id")
+                        .ok_or_else(|| bad("note id"))?
+                        .parse::<u64>()
+                        .map_err(bad)?;
+                    let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
+                    note_marks.push((
+                        id,
+                        offset,
+                        external,
+                        child.has_tag_name((W, "endnoteReference")),
+                    ));
+                }
+                "commentReference" => {
+                    if field.is_some() {
+                        return Err(Error::Unsupported("comment in DOCX field".into()));
+                    }
+                    let external = val(child, "id")
+                        .ok_or_else(|| bad("comment id"))?
+                        .parse::<u64>()
+                        .map_err(bad)?;
+                    let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
+                    comment_marks.push((id, offset, external, 2));
+                }
                 "t" => {
                     if field.as_ref().is_some_and(|(_, separated)| !separated) {
                         return Err(bad("DOCX field result before separator"));
@@ -965,6 +1306,67 @@ fn read_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_word_footnote_and_separator_survive_resave() {
+        let doc = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p><w:sectPr/></w:body></w:document>"#
+        );
+        let notes = format!(
+            r#"<w:footnotes xmlns:w="{W}"><w:footnote w:type="separator" w:id="-1"><w:p><w:pPr><w:spacing w:after="100"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>Source note</w:t></w:r></w:p></w:footnote></w:footnotes>"#
+        );
+        let mut parts = std::collections::BTreeMap::new();
+        parts.insert("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>"#.to_vec());
+        parts.insert("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/_rels/document.xml.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/document.xml".into(), doc.into_bytes());
+        parts.insert("word/footnotes.xml".into(), notes.into_bytes());
+        let doc = RichDocument::decode(&package(&parts).unwrap(), Format::Docx).unwrap();
+        assert_eq!(doc.state().footnotes[0].at.offset, 5);
+        assert_eq!(
+            doc.state().footnotes[0].paragraphs[0].runs[0].text,
+            "Source note"
+        );
+        let output = doc.encode(Format::Docx).unwrap();
+        let reopened = RichDocument::decode(&output, Format::Docx).unwrap();
+        assert_eq!(
+            reopened.state().footnotes[0].paragraphs[0].runs[0].text,
+            "Source note"
+        );
+        assert!(
+            std::str::from_utf8(&reopened.state().docx_parts["word/footnotes.xml"])
+                .unwrap()
+                .contains("w:after=\"100\"")
+        );
+    }
+    #[test]
+    fn external_word_comment_range_and_metadata_survive_edit_and_resave() {
+        let doc = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Hello </w:t></w:r><w:commentRangeStart w:id="17"/><w:r><w:t>world</w:t></w:r><w:commentRangeEnd w:id="17"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="17"/></w:r></w:p><w:sectPr/></w:body></w:document>"#
+        );
+        let comments = format!(
+            r#"<w:comments xmlns:w="{W}"><w:comment w:id="17" w:author="Ada" w:initials="AL" w:date="2026-01-02T03:04:05Z"><w:p><w:pPr><w:pStyle w:val="CommentText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:annotationRef/></w:r><w:r><w:t>Review</w:t><w:tab/><w:t>this</w:t></w:r></w:p></w:comment></w:comments>"#
+        );
+        let mut parts = std::collections::BTreeMap::new();
+        parts.insert("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>"#.to_vec());
+        parts.insert("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/_rels/document.xml.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/document.xml".into(), doc.into_bytes());
+        parts.insert("word/comments.xml".into(), comments.into_bytes());
+        let bytes = package(&parts).unwrap();
+        let mut doc = RichDocument::decode(&bytes, Format::Docx).unwrap();
+        assert_eq!(doc.state().comments[0].text, "Review\tthis");
+        assert_eq!(
+            doc.state().comments[0].date.as_deref(),
+            Some("2026-01-02T03:04:05Z")
+        );
+        assert_eq!(doc.state().comments[0].initials.as_deref(), Some("AL"));
+        let id = doc.state().comments[0].id;
+        doc.edit_comment(id, "Updated".into(), false).unwrap();
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Docx).unwrap(), Format::Docx).unwrap();
+        assert_eq!(reopened.state().comments[0].text, "Updated");
+        assert_eq!(reopened.state().comments[0].initials.as_deref(), Some("AL"));
+    }
     #[test]
     fn external_word_vertical_merge_is_reconstructed() {
         let xml = format!(

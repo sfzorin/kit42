@@ -37,10 +37,41 @@ impl PdfFont {
                 chars.insert(ch, (cid, glyph.0, width));
             }
         }
-        let font_stream = doc.add_object(Stream::new(
-            dictionary! {"Length1"=>font_data.len() as i64},
-            font_data.to_vec(),
-        ));
+        // Reuse only an actual identical embedded font stream. CID maps and
+        // ToUnicode remain separate for each independently encoded character set.
+        let existing = doc
+            .objects
+            .iter()
+            .filter_map(|(id, obj)| obj.as_stream().ok().map(|s| (*id, s)))
+            .take(10_000)
+            .find_map(|(id, stream)| {
+                if stream
+                    .dict
+                    .get(b"Length1")
+                    .ok()
+                    .and_then(|v| v.as_i64().ok())
+                    != Some(font_data.len() as i64)
+                {
+                    return None;
+                }
+                if stream.dict.get(b"Filter").is_ok() {
+                    stream
+                        .decompressed_content_with_limit(font_data.len() + 1)
+                        .ok()
+                        .filter(|bytes| bytes.as_slice() == font_data)
+                        .map(|_| id)
+                } else if stream.content.as_slice() == font_data {
+                    Some(id)
+                } else {
+                    None
+                }
+            });
+        let font_stream = existing.unwrap_or_else(|| {
+            doc.add_object(Stream::new(
+                dictionary! {"Length1"=>font_data.len() as i64},
+                font_data.to_vec(),
+            ))
+        });
         let descriptor = doc.add_object(dictionary! {"Type"=>"FontDescriptor", "FontName"=>"NotoSans", "Flags"=>32, "FontBBox"=>vec![(-1000).into(),(-1000).into(),3000.into(),3000.into()], "ItalicAngle"=>0, "Ascent"=>1100, "Descent"=>-300, "CapHeight"=>750, "StemV"=>80, "FontFile2"=>font_stream});
         let mut cid_to_gid = vec![0u8; (chars.len() + 1) * 2];
         let mut widths = vec![Object::Integer(0); chars.len() + 1];

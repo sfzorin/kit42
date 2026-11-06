@@ -13,6 +13,37 @@ fn decode_image(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     reader.limits(limits);
     reader.decode().map_err(|e| e.to_string())
 }
+fn object_point(o: &ppt42_core::SlideObject, x: f64, y: f64) -> win42::Point {
+    let cx = o.x + o.width / 2.0;
+    let cy = o.y + o.height / 2.0;
+    let (sin, cos) = o.rotation_degrees.rem_euclid(360.0).to_radians().sin_cos();
+    win42::Point {
+        x: cx + cos * (x - cx) - sin * (y - cy),
+        y: cy + sin * (x - cx) + cos * (y - cy),
+    }
+}
+
+fn object_local_point(o: &ppt42_core::SlideObject, p: win42::Point) -> win42::Point {
+    let cx = o.x + o.width / 2.0;
+    let cy = o.y + o.height / 2.0;
+    let (sin, cos) = o.rotation_degrees.rem_euclid(360.0).to_radians().sin_cos();
+    win42::Point {
+        x: cx + cos * (p.x - cx) + sin * (p.y - cy),
+        y: cy - sin * (p.x - cx) + cos * (p.y - cy),
+    }
+}
+
+fn resize_object(o: &mut ppt42_core::SlideObject, start: win42::Point, end: win42::Point) {
+    let (sin, cos) = o.rotation_degrees.rem_euclid(360.0).to_radians().sin_cos();
+    let (dx, dy) = (end.x - start.x, end.y - start.y);
+    let width = (o.width + cos * dx + sin * dy).max(1.0);
+    let height = (o.height - sin * dx + cos * dy).max(1.0);
+    let (dw, dh) = (width - o.width, height - o.height);
+    o.x += (cos * dw - sin * dh - dw) / 2.0;
+    o.y += (sin * dw + cos * dh - dh) / 2.0;
+    o.width = width;
+    o.height = height;
+}
 struct Ppt {
     pending: Option<(u64, ppt42_core::SaveState)>,
     next_save: u64,
@@ -186,9 +217,10 @@ impl Ppt {
                 .objects
                 .iter()
                 .find(|o| {
-                    o.id == selected[0]
-                        && (p.x - (o.x + o.width)).abs() <= 7.0
-                        && (p.y - (o.y + o.height)).abs() <= 7.0
+                    o.id == selected[0] && {
+                        let handle = object_point(o, o.x + o.width, o.y + o.height);
+                        (p.x - handle.x).abs() <= 7.0 && (p.y - handle.y).abs() <= 7.0
+                    }
                 })
                 .cloned()
             {
@@ -201,7 +233,10 @@ impl Ppt {
             .objects
             .iter()
             .rev()
-            .find(|o| p.x >= o.x && p.x <= o.x + o.width && p.y >= o.y && p.y <= o.y + o.height)
+            .find(|o| {
+                let p = object_local_point(o, p);
+                p.x >= o.x && p.x <= o.x + o.width && p.y >= o.y && p.y <= o.y + o.height
+            })
             .cloned();
         if let Some(object) = object {
             let mut selection = selected;
@@ -327,6 +362,7 @@ impl Ppt {
             } else {
                 o.stroke
             };
+            let object_start = items.len();
             match o.kind {
                 ppt42_core::ObjectKind::Rectangle | ppt42_core::ObjectKind::Text => {
                     if o.fill_visible {
@@ -540,6 +576,17 @@ impl Ppt {
                     stroke: [0, 100, 220],
                 });
             }
+            if o.rotation_degrees.rem_euclid(360.0) != 0.0 {
+                let children = items.split_off(object_start);
+                items.push(SceneItem::Transform {
+                    center: Point {
+                        x: o.x + o.width / 2.0,
+                        y: o.y + o.height / 2.0,
+                    },
+                    degrees: o.rotation_degrees,
+                    items: children,
+                });
+            }
         }
         if show_selection {
             if let Some((a, b, _)) = self.rubber_band {
@@ -661,115 +708,128 @@ impl win42::App for Ppt {
             margin_right_twips: 0,
             margin_bottom_twips: 0,
         };
-        let sx = width / 720.0;
-        let sy = height / 405.0;
+        // Fit the logical slide without distorting rotated content.
+        let sx = (width / 720.0).min(height / 405.0);
+        let sy = sx;
         let mut pages = Vec::new();
         for index in 0..self.deck.slides().len() {
             let mut scene = self.scene_for(index, false)?;
-            for item in &mut scene.items {
-                match item {
-                    win42::SceneItem::Rect {
-                        x,
-                        y,
-                        width,
-                        height,
-                        ..
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        *width *= sx;
-                        *height *= sy;
-                    }
-                    win42::SceneItem::Ellipse {
-                        x,
-                        y,
-                        width,
-                        height,
-                        ..
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        *width *= sx;
-                        *height *= sy;
-                    }
-                    win42::SceneItem::Text { x, y, .. } => {
-                        *x *= sx;
-                        *y *= sy;
-                    }
-                    win42::SceneItem::TextBox {
-                        x,
-                        y,
-                        width,
-                        height,
-                        font,
-                        ..
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        *width *= sx;
-                        *height *= sy;
-                        font.points *= sy;
-                    }
-                    win42::SceneItem::RichText {
-                        x,
-                        y,
-                        width,
-                        height,
-                        paragraphs,
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        *width *= sx;
-                        *height *= sy;
-                        for p in paragraphs {
-                            for r in &mut p.runs {
-                                r.font.points *= sy;
+            fn scale_items(items: &mut [win42::SceneItem], sx: f64, sy: f64) -> Option<()> {
+                for item in items {
+                    match item {
+                        win42::SceneItem::Transform { center, items, .. } => {
+                            if (sx - sy).abs() > 1e-9 {
+                                return None;
+                            }
+                            center.x *= sx;
+                            center.y *= sy;
+                            scale_items(items, sx, sy)?;
+                        }
+                        win42::SceneItem::Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                            ..
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            *width *= sx;
+                            *height *= sy;
+                        }
+                        win42::SceneItem::Ellipse {
+                            x,
+                            y,
+                            width,
+                            height,
+                            ..
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            *width *= sx;
+                            *height *= sy;
+                        }
+                        win42::SceneItem::Text { x, y, .. } => {
+                            *x *= sx;
+                            *y *= sy;
+                        }
+                        win42::SceneItem::TextBox {
+                            x,
+                            y,
+                            width,
+                            height,
+                            font,
+                            ..
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            *width *= sx;
+                            *height *= sy;
+                            font.points *= sy;
+                        }
+                        win42::SceneItem::RichText {
+                            x,
+                            y,
+                            width,
+                            height,
+                            paragraphs,
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            *width *= sx;
+                            *height *= sy;
+                            for p in paragraphs {
+                                for r in &mut p.runs {
+                                    r.font.points *= sy;
+                                }
                             }
                         }
-                    }
-                    win42::SceneItem::Path { points, .. } => {
-                        for p in points {
-                            p.x *= sx;
-                            p.y *= sy;
+                        win42::SceneItem::Path { points, .. } => {
+                            for p in points {
+                                p.x *= sx;
+                                p.y *= sy;
+                            }
+                        }
+                        win42::SceneItem::Image {
+                            x,
+                            y,
+                            width,
+                            height,
+                            rgba,
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            let nw = ((*width as f64 * sx).round() as u32).clamp(1, 4096);
+                            let nh = ((*height as f64 * sy).round() as u32).clamp(1, 4096);
+                            let image =
+                                image::RgbaImage::from_raw(*width, *height, std::mem::take(rgba))?;
+                            *rgba = image::imageops::resize(
+                                &image,
+                                nw,
+                                nh,
+                                image::imageops::FilterType::Triangle,
+                            )
+                            .into_raw();
+                            *width = nw;
+                            *height = nh;
+                        }
+                        win42::SceneItem::ImageScaled {
+                            x,
+                            y,
+                            width,
+                            height,
+                            ..
+                        } => {
+                            *x *= sx;
+                            *y *= sy;
+                            *width *= sx;
+                            *height *= sy;
                         }
                     }
-                    win42::SceneItem::Image {
-                        x,
-                        y,
-                        width,
-                        height,
-                        rgba,
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        let nw = ((*width as f64 * sx).round() as u32).clamp(1, 4096);
-                        let nh = ((*height as f64 * sy).round() as u32).clamp(1, 4096);
-                        let image =
-                            image::RgbaImage::from_raw(*width, *height, std::mem::take(rgba))?;
-                        *rgba = image::imageops::resize(
-                            &image,
-                            nw,
-                            nh,
-                            image::imageops::FilterType::Triangle,
-                        )
-                        .into_raw();
-                        *width = nw;
-                        *height = nh;
-                    }
-                    win42::SceneItem::ImageScaled {
-                        x,
-                        y,
-                        width,
-                        height,
-                        ..
-                    } => {
-                        *x *= sx;
-                        *y *= sy;
-                        *width *= sx;
-                        *height *= sy;
-                    }
                 }
+                Some(())
             }
+            scale_items(&mut scene.items, sx, sy)?;
             pages.push(win42::PrintPage { geometry, scene });
         }
         Some(win42::PrintJob::Scenes(pages))
@@ -889,11 +949,16 @@ impl win42::App for Ppt {
                         ("Y", o.y.to_string()),
                         ("Width", o.width.to_string()),
                         ("Height", o.height.to_string()),
+                        ("Rotation (degrees)", o.rotation_degrees.to_string()),
                     ],
                 }),
             33 => Some(win42::InputRequest {
                 title: "Insert table",
                 fields: vec![("Rows", "3".into()), ("Columns", "3".into())],
+            }),
+            65 => Some(win42::InputRequest {
+                title: "Rotate selected objects",
+                fields: vec![("Clockwise degrees", "90".into())],
             }),
             34 => self
                 .selected_object
@@ -916,6 +981,59 @@ impl win42::App for Ppt {
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
         match id {
+            65 if values.len() == 1 => {
+                let angle: f64 = values[0].parse().map_err(|_| "Invalid rotation")?;
+                if !angle.is_finite() {
+                    return Err("Invalid rotation".into());
+                }
+                let ids = self.selection();
+                let slide_id = self.deck.slides()[self.deck.current()].source_identity();
+                if self
+                    .pptx_source
+                    .as_ref()
+                    .is_some_and(|s| ids.iter().any(|id| !s.can_rotate(slide_id, *id)))
+                {
+                    return Err("This source geometry cannot be rotated safely".into());
+                }
+                let mut objects = self.deck.slides()[self.deck.current()]
+                    .objects
+                    .iter()
+                    .filter(|o| ids.contains(&o.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if objects.is_empty() {
+                    return Err("Select objects first".into());
+                }
+                let mut left = f64::INFINITY;
+                let mut right = f64::NEG_INFINITY;
+                let mut top = f64::INFINITY;
+                let mut bottom = f64::NEG_INFINITY;
+                for o in &objects {
+                    for (x, y) in [
+                        (o.x, o.y),
+                        (o.x + o.width, o.y),
+                        (o.x, o.y + o.height),
+                        (o.x + o.width, o.y + o.height),
+                    ] {
+                        let p = object_point(o, x, y);
+                        left = left.min(p.x);
+                        right = right.max(p.x);
+                        top = top.min(p.y);
+                        bottom = bottom.max(p.y);
+                    }
+                }
+                let (cx, cy) = ((left + right) / 2.0, (top + bottom) / 2.0);
+                let (sin, cos) = angle.rem_euclid(360.0).to_radians().sin_cos();
+                for o in &mut objects {
+                    let (x, y) = (o.x + o.width / 2.0 - cx, o.y + o.height / 2.0 - cy);
+                    o.x = cx + cos * x - sin * y - o.width / 2.0;
+                    o.y = cy + sin * x + cos * y - o.height / 2.0;
+                    o.rotation_degrees = (o.rotation_degrees.rem_euclid(360.0)
+                        + angle.rem_euclid(360.0))
+                    .rem_euclid(360.0);
+                }
+                self.deck.update_objects(objects)
+            }
             33 if values.len() == 2 => {
                 let rows = values[0].parse().map_err(|_| "Invalid row count")?;
                 let cols = values[1].parse().map_err(|_| "Invalid column count")?;
@@ -990,7 +1108,7 @@ impl win42::App for Ppt {
                 object.paragraphs.clear();
                 self.deck.update_object(object)
             }
-            26 if values.len() == 4 => {
+            26 if values.len() == 5 => {
                 let id = self.selected_object.ok_or("Select an object")?;
                 let mut object = self.deck.slides()[self.deck.current()]
                     .objects
@@ -1002,10 +1120,21 @@ impl win42::App for Ppt {
                     .iter()
                     .map(|v| v.parse::<f64>().map_err(|_| "Invalid geometry".to_string()))
                     .collect::<Result<Vec<_>, _>>()?;
+                if parsed[4].rem_euclid(360.0) != object.rotation_degrees.rem_euclid(360.0)
+                    && self.pptx_source.as_ref().is_some_and(|s| {
+                        !s.can_rotate(
+                            self.deck.slides()[self.deck.current()].source_identity(),
+                            id,
+                        )
+                    })
+                {
+                    return Err("This source geometry cannot be rotated safely".into());
+                }
                 object.x = parsed[0];
                 object.y = parsed[1];
                 object.width = parsed[2];
                 object.height = parsed[3];
+                object.rotation_degrees = parsed[4].rem_euclid(360.0);
                 self.deck.update_object(object)
             }
             _ => Err("Invalid text input".into()),
@@ -1062,8 +1191,7 @@ impl win42::App for Ppt {
                             *start = p;
                         }
                         Drag::Resize(start, object) => {
-                            object.width = (object.width + p.x - start.x).max(1.0);
-                            object.height = (object.height + p.y - start.y).max(1.0);
+                            resize_object(object, *start, p);
                             *start = p;
                         }
                     }
@@ -1083,8 +1211,7 @@ impl win42::App for Ppt {
                             self.deck.update_objects(objects)?;
                         }
                         Drag::Resize(start, mut object) => {
-                            object.width = (object.width + p.x - start.x).max(1.0);
-                            object.height = (object.height + p.y - start.y).max(1.0);
+                            resize_object(&mut object, start, p);
                             self.deck.update_object(object)?;
                         }
                     }
@@ -1094,10 +1221,15 @@ impl win42::App for Ppt {
                     let (top, bottom) = (a.y.min(p.y), a.y.max(p.y));
                     let mut ids = if add { self.selection() } else { Vec::new() };
                     for o in &self.deck.slides()[self.deck.current()].objects {
-                        if o.x >= left
-                            && o.y >= top
-                            && o.x + o.width <= right
-                            && o.y + o.height <= bottom
+                        if [
+                            (o.x, o.y),
+                            (o.x + o.width, o.y),
+                            (o.x, o.y + o.height),
+                            (o.x + o.width, o.y + o.height),
+                        ]
+                        .into_iter()
+                        .map(|(x, y)| object_point(o, x, y))
+                        .all(|p| p.x >= left && p.x <= right && p.y >= top && p.y <= bottom)
                             && !ids.contains(&o.id)
                         {
                             ids.push(o.id);
@@ -1235,6 +1367,7 @@ impl win42::App for Ppt {
             (24, "Edit Slide Text…"),
             (25, "Edit Object Text…"),
             (26, "Object Geometry…"),
+            (65, "Rotate Selected Objects…"),
             (27, "Delete Object"),
             (28, "Bring to Front"),
             (29, "Send to Back"),
@@ -1485,6 +1618,7 @@ impl win42::App for Ppt {
                                     o.kind,
                                     ppt42_core::ObjectKind::Picture | ppt42_core::ObjectKind::Table
                                 )
+                                && o.rotation_degrees.rem_euclid(360.0) == 0.0
                                 && rich::document(o).is_ok_and(|d| d.rich_edit_projection().is_ok())
                         }) && self.pptx_source.as_ref().is_none_or(|s| {
                             s.can_edit_rich(self.deck.slides()[i].source_identity(), id)
@@ -1494,6 +1628,14 @@ impl win42::App for Ppt {
                     })
             }
             59..=62 => self.rich_edit_object.is_some(),
+            65 => {
+                !self.selection().is_empty()
+                    && self.pptx_source.as_ref().is_none_or(|s| {
+                        self.selection()
+                            .iter()
+                            .all(|id| s.can_rotate(self.deck.slides()[i].source_identity(), *id))
+                    })
+            }
             46 => !self.deck.slides()[i].objects.is_empty(),
             47..=52 => self.selection().len() >= 2,
             53 | 54 => self.selection().len() >= 3,
@@ -1720,6 +1862,57 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+
+    #[test]
+    fn rotation_hit_resize_and_group_undo() {
+        let mut app = Ppt::new(Presentation::new());
+        let a = app
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let b = app
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Ellipse, String::new())
+            .unwrap();
+        let mut second = app.deck.slides()[0]
+            .objects
+            .iter()
+            .find(|o| o.id == b)
+            .unwrap()
+            .clone();
+        second.x += 200.0;
+        app.deck.update_object(second).unwrap();
+        app.selected_object = Some(a);
+        app.selected_objects = vec![a, b];
+        let original = app.deck.slides()[0].objects.clone();
+        app.input_action(65, &["90".into()]).unwrap();
+        let rotated = app.deck.slides()[0].objects.clone();
+        assert_eq!(rotated[0].rotation_degrees, 90.0);
+        assert_eq!(rotated[1].rotation_degrees, 90.0);
+        assert_ne!(rotated[0].y, original[0].y);
+        assert!(app.deck.undo());
+        assert_eq!(app.deck.slides()[0].objects, original);
+        assert!(app.deck.redo());
+        let mut object = rotated[0].clone();
+        let corner = object_point(&object, object.x, object.y);
+        let end = object_point(&object, object.x + object.width, object.y + object.height);
+        resize_object(
+            &mut object,
+            end,
+            win42::Point {
+                x: end.x - 10.0,
+                y: end.y + 20.0,
+            },
+        );
+        let after = object_point(&object, object.x, object.y);
+        assert!((corner.x - after.x).abs() < 1e-9 && (corner.y - after.y).abs() < 1e-9);
+        let local = object_local_point(
+            &object,
+            object_point(&object, object.x + 5.0, object.y + 5.0),
+        );
+        assert!((local.x - object.x - 5.0).abs() < 1e-9);
+    }
+
     #[test]
     fn rich_draft_save_captures_revision_and_cancel_is_lossless() {
         let mut app = Ppt::new(Presentation::new());

@@ -52,7 +52,20 @@ pub(crate) fn apply(book: &Workbook, grid: &mut [Vec<String>]) {
             if !value.is_finite() {
                 continue;
             }
-            if let Some(date) = serial_to_date(value) {
+            if !book.history.current().date_1904 && value.floor() == 60.0 {
+                let rendered = match code.to_ascii_lowercase().as_str() {
+                    "yyyy-mm-dd" => Some("1900-02-29"),
+                    "m/d/yy" => Some("2/29/00"),
+                    "mm-dd-yy" => Some("02-29-00"),
+                    "d-mmm-yy" => Some("29-Feb-00"),
+                    _ => None,
+                };
+                if let Some(value) = rendered {
+                    *text = value.into();
+                    continue;
+                }
+            }
+            if let Some(date) = workbook_serial_to_date(book, value) {
                 let rendered = match code.to_ascii_lowercase().as_str() {
                     "yyyy-mm-dd" => Some(date.format("%Y-%m-%d").to_string()),
                     "m/d/yy" => Some(format!(
@@ -112,6 +125,39 @@ pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
             .ok()
             .map(|d| d.date())
     })
+}
+pub(crate) fn workbook_serial_to_date(book: &Workbook, serial: f64) -> Option<NaiveDate> {
+    serial_to_date(if book.history.current().date_1904 {
+        serial + 1462.0
+    } else {
+        serial
+    })
+}
+pub(crate) fn workbook_date_to_serial(book: &Workbook, date: NaiveDate) -> Option<f64> {
+    let value = date_to_serial(date)?
+        - if book.history.current().date_1904 {
+            1462.0
+        } else {
+            0.0
+        };
+    if value < 0.0 {
+        None
+    } else {
+        Some(value)
+    }
+}
+pub(crate) fn workbook_parse_serial(book: &Workbook, input: &str) -> Option<f64> {
+    let value = parse_serial(input)?
+        - if book.history.current().date_1904 {
+            1462.0
+        } else {
+            0.0
+        };
+    if value < 0.0 {
+        None
+    } else {
+        Some(value)
+    }
 }
 pub(crate) fn serial_to_date(serial: f64) -> Option<NaiveDate> {
     if !serial.is_finite() || serial < 0.0 || serial > 2_958_465.0 || serial.floor() == 60.0 {

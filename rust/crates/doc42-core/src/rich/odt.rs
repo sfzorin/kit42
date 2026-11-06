@@ -7,6 +7,7 @@ use std::{
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const O: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 const T: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
+const DC: &str = "http://purl.org/dc/elements/1.1/";
 const S: &str = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const F: &str = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0";
 const TB: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
@@ -542,12 +543,73 @@ fn read_parts(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Error> {
     }
     Ok(out)
 }
+struct OdtComment {
+    author: String,
+    text: String,
+    date: Option<String>,
+}
+fn read_comment(node: roxmltree::Node<'_, '_>) -> Result<OdtComment, Error> {
+    for attr in node.attributes() {
+        if attr.namespace() != Some(O) || attr.name() != "name" {
+            return Err(unsupported("ODT comment metadata"));
+        }
+    }
+    let mut author = String::new();
+    let mut date = None;
+    let mut paragraphs = Vec::new();
+    for child in node.children().filter(|n| n.is_element()) {
+        if child.has_tag_name((DC, "creator")) {
+            author = child.text().unwrap_or("").into();
+        } else if child.has_tag_name((DC, "date")) {
+            date = Some(child.text().unwrap_or("").into());
+        } else if child.has_tag_name((T, "p")) {
+            if child.attributes().len() != 0 {
+                return Err(unsupported("formatted ODT comment"));
+            }
+            let mut text = String::new();
+            for node in child.children() {
+                if node.is_text() {
+                    text.push_str(node.text().unwrap_or(""));
+                } else if node.has_tag_name((T, "s")) {
+                    let count = attr(node, T, "c")
+                        .unwrap_or("1")
+                        .parse::<usize>()
+                        .map_err(bad)?;
+                    if count > 1_000_000 {
+                        return Err(Error::Limit);
+                    }
+                    text.push_str(&" ".repeat(count));
+                } else if node.has_tag_name((T, "tab")) {
+                    text.push('\t');
+                } else if node.is_element() {
+                    return Err(unsupported("formatted ODT comment"));
+                }
+            }
+            paragraphs.push(text);
+        } else {
+            return Err(unsupported("ODT comment content"));
+        }
+    }
+    Ok(OdtComment {
+        author,
+        text: paragraphs.join("\n"),
+        date,
+    })
+}
 struct Reader<'a> {
     styles: Styles,
     parts: &'a BTreeMap<String, Vec<u8>>,
     state: State,
     next: u64,
     pending_fields: Vec<(usize, FieldKind)>,
+    pending_comments: Vec<(usize, String, bool)>,
+    pending_notes: Vec<(usize, Vec<Paragraph>, bool, Option<String>)>,
+    inside_note: bool,
+    comment_marks: Vec<(u64, usize, String, bool)>,
+    comment_data: BTreeMap<String, OdtComment>,
+    point_counter: u64,
+    bookmarks: BTreeMap<String, u64>,
+    pending_tocs: Vec<Vec<(u64, String)>>,
 }
 impl Reader<'_> {
     fn id(&mut self) -> u64 {
@@ -577,7 +639,116 @@ impl Reader<'_> {
         if !n.is_element() {
             return Ok(());
         }
+        if n.has_tag_name((T, "note")) {
+            if self.inside_note {
+                return Err(unsupported("nested ODT note"));
+            }
+            let endnote = match attr(n, T, "note-class") {
+                None | Some("footnote") => false,
+                Some("endnote") => true,
+                _ => return Err(unsupported("ODT note class")),
+            };
+            for a in n.attributes() {
+                if a.namespace() != Some(T) || !["id", "note-class"].contains(&a.name()) {
+                    return Err(unsupported("ODT note metadata"));
+                }
+            }
+            let citation =
+                if let Some(c) = n.children().find(|c| c.has_tag_name((T, "note-citation"))) {
+                    if c.attributes().len() != 0 || c.children().any(|n| n.is_element()) {
+                        return Err(unsupported("ODT note citation metadata"));
+                    }
+                    Some(c.text().unwrap_or("").to_owned())
+                } else {
+                    None
+                };
+            let body = n
+                .children()
+                .find(|c| c.has_tag_name((T, "note-body")))
+                .ok_or_else(|| bad("missing ODT note body"))?;
+            if n.children()
+                .filter(|c| c.is_element())
+                .any(|c| !c.has_tag_name((T, "note-citation")) && !c.has_tag_name((T, "note-body")))
+            {
+                return Err(unsupported("ODT note content"));
+            }
+            let fields = std::mem::take(&mut self.pending_fields);
+            let comments = std::mem::take(&mut self.pending_comments);
+            let notes = std::mem::take(&mut self.pending_notes);
+            let old_marks = self.comment_marks.len();
+            let old_fields = self.state.fields.len();
+            let old_notes = self.state.footnotes.len();
+            self.inside_note = true;
+            let mut paragraphs = Vec::new();
+            for paragraph in body.children().filter(|c| c.is_element()) {
+                if !paragraph.has_tag_name((T, "p")) {
+                    return Err(unsupported("ODT note body"));
+                }
+                paragraphs.push(self.para(paragraph, None)?);
+            }
+            self.inside_note = false;
+            if paragraphs.is_empty()
+                || !self.pending_fields.is_empty()
+                || !self.pending_comments.is_empty()
+                || !self.pending_notes.is_empty()
+                || self.comment_marks.len() != old_marks
+                || self.state.fields.len() != old_fields
+                || self.state.footnotes.len() != old_notes
+            {
+                return Err(unsupported("ODT note body metadata"));
+            }
+            self.pending_fields = fields;
+            self.pending_comments = comments;
+            self.pending_notes = notes;
+            self.pending_notes.push((
+                out.iter().map(|r| r.text.len()).sum(),
+                paragraphs,
+                endnote,
+                citation,
+            ));
+            return Ok(());
+        }
+        if n.has_tag_name((O, "annotation")) {
+            let offset = out.iter().map(|r| r.text.len()).sum();
+            let named = attr(n, O, "name");
+            let name = if let Some(name) = named {
+                name.to_owned()
+            } else {
+                self.point_counter += 1;
+                format!("__DOC42_POINT_{}", self.point_counter)
+            };
+            let item = read_comment(n)?;
+            if self.comment_data.insert(name.clone(), item).is_some() {
+                return Err(bad("duplicate ODT comment name"));
+            }
+            self.pending_comments.push((offset, name.clone(), true));
+            if named.is_none() {
+                self.pending_comments.push((offset, name, false));
+            }
+            return Ok(());
+        }
+        if n.has_tag_name((O, "annotation-end")) {
+            let name = attr(n, O, "name").ok_or_else(|| bad("missing ODT comment name"))?;
+            if n.attributes().len() != 1 || n.children().any(|c| c.is_element()) {
+                return Err(unsupported("ODT comment end"));
+            }
+            self.pending_comments.push((
+                out.iter().map(|r| r.text.len()).sum(),
+                name.to_owned(),
+                false,
+            ));
+            return Ok(());
+        }
         match n.tag_name().name() {
+            "bookmark" if n.tag_name().namespace() == Some(T) => {
+                if attr(n, T, "name").is_none()
+                    || n.attributes().len() != 1
+                    || n.children().any(|c| c.is_element())
+                {
+                    return Err(unsupported("ODT bookmark metadata"));
+                }
+                Ok(())
+            }
             "span" => {
                 let mut t = run.clone();
                 let mut p = para.clone();
@@ -666,6 +837,28 @@ impl Reader<'_> {
             self.inline(c, &run, &para, None, &mut runs)?
         }
         let id = self.id();
+        for bookmark in n.children().filter(|c| c.has_tag_name((T, "bookmark"))) {
+            let name = attr(bookmark, T, "name").ok_or_else(|| bad("ODT bookmark name"))?;
+            if self.bookmarks.insert(name.to_owned(), id).is_some() {
+                return Err(bad("duplicate ODT bookmark"));
+            }
+        }
+        for (offset, paragraphs, endnote, citation) in std::mem::take(&mut self.pending_notes) {
+            let note_id = self.id();
+            self.state.footnotes.push(Footnote {
+                id: note_id,
+                at: Position {
+                    paragraph: id,
+                    offset,
+                },
+                paragraphs,
+                endnote,
+                citation,
+            });
+        }
+        for (offset, name, start) in std::mem::take(&mut self.pending_comments) {
+            self.comment_marks.push((id, offset, name, start));
+        }
         for (offset, kind) in std::mem::take(&mut self.pending_fields) {
             let field_id = self.id();
             self.state.fields.push(Field {
@@ -732,6 +925,85 @@ impl Reader<'_> {
                         }
                         self.blocks(item, actual_level, Some((id, numbered)))?;
                     }
+                }
+                "table-of-content" if n.tag_name().namespace() == Some(T) => {
+                    let source = n
+                        .children()
+                        .find(|c| c.has_tag_name((T, "table-of-content-source")))
+                        .ok_or_else(|| bad("ODT index source"))?;
+                    if n.attributes()
+                        .any(|a| a.namespace() != Some(T) || a.name() != "name")
+                        || source
+                            .attributes()
+                            .any(|a| a.namespace() != Some(T) || a.name() != "outline-level")
+                    {
+                        return Err(unsupported("ODT index options"));
+                    }
+                    for template in source.children().filter(|c| c.is_element()) {
+                        if template
+                            .attributes()
+                            .any(|a| a.namespace() != Some(T) || a.name() != "outline-level")
+                            || template
+                                .children()
+                                .filter(|c| c.is_element())
+                                .map(|c| c.tag_name().name())
+                                .collect::<Vec<_>>()
+                                != [
+                                    "index-entry-link-start",
+                                    "index-entry-text",
+                                    "index-entry-link-end",
+                                ]
+                            || template.children().filter(|c| c.is_element()).any(|c| {
+                                c.attributes().len() != 0 || c.children().any(|n| n.is_element())
+                            })
+                        {
+                            return Err(unsupported("ODT index template"));
+                        }
+                    }
+                    if source
+                        .children()
+                        .filter(|c| c.is_element())
+                        .any(|c| !c.has_tag_name((T, "table-of-content-entry-template")))
+                    {
+                        return Err(unsupported("ODT index source options"));
+                    }
+                    let body = n
+                        .children()
+                        .find(|c| c.has_tag_name((T, "index-body")))
+                        .ok_or_else(|| bad("ODT index body"))?;
+                    if n.children().filter(|c| c.is_element()).any(|c| {
+                        !c.has_tag_name((T, "index-body"))
+                            && !c.has_tag_name((T, "table-of-content-source"))
+                    }) {
+                        return Err(unsupported("ODT index content"));
+                    }
+                    let mut entries = Vec::new();
+                    for item in body.children().filter(|c| c.is_element()) {
+                        if !item.has_tag_name((T, "p")) {
+                            return Err(unsupported("ODT index entry"));
+                        }
+                        let p = self.para(item, None)?;
+                        let target = p
+                            .runs
+                            .iter()
+                            .filter_map(|r| r.link.as_deref())
+                            .next()
+                            .and_then(|v| v.strip_prefix('#'))
+                            .ok_or_else(|| unsupported("ODT unlinked index entry"))?
+                            .to_owned();
+                        if p.runs
+                            .iter()
+                            .any(|r| r.link.as_deref() != Some(&format!("#{target}")))
+                        {
+                            return Err(unsupported("ODT mixed index entry"));
+                        }
+                        entries.push((p.id, target));
+                        self.state.blocks.push(Block::Paragraph(p));
+                    }
+                    if entries.is_empty() {
+                        return Err(unsupported("empty ODT index"));
+                    }
+                    self.pending_tocs.push(entries);
                 }
                 "sequence-decls" if n.tag_name().namespace() == Some(T) => {}
                 "table" if n.tag_name().namespace() == Some(TB) => {
@@ -1029,9 +1301,42 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
         state: State::default(),
         next: 1,
         pending_fields: vec![],
+        pending_comments: vec![],
+        pending_notes: vec![],
+        inside_note: false,
+        comment_marks: vec![],
+        comment_data: BTreeMap::new(),
+        point_counter: 0,
+        bookmarks: BTreeMap::new(),
+        pending_tocs: vec![],
     };
     r.state.blocks.clear();
     r.blocks(body, 0, None)?;
+    let used_bookmarks: HashSet<String> = r
+        .pending_tocs
+        .iter()
+        .flatten()
+        .map(|(_, name)| name.clone())
+        .collect();
+    for pending in std::mem::take(&mut r.pending_tocs) {
+        let id = r.id();
+        let mut entries = Vec::new();
+        for (paragraph, bookmark) in pending {
+            let heading = *r
+                .bookmarks
+                .get(&bookmark)
+                .ok_or_else(|| unsupported("unresolved ODT index link"))?;
+            let p =
+                paragraph_mut(&mut r.state, paragraph).ok_or_else(|| bad("ODT index paragraph"))?;
+            for run in &mut p.runs {
+                run.link = Some(format!("#DOC42_H{heading}"));
+            }
+            entries.push(TocEntry { paragraph, heading });
+        }
+        r.state
+            .tables_of_contents
+            .push(TableOfContents { id, entries });
+    }
     if r.state.blocks.is_empty() {
         return Err(bad("empty ODT document"));
     }
@@ -1067,6 +1372,44 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
         );
         r.state.odt_source_headers = Some((header, footer));
     }
+    let mut grouped: BTreeMap<String, (Option<Position>, Option<Position>)> = BTreeMap::new();
+    for (paragraph, offset, name, start) in std::mem::take(&mut r.comment_marks) {
+        let pair = grouped.entry(name).or_default();
+        let slot = if start { &mut pair.0 } else { &mut pair.1 };
+        if slot.replace(Position { paragraph, offset }).is_some() {
+            return Err(bad("duplicate ODT comment marker"));
+        }
+    }
+    for (name, (start, end)) in grouped {
+        let item = r
+            .comment_data
+            .remove(&name)
+            .ok_or_else(|| bad("ODT comment without content"))?;
+        let start = start.ok_or_else(|| bad("ODT comment start"))?;
+        let end = end.ok_or_else(|| bad("ODT comment end"))?;
+        let id = r.id();
+        r.state.comments.push(Annotation {
+            id,
+            start,
+            end,
+            author: item.author,
+            text: item.text,
+            resolved: false,
+            date: item.date,
+            initials: None,
+        });
+    }
+    if !r.comment_data.is_empty() {
+        return Err(unsupported("unanchored ODT comment"));
+    }
+    if r.bookmarks
+        .keys()
+        .any(|name| !used_bookmarks.contains(name))
+    {
+        return Err(unsupported(
+            "ODT bookmark outside supported table of contents",
+        ));
+    }
     r.state.next_id = r.next;
     r.state.sections[0].page = page.clone();
     r.state.odt_source_page = Some(page);
@@ -1080,6 +1423,8 @@ struct Writer {
     pictures: Vec<(String, String, Vec<u8>)>,
     used: HashSet<String>,
     fields: Vec<Field>,
+    comments: Vec<Annotation>,
+    notes: Vec<Footnote>,
 }
 impl Writer {
     fn name(&mut self, prefix: &str) -> String {
@@ -1146,13 +1491,78 @@ impl Writer {
             ("p", String::new())
         };
         let mut out = format!("<text:{tag} text:style-name=\"{name}\"{outline}>");
-        let mut markers = self
+        #[derive(Clone)]
+        enum Marker {
+            Field(FieldKind),
+            Start(Annotation),
+            End(u64),
+            Note(String),
+        }
+        let mut markers: Vec<(usize, u8, Marker)> = self
             .fields
             .iter()
             .filter(|f| f.at.paragraph == p.id)
+            .map(|f| (f.at.offset, 1, Marker::Field(f.kind.clone())))
+            .collect();
+        for comment in &self.comments {
+            if comment.start.paragraph == p.id {
+                markers.push((comment.start.offset, 0, Marker::Start(comment.clone())));
+            }
+            if comment.end.paragraph == p.id {
+                markers.push((comment.end.offset, 2, Marker::End(comment.id)));
+            }
+        }
+        let notes = self
+            .notes
+            .iter()
+            .filter(|n| n.at.paragraph == p.id)
             .cloned()
             .collect::<Vec<_>>();
-        markers.sort_by_key(|f| f.at.offset);
+        for note in notes {
+            let number = self
+                .notes
+                .iter()
+                .filter(|n| n.endnote == note.endnote)
+                .position(|n| n.id == note.id)
+                .unwrap_or(0)
+                + 1;
+            let label = note.citation.clone().unwrap_or_else(|| number.to_string());
+            let mut body = String::new();
+            for paragraph in &note.paragraphs {
+                body.push_str(&self.paragraph(paragraph)?);
+            }
+            let class = if note.endnote { "endnote" } else { "footnote" };
+            let markup = format!("<text:note text:id=\"DOC42N{}\" text:note-class=\"{class}\"><text:note-citation>{}</text:note-citation><text:note-body>{body}</text:note-body></text:note>", note.id, esc(&label));
+            markers.push((note.at.offset, 1, Marker::Note(markup)));
+        }
+        markers.sort_by_key(|(offset, priority, _)| (*offset, *priority));
+        let emit = |marker: &Marker| -> Result<String, Error> {
+            Ok(match marker {
+                Marker::Field(kind) => odt_field(kind)?.to_owned(),
+                Marker::Start(comment) => {
+                    if comment
+                        .text
+                        .chars()
+                        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+                    {
+                        return Err(unsupported("ODT comment text"));
+                    }
+                    let date = comment
+                        .date
+                        .as_ref()
+                        .map(|d| format!("<dc:date xmlns:dc=\"{DC}\">{}</dc:date>", esc(d)))
+                        .unwrap_or_default();
+                    let text = comment
+                        .text
+                        .split('\n')
+                        .map(|p| format!("<text:p>{}</text:p>", odt_text(p.trim_end_matches('\r'))))
+                        .collect::<String>();
+                    format!("<office:annotation office:name=\"DOC42C{}\"><dc:creator xmlns:dc=\"{DC}\">{}</dc:creator>{date}{text}</office:annotation>", comment.id, esc(&comment.author))
+                }
+                Marker::End(id) => format!("<office:annotation-end office:name=\"DOC42C{id}\"/>"),
+                Marker::Note(markup) => markup.clone(),
+            })
+        };
         let mut marker_index = 0;
         let mut base = 0usize;
         for run in &p.runs {
@@ -1179,15 +1589,15 @@ impl Writer {
             let end = base + run.text.len();
             let mut cursor = base;
             let mut inner = String::new();
-            while marker_index < markers.len() && markers[marker_index].at.offset <= end {
-                let field = &markers[marker_index];
+            while marker_index < markers.len() && markers[marker_index].0 <= end {
+                let marker = &markers[marker_index];
                 let piece = run
                     .text
-                    .get(cursor - base..field.at.offset - base)
+                    .get(cursor - base..marker.0 - base)
                     .ok_or_else(|| bad("ODT field boundary"))?;
                 inner.push_str(&odt_text(piece));
-                inner.push_str(odt_field(&field.kind)?);
-                cursor = field.at.offset;
+                inner.push_str(&emit(&marker.2)?);
+                cursor = marker.0;
                 marker_index += 1;
             }
             inner.push_str(&odt_text(
@@ -1207,10 +1617,10 @@ impl Writer {
             }
         }
         while marker_index < markers.len() {
-            if markers[marker_index].at.offset != base {
-                return Err(bad("ODT field position"));
+            if markers[marker_index].0 != base {
+                return Err(bad("ODT anchor position"));
             }
-            out.push_str(odt_field(&markers[marker_index].kind)?);
+            out.push_str(&emit(&markers[marker_index].2)?);
             marker_index += 1;
         }
         out.push_str(&format!("</text:{tag}>"));
@@ -1489,13 +1899,36 @@ fn insert_child(
     Ok(())
 }
 pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
-    if s.sections.len() != 1
-        || s.sections[0].page.columns != 1
-        || !s.comments.is_empty()
-        || !s.footnotes.is_empty()
-        || !s.revisions.is_empty()
-    {
+    if s.sections.len() != 1 || s.sections[0].page.columns != 1 || !s.revisions.is_empty() {
         return Err(unsupported("ODT sections, columns or review content"));
+    }
+    let body_ids: HashSet<_> = s
+        .blocks
+        .iter()
+        .flat_map(|b| match b {
+            Block::Paragraph(p) => vec![p.id],
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flatten()
+                .flat_map(|c| c.paragraphs.iter().map(|p| p.id))
+                .collect(),
+            _ => vec![],
+        })
+        .collect();
+    if s.footnotes
+        .iter()
+        .any(|n| !body_ids.contains(&n.at.paragraph))
+    {
+        return Err(unsupported("ODT note anchors outside body"));
+    }
+    if s.comments.iter().any(|c| {
+        !body_ids.contains(&c.start.paragraph)
+            || !body_ids.contains(&c.end.paragraph)
+            || c.resolved
+            || c.initials.is_some()
+    }) {
+        return Err(unsupported("ODT comment metadata or anchors"));
     }
     let header_ids: HashSet<_> = s.sections[0]
         .header
@@ -1540,6 +1973,8 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         pictures: vec![],
         used: parts.keys().cloned().collect(),
         fields: s.fields.clone(),
+        comments: s.comments.clone(),
+        notes: s.footnotes.clone(),
     };
     if let Some(styles) = parts.get("styles.xml") {
         let xml = std::str::from_utf8(styles).map_err(bad)?;
@@ -1630,11 +2065,46 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
             }
         }
         close_lists(&mut body, &mut stack);
+        if let Block::Paragraph(p) = block {
+            if let Some(toc) = s
+                .tables_of_contents
+                .iter()
+                .find(|t| t.entries.first().is_some_and(|e| e.paragraph == p.id))
+            {
+                body.push_str(&format!("<text:table-of-content text:name=\"DOC42_T{}\"><text:table-of-content-source text:outline-level=\"10\">", toc.id));
+                for level in 1..=10 {
+                    body.push_str(&format!("<text:table-of-content-entry-template text:outline-level=\"{level}\"><text:index-entry-link-start/><text:index-entry-text/><text:index-entry-link-end/></text:table-of-content-entry-template>"));
+                }
+                body.push_str("</text:table-of-content-source><text:index-body>");
+            }
+        }
         match block {
-            Block::Paragraph(p) => body.push_str(&w.paragraph(p)?),
+            Block::Paragraph(p) => {
+                let mut xml = w.paragraph(p)?;
+                if s.tables_of_contents
+                    .iter()
+                    .flat_map(|t| &t.entries)
+                    .any(|e| e.heading == p.id)
+                {
+                    let start = xml.find('>').ok_or_else(|| bad("ODT paragraph"))? + 1;
+                    xml.insert_str(
+                        start,
+                        &format!("<text:bookmark text:name=\"DOC42_H{}\"/>", p.id),
+                    );
+                }
+                body.push_str(&xml);
+            }
             Block::Image(i) => body.push_str(&w.image(i)?),
             Block::Table(t) => body.push_str(&w.table(t)?),
             Block::SectionBreak => return Err(unsupported("ODT section break")),
+        }
+        if let Block::Paragraph(p) = block {
+            if s.tables_of_contents
+                .iter()
+                .any(|t| t.entries.last().is_some_and(|e| e.paragraph == p.id))
+            {
+                body.push_str("</text:index-body></text:table-of-content>");
+            }
         }
     }
     close_lists(&mut body, &mut stack);
@@ -1762,6 +2232,74 @@ mod tests {
                 link: None,
             }],
         }
+    }
+    #[test]
+    fn external_odt_note_preserves_class_citation_and_text() {
+        let content = format!(
+            r#"<office:document-content xmlns:office="{O}" xmlns:text="{T}"><office:body><office:text><text:p>Hello<text:note text:id="ftn1" text:note-class="endnote"><text:note-citation>i</text:note-citation><text:note-body><text:p>External note</text:p></text:note-body></text:note></text:p></office:text></office:body></office:document-content>"#
+        );
+        let styles = format!("<office:document-styles {NS}><office:automatic-styles><style:page-layout style:name=\"P\"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"P\"/></office:master-styles></office:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let doc = RichDocument::decode(&zip.finish().unwrap().into_inner(), Format::Odt).unwrap();
+        assert!(doc.state().footnotes[0].endnote);
+        assert_eq!(doc.state().footnotes[0].citation.as_deref(), Some("i"));
+        assert_eq!(doc.state().footnotes[0].at.offset, 5);
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        assert_eq!(reopened.state().footnotes[0].citation.as_deref(), Some("i"));
+        assert_eq!(
+            reopened.state().footnotes[0].paragraphs[0]
+                .runs
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<String>(),
+            "External note"
+        );
+    }
+    #[test]
+    fn external_odt_annotation_survives_edit_and_resave() {
+        let content = format!(
+            r#"<office:document-content xmlns:office="{O}" xmlns:text="{T}" xmlns:dc="{DC}"><office:body><office:text><text:p>Hello <office:annotation office:name="review"><dc:creator>Ada</dc:creator><dc:date>2026-01-02</dc:date><text:p>Review<text:s/>this</text:p></office:annotation>world<office:annotation-end office:name="review"/></text:p></office:text></office:body></office:document-content>"#
+        );
+        let styles = format!("<office:document-styles {NS}><office:automatic-styles><style:page-layout style:name=\"P\"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"P\"/></office:master-styles></office:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+            ("custom/keep.bin", b"opaque".as_slice()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let mut doc =
+            RichDocument::decode(&zip.finish().unwrap().into_inner(), Format::Odt).unwrap();
+        assert_eq!(doc.state().comments[0].text, "Review this");
+        assert_eq!(
+            (
+                doc.state().comments[0].start.offset,
+                doc.state().comments[0].end.offset
+            ),
+            (6, 11)
+        );
+        let id = doc.state().comments[0].id;
+        doc.edit_comment(id, "Updated".into(), false).unwrap();
+        let reopened =
+            RichDocument::decode(&doc.encode(Format::Odt).unwrap(), Format::Odt).unwrap();
+        assert_eq!(reopened.state().comments[0].text, "Updated");
+        assert_eq!(
+            reopened.state().comments[0].date.as_deref(),
+            Some("2026-01-02")
+        );
+        assert_eq!(reopened.state().odt_parts["custom/keep.bin"], b"opaque");
     }
     #[test]
     fn external_style_overlay_preserves_package_and_uses_namespace_aliases() {

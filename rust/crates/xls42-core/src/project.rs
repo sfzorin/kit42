@@ -7,6 +7,8 @@ struct Project {
     active: SheetId,
     next_id: SheetId,
     selection: Range,
+    #[serde(default)]
+    date_1904: bool,
     styles: Vec<CellStyle>,
     sheets: Vec<ProjectSheet>,
 }
@@ -31,6 +33,8 @@ struct ProjectSheet {
     #[serde(default)]
     pivots: Vec<Pivot>,
     #[serde(default)]
+    tables: Vec<SpreadsheetTable>,
+    #[serde(default)]
     filter: Option<SheetFilter>,
     #[serde(default)]
     print: PrintSettings,
@@ -50,6 +54,7 @@ impl Project {
             active: s.active,
             next_id: s.next_id,
             selection: s.selection,
+            date_1904: s.date_1904,
             styles: s.styles.clone(),
             sheets: s
                 .sheets
@@ -77,6 +82,7 @@ impl Project {
                     conditional_formats: sh.conditional_formats.clone(),
                     charts: sh.charts.clone(),
                     pivots: sh.pivots.clone(),
+                    tables: sh.tables.clone(),
                     filter: sh.filter.clone(),
                     print: sh.print.clone(),
                 })
@@ -98,6 +104,7 @@ impl Project {
             next_id: self.next_id,
             selection: self.selection,
             styles: self.styles,
+            date_1904: self.date_1904,
         };
         for sh in self.sheets {
             if sh.id == 0
@@ -138,6 +145,7 @@ impl Project {
             s.conditional_formats = sh.conditional_formats;
             s.charts = sh.charts;
             s.pivots = sh.pivots;
+            s.tables = sh.tables;
             if sh
                 .filter
                 .as_ref()
@@ -181,6 +189,7 @@ impl Project {
             s.col_widths = sh.col_widths;
             state.sheets.push(s);
         }
+        tables::validate_tables(&state)?;
         let mut object_ids = std::collections::BTreeSet::new();
         for sheet in &state.sheets {
             if !object_ids.insert(sheet.id) {
@@ -191,6 +200,7 @@ impl Project {
                 .iter()
                 .map(|c| c.id)
                 .chain(sheet.pivots.iter().map(|p| p.id))
+                .chain(sheet.tables.iter().map(|t| t.id))
             {
                 if !object_ids.insert(id) {
                     return Err(Error::Invalid("duplicate object ID"));
@@ -357,6 +367,8 @@ impl Workbook {
                 right: col,
             },
         )?;
+        tables::reconcile_headers(self.history.current(), &mut state)?;
+        self.validate_external_table_edit(&state)?;
         Ok(self.history.apply(state))
     }
 }

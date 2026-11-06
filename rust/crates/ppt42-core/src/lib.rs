@@ -44,6 +44,8 @@ pub struct SlideObject {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    #[serde(default)]
+    pub rotation_degrees: f64,
     pub kind: ObjectKind,
     pub fill: [u8; 3],
     pub stroke: [u8; 3],
@@ -198,6 +200,7 @@ impl Deck {
                                     && o.y.is_finite()
                                     && o.width.is_finite()
                                     && o.height.is_finite()
+                                    && o.rotation_degrees.is_finite()
                                     && o.width > 0.0
                                     && o.height > 0.0
                                     && o.text.len() <= MAX_TEXT
@@ -371,6 +374,7 @@ impl Presentation {
             y: 120.0,
             width: 180.0,
             height: 90.0,
+            rotation_degrees: 0.0,
             kind,
             fill: [220, 230, 245],
             stroke: [40, 70, 110],

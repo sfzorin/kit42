@@ -225,7 +225,7 @@ impl win42::App for Img {
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                format == "tiff"
+                matches!(format, "tiff" | "png")
                     && (if i == self.frame_index {
                         self.doc.as_ref()
                     } else {
@@ -950,6 +950,79 @@ fn main() {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    #[test]
+    fn png_with_srgb_can_save_in_place() {
+        use image::ImageEncoder;
+        use win42::App;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        png.splice(
+            33..33,
+            [
+                0, 0, 0, 1, b's', b'R', b'G', b'B', 0, 0xae, 0xce, 0x1c, 0xe9,
+            ],
+        );
+        std::fs::write(&path, png).unwrap();
+        let mut app = Img::default();
+        app.open(&path).unwrap();
+        assert!(app.can_save_in_place());
+        let (_, out) = app.save_snapshot_to("png", &path, true).unwrap().unwrap();
+        assert!(out.windows(4).any(|p| p == b"sRGB"));
+    }
+    #[test]
+    fn png_with_unpreserved_color_metadata_needs_new_destination() {
+        use image::ImageEncoder;
+        use win42::App;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let chunk = [
+            0, 0, 0, 4, b's', b'B', b'I', b'T', 8, 8, 8, 8, 124, 8, 100, 136,
+        ];
+        bytes.splice(33..33, chunk);
+        std::fs::write(&path, bytes).unwrap();
+        let mut app = Img::default();
+        app.open(&path).unwrap();
+        assert!(!app.can_save_in_place());
+        assert!(app.save_snapshot_to("png", &path, true).is_err());
+        assert!(app
+            .save_snapshot_to("png", &dir.path().join("copy.png"), false)
+            .unwrap()
+            .is_some());
+    }
+    #[test]
+    fn png16_save_tracks_published_precision() {
+        use image::ImageEncoder;
+        use win42::App;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.png");
+        let samples = [1u16, 257, 4097, 65535];
+        let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let mut input = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut input)
+            .write_image(&bytes, 1, 1, image::ExtendedColorType::Rgba16)
+            .unwrap();
+        std::fs::write(&path, input).unwrap();
+        let mut app = Img::default();
+        app.open(&path).unwrap();
+        assert!(app.doc.as_ref().unwrap().is_16bit());
+        assert!(app.can_save_in_place());
+        let (revision, encoded) = app.save_snapshot_to("png", &path, true).unwrap().unwrap();
+        app.saved_snapshot(revision);
+        assert!(app.can_save_in_place());
+        assert_eq!(app.original_16bit, vec![true]);
+        let saved = dir.path().join("saved.png");
+        std::fs::write(&saved, encoded).unwrap();
+        let reopened = ImageDocument::open(&saved).unwrap();
+        assert!(reopened.is_16bit());
+    }
     #[test]
     fn prepared_pdf_is_atomic_and_cancellable() {
         use win42::App;

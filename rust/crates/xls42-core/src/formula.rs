@@ -36,6 +36,7 @@ struct Eval<'a> {
     visiting: HashSet<(SheetId, usize, usize)>,
     steps: usize,
     text_bytes: usize,
+    now: chrono::NaiveDateTime,
 }
 impl Eval<'_> {
     fn raw(&self, sheet: SheetId, row: usize, col: usize) -> Option<&str> {
@@ -122,7 +123,9 @@ impl Eval<'_> {
                 _ => Value::Error("#VALUE!"),
             }
         } else if matches!(self.content(sheet, row, col), Some(CellContent::Date(_))) {
-            match crate::display::parse_serial(&raw).or_else(|| raw.parse::<f64>().ok()) {
+            match crate::display::workbook_parse_serial(self.book, &raw)
+                .or_else(|| raw.parse::<f64>().ok())
+            {
                 Some(v) => finite(v),
                 None => Value::Error("#VALUE!"),
             }
@@ -386,7 +389,7 @@ impl Parser<'_, '_> {
                 };
             }
             self.depth += 1;
-            if matches!(name.as_str(), "IF" | "IFERROR" | "AND" | "OR") {
+            if matches!(name.as_str(), "IF" | "IFERROR" | "IFNA" | "AND" | "OR") {
                 let value = self.lazy_conditional(&name);
                 self.depth -= 1;
                 return value;
@@ -417,6 +420,21 @@ impl Parser<'_, '_> {
         if self.depth > MAX_DEPTH {
             return Value::Error("#LIMIT!");
         }
+        if name == "LOOKUP" {
+            return self.lookup();
+        }
+        if name == "NPV" {
+            return self.npv();
+        }
+        if name == "XLOOKUP" {
+            return self.xlookup();
+        }
+        if matches!(name, "COUNTIFS" | "SUMIFS" | "AVERAGEIF" | "AVERAGEIFS") {
+            return self.conditional_aggregate(name);
+        }
+        if matches!(name, "ISBLANK" | "ISNUMBER" | "ISTEXT" | "ISERROR" | "ISNA") {
+            return self.type_predicate(name);
+        }
         if matches!(name, "COUNTIF" | "SUMIF" | "INDEX" | "MATCH" | "VLOOKUP") {
             return self.range_function(name);
         }
@@ -432,6 +450,9 @@ impl Parser<'_, '_> {
                 | "CONCAT"
                 | "CONCATENATE"
                 | "EXACT"
+                | "VALUE"
+                | "DATEVALUE"
+                | "TEXT"
         ) {
             return self.text_function(name);
         }
@@ -444,50 +465,21 @@ impl Parser<'_, '_> {
         if !self.take(b')') {
             loop {
                 let start = self.pos;
-                let reference = self.read_any_ref(self.sheet);
-                let has_colon = reference.is_some() && self.take(b':');
+                let range = if aggregate { self.read_range() } else { None };
                 self.space();
-                let single =
-                    reference.is_some() && matches!(self.input.get(self.pos), Some(b',' | b')'));
-                if aggregate && (has_colon || single) {
-                    let a = reference.unwrap();
-                    let b = if has_colon {
-                        let Some(b) = self.read_any_ref(a.0) else {
-                            return Value::Error("#ERROR!");
-                        };
-                        b
-                    } else {
-                        a
-                    };
-                    let Some(target) = self
-                        .eval
-                        .book
-                        .history
-                        .current()
-                        .sheets
-                        .iter()
-                        .find(|s| s.id == a.0)
-                    else {
-                        return Value::Error("#REF!");
-                    };
-                    if a.0 != b.0
-                        || a.1 > b.1
-                        || a.2 > b.2
-                        || b.1 >= target.rows
-                        || b.2 >= target.cols
-                    {
-                        return Value::Error("#REF!");
-                    }
-                    for r in a.1..=b.1 {
-                        for c in a.2..=b.2 {
+                if let Some((sheet, top, left, bottom, right)) =
+                    range.filter(|_| matches!(self.input.get(self.pos), Some(b',' | b')')))
+                {
+                    for r in top..=bottom {
+                        for c in left..=right {
                             self.eval.steps += 1;
                             if self.eval.steps > MAX_STEPS {
                                 return Value::Error("#LIMIT!");
                             }
-                            if !self.eval.raw(a.0, r, c).unwrap_or("").is_empty() {
-                                nonempty += 1
+                            if !self.eval.raw(sheet, r, c).unwrap_or("").is_empty() {
+                                nonempty += 1;
                             }
-                            match self.eval.range_cell(a.0, r, c, self.depth + 1) {
+                            match self.eval.range_cell(sheet, r, c, self.depth + 1) {
                                 Some(Value::Number(n)) => values.push(n),
                                 Some(Value::Error(e)) if name != "COUNT" && name != "COUNTA" => {
                                     return Value::Error(e)
@@ -555,24 +547,102 @@ impl Parser<'_, '_> {
                 let Some(date) = i32::try_from(y)
                     .ok()
                     .and_then(|y| chrono::NaiveDate::from_ymd_opt(y, month as u32, 1))
-                    .and_then(|v| v.checked_add_signed(chrono::Duration::try_days(d - 1)?))
                 else {
                     return Value::Error("#NUM!");
                 };
-                match crate::display::date_to_serial(date) {
-                    Some(n) => finite(n),
-                    None => Value::Error("#NUM!"),
+                match crate::display::workbook_date_to_serial(self.eval.book, date) {
+                    Some(n) if n + (d - 1) as f64 >= 0.0 => finite(n + (d - 1) as f64),
+                    _ => Value::Error("#NUM!"),
                 }
             }
             "YEAR" | "MONTH" | "DAY" if one => {
+                if !self.eval.book.history.current().date_1904 && values[0].floor() == 60.0 {
+                    return finite(match name {
+                        "YEAR" => 1900.0,
+                        "MONTH" => 2.0,
+                        _ => 29.0,
+                    });
+                }
                 use chrono::Datelike;
-                match crate::display::serial_to_date(values[0]) {
+                match crate::display::workbook_serial_to_date(self.eval.book, values[0]) {
                     Some(d) => finite(match name {
                         "YEAR" => d.year() as f64,
                         "MONTH" => d.month() as f64,
                         _ => d.day() as f64,
                     }),
                     None => Value::Error("#NUM!"),
+                }
+            }
+            "TODAY" if values.is_empty() => {
+                match crate::display::workbook_date_to_serial(self.eval.book, self.eval.now.date())
+                {
+                    Some(value) => finite(value),
+                    None => Value::Error("#NUM!"),
+                }
+            }
+            "NOW" if values.is_empty() => {
+                use chrono::Timelike;
+                match crate::display::workbook_date_to_serial(self.eval.book, self.eval.now.date())
+                {
+                    Some(day) => finite(
+                        day + (self.eval.now.time().num_seconds_from_midnight() as f64
+                            + self.eval.now.time().nanosecond() as f64 / 1_000_000_000.0)
+                            / 86400.0,
+                    ),
+                    None => Value::Error("#NUM!"),
+                }
+            }
+            "TIME" if values.len() == 3 => {
+                if values
+                    .iter()
+                    .any(|n| !n.is_finite() || n.abs() > 1_000_000.0)
+                {
+                    return Value::Error("#NUM!");
+                }
+                let seconds =
+                    values[0].trunc() * 3600.0 + values[1].trunc() * 60.0 + values[2].trunc();
+                if seconds < 0.0 {
+                    Value::Error("#NUM!")
+                } else {
+                    finite(seconds.rem_euclid(86400.0) / 86400.0)
+                }
+            }
+            "CEILING" | "FLOOR" if values.len() == 2 => {
+                let (number, significance) = (values[0], values[1]);
+                if significance == 0.0 {
+                    return finite(0.0);
+                }
+                if number > 0.0 && significance < 0.0 {
+                    return Value::Error("#NUM!");
+                }
+                let magnitude = significance.abs();
+                let round_up = (name == "CEILING") != (number < 0.0 && significance < 0.0);
+                finite(if round_up {
+                    (number / magnitude).ceil() * magnitude
+                } else {
+                    (number / magnitude).floor() * magnitude
+                })
+            }
+            "PMT" if (3..=5).contains(&values.len()) => {
+                let (rate, periods, present) = (values[0], values[1], values[2]);
+                let future = values.get(3).copied().unwrap_or(0.0);
+                let due = values.get(4).copied().unwrap_or(0.0);
+                if periods == 0.0 {
+                    return Value::Error("#DIV/0!");
+                }
+                if due != 0.0 && due != 1.0 {
+                    return Value::Error("#NUM!");
+                }
+                if rate == 0.0 {
+                    finite(-(present + future) / periods)
+                } else {
+                    let growth = (1.0 + rate).powf(periods);
+                    let denominator = (1.0 + rate * due) * (growth - 1.0);
+                    if denominator == 0.0 {
+                        Value::Error("#DIV/0!")
+                    } else {
+                        finite(-rate * (future + present * growth) / denominator)
+                    }
                 }
             }
             "PI" if values.is_empty() => finite(std::f64::consts::PI),
@@ -632,7 +702,74 @@ impl Parser<'_, '_> {
             _ => Value::Error("#ERROR!"),
         }
     }
+    fn read_table_range(&mut self) -> Option<(SheetId, usize, usize, usize, usize)> {
+        self.space();
+        let start = self.pos;
+        while self
+            .input
+            .get(self.pos)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            self.pos += 1;
+        }
+        if self.pos == start || self.input.get(self.pos) != Some(&b'[') {
+            self.pos = start;
+            return None;
+        }
+        let name = std::str::from_utf8(&self.input[start..self.pos]).ok()?;
+        self.pos += 1;
+        let column_start = self.pos;
+        while self.input.get(self.pos).is_some_and(|c| *c != b']') {
+            self.pos += 1;
+        }
+        if self.input.get(self.pos) != Some(&b']') {
+            self.pos = start;
+            return None;
+        }
+        let column = std::str::from_utf8(&self.input[column_start..self.pos]).ok()?;
+        self.pos += 1;
+        for sheet in &self.eval.book.history.current().sheets {
+            if let Some(table) = sheet
+                .tables
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(name))
+            {
+                let r = table.range;
+                if column.eq_ignore_ascii_case("#all") {
+                    return Some((sheet.id, r.top, r.left, r.bottom, r.right));
+                }
+                if column.eq_ignore_ascii_case("#headers") {
+                    return Some((sheet.id, r.top, r.left, r.top, r.right));
+                }
+                if column.eq_ignore_ascii_case("#totals") && table.total_row {
+                    return Some((sheet.id, r.bottom, r.left, r.bottom, r.right));
+                }
+                for col in r.left..=r.right {
+                    if sheet
+                        .cells
+                        .get(&(r.top, col))
+                        .is_some_and(|c| c.text.raw().eq_ignore_ascii_case(column))
+                    {
+                        return Some((
+                            sheet.id,
+                            r.top + 1,
+                            col,
+                            r.bottom - usize::from(table.total_row),
+                            col,
+                        ));
+                    }
+                }
+            }
+        }
+        self.pos = start;
+        None
+    }
     fn read_range(&mut self) -> Option<(SheetId, usize, usize, usize, usize)> {
+        let start = self.pos;
+        if let Some(range) = self.read_table_range() {
+            return Some(range);
+        }
+        self.pos = start;
         let first = self.read_any_ref(self.sheet)?;
         let last = if self.take(b':') {
             self.read_any_ref(first.0)?
@@ -654,6 +791,469 @@ impl Parser<'_, '_> {
             return None;
         }
         Some((first.0, first.1, first.2, last.1, last.2))
+    }
+    fn lookup(&mut self) -> Value {
+        let needle = self.comparison();
+        if matches!(needle, Value::Error(_)) {
+            return needle;
+        }
+        if !self.take(b',') {
+            return Value::Error("#ERROR!");
+        }
+        let Some(lookup) = self.read_range() else {
+            return Value::Error("#REF!");
+        };
+        let result = if self.take(b',') {
+            let Some(range) = self.read_range() else {
+                return Value::Error("#REF!");
+            };
+            range
+        } else {
+            lookup
+        };
+        if !self.take(b')') {
+            return Value::Error("#ERROR!");
+        }
+        let vertical = lookup.2 == lookup.4;
+        if !vertical && lookup.1 != lookup.3 {
+            return Value::Error("#VALUE!");
+        }
+        let length = if vertical {
+            lookup.3 - lookup.1 + 1
+        } else {
+            lookup.4 - lookup.2 + 1
+        };
+        if vertical && (result.2 != result.4 || result.3 - result.1 + 1 != length)
+            || !vertical && (result.1 != result.3 || result.4 - result.2 + 1 != length)
+        {
+            return Value::Error("#VALUE!");
+        }
+        let mut best: Option<(usize, Value)> = None;
+        for index in 0..length {
+            self.eval.steps += 1;
+            if self.eval.steps > MAX_STEPS {
+                return Value::Error("#LIMIT!");
+            }
+            let value = self.eval.cell(
+                lookup.0,
+                lookup.1 + if vertical { index } else { 0 },
+                lookup.2 + if vertical { 0 } else { index },
+                self.depth + 1,
+            );
+            let eligible = lookup_order(&value, &needle).is_some_and(|o| !o.is_gt());
+            let better = best.as_ref().is_none_or(|(_, previous)| {
+                lookup_order(&value, previous).is_some_and(|o| !o.is_lt())
+            });
+            if eligible && better {
+                best = Some((index, value));
+            }
+        }
+        if let Some((index, _)) = best {
+            self.eval.cell(
+                result.0,
+                result.1 + if vertical { index } else { 0 },
+                result.2 + if vertical { 0 } else { index },
+                self.depth + 1,
+            )
+        } else {
+            Value::Error("#N/A")
+        }
+    }
+    fn npv(&mut self) -> Value {
+        let rate = match self.comparison() {
+            Value::Number(n) => n,
+            Value::Error(e) => return Value::Error(e),
+            _ => return Value::Error("#VALUE!"),
+        };
+        if rate == -1.0 {
+            return Value::Error("#DIV/0!");
+        }
+        if !self.take(b',') {
+            return Value::Error("#ERROR!");
+        }
+        let mut period = 0i32;
+        let mut total = 0.0;
+        loop {
+            let start = self.pos;
+            if let Some(range) = self.read_range() {
+                self.space();
+                if matches!(self.input.get(self.pos), Some(b',' | b')')) {
+                    for row in range.1..=range.3 {
+                        for col in range.2..=range.4 {
+                            self.eval.steps += 1;
+                            if self.eval.steps > MAX_STEPS {
+                                return Value::Error("#LIMIT!");
+                            }
+                            match self.eval.range_cell(range.0, row, col, self.depth + 1) {
+                                Some(Value::Number(value)) => {
+                                    period += 1;
+                                    total += value / (1.0 + rate).powi(period);
+                                }
+                                Some(Value::Error(e)) => return Value::Error(e),
+                                _ => {}
+                            }
+                        }
+                    }
+                } else {
+                    self.pos = start;
+                    let value = self.comparison();
+                    match value {
+                        Value::Number(n) => {
+                            period += 1;
+                            total += n / (1.0 + rate).powi(period);
+                        }
+                        Value::Error(e) => return Value::Error(e),
+                        _ => return Value::Error("#VALUE!"),
+                    }
+                }
+            } else {
+                self.pos = start;
+                match self.comparison() {
+                    Value::Number(n) => {
+                        period += 1;
+                        total += n / (1.0 + rate).powi(period);
+                    }
+                    Value::Error(e) => return Value::Error(e),
+                    _ => return Value::Error("#VALUE!"),
+                }
+            }
+            if self.take(b')') {
+                break;
+            }
+            if !self.take(b',') {
+                return Value::Error("#ERROR!");
+            }
+        }
+        finite(total)
+    }
+    fn xlookup(&mut self) -> Value {
+        let needle = self.comparison();
+        if matches!(needle, Value::Error(_)) {
+            return needle;
+        }
+        if !self.take(b',') {
+            return Value::Error("#ERROR!");
+        }
+        let Some(lookup) = self.read_range() else {
+            return Value::Error("#REF!");
+        };
+        if !self.take(b',') {
+            return Value::Error("#ERROR!");
+        }
+        let Some(result) = self.read_range() else {
+            return Value::Error("#REF!");
+        };
+        let vertical = lookup.2 == lookup.4;
+        if !vertical && lookup.1 != lookup.3 {
+            return Value::Error("#VALUE!");
+        }
+        let length = if vertical {
+            lookup.3 - lookup.1 + 1
+        } else {
+            lookup.4 - lookup.2 + 1
+        };
+        if vertical && (result.2 != result.4 || result.3 - result.1 + 1 != length)
+            || !vertical && (result.1 != result.3 || result.4 - result.2 + 1 != length)
+        {
+            return Value::Error("#VALUE!");
+        }
+        let fallback = if self.take(b',') {
+            let start = self.pos;
+            let mut i = start;
+            let mut nesting = 0usize;
+            let mut quoted = false;
+            let mut sheet_quoted = false;
+            loop {
+                let Some(&ch) = self.input.get(i) else {
+                    return Value::Error("#ERROR!");
+                };
+                if ch == b'"' && !sheet_quoted {
+                    if quoted && self.input.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                        continue;
+                    }
+                    quoted = !quoted;
+                } else if ch == b'\'' && !quoted {
+                    if sheet_quoted && self.input.get(i + 1) == Some(&b'\'') {
+                        i += 2;
+                        continue;
+                    }
+                    sheet_quoted = !sheet_quoted;
+                }
+                if !quoted && !sheet_quoted {
+                    match ch {
+                        b'(' => nesting += 1,
+                        b')' if nesting == 0 => break,
+                        b')' => nesting -= 1,
+                        b',' if nesting == 0 => break,
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            self.pos = i;
+            Some(&self.input[start..i])
+        } else {
+            None
+        };
+        let mode = if fallback.is_some() && self.take(b',') {
+            if self.input.get(self.pos) == Some(&b',') || self.input.get(self.pos) == Some(&b')') {
+                0
+            } else {
+                match self.comparison() {
+                    Value::Number(n) if [-1.0, 0.0, 1.0, 2.0].contains(&n) => n as i32,
+                    Value::Error(e) => return Value::Error(e),
+                    _ => return Value::Error("#VALUE!"),
+                }
+            }
+        } else {
+            0
+        };
+        let reverse = if self.take(b',') {
+            match self.comparison() {
+                Value::Number(-1.0) => true,
+                Value::Number(1.0) => false,
+                Value::Error(e) => return Value::Error(e),
+                _ => return Value::Error("#VALUE!"),
+            }
+        } else {
+            false
+        };
+        if !self.take(b')') {
+            return Value::Error("#ERROR!");
+        }
+        let mut best: Option<(usize, Value)> = None;
+        for offset in 0..length {
+            let index = if reverse { length - offset - 1 } else { offset };
+            self.eval.steps += 1;
+            if self.eval.steps > MAX_STEPS {
+                return Value::Error("#LIMIT!");
+            }
+            let value = self.eval.cell(
+                lookup.0,
+                lookup.1 + if vertical { index } else { 0 },
+                lookup.2 + if vertical { 0 } else { index },
+                self.depth + 1,
+            );
+            if mode == 2 {
+                if let (Value::Text(pattern), Value::Text(text)) = (&needle, &value) {
+                    self.eval.steps = self
+                        .eval
+                        .steps
+                        .saturating_add(pattern.len().saturating_mul(text.len()));
+                    if self.eval.steps > MAX_STEPS {
+                        return Value::Error("#LIMIT!");
+                    }
+                }
+            }
+            let equal = lookup_equal(&needle, &value)
+                || mode == 2
+                    && matches!((&needle, &value), (Value::Text(pattern), Value::Text(text)) if wildcard(pattern, text));
+            if equal {
+                return self.eval.cell(
+                    result.0,
+                    result.1 + if vertical { index } else { 0 },
+                    result.2 + if vertical { 0 } else { index },
+                    self.depth + 1,
+                );
+            }
+            if mode == -1 || mode == 1 {
+                let valid = lookup_order(&value, &needle).is_some_and(|o| {
+                    if mode == -1 {
+                        o.is_lt()
+                    } else {
+                        o.is_gt()
+                    }
+                });
+                let better = best.as_ref().is_none_or(|(_, old)| {
+                    lookup_order(&value, old).is_some_and(|o| {
+                        if mode == -1 {
+                            o.is_gt()
+                        } else {
+                            o.is_lt()
+                        }
+                    })
+                });
+                if valid && better {
+                    best = Some((index, value));
+                }
+            }
+        }
+        if let Some((index, _)) = best {
+            return self.eval.cell(
+                result.0,
+                result.1 + if vertical { index } else { 0 },
+                result.2 + if vertical { 0 } else { index },
+                self.depth + 1,
+            );
+        }
+        if let Some(input) = fallback.filter(|input| !input.iter().all(u8::is_ascii_whitespace)) {
+            let mut p = Parser {
+                input,
+                pos: 0,
+                eval: self.eval,
+                depth: self.depth,
+                sheet: self.sheet,
+            };
+            let value = p.comparison();
+            p.space();
+            if p.pos == input.len() {
+                value
+            } else {
+                Value::Error("#ERROR!")
+            }
+        } else {
+            Value::Error("#N/A")
+        }
+    }
+    fn type_predicate(&mut self, name: &str) -> Value {
+        let start = self.pos;
+        if name == "ISBLANK" {
+            if let Some((sheet, row, col)) = self.read_any_ref(self.sheet) {
+                if self.take(b')') {
+                    if self.eval.raw(sheet, row, col).is_none() {
+                        return Value::Error("#REF!");
+                    }
+                    return Value::Boolean(self.eval.content(sheet, row, col).is_none());
+                }
+            }
+            self.pos = start;
+        }
+        let value = self.comparison();
+        if !self.take(b')') {
+            return Value::Error("#ERROR!");
+        }
+        Value::Boolean(match name {
+            "ISBLANK" => false,
+            "ISNUMBER" => matches!(value, Value::Number(_)),
+            "ISTEXT" => matches!(value, Value::Text(_)),
+            "ISERROR" => matches!(value, Value::Error(_)),
+            "ISNA" => value == Value::Error("#N/A"),
+            _ => false,
+        })
+    }
+    fn conditional_aggregate(&mut self, name: &str) -> Value {
+        let aggregate = if matches!(name, "SUMIFS" | "AVERAGEIFS") {
+            let Some(range) = self.read_range() else {
+                return Value::Error("#REF!");
+            };
+            if !self.take(b',') {
+                return Value::Error("#ERROR!");
+            }
+            Some(range)
+        } else {
+            None
+        };
+        let mut criteria = Vec::new();
+        loop {
+            let Some(range) = self.read_range() else {
+                return Value::Error("#REF!");
+            };
+            if !self.take(b',') {
+                return Value::Error("#ERROR!");
+            }
+            let criterion = self.comparison();
+            if let Value::Error(_) = criterion {
+                return criterion;
+            }
+            criteria.push((range, criterion));
+            if criteria.len() > 127 {
+                return Value::Error("#LIMIT!");
+            }
+            if name == "AVERAGEIF" {
+                break;
+            }
+            if self.take(b')') {
+                break;
+            }
+            if !self.take(b',') {
+                return Value::Error("#ERROR!");
+            }
+        }
+        let aggregate = if name == "AVERAGEIF" {
+            let selected = if self.take(b',') {
+                let Some(r) = self.read_range() else {
+                    return Value::Error("#REF!");
+                };
+                r
+            } else {
+                criteria[0].0
+            };
+            if !self.take(b')') {
+                return Value::Error("#ERROR!");
+            }
+            Some(selected)
+        } else {
+            aggregate
+        };
+        let base = criteria[0].0;
+        let height = base.3 - base.1 + 1;
+        let width = base.4 - base.2 + 1;
+        if criteria
+            .iter()
+            .any(|(r, _)| r.3 - r.1 + 1 != height || r.4 - r.2 + 1 != width)
+            || aggregate.is_some_and(|r| r.3 - r.1 + 1 != height || r.4 - r.2 + 1 != width)
+        {
+            return Value::Error("#VALUE!");
+        }
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for row in 0..height {
+            for col in 0..width {
+                let mut matched = true;
+                for (range, criterion) in &criteria {
+                    self.eval.steps = self.eval.steps.saturating_add(1);
+                    if self.eval.steps > MAX_STEPS {
+                        return Value::Error("#LIMIT!");
+                    }
+                    let r = range.1 + row;
+                    let c = range.2 + col;
+                    let raw = self.eval.raw(range.0, r, c).unwrap_or("").to_owned();
+                    let value = self.eval.cell(range.0, r, c, self.depth + 1);
+                    if let Value::Text(spec) = criterion {
+                        if spec.contains(['*', '?', '~']) {
+                            self.eval.steps = self
+                                .eval
+                                .steps
+                                .saturating_add(spec.len().saturating_mul(raw.len()));
+                            if self.eval.steps > MAX_STEPS {
+                                return Value::Error("#LIMIT!");
+                            }
+                        }
+                    }
+                    if !criterion_matches(&value, &raw, criterion) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if !matched {
+                    continue;
+                }
+                if let Some(target) = aggregate {
+                    match self.eval.range_cell(
+                        target.0,
+                        target.1 + row,
+                        target.2 + col,
+                        self.depth + 1,
+                    ) {
+                        Some(Value::Number(n)) => {
+                            sum += n;
+                            count += 1;
+                        }
+                        Some(Value::Error(e)) => return Value::Error(e),
+                        _ => {}
+                    }
+                } else {
+                    count += 1;
+                }
+            }
+        }
+        match name {
+            "COUNTIFS" => finite(count as f64),
+            "SUMIFS" => finite(sum),
+            _ if count == 0 => Value::Error("#DIV/0!"),
+            _ => finite(sum / count as f64),
+        }
     }
     fn range_function(&mut self, name: &str) -> Value {
         if name == "COUNTIF" || name == "SUMIF" {
@@ -909,6 +1509,48 @@ impl Parser<'_, '_> {
             }
         };
         let result = match name {
+            "VALUE" if args.len() == 1 => {
+                let text = string(0).unwrap();
+                let trimmed = text.trim();
+                if let Some(value) = trimmed
+                    .strip_suffix('%')
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                {
+                    finite(value / 100.0)
+                } else if let Ok(value) = trimmed.parse::<f64>() {
+                    finite(value)
+                } else if let Some(value) =
+                    crate::display::workbook_parse_serial(self.eval.book, trimmed)
+                {
+                    finite(value)
+                } else {
+                    Value::Error("#VALUE!")
+                }
+            }
+            "DATEVALUE" if args.len() == 1 => {
+                let text = string(0).unwrap();
+                if !self.eval.book.history.current().date_1904 && text.trim() == "1900-02-29" {
+                    return Value::Number(60.0);
+                }
+                match chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+                    .ok()
+                    .and_then(|date| crate::display::workbook_date_to_serial(self.eval.book, date))
+                {
+                    Some(n) => finite(n),
+                    None => Value::Error("#VALUE!"),
+                }
+            }
+            "TEXT" if args.len() == 2 => {
+                let value = match args[0] {
+                    Value::Number(n) => n,
+                    _ => return Value::Error("#VALUE!"),
+                };
+                let code = string(1).unwrap();
+                match format_formula_number(self.eval.book, value, &code) {
+                    Some(s) => Value::Text(s),
+                    None => Value::Error("#VALUE!"),
+                }
+            }
             "LEN" if args.len() == 1 => Value::Number(string(0).unwrap().chars().count() as f64),
             "LOWER" if args.len() == 1 => Value::Text(string(0).unwrap().to_lowercase()),
             "UPPER" if args.len() == 1 => Value::Text(string(0).unwrap().to_uppercase()),
@@ -1074,7 +1716,7 @@ impl Parser<'_, '_> {
             return Value::Error("#ERROR!");
         }
         if (name == "IF" && segments.len() != 3)
-            || (name == "IFERROR" && segments.len() != 2)
+            || (matches!(name, "IFERROR" | "IFNA") && segments.len() != 2)
             || ((name == "AND" || name == "OR") && segments.is_empty())
         {
             return Value::Error("#ERROR!");
@@ -1114,8 +1756,10 @@ impl Parser<'_, '_> {
             return Value::Boolean(name == "AND");
         }
         let first = eval_arg(self, 0);
-        if name == "IFERROR" {
-            if matches!(first, Value::Error(_)) {
+        if matches!(name, "IFERROR" | "IFNA") {
+            if matches!(first, Value::Error(_))
+                && (name == "IFERROR" || first == Value::Error("#N/A"))
+            {
                 eval_arg(self, 1)
             } else {
                 first
@@ -1198,6 +1842,52 @@ fn wildcard(pattern: &str, value: &str) -> bool {
         i += 1
     }
     previous[v.len()]
+}
+fn format_formula_number(book: &Workbook, value: f64, format: &str) -> Option<String> {
+    let format = format.trim().to_ascii_lowercase();
+    if format == "general" {
+        return Some(value.to_string());
+    }
+    if matches!(
+        format.as_str(),
+        "yyyy-mm-dd" | "m/d/yy" | "mm-dd-yy" | "d-mmm-yy"
+    ) {
+        if !book.history.current().date_1904 && value.floor() == 60.0 {
+            return Some(
+                match format.as_str() {
+                    "yyyy-mm-dd" => "1900-02-29",
+                    "m/d/yy" => "2/29/00",
+                    "mm-dd-yy" => "02-29-00",
+                    _ => "29-Feb-00",
+                }
+                .into(),
+            );
+        }
+        use chrono::Datelike;
+        let date = crate::display::workbook_serial_to_date(book, value)?;
+        return Some(match format.as_str() {
+            "yyyy-mm-dd" => date.format("%Y-%m-%d").to_string(),
+            "m/d/yy" => format!("{}/{}/{:02}", date.month(), date.day(), date.year() % 100),
+            "mm-dd-yy" => date.format("%m-%d-%y").to_string(),
+            _ => date.format("%-d-%b-%y").to_string(),
+        });
+    }
+    let (pattern, percent) = format
+        .strip_suffix('%')
+        .map_or((format.as_str(), false), |s| (s, true));
+    let decimals = match pattern {
+        "0" => 0,
+        "0.0" => 1,
+        "0.00" => 2,
+        "0.000" => 3,
+        _ => return None,
+    };
+    Some(format!(
+        "{:.*}{}",
+        decimals,
+        if percent { value * 100.0 } else { value },
+        if percent { "%" } else { "" }
+    ))
 }
 fn criterion_matches(value: &Value, raw: &str, criterion: &Value) -> bool {
     let Value::Text(spec) = criterion else {
@@ -1315,12 +2005,16 @@ fn calc(a: Value, b: Value, op: u8) -> Value {
 }
 
 pub(crate) fn display_grid(book: &Workbook) -> Vec<Vec<String>> {
+    display_grid_at(book, chrono::Local::now().naive_local())
+}
+pub(crate) fn display_grid_at(book: &Workbook, now: chrono::NaiveDateTime) -> Vec<Vec<String>> {
     let mut eval = Eval {
         book,
         cache: HashMap::new(),
         visiting: HashSet::new(),
         steps: 0,
         text_bytes: 0,
+        now,
     };
     (0..book.rows())
         .map(|r| {
@@ -1345,6 +2039,105 @@ pub(crate) fn display_cell(book: &Workbook, row: usize, col: usize) -> String {
         visiting: HashSet::new(),
         steps: 0,
         text_bytes: 0,
+        now: chrono::Local::now().naive_local(),
     };
     eval.cell(book.active_sheet(), row, col, 0).display()
+}
+
+#[cfg(test)]
+mod common_formula_regression {
+    use super::*;
+    #[test]
+    fn lookup_modes_finance_and_excel_leap_day() {
+        let mut book = Workbook::new(12, 4).unwrap();
+        for (row, value) in [1, 3, 5].into_iter().enumerate() {
+            book.set_cell(row, 0, value.to_string()).unwrap();
+            book.set_cell(row, 1, (value * 10).to_string()).unwrap();
+        }
+        for (row, formula, expected) in [
+            (3, "=XLOOKUP(4,A1:A3,B1:B3,, -1)", "30"),
+            (4, "=XLOOKUP(4,A1:A3,B1:B3,, 1)", "50"),
+            (5, "=LOOKUP(4,A1:A3,B1:B3)", "30"),
+            (6, "=NPV(0,10,20,30)", "60"),
+            (7, "=DATE(1900,2,29)", "60"),
+            (8, "=DAY(60)", "29"),
+            (9, "=CEILING(-2.3,-1)", "-3"),
+        ] {
+            book.set_cell(row, 0, formula.into()).unwrap();
+            assert_eq!(book.display_grid()[row][0], expected, "{formula}");
+        }
+    }
+    #[test]
+    fn formulas_respect_the_1904_date_system() {
+        let mut book = Workbook::new(3, 3).unwrap();
+        let mut state = book.history.current().clone();
+        state.date_1904 = true;
+        book.history.apply(state);
+        book.set_cell(0, 0, "=DATE(1904,1,1)".into()).unwrap();
+        book.set_cell(1, 0, "=YEAR(0)".into()).unwrap();
+        book.set_cell(2, 0, "=TEXT(0,\"yyyy-mm-dd\")".into())
+            .unwrap();
+        let grid = display_grid_at(
+            &book,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        );
+        assert_eq!(grid[0][0], "0");
+        assert_eq!(grid[1][0], "1904");
+        assert_eq!(grid[2][0], "1904-01-01");
+    }
+    #[test]
+    fn recalc_uses_one_injected_local_time() {
+        let mut book = Workbook::new(2, 3).unwrap();
+        book.set_cell(0, 0, "=TODAY()".into()).unwrap();
+        book.set_cell(0, 1, "=NOW()-TODAY()".into()).unwrap();
+        book.set_cell(0, 2, "=NOW()-NOW()".into()).unwrap();
+        let time = chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let grid = display_grid_at(&book, time);
+        assert_eq!(grid[0][0], "45292");
+        assert_eq!(grid[0][1], "0.5");
+        assert_eq!(grid[0][2], "0");
+    }
+    #[test]
+    fn conditional_aggregation_predicates_and_financial_functions() {
+        let mut book = Workbook::new(20, 8).unwrap();
+        for (row, (kind, region, amount)) in [
+            ("apple", "east", "10"),
+            ("apple", "west", "20"),
+            ("pear", "east", "30"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            book.set_cell(row, 0, kind.into()).unwrap();
+            book.set_cell(row, 1, region.into()).unwrap();
+            book.set_cell(row, 2, amount.into()).unwrap();
+        }
+        for (row, formula, expected) in [
+            (3, "=SUMIFS(C1:C3,A1:A3,\"apple\",B1:B3,\"east\")", "10"),
+            (4, "=COUNTIFS(A1:A3,\"a*\",C1:C3,\">10\")", "1"),
+            (5, "=AVERAGEIF(A1:A3,\"apple\",C1:C3)", "15"),
+            (6, "=AVERAGEIFS(C1:C3,B1:B3,\"east\")", "20"),
+            (7, "=ISBLANK(H1)", "TRUE"),
+            (8, "=ISNUMBER(C1)", "TRUE"),
+            (9, "=ISTEXT(A1)", "TRUE"),
+            (10, "=ISERROR(1/0)", "TRUE"),
+            (11, "=IFNA(1/0,5)", "#DIV/0!"),
+            (12, "=PMT(0,10,100)", "-10"),
+            (13, "=CEILING(2.3,1)", "3"),
+            (14, "=XLOOKUP(\"pear\",A1:A3,C1:C3)", "30"),
+            (15, "=XLOOKUP(\"missing\",A1:A3,C1:C3,77)", "77"),
+            (16, "=TEXT(1.234,\"0.00\")", "1.23"),
+            (17, "=VALUE(\"25%\")", "0.25"),
+            (18, "=DATEVALUE(\"2024-01-01\")", "45292"),
+        ] {
+            book.set_cell(row, 0, formula.into()).unwrap();
+            assert_eq!(book.display_grid()[row][0], expected, "{formula}");
+        }
+    }
 }

@@ -116,6 +116,22 @@ impl Workbook {
     pub fn effective_style(&self, row: usize, col: usize) -> Option<CellStyle> {
         let mut style = self.style(row, col)?.clone();
         let s = self.history.current().sheet();
+        if let Some(table) = s
+            .tables
+            .iter()
+            .find(|table| contains(table.range, row, col))
+        {
+            if row == table.range.top {
+                style.bold = true;
+                style.foreground.get_or_insert(0xffffff);
+                style.background.get_or_insert(0x35618b);
+            } else if table.total_row && row == table.range.bottom {
+                style.bold = true;
+                style.background.get_or_insert(0xdbe8f4);
+            } else if (row - table.range.top) % 2 == 0 {
+                style.background.get_or_insert(0xeaf2f8);
+            }
+        }
         let relevant: Vec<_> = s
             .conditional_formats
             .iter()

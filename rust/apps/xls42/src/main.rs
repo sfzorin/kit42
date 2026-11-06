@@ -170,6 +170,8 @@ impl win42::App for Xls {
             (65, "Set row height..."),
             (66, "Set column width..."),
             (67, "Move current sheet..."),
+            (68, "Format selection as table..."),
+            (69, "Remove table at selection"),
         ]
         .into_iter()
         .map(|(id, title)| win42::CommandSpec {
@@ -272,6 +274,13 @@ impl win42::App for Xls {
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let (title, fields) = match id {
             20 | 21 | 22 => ("Sheet name", vec![("Name", String::new())]),
+            68 => (
+                "Create table from selection",
+                vec![
+                    ("Table name", "Table1".into()),
+                    ("Total row (yes/no)", "no".into()),
+                ],
+            ),
             24 => ("Switch sheet", vec![("Sheet name", String::new())]),
             25 | 27 => (
                 "Range (1-based)",
@@ -500,8 +509,20 @@ impl win42::App for Xls {
                     .map_err(|e| e.to_string())?;
             }
             28 => {
+                let mut range = self.active_range();
+                if let Some(table) = self.book.tables().iter().find(|table| table.range == range) {
+                    range.top += 1;
+                    if table.total_row {
+                        range.bottom -= 1;
+                    }
+                }
                 self.book
-                    .sort_range(self.active_range(), n(0)?, v[1].eq_ignore_ascii_case("yes"))
+                    .sort_range(range, n(0)?, v[1].eq_ignore_ascii_case("yes"))
+                    .map_err(|e| e.to_string())?;
+            }
+            68 => {
+                self.book
+                    .add_table(&v[0], self.active_range(), v[1].eq_ignore_ascii_case("yes"))
                     .map_err(|e| e.to_string())?;
             }
             67 => {
@@ -1089,6 +1110,21 @@ impl win42::App for Xls {
             11 => {
                 self.book.add_column().map_err(|e| e.to_string())?;
             }
+            69 => {
+                let table = self
+                    .book
+                    .tables()
+                    .iter()
+                    .find(|table| {
+                        self.row >= table.range.top
+                            && self.row <= table.range.bottom
+                            && self.col >= table.range.left
+                            && self.col <= table.range.right
+                    })
+                    .ok_or("Select a cell in a table")?
+                    .id;
+                self.book.remove_table(table).map_err(|e| e.to_string())?;
+            }
             23 => {
                 self.book
                     .delete_sheet(self.book.active_sheet())
@@ -1198,6 +1234,35 @@ mod tests {
 mod regression {
     use super::*;
     use win42::App;
+    #[test]
+    fn table_commands_create_style_and_convert_to_range() {
+        let mut app = Xls {
+            book: Workbook::new(5, 2).unwrap(),
+            row: 0,
+            col: 0,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        app.book.set_cell(0, 0, "Amount".into()).unwrap();
+        app.book.set_cell(1, 0, "10".into()).unwrap();
+        app.book.set_cell(2, 0, "20".into()).unwrap();
+        app.book
+            .set_selection(Range {
+                top: 0,
+                left: 0,
+                bottom: 3,
+                right: 0,
+            })
+            .unwrap();
+        app.input_action(68, &["Sales".into(), "yes".into()])
+            .unwrap();
+        assert_eq!(app.book.display_grid()[3][0], "30");
+        assert!(app.grid_cell_style(0, 0).unwrap().bold);
+        app.action(69).unwrap();
+        assert!(app.book.tables().is_empty());
+        app.action(4).unwrap();
+        assert_eq!(app.book.tables().len(), 1);
+    }
     #[test]
     fn same_shape_open_and_keyboard_selection_edit_the_visible_destination() {
         let root =

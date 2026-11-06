@@ -138,6 +138,7 @@ impl Workbook {
         }
         let formats: Vec<_> = state.styles.iter().map(format).collect();
         let mut book = Xlsx::new();
+        let recalc_time = chrono::Local::now().naive_local();
         for sheet in &state.sheets {
             let ws = book.add_worksheet();
             ws.set_name(&sheet.name)
@@ -176,7 +177,7 @@ impl Workbook {
                 external_format: None,
                 external_cache: BTreeMap::new(),
             };
-            let grid = formula::display_grid(&eval);
+            let grid = formula::display_grid_at(&eval, recalc_time);
             for (&(r, c), cell) in &sheet.cells {
                 let (r, c) = (r as u32, c as u16);
                 let f = &formats[cell.style];
@@ -211,6 +212,37 @@ impl Workbook {
                 }
                 .map_err(|_| Error::Invalid("cannot encode XLSX cell"))?;
             }
+            for table in &sheet.tables {
+                use rust_xlsxwriter::{Table, TableColumn, TableFunction};
+                let columns: Vec<_> = (table.range.left..=table.range.right)
+                    .map(|column| {
+                        let header = sheet
+                            .cells
+                            .get(&(table.range.top, column))
+                            .map(|c| c.text.raw())
+                            .unwrap_or("");
+                        let column = TableColumn::new().set_header(header);
+                        if table.total_row {
+                            column.set_total_function(TableFunction::Sum)
+                        } else {
+                            column
+                        }
+                    })
+                    .collect();
+                let table_format = Table::new()
+                    .set_name(&table.name)
+                    .set_columns(&columns)
+                    .set_total_row(table.total_row)
+                    .set_autofilter(sheet.filter.is_none());
+                ws.add_table(
+                    table.range.top as u32,
+                    table.range.left as u16,
+                    table.range.bottom as u32,
+                    table.range.right as u16,
+                    &table_format,
+                )
+                .map_err(|_| Error::Invalid("Cannot encode spreadsheet table"))?;
+            }
             if let Some(filter) = &sheet.filter {
                 use rust_xlsxwriter::{FilterCondition, FilterCriteria};
                 let r = filter.range;
@@ -225,7 +257,7 @@ impl Workbook {
                     .add_custom_filter(FilterCriteria::Contains, escaped.as_str());
                 ws.filter_column(filter.column as u16, &condition)
                     .map_err(|_| Error::Invalid("cannot encode XLSX filter"))?;
-                let grid = eval.display_grid();
+                let grid = eval.display_grid_at(recalc_time);
                 let needle = filter.contains.to_lowercase();
                 for row in r.top + 1..=r.bottom {
                     if !grid[row][filter.column].to_lowercase().contains(&needle) {
@@ -401,6 +433,11 @@ impl Workbook {
         let bytes = book
             .save_to_buffer()
             .map_err(|_| Error::Invalid("cannot encode XLSX"))?;
+        let bytes = if state.date_1904 {
+            set_generated_xlsx_1904(&bytes)?
+        } else {
+            bytes
+        };
         embed(bytes, "xlsx", self.project_bytes()?)
     }
     pub fn open_office(path: &Path, kind: &str) -> Result<Self, Error> {
@@ -432,6 +469,113 @@ impl Workbook {
         }
         Self::from_external_office(bytes, kind)
     }
+}
+fn set_generated_xlsx_1904(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("Invalid XLSX"))?;
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|_| Error::Invalid("Invalid XLSX"))?;
+        if file.name() == "xl/workbook.xml" {
+            let mut text = String::new();
+            file.read_to_string(&mut text)?;
+            let d = xml(&text)?;
+            let node = d
+                .descendants()
+                .find(|n| n.has_tag_name("workbookPr"))
+                .ok_or(Error::Invalid("Missing workbook properties"))?;
+            let range = node.range();
+            let part =
+                crate::xlsx_styles::attrs(&text[range.clone()], &[("date1904", "1".into())])?;
+            text.replace_range(range, &part);
+            writer
+                .start_file("xl/workbook.xml", zip::write::SimpleFileOptions::default())
+                .map_err(|_| Error::Invalid("Cannot write XLSX"))?;
+            writer.write_all(text.as_bytes())?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|_| Error::Invalid("Cannot preserve XLSX part"))?;
+        }
+    }
+    Ok(writer
+        .finish()
+        .map_err(|_| Error::Invalid("Cannot write XLSX"))?
+        .into_inner())
+}
+fn add_ods_database_ranges(bytes: &[u8], state: &State) -> Result<Vec<u8>, Error> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("Invalid ODS"))?;
+    let content =
+        zip_text(&mut archive, "content.xml")?.ok_or(Error::Invalid("Missing ODS content"))?;
+    let d = xml(&content)?;
+    let spreadsheet = d
+        .descendants()
+        .find(|n| n.has_tag_name("spreadsheet"))
+        .ok_or(Error::Invalid("Missing ODS spreadsheet"))?;
+    let prefix = spreadsheet
+        .children()
+        .find(|n| n.has_tag_name("table"))
+        .map(|n| prefix(&content[n.range()]))
+        .unwrap_or("table:");
+    let mut items = String::new();
+    for sheet in &state.sheets {
+        for table in &sheet.tables {
+            let sheet_name = sheet.name.replace('\'', "''");
+            let r = table.range;
+            let target = format!(
+                "'{}'.$${}${}:'{}'.$${}${}",
+                sheet_name,
+                col_name(r.left),
+                r.top + 1,
+                sheet_name,
+                col_name(r.right),
+                r.bottom + 1
+            )
+            .replace("$$", "$");
+            items.push_str(&format!("<{prefix}database-range {prefix}name=\"{}\" {prefix}target-range-address=\"{}\" {prefix}contains-header=\"true\" {prefix}display-filter-buttons=\"true\"/>", escape_xml(&table.name), escape_xml(&target)));
+        }
+    }
+    let insert = spreadsheet
+        .children()
+        .filter(|n| n.has_tag_name("table"))
+        .map(|n| n.range().end)
+        .max()
+        .ok_or(Error::Invalid("Missing ODS sheets"))?;
+    let mut content = content.clone();
+    content.insert_str(
+        insert,
+        &format!("<{prefix}database-ranges>{items}</{prefix}database-ranges>"),
+    );
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|_| Error::Invalid("Invalid ODS"))?;
+        let name = file.name().to_owned();
+        if name == EXTRA {
+            continue;
+        }
+        if name == "content.xml" {
+            writer
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default().compression_method(file.compression()),
+                )
+                .map_err(|_| Error::Invalid("Cannot write ODS"))?;
+            writer.write_all(content.as_bytes())?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|_| Error::Invalid("Cannot preserve ODS"))?;
+        }
+    }
+    Ok(writer
+        .finish()
+        .map_err(|_| Error::Invalid("Cannot write ODS"))?
+        .into_inner())
 }
 fn ods_formula_to_a1(input: &str) -> Option<String> {
     let input = input
@@ -633,6 +777,101 @@ impl Workbook {
             CellStyle as OdsStyle, Length, Sheet, WorkBook,
         };
         let state = self.history.current();
+        let recalc_time = chrono::Local::now().naive_local();
+        if state.date_1904 {
+            return Err(Error::Invalid(
+                "Native export of the 1904 date system is not yet supported",
+            ));
+        }
+        if state.sheets.iter().any(|s| !s.tables.is_empty()) {
+            let mut converted_state = state.clone();
+            let mut cells = 0usize;
+            let mut style_cache = BTreeMap::new();
+            for sheet in &mut converted_state.sheets {
+                for table in &sheet.tables {
+                    let range = table.range;
+                    cells = cells.saturating_add(
+                        (range.bottom - range.top + 1).saturating_mul(range.right - range.left + 1),
+                    );
+                    if cells > MAX_ROWS * MAX_COLS {
+                        return Err(Error::Limit);
+                    }
+                    for row in range.top..=range.bottom {
+                        for col in range.left..=range.right {
+                            let role = if row == range.top {
+                                1
+                            } else if table.total_row && row == range.bottom {
+                                2
+                            } else if (row - range.top) % 2 == 0 {
+                                3
+                            } else {
+                                0
+                            };
+                            if role == 0 {
+                                continue;
+                            }
+                            let cell = sheet.cells.entry((row, col)).or_insert_with(|| Cell {
+                                text: CellContent::default(),
+                                style: 0,
+                            });
+                            let key = (cell.style, role);
+                            cell.style = if let Some(id) = style_cache.get(&key) {
+                                *id
+                            } else {
+                                if style_cache.len() >= 1024 {
+                                    return Err(Error::Limit);
+                                }
+                                let mut style = converted_state.styles[cell.style].clone();
+                                if role == 1 {
+                                    style.bold = true;
+                                    style.foreground.get_or_insert(0xffffff);
+                                    style.background.get_or_insert(0x35618b);
+                                } else if role == 2 {
+                                    style.bold = true;
+                                    style.background.get_or_insert(0xdbe8f4);
+                                } else {
+                                    style.background.get_or_insert(0xeaf2f8);
+                                }
+                                let id = if let Some(id) =
+                                    converted_state.styles.iter().position(|v| *v == style)
+                                {
+                                    id
+                                } else {
+                                    if converted_state.styles.len() >= 100_000 {
+                                        return Err(Error::Limit);
+                                    }
+                                    converted_state.styles.push(style);
+                                    converted_state.styles.len() - 1
+                                };
+                                style_cache.insert(key, id);
+                                id
+                            };
+                        }
+                    }
+                }
+            }
+            let mut converted = Workbook {
+                history: SnapshotHistory::new(converted_state, 0),
+                snapshots: BTreeMap::new(),
+                next_revision: 1,
+                external_source: None,
+                external_baseline: None,
+                external_format: None,
+                external_cache: BTreeMap::new(),
+            };
+            let tables: Vec<_> = state
+                .sheets
+                .iter()
+                .flat_map(|sheet| sheet.tables.iter().map(move |table| (sheet.id, table.id)))
+                .collect();
+            for (sheet, table) in tables {
+                converted.select_sheet(sheet)?;
+                converted.remove_table(table)?;
+            }
+            let bytes = converted.ods_bytes()?;
+            let bytes = add_ods_database_ranges(&bytes, state)?;
+            return embed(bytes, "ods", self.project_bytes()?);
+        }
         if state
             .sheets
             .iter()
@@ -735,7 +974,7 @@ impl Workbook {
                 external_format: None,
                 external_cache: BTreeMap::new(),
             };
-            let grid = formula::display_grid(&eval);
+            let grid = formula::display_grid_at(&eval, recalc_time);
             for (&(r, c), cell) in &sh.cells {
                 let (r, c) = (r as u32, c as u32);
                 match &cell.text {
@@ -935,6 +1174,7 @@ impl Workbook {
             sheets,
             active: 1,
             styles: vec![CellStyle::default()],
+            date_1904: false,
             selection: Range {
                 top: 0,
                 left: 0,
@@ -945,6 +1185,15 @@ impl Workbook {
         if kind == "ods" {
             import_ods_layout(bytes, &mut state)?;
         } else if kind == "xlsx" {
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+                .map_err(|_| Error::Invalid("invalid XLSX"))?;
+            if let Some(workbook) = zip_text(&mut archive, "xl/workbook.xml")? {
+                state.date_1904 = xml(&workbook)?
+                    .descendants()
+                    .find(|n| n.has_tag_name("workbookPr"))
+                    .and_then(|n| n.attribute("date1904"))
+                    .is_some_and(|v| matches!(v, "1" | "true"));
+            }
             import_xlsx_layout(bytes, &mut state)?;
         }
         Ok(Self {
@@ -1560,6 +1809,44 @@ fn import_xlsx_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
             if r >= sheet.rows || c >= sheet.cols {
                 continue;
             }
+            if node
+                .children()
+                .any(|n| n.has_tag_name("f") && n.attribute("t") == Some("shared"))
+            {
+                sheet.shared_formula_cells.push((r, c));
+            }
+            if let Some(formula) = node.children().find(|n| {
+                n.has_tag_name("f") && matches!(n.attribute("t"), Some("array" | "dataTable"))
+            }) {
+                let range = formula
+                    .attribute("ref")
+                    .and_then(|reference| {
+                        reference
+                            .split_once(':')
+                            .and_then(|(first, last)| Some((a1(first)?, a1(last)?)))
+                            .map(|((top, left), (bottom, right))| Range {
+                                top,
+                                left,
+                                bottom,
+                                right,
+                            })
+                            .or_else(|| {
+                                a1(reference).map(|(row, col)| Range {
+                                    top: row,
+                                    left: col,
+                                    bottom: row,
+                                    right: col,
+                                })
+                            })
+                    })
+                    .unwrap_or(Range {
+                        top: r,
+                        left: c,
+                        bottom: r,
+                        right: c,
+                    });
+                sheet.protected_formula_ranges.push(range);
+            }
             let index = node
                 .attribute("s")
                 .and_then(|x| x.parse::<usize>().ok())
@@ -1599,6 +1886,91 @@ fn import_xlsx_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
                     sheet.merges.push(m)
                 }
             }
+        }
+        let (directory, filename) = path
+            .rsplit_once('/')
+            .ok_or(Error::Invalid("invalid sheet path"))?;
+        let relpath = format!("{directory}/_rels/{filename}.rels");
+        if let Some(reltext) = zip_text(&mut archive, &relpath)? {
+            let relations = xml(&reltext)?;
+            for relation in relations.descendants().filter(|n| {
+                n.has_tag_name("Relationship")
+                    && n.attribute("Type").is_some_and(|t| t.ends_with("/table"))
+            }) {
+                let Some(target) = relation.attribute("Target") else {
+                    continue;
+                };
+                let joined = if target.starts_with('/') {
+                    target.trim_start_matches('/').to_owned()
+                } else {
+                    format!("{directory}/{target}")
+                };
+                let mut components = Vec::new();
+                for part in joined.split('/') {
+                    match part {
+                        "" | "." => {}
+                        ".." => {
+                            if components.pop().is_none() {
+                                break;
+                            }
+                        }
+                        part => components.push(part),
+                    }
+                }
+                let path = components.join("/");
+                if !path.starts_with("xl/tables/") {
+                    continue;
+                }
+                let Some(table_text) = zip_text(&mut archive, &path)? else {
+                    continue;
+                };
+                let table_doc = xml(&table_text)?;
+                let root = table_doc.root_element();
+                let Some(name) = root.attribute("name") else {
+                    continue;
+                };
+                let Some((a, b)) = root
+                    .attribute("ref")
+                    .and_then(|s| s.split_once(':'))
+                    .and_then(|(a, b)| Some((a1(a)?, a1(b)?)))
+                else {
+                    continue;
+                };
+                let range = Range {
+                    top: a.0,
+                    left: a.1,
+                    bottom: b.0,
+                    right: b.1,
+                };
+                if range.bottom >= MAX_ROWS || range.right >= MAX_COLS {
+                    continue;
+                }
+                sheet.rows = sheet.rows.max(range.bottom + 1);
+                sheet.cols = sheet.cols.max(range.right + 1);
+                sheet.opaque_table_headers.push(Range {
+                    top: range.top,
+                    left: range.left,
+                    bottom: range.top,
+                    right: range.right,
+                });
+                let id = state.next_id;
+                state.next_id = id.checked_add(1).ok_or(Error::Limit)?;
+                sheet.tables.push(SpreadsheetTable {
+                    id,
+                    name: name.into(),
+                    range,
+                    total_row: root.attribute("totalsRowCount").is_some_and(|v| v != "0"),
+                });
+            }
+        }
+    }
+    if tables::validate_tables(state).is_err() {
+        for sheet in &mut state.sheets {
+            sheet.tables.clear();
+        }
+    } else {
+        for sheet in &mut state.sheets {
+            sheet.opaque_table_headers.clear();
         }
     }
     Ok(())
@@ -1773,12 +2145,11 @@ fn patch_ods_structure(bytes: &[u8], old: &State, current: &State) -> Result<Vec
                 "ODS contains references or objects that cannot yet be shifted safely",
             ));
         }
-        if old.sheets.iter().any(|sheet| {
-            !sheet.merges.is_empty()
-                || !sheet.row_heights.is_empty()
-                || !sheet.col_widths.is_empty()
-                || sheet.cells.values().any(|cell| cell.style != 0)
-        }) {
+        if old
+            .sheets
+            .iter()
+            .any(|sheet| !sheet.row_heights.is_empty() || !sheet.col_widths.is_empty())
+        {
             return Err(Error::Invalid(
                 "ODS structural editing of styles, merges, or geometry is not yet supported",
             ));
@@ -1793,11 +2164,8 @@ fn patch_ods_structure(bytes: &[u8], old: &State, current: &State) -> Result<Vec
             })
             .any(|n| {
                 n.attributes().any(|a| {
-                    matches!(
-                        a.name(),
-                        "visibility" | "number-rows-spanned" | "number-columns-spanned"
-                    ) || a.name() == "style-name"
-                        && !matches!(a.value(), "default-num" | "default-bool")
+                    matches!(a.name(), "visibility")
+                        || a.name() == "style-name" && !n.has_tag_name("table-cell")
                 })
             })
         {
@@ -2123,6 +2491,24 @@ fn ods_has_sheet_ref(value: &str, name: &str) -> bool {
     let value = value.to_lowercase();
     value.contains(&plain) || value.contains(&quoted)
 }
+fn shift_ods_cell(
+    mut row: usize,
+    mut col: usize,
+    edits: &[StructuralEdit],
+) -> Option<(usize, usize)> {
+    for edit in edits {
+        let value = if edit.rows { &mut row } else { &mut col };
+        if edit.delete && *value >= edit.at && *value < edit.at + edit.count {
+            return None;
+        }
+        if edit.delete && *value >= edit.at + edit.count {
+            *value -= edit.count;
+        } else if !edit.delete && *value >= edit.at {
+            *value = value.checked_add(edit.count)?;
+        }
+    }
+    Some((row, col))
+}
 fn patch_ods(
     bytes: &[u8],
     old: &State,
@@ -2133,6 +2519,44 @@ fn patch_ods(
     let mut book = spreadsheet_ods::read_ods_buf(bytes)
         .map_err(|_| Error::Invalid("cannot read original ODS"))?;
     let mut style_seq = 0usize;
+    let mut shifted_style_ids: Vec<BTreeMap<(usize, usize), usize>> =
+        vec![BTreeMap::new(); old.sheets.len()];
+    let mut style_scan = 0usize;
+    for (i, (before, after)) in old.sheets.iter().zip(&current.sheets).enumerate() {
+        if !after.source_structure {
+            continue;
+        }
+        style_scan = style_scan.saturating_add(before.rows.saturating_mul(before.cols));
+        if style_scan > 1_000_000 {
+            return Err(Error::Limit);
+        }
+        let mut styles = Vec::new();
+        for row in 0..before.rows {
+            for col in 0..before.cols {
+                if let Some(reference) = book.sheet(i).cellstyle(row as u32, col as u32).cloned() {
+                    let id = before.cells.get(&(row, col)).map_or(0, |c| c.style);
+                    styles.push((
+                        (row, col),
+                        shift_ods_cell(row, col, &after.source_edits),
+                        reference,
+                        id,
+                    ));
+                }
+            }
+        }
+        for ((row, col), _, _, _) in &styles {
+            book.sheet_mut(i).clear_cellstyle(*row as u32, *col as u32);
+        }
+        for (_, destination, reference, id) in styles {
+            if let Some((row, col)) =
+                destination.filter(|(r, c)| *r < after.rows && *c < after.cols)
+            {
+                book.sheet_mut(i)
+                    .set_cellstyle(row as u32, col as u32, &reference);
+                shifted_style_ids[i].insert((row, col), id);
+            }
+        }
+    }
     for (i, (before, after)) in old.sheets.iter().zip(&current.sheets).enumerate() {
         for m in &before.merges {
             if !after.merges.contains(m) {
@@ -2154,7 +2578,11 @@ fn patch_ods(
             let (r, c) = (row as u32, col as u32);
             let before = old.sheets[i].cells.get(&(row, col));
             let after = value.as_ref();
-            let old_id = before.map_or(0, |v| v.style);
+            let old_id = if current.sheets[i].source_structure {
+                shifted_style_ids[i].get(&(row, col)).copied().unwrap_or(0)
+            } else {
+                before.map_or(0, |v| v.style)
+            };
             let new_id = after.map_or(0, |v| v.style);
             let replacement_style = if old_id != new_id {
                 let prior = &old.styles[old_id];
@@ -2195,12 +2623,7 @@ fn patch_ods(
             }
             sheet.clear_formula(r, c);
             match after.map(|v| &v.text) {
-                None => {
-                    if current.sheets[i].source_structure {
-                        sheet.clear_cellstyle(r, c);
-                    }
-                    sheet.set_value(r, c, Value::Empty)
-                }
+                None => sheet.set_value(r, c, Value::Empty),
                 Some(CellContent::Text(v)) => sheet.set_value(r, c, v.raw()),
                 Some(CellContent::Number(v)) => sheet.set_value(
                     r,
@@ -2277,7 +2700,7 @@ pub(super) fn escape_xml(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
-fn col_name(mut c: usize) -> String {
+pub(super) fn col_name(mut c: usize) -> String {
     c += 1;
     let mut s = Vec::new();
     while c > 0 {
@@ -2787,6 +3210,13 @@ fn guard_simple_xlsx_structure(
     }
     let d = xml(text)?;
     let root = d.root_element();
+    if d.descendants()
+        .any(|n| n.has_tag_name("f") && matches!(n.attribute("t"), Some("array" | "dataTable")))
+    {
+        return Err(Error::Invalid(
+            "Shared or array formulas cannot yet be shifted safely",
+        ));
+    }
     if d.descendants().any(|n| {
         n.has_tag_name("pane") && !matches!(n.attribute("state"), Some("frozen" | "frozenSplit"))
     }) || root.children().filter(|n| n.is_element()).any(|n| {
@@ -2873,6 +3303,32 @@ fn patch_xlsx_tables(
             let table = zip_text(archive, &table_path)?.ok_or(Error::Invalid("Missing table"))?;
             let d = xml(&table)?;
             let root = d.root_element();
+            let source_table = root.attribute("name").and_then(|name| {
+                source
+                    .tables
+                    .iter()
+                    .find(|table| table.name.eq_ignore_ascii_case(name))
+            });
+            let target_table =
+                source_table.and_then(|table| sheet.tables.iter().find(|next| next.id == table.id));
+            let mut header_changes = Vec::new();
+            if let (Some(before), Some(after)) = (source_table, target_table) {
+                for offset in 0..=before.range.right - before.range.left {
+                    let previous = source
+                        .cells
+                        .get(&(before.range.top, before.range.left + offset))
+                        .map(|c| c.text.raw())
+                        .unwrap_or("");
+                    let next = sheet
+                        .cells
+                        .get(&(after.range.top, after.range.left + offset))
+                        .map(|c| c.text.raw())
+                        .unwrap_or("");
+                    if previous != next {
+                        header_changes.push((previous.to_owned(), next.to_owned()));
+                    }
+                }
+            }
             let table_ref = root
                 .attribute("ref")
                 .ok_or(Error::Invalid("Invalid table range"))?;
@@ -2917,6 +3373,20 @@ fn patch_xlsx_tables(
                 ));
             }
             let mut changes = Vec::new();
+            for column in d.descendants().filter(|n| n.has_tag_name("tableColumn")) {
+                if let Some(attr) = column.attributes().find(|a| a.name() == "name") {
+                    if let Some((_, next)) = header_changes
+                        .iter()
+                        .find(|(old, _)| old.eq_ignore_ascii_case(attr.value()))
+                    {
+                        changes.push((
+                            attr.range_value().start,
+                            attr.range_value().end,
+                            escape_xml(next),
+                        ));
+                    }
+                }
+            }
             for node in d.descendants().filter(|n| {
                 n.has_tag_name("table")
                     || n.has_tag_name("autoFilter")
@@ -2961,6 +3431,15 @@ fn patch_xlsx_tables(
                                 edit.at,
                                 edit.count,
                                 edit.delete,
+                            );
+                        }
+                    }
+                    for (previous, next) in &header_changes {
+                        if let Some(table) = target_table {
+                            value = crate::tables::replace_formula_token(
+                                &value,
+                                &format!("{}[{}]", table.name, previous),
+                                &format!("{}[{}]", table.name, next),
                             );
                         }
                     }
@@ -3316,6 +3795,162 @@ fn patch_xlsx_view_refs(text: &str, edits: &[StructuralEdit]) -> Result<String, 
     }
     Ok(apply_edits(text.to_owned(), updates))
 }
+fn translate_shared_formula(input: &str, dr: isize, dc: isize) -> String {
+    let bytes = input.as_bytes();
+    let mut text = String::new();
+    let mut qualifiers = Vec::new();
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            text.push('"');
+            i += 1;
+            if in_string && bytes.get(i) == Some(&b'"') {
+                text.push('"');
+                i += 1;
+            } else {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if in_string {
+            let ch = input[i..].chars().next().unwrap();
+            text.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let start = i;
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < bytes.len() {
+                let ch = input[i..].chars().next().unwrap();
+                i += ch.len_utf8();
+                if ch == '\'' {
+                    if bytes.get(i) == Some(&b'\'') {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'.'))
+            {
+                i += 1;
+            }
+        } else {
+            let ch = input[i..].chars().next().unwrap();
+            text.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if bytes.get(i) == Some(&b'!') && parse_a1_endpoint(input, i + 1).is_some() {
+            i += 1;
+            let marker = format!("\u{1}{}\u{2}", qualifiers.len());
+            qualifiers.push(input[start..i].to_owned());
+            text.push_str(&marker);
+        } else {
+            text.push_str(&input[start..i]);
+        }
+    }
+    let mut result = translate_refs(&text, dr, dc);
+    for (index, qualifier) in qualifiers.into_iter().enumerate() {
+        result = result.replace(&format!("\u{1}{index}\u{2}"), &qualifier);
+    }
+    result
+}
+fn deshare_xlsx(
+    text: &str,
+    sheet: &Sheet,
+    changes: &[((usize, usize), Option<Cell>)],
+    structural: bool,
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut groups: BTreeMap<String, Vec<((usize, usize), roxmltree::Node<'_, '_>)>> =
+        BTreeMap::new();
+    for cell in d.descendants().filter(|n| n.has_tag_name("c")) {
+        let Some(coord) = cell.attribute("r").and_then(a1) else {
+            continue;
+        };
+        for formula in cell
+            .children()
+            .filter(|n| n.has_tag_name("f") && n.attribute("t") == Some("shared"))
+        {
+            let id = formula
+                .attribute("si")
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("missing:{}:{}", coord.0, coord.1));
+            groups.entry(id).or_default().push((coord, formula));
+        }
+    }
+    let mut edits = Vec::new();
+    for members in groups.values() {
+        if !structural
+            && !members.iter().any(|(coord, _)| {
+                changes.iter().any(|(changed, next)| {
+                    changed == coord
+                        && sheet.cells.get(coord).map(|c| &c.text) != next.as_ref().map(|c| &c.text)
+                })
+            })
+        {
+            continue;
+        }
+        if members.iter().any(|(_, formula)| {
+            formula.attribute("si").is_none()
+                || formula
+                    .attributes()
+                    .any(|a| !matches!(a.name(), "t" | "si" | "ref"))
+        }) {
+            return Err(Error::Invalid(
+                "Extended or invalid shared formula is unsupported",
+            ));
+        }
+        let anchors: Vec<_> = members
+            .iter()
+            .filter(|(_, f)| f.text().is_some_and(|text| !text.is_empty()))
+            .collect();
+        if anchors.len() != 1 {
+            return Err(Error::Invalid("Invalid shared formula group"));
+        }
+        let (anchor_coord, anchor) = anchors[0];
+        let source = format!("={}", anchor.text().unwrap_or(""));
+        if source.contains('[') {
+            return Err(Error::Invalid(
+                "Shared formulas with structured or external references are not yet supported",
+            ));
+        }
+        for (coord, formula) in members {
+            let expected = translate_shared_formula(
+                &source,
+                coord.0 as isize - anchor_coord.0 as isize,
+                coord.1 as isize - anchor_coord.1 as isize,
+            );
+            let imported = sheet
+                .cells
+                .get(coord)
+                .and_then(|cell| match &cell.text {
+                    CellContent::Formula(value) => Some(value.raw()),
+                    _ => None,
+                })
+                .ok_or(Error::Invalid("Shared formula member cannot be resolved"))?;
+            if imported != expected {
+                return Err(Error::Invalid(
+                    "Shared formula translation cannot be verified",
+                ));
+            }
+            let p = prefix(&text[formula.range()]);
+            let value = expected.strip_prefix('=').unwrap_or(&expected);
+            edits.push((
+                formula.range().start,
+                formula.range().end,
+                format!("<{p}f>{}</{p}f>", escape_xml(value)),
+            ));
+        }
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
 fn patch_xlsx_sheet_contents(
     text: &str,
     sheet: &Sheet,
@@ -3327,6 +3962,7 @@ fn patch_xlsx_sheet_contents(
     style_doc: &mut Option<String>,
     style_cache: &mut BTreeMap<(usize, usize, usize), usize>,
 ) -> Result<String, Error> {
+    let text = deshare_xlsx(text, sheet, changes, current_sheet.source_structure)?;
     let mut stylemap = BTreeMap::new();
     let sheet_doc = xml(&text)?;
     for (coord, after) in changes {
@@ -3371,7 +4007,7 @@ fn patch_xlsx_sheet_contents(
         };
         stylemap.insert(*coord, id);
     }
-    let patched = patch_sheet(text, changes, sheet, &stylemap, renames)?;
+    let patched = patch_sheet(&text, changes, sheet, &stylemap, renames)?;
     let patched = patch_xlsx_merges(&patched, &sheet.merges, &current_sheet.merges)?;
     let patched = if current_sheet.source_structure {
         patch_xlsx_view_refs(&patched, &current_sheet.source_edits)?
@@ -3572,7 +4208,33 @@ fn patch_xlsx(
         )?;
         replacements.insert(path.to_owned(), patched);
     }
-    if current.sheets.iter().any(|sheet| sheet.source_structure) {
+    let table_headers_changed = old.sheets.iter().any(|source| {
+        current
+            .sheets
+            .iter()
+            .find(|s| s.id == source.id)
+            .is_some_and(|sheet| {
+                source.tables.iter().any(|table| {
+                    sheet
+                        .tables
+                        .iter()
+                        .find(|t| t.id == table.id)
+                        .is_some_and(|next| {
+                            (0..=table.range.right - table.range.left).any(|offset| {
+                                source
+                                    .cells
+                                    .get(&(table.range.top, table.range.left + offset))
+                                    .map(|c| c.text.raw())
+                                    != sheet
+                                        .cells
+                                        .get(&(next.range.top, next.range.left + offset))
+                                        .map(|c| c.text.raw())
+                            })
+                        })
+                })
+            })
+    });
+    if current.sheets.iter().any(|sheet| sheet.source_structure) || table_headers_changed {
         patch_xlsx_tables(&mut archive, &source_parts, old, current, &mut replacements)?;
         for source in &old.sheets {
             let Some(sheet) = current.sheets.iter().find(|sheet| sheet.id == source.id) else {
@@ -5098,6 +5760,56 @@ mod external_sheet_structure_regression {
         );
     }
     #[test]
+    fn ods_structure_moves_merged_ranges() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut sheet = spreadsheet_ods::Sheet::new("First");
+        sheet.set_value(1, 1, "merged");
+        sheet.set_row_span(1, 1, 2);
+        sheet.set_col_span(1, 1, 2);
+        source.push_sheet(sheet);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        book.insert_rows(0, 1).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(reopened.cell(2, 1), Some("merged"));
+        assert!(reopened.merges().contains(&Range {
+            top: 2,
+            left: 1,
+            bottom: 3,
+            right: 2
+        }));
+        let source = spreadsheet_ods::read_ods_buf(&saved).unwrap();
+        assert_eq!(source.sheet(0).row_span(2, 1), 2);
+        assert_eq!(source.sheet(0).col_span(2, 1), 2);
+    }
+    #[test]
+    fn ods_structure_moves_explicit_cell_style_without_losing_properties() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut style = spreadsheet_ods::CellStyle::new_empty();
+        style.set_name("custom-bold");
+        style.set_font_bold();
+        let style = source.add_cellstyle(style);
+        let mut sheet = spreadsheet_ods::Sheet::new("First");
+        sheet.set_value(1, 1, "styled");
+        sheet.set_cellstyle(1, 1, &style);
+        source.push_sheet(sheet);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        assert!(book.style(1, 1).unwrap().bold);
+        book.insert_rows(0, 1).unwrap();
+        book.insert_columns(0, 1).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(reopened.cell(2, 2), Some("styled"));
+        assert!(reopened.style(2, 2).unwrap().bold);
+        let external = spreadsheet_ods::read_ods_buf(&saved).unwrap();
+        assert_eq!(
+            external.sheet(0).cellstyle(2, 2).map(|s| s.as_ref()),
+            Some("custom-bold")
+        );
+    }
+    #[test]
     fn ods_plain_structure_updates_values_and_cross_sheet_references() {
         let mut source = spreadsheet_ods::WorkBook::default();
         let mut first = spreadsheet_ods::Sheet::new("First");
@@ -5170,6 +5882,155 @@ mod external_sheet_structure_regression {
         assert_ne!(copy, added);
     }
     #[test]
+    fn shared_formula_translation_preserves_qualified_and_mixed_references() {
+        assert_eq!(
+            translate_shared_formula("='Data Sheet'!$A1+B$2+\"A1\"", 1, 1),
+            "='Data Sheet'!$A2+C$2+\"A1\""
+        );
+    }
+    #[test]
+    fn independently_authored_shared_formula_is_materialized_and_array_guarded() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_number(0, 0, 1).unwrap();
+        sheet.write_number(1, 0, 2).unwrap();
+        sheet.write_formula(0, 1, "=A1*2").unwrap();
+        sheet.write_formula(1, 1, "=A2*2").unwrap();
+        sheet.write_formula(0, 2, "=A1*3").unwrap();
+        sheet.write_number(1, 2, 6).unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut input = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..input.len() {
+            let mut file = input.by_index(index).unwrap();
+            if file.name() == "xl/worksheets/sheet1.xml" {
+                let mut text = String::new();
+                file.read_to_string(&mut text).unwrap();
+                let doc = xml(&text).unwrap();
+                let mut edits = Vec::new();
+                for (address, replacement) in [
+                    ("B1", "<f t=\"shared\" si=\"0\" ref=\"B1:B2\">A1*2</f>"),
+                    ("B2", "<f t=\"shared\" si=\"0\"/>"),
+                    ("C1", "<f t=\"array\" ref=\"C1:C2\">A1:A2*3</f>"),
+                ] {
+                    let cell = doc
+                        .descendants()
+                        .find(|n| n.has_tag_name("c") && n.attribute("r") == Some(address))
+                        .unwrap();
+                    let formula = cell.children().find(|n| n.has_tag_name("f")).unwrap();
+                    edits.push((
+                        formula.range().start,
+                        formula.range().end,
+                        replacement.to_owned(),
+                    ));
+                }
+                let text = apply_edits(text, edits);
+                output
+                    .start_file(
+                        "xl/worksheets/sheet1.xml",
+                        zip::write::SimpleFileOptions::default(),
+                    )
+                    .unwrap();
+                output.write_all(text.as_bytes()).unwrap();
+            } else {
+                output.raw_copy_file(file).unwrap();
+            }
+        }
+        let bytes = output.finish().unwrap().into_inner();
+        let mut plain_input = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let mut plain_output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..plain_input.len() {
+            let mut entry = plain_input.by_index(index).unwrap();
+            if entry.name() == "xl/worksheets/sheet1.xml" {
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                let xml = xml.replace("<f t=\"array\" ref=\"C1:C2\">A1:A2*3</f>", "<f>A1*3</f>");
+                plain_output
+                    .start_file(
+                        "xl/worksheets/sheet1.xml",
+                        zip::write::SimpleFileOptions::default(),
+                    )
+                    .unwrap();
+                plain_output.write_all(xml.as_bytes()).unwrap();
+            } else {
+                plain_output.raw_copy_file(entry).unwrap();
+            }
+        }
+        let plain_bytes = plain_output.finish().unwrap().into_inner();
+        let mut structural = Workbook::from_office_bytes(&plain_bytes, "xlsx").unwrap();
+        structural.insert_rows(0, 1).unwrap();
+        let saved_structural = structural.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved_structural, "xlsx").unwrap();
+        assert_eq!(reopened.cell(1, 1), Some("=A2*2"));
+        assert_eq!(reopened.cell(2, 1), Some("=A3*2"));
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved_structural.as_slice())).unwrap();
+        assert!(!zip_text(&mut archive, "xl/worksheets/sheet1.xml")
+            .unwrap()
+            .unwrap()
+            .contains("t=\"shared\""));
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        assert_eq!(book.cell(1, 1), Some("=A2*2"));
+        book.set_cell(0, 1, "9".into()).unwrap();
+        assert_eq!(book.cell(1, 1), Some("=A2*2"));
+        assert!(book.set_cell(1, 2, "9".into()).is_err());
+        assert!(book.insert_rows(0, 1).is_err());
+        book.set_cell(0, 3, "safe".into()).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let xml = zip_text(&mut archive, "xl/worksheets/sheet1.xml")
+            .unwrap()
+            .unwrap();
+        assert!(!xml.contains("t=\"shared\""));
+        assert!(xml.contains("<f>A2*2</f>"));
+        assert!(xml.contains("t=\"array\" ref=\"C1:C2\""));
+        assert_eq!(
+            Workbook::from_office_bytes(&saved, "xlsx")
+                .unwrap()
+                .cell(0, 3),
+            Some("safe")
+        );
+    }
+    #[test]
+    fn external_xlsx_table_header_edit_updates_metadata_and_formulas() {
+        use rust_xlsxwriter::{Table, TableColumn};
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_number(1, 0, 10).unwrap();
+        sheet.write_formula(4, 0, "=SUM(Sales[Amount])").unwrap();
+        sheet
+            .add_table(
+                0,
+                0,
+                2,
+                0,
+                &Table::new()
+                    .set_name("Sales")
+                    .set_columns(&[TableColumn::new().set_header("Amount")]),
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        assert_eq!(book.tables().len(), 1);
+        assert_eq!(book.display_grid()[4][0], "10");
+        book.set_cell(0, 0, "Revenue".into()).unwrap();
+        assert_eq!(book.cell(4, 0), Some("=SUM(Sales[Revenue])"));
+        let bytes = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let table = zip_text(&mut archive, "xl/tables/table1.xml")
+            .unwrap()
+            .unwrap();
+        let d = xml(&table).unwrap();
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("tableColumn"))
+                .unwrap()
+                .attribute("name"),
+            Some("Revenue")
+        );
+        let reopened = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        assert_eq!(reopened.display_grid()[4][0], "10");
+    }
+    #[test]
     fn structured_table_rows_resize_table_and_preserve_relationships() {
         let mut source = rust_xlsxwriter::Workbook::new();
         let sheet = source.add_worksheet();
@@ -5197,6 +6058,78 @@ mod external_sheet_structure_regression {
         );
         assert!(book.delete_rows(0, 1).is_err());
         assert!(book.insert_columns(0, 1).is_err());
+    }
+    #[test]
+    fn native_xlsx_1904_writes_epoch_and_formula_cache() {
+        let mut book = Workbook::new(2, 2).unwrap();
+        let mut state = book.history.current().clone();
+        state.date_1904 = true;
+        book.history.apply(state);
+        book.set_cell(0, 0, "=DATE(1904,1,2)".into()).unwrap();
+        let bytes = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let workbook = zip_text(&mut archive, "xl/workbook.xml").unwrap().unwrap();
+        assert_eq!(
+            xml(&workbook)
+                .unwrap()
+                .descendants()
+                .find(|n| n.has_tag_name("workbookPr"))
+                .unwrap()
+                .attribute("date1904"),
+            Some("1")
+        );
+        let sheet = zip_text(&mut archive, "xl/worksheets/sheet1.xml")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            xml(&sheet)
+                .unwrap()
+                .descendants()
+                .find(|n| n.has_tag_name("v"))
+                .unwrap()
+                .text(),
+            Some("1")
+        );
+        assert!(
+            Workbook::from_office_bytes(&bytes, "xlsx")
+                .unwrap()
+                .history
+                .current()
+                .date_1904
+        );
+    }
+    #[test]
+    fn external_xlsx_1904_dates_survive_recalculation_and_save() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .write_formula(0, 0, "=DATE(1904,1,1)")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut input = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..input.len() {
+            let mut file = input.by_index(index).unwrap();
+            if file.name() == "xl/workbook.xml" {
+                let mut xml = String::new();
+                file.read_to_string(&mut xml).unwrap();
+                let xml = xml.replace("<workbookPr", "<workbookPr date1904=\"1\"");
+                output
+                    .start_file("xl/workbook.xml", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                output.write_all(xml.as_bytes()).unwrap();
+            } else {
+                output.raw_copy_file(file).unwrap();
+            }
+        }
+        let bytes = output.finish().unwrap().into_inner();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        assert!(book.history.current().date_1904);
+        assert_eq!(book.display_grid()[0][0], "0");
+        book.set_cell(1, 0, "=YEAR(0)".into()).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.display_grid()[1][0], "1904");
     }
     #[test]
     fn structural_edits_shift_filter_columns_and_sort_ranges() {

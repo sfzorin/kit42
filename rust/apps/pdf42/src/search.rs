@@ -3,7 +3,7 @@ use std::{
     ffi::{c_char, c_void, CString},
     sync::Mutex,
 };
-static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static PDFIUM_LOCK: Mutex<()> = Mutex::new(());
 type Handle = *mut c_void;
 #[link(name = "kernel32")]
 extern "system" {

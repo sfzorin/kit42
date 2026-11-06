@@ -128,6 +128,61 @@ fn esc(s: &str) -> String {
 fn pt(n: f64) -> String {
     format!("{n:.4}pt")
 }
+fn rotation_transform(o: &SlideObject) -> String {
+    let angle = o.rotation_degrees.rem_euclid(360.0).to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let tx = o.x + o.width / 2.0 - (cos * o.width - sin * o.height) / 2.0;
+    let ty = o.y + o.height / 2.0 - (sin * o.width + cos * o.height) / 2.0;
+    format!("rotate ({angle:.12}) translate ({} {})", pt(tx), pt(ty))
+}
+fn geometry_attrs(o: &SlideObject) -> String {
+    if o.rotation_degrees.rem_euclid(360.0) == 0.0 {
+        format!(
+            "svg:x=\"{}\" svg:y=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",
+            pt(o.x),
+            pt(o.y),
+            pt(o.width),
+            pt(o.height)
+        )
+    } else {
+        format!(
+            "draw:transform=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",
+            rotation_transform(o),
+            pt(o.width),
+            pt(o.height)
+        )
+    }
+}
+fn parse_rotation_transform(raw: &str) -> Option<(f64, f64, f64)> {
+    let rest = raw
+        .trim()
+        .strip_prefix("rotate")?
+        .trim_start()
+        .strip_prefix('(')?;
+    let (angle, rest) = rest.split_once(')')?;
+    let angle: f64 = angle.trim().parse().ok()?;
+    let rest = rest
+        .trim_start()
+        .strip_prefix("translate")?
+        .trim_start()
+        .strip_prefix('(')?;
+    let (values, tail) = rest.split_once(')')?;
+    if !tail.trim().is_empty() {
+        return None;
+    }
+    let values = values
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if values.len() != 2 || !angle.is_finite() {
+        return None;
+    }
+    Some((
+        angle,
+        number(Some(values[0])).ok()?,
+        number(Some(values[1])).ok()?,
+    ))
+}
 fn text(s: &str) -> String {
     s.split('\n')
         .map(|s| format!("<text:p>{}</text:p>", esc(s)))
@@ -416,6 +471,11 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 && n.parent()
                     .is_some_and(|p| p == *page || p.tag_name().name() == "g")
         }) {
+            // An unrecognized transform cannot be represented by this model yet.
+            // Keep the source XML intact instead of displaying incorrect geometry.
+            if attr(node, "transform").is_some_and(|s| parse_rotation_transform(s).is_none()) {
+                continue;
+            }
             if node
                 .ancestors()
                 .filter(|n| n.is_element() && n.tag_name().name() == "g")
@@ -483,6 +543,14 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 "notes" => continue,
                 _ => continue,
             };
+            let rotation = attr(node, "transform").and_then(parse_rotation_transform);
+            if rotation.is_some()
+                && ["x", "y"].iter().any(|key| {
+                    attr(node, key).is_some_and(|v| number(Some(v)).map_or(true, |n| n != 0.0))
+                })
+            {
+                continue;
+            }
             let geometry = if matches!(kind, ObjectKind::Line) {
                 match (
                     number(attr(node, "x1")),
@@ -495,8 +563,16 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 }
             } else {
                 match (
-                    number(attr(node, "x")),
-                    number(attr(node, "y")),
+                    if rotation.is_some() {
+                        Ok(0.0)
+                    } else {
+                        number(attr(node, "x"))
+                    },
+                    if rotation.is_some() {
+                        Ok(0.0)
+                    } else {
+                        number(attr(node, "y"))
+                    },
                     number(attr(node, "width")),
                     number(attr(node, "height")),
                 ) {
@@ -507,6 +583,9 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
             let Some((x, y, width, height)) = geometry else {
                 continue;
             };
+            if rotation.is_some() && matches!(kind, ObjectKind::Line) && (x != 0.0 || y != 0.0) {
+                continue;
+            }
             if width <= 0.0 || height <= 0.0 {
                 continue;
             }
@@ -534,6 +613,12 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
             object.y = y;
             object.width = width;
             object.height = height;
+            if let Some((angle, tx, ty)) = rotation {
+                let (sin, cos) = angle.sin_cos();
+                object.x = tx + (cos * width - sin * height) / 2.0 - width / 2.0;
+                object.y = ty + (sin * width + cos * height) / 2.0 - height / 2.0;
+                object.rotation_degrees = angle.to_degrees().rem_euclid(360.0);
+            }
             if let Some(span) = node
                 .descendants()
                 .find(|n| n.is_element() && n.tag_name().name() == "span")
@@ -747,7 +832,7 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
             } else {
                 rich_text(&o.paragraphs, &name, &mut styles)
             };
-            let geo=format!("draw:style-name=\"{name}\" svg:x=\"{}\" svg:y=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",pt(o.x),pt(o.y),pt(o.width),pt(o.height));
+            let geo = format!("draw:style-name=\"{name}\" {}", geometry_attrs(o));
             match o.kind {
                 ObjectKind::Rectangle | ObjectKind::Ellipse => {
                     let tag = if o.kind == ObjectKind::Rectangle {
@@ -786,7 +871,19 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
                     }
                     target.push_str("</table:table></draw:frame>");
                 }
-                ObjectKind::Line => target.push_str(&format!("<draw:line draw:style-name=\"{name}\" svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(o.x),pt(o.y),pt(o.x+o.width),pt(o.y+o.height))),
+                ObjectKind::Line => {
+                    let transform = if o.rotation_degrees.rem_euclid(360.0) != 0.0 {
+                        format!(" draw:transform=\"{}\"", rotation_transform(o))
+                    } else {
+                        String::new()
+                    };
+                    let (x, y) = if transform.is_empty() {
+                        (o.x, o.y)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    target.push_str(&format!("<draw:line draw:style-name=\"{name}\"{transform} svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(x),pt(y),pt(x+o.width),pt(y+o.height)));
+                }
             }
         }
         for group in group_order {
@@ -840,6 +937,69 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rotation_roundtrips_new_and_overlay() {
+        use super::*;
+        let mut deck = Presentation::new();
+        let id = deck
+            .insert_object(ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let mut object = deck.slides()[0]
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap()
+            .clone();
+        object.rotation_degrees = 35.0;
+        object.x = 142.0;
+        object.y = 96.0;
+        deck.update_object(object.clone()).unwrap();
+        let bytes = export(&deck).unwrap();
+        let (mut reopened, source) = import_with_source(&bytes).unwrap();
+        let actual = &reopened.slides()[0].objects[0];
+        assert!((actual.rotation_degrees - object.rotation_degrees).abs() < 0.001);
+        assert!((actual.x - object.x).abs() < 0.001 && (actual.y - object.y).abs() < 0.001);
+        let mut edited = actual.clone();
+        edited.rotation_degrees = 80.0;
+        edited.x += 30.0;
+        reopened.update_object(edited.clone()).unwrap();
+        let bytes = export_overlay(&reopened, &source).unwrap();
+        let (reopened, _) = import_with_source(&bytes).unwrap();
+        let actual = &reopened.slides()[0].objects[0];
+        assert!((actual.rotation_degrees - edited.rotation_degrees).abs() < 0.001);
+        assert!((actual.x - edited.x).abs() < 0.001 && (actual.y - edited.y).abs() < 0.001);
+        let mut lines = Presentation::new();
+        lines
+            .insert_object(ObjectKind::Line, String::new())
+            .unwrap();
+        let (mut lines, source) = import_with_source(&export(&lines).unwrap()).unwrap();
+        let mut line = lines.slides()[0].objects[0].clone();
+        line.rotation_degrees = 60.0;
+        lines.update_object(line.clone()).unwrap();
+        let (mut reopened, source) =
+            import_with_source(&export_overlay(&lines, &source).unwrap()).unwrap();
+        let actual = &reopened.slides()[0].objects[0];
+        assert!((actual.rotation_degrees - 60.0).abs() < 0.001);
+        assert!((actual.x - line.x).abs() < 0.001 && (actual.y - line.y).abs() < 0.001);
+        let mut edited_line = actual.clone();
+        edited_line.rotation_degrees = 120.0;
+        reopened.update_object(edited_line).unwrap();
+        let (again, _) = import_with_source(&export_overlay(&reopened, &source).unwrap()).unwrap();
+        assert!((again.slides()[0].objects[0].rotation_degrees - 120.0).abs() < 0.001);
+        let mut initial = Presentation::new();
+        initial
+            .insert_object(ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let (mut initial, source) = import_with_source(&export(&initial).unwrap()).unwrap();
+        let mut edited = initial.slides()[0].objects[0].clone();
+        edited.rotation_degrees = 50.0;
+        initial.update_object(edited.clone()).unwrap();
+        let (reopened, _) =
+            import_with_source(&export_overlay(&initial, &source).unwrap()).unwrap();
+        let actual = &reopened.slides()[0].objects[0];
+        assert!((actual.rotation_degrees - edited.rotation_degrees).abs() < 0.001);
+        assert!((actual.x - edited.x).abs() < 0.001 && (actual.y - edited.y).abs() < 0.001);
+    }
     use super::*;
     #[test]
     fn overlay_keeps_opaque_elements_and_package_parts() {
@@ -1271,36 +1431,108 @@ pub fn export_overlay(deck: &Presentation, source: &Source) -> Result<Vec<u8>, S
                 return Err("Saving this ODP object formatting is not supported yet".into());
             }
             if matches!(object.kind, ObjectKind::Line) {
-                if object.x != item.original.x {
-                    patch_attr(node, "x1", pt(object.x), original, &mut patches)?;
-                }
-                if object.y != item.original.y {
-                    patch_attr(node, "y1", pt(object.y), original, &mut patches)?;
-                }
-                if object.x != item.original.x || object.width != item.original.width {
-                    patch_attr(
-                        node,
-                        "x2",
-                        pt(object.x + object.width),
-                        original,
-                        &mut patches,
-                    )?;
-                }
-                if object.y != item.original.y || object.height != item.original.height {
-                    patch_attr(
-                        node,
-                        "y2",
-                        pt(object.y + object.height),
-                        original,
-                        &mut patches,
-                    )?;
+                let transformed = attr(node, "transform").is_some();
+                let wants_transform =
+                    transformed || object.rotation_degrees.rem_euclid(360.0) != 0.0;
+                let changed = object.x != item.original.x
+                    || object.y != item.original.y
+                    || object.width != item.original.width
+                    || object.height != item.original.height
+                    || object.rotation_degrees != item.original.rotation_degrees;
+                if wants_transform && changed {
+                    let value = rotation_transform(object);
+                    if transformed {
+                        patch_attr(node, "transform", value, original, &mut patches)?;
+                    } else {
+                        let start = node.range().start;
+                        let end = original[start..].find('>').ok_or("Invalid ODP line")? + start;
+                        let at = if original.as_bytes().get(end.wrapping_sub(1)) == Some(&b'/') {
+                            end - 1
+                        } else {
+                            end
+                        };
+                        let namespace = match node.lookup_namespace_uri(Some("draw")) {
+                            Some("urn:oasis:names:tc:opendocument:xmlns:drawing:1.0") => "",
+                            None => {
+                                " xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\""
+                            }
+                            Some(_) => return Err("ODP draw namespace is incompatible".into()),
+                        };
+                        patches.push((at..at, format!("{namespace} draw:transform=\"{}\"", value)));
+                    }
+                    patch_attr(node, "x1", pt(0.0), original, &mut patches)?;
+                    patch_attr(node, "y1", pt(0.0), original, &mut patches)?;
+                    patch_attr(node, "x2", pt(object.width), original, &mut patches)?;
+                    patch_attr(node, "y2", pt(object.height), original, &mut patches)?;
+                } else if !wants_transform {
+                    if object.x != item.original.x {
+                        patch_attr(node, "x1", pt(object.x), original, &mut patches)?;
+                    }
+                    if object.y != item.original.y {
+                        patch_attr(node, "y1", pt(object.y), original, &mut patches)?;
+                    }
+                    if object.x != item.original.x || object.width != item.original.width {
+                        patch_attr(
+                            node,
+                            "x2",
+                            pt(object.x + object.width),
+                            original,
+                            &mut patches,
+                        )?;
+                    }
+                    if object.y != item.original.y || object.height != item.original.height {
+                        patch_attr(
+                            node,
+                            "y2",
+                            pt(object.y + object.height),
+                            original,
+                            &mut patches,
+                        )?;
+                    }
                 }
             } else {
-                if object.x != item.original.x {
-                    patch_attr(node, "x", pt(object.x), original, &mut patches)?;
-                }
-                if object.y != item.original.y {
-                    patch_attr(node, "y", pt(object.y), original, &mut patches)?;
+                let transformed = attr(node, "transform").is_some();
+                let wants_transform =
+                    transformed || object.rotation_degrees.rem_euclid(360.0) != 0.0;
+                let geometry_changed = object.x != item.original.x
+                    || object.y != item.original.y
+                    || object.width != item.original.width
+                    || object.height != item.original.height
+                    || object.rotation_degrees != item.original.rotation_degrees;
+                if wants_transform && geometry_changed {
+                    let value = rotation_transform(object);
+                    if transformed {
+                        patch_attr(node, "transform", value, original, &mut patches)?;
+                    } else {
+                        let start = node.range().start;
+                        let end = original[start..].find('>').ok_or("Invalid ODP shape")? + start;
+                        let at = if original.as_bytes().get(end.wrapping_sub(1)) == Some(&b'/') {
+                            end - 1
+                        } else {
+                            end
+                        };
+                        let namespace = match node.lookup_namespace_uri(Some("draw")) {
+                            Some("urn:oasis:names:tc:opendocument:xmlns:drawing:1.0") => "",
+                            None => {
+                                " xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\""
+                            }
+                            Some(_) => return Err("ODP draw namespace is incompatible".into()),
+                        };
+                        patches.push((at..at, format!("{namespace} draw:transform=\"{}\"", value)));
+                        if attr(node, "x").is_some() {
+                            patch_attr(node, "x", pt(0.0), original, &mut patches)?;
+                        }
+                        if attr(node, "y").is_some() {
+                            patch_attr(node, "y", pt(0.0), original, &mut patches)?;
+                        }
+                    }
+                } else if !wants_transform {
+                    if object.x != item.original.x {
+                        patch_attr(node, "x", pt(object.x), original, &mut patches)?;
+                    }
+                    if object.y != item.original.y {
+                        patch_attr(node, "y", pt(object.y), original, &mut patches)?;
+                    }
                 }
                 if object.width != item.original.width {
                     patch_attr(node, "width", pt(object.width), original, &mut patches)?;
@@ -1625,12 +1857,58 @@ fn appended_object(
     } else {
         rich_text(&o.paragraphs, &name, styles)
     };
-    let geo=format!("{ns} draw:style-name=\"{name}\" svg:x=\"{}\" svg:y=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",pt(o.x),pt(o.y),pt(o.width),pt(o.height));
+    let geo = format!("{ns} draw:style-name=\"{name}\" {}", geometry_attrs(o));
     Ok(match o.kind {
- ObjectKind::Rectangle|ObjectKind::Ellipse => {let tag=if o.kind==ObjectKind::Rectangle{"rect"}else{"ellipse"};format!("<draw:{tag} {geo}>{object_text}</draw:{tag}>")},
- ObjectKind::Line=>format!("<draw:line {ns} draw:style-name=\"{name}\" svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(o.x),pt(o.y),pt(o.x+o.width),pt(o.y+o.height)),
- ObjectKind::Text=>format!("<draw:frame {geo}><draw:text-box>{object_text}</draw:text-box></draw:frame>"),
- ObjectKind::Picture=>{let(ext,mime)=if o.media.starts_with(b"\x89PNG\r\n\x1a\n"){("png","image/png")}else if o.media.starts_with(b"\xff\xd8\xff"){("jpg","image/jpeg")}else{return Err("Unsupported image encoding".into())};let path=format!("Pictures/{name}.{ext}");media.push((path.clone(),o.media.clone(),mime));format!("<draw:frame {geo}><draw:image xlink:href=\"{path}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>")},
- ObjectKind::Table=>{let mut result=format!("<draw:frame {geo}><table:table table:name=\"{name}\">");for row in &o.cells {result.push_str("<table:table-row>");for cell in row{result.push_str(&format!("<table:table-cell office:value-type=\"string\">{}</table:table-cell>",text(cell)));}result.push_str("</table:table-row>");}result.push_str("</table:table></draw:frame>");result}
- })
+        ObjectKind::Rectangle | ObjectKind::Ellipse => {
+            let tag = if o.kind == ObjectKind::Rectangle {
+                "rect"
+            } else {
+                "ellipse"
+            };
+            format!("<draw:{tag} {geo}>{object_text}</draw:{tag}>")
+        }
+        ObjectKind::Line => {
+            let transform = if o.rotation_degrees.rem_euclid(360.0) != 0.0 {
+                format!(" draw:transform=\"{}\"", rotation_transform(o))
+            } else {
+                String::new()
+            };
+            let (x, y) = if transform.is_empty() {
+                (o.x, o.y)
+            } else {
+                (0.0, 0.0)
+            };
+            format!("<draw:line {ns} draw:style-name=\"{name}\"{transform} svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(x),pt(y),pt(x+o.width),pt(y+o.height))
+        }
+        ObjectKind::Text => {
+            format!("<draw:frame {geo}><draw:text-box>{object_text}</draw:text-box></draw:frame>")
+        }
+        ObjectKind::Picture => {
+            let (ext, mime) = if o.media.starts_with(b"\x89PNG\r\n\x1a\n") {
+                ("png", "image/png")
+            } else if o.media.starts_with(b"\xff\xd8\xff") {
+                ("jpg", "image/jpeg")
+            } else {
+                return Err("Unsupported image encoding".into());
+            };
+            let path = format!("Pictures/{name}.{ext}");
+            media.push((path.clone(), o.media.clone(), mime));
+            format!("<draw:frame {geo}><draw:image xlink:href=\"{path}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>")
+        }
+        ObjectKind::Table => {
+            let mut result = format!("<draw:frame {geo}><table:table table:name=\"{name}\">");
+            for row in &o.cells {
+                result.push_str("<table:table-row>");
+                for cell in row {
+                    result.push_str(&format!(
+                        "<table:table-cell office:value-type=\"string\">{}</table:table-cell>",
+                        text(cell)
+                    ));
+                }
+                result.push_str("</table:table-row>");
+            }
+            result.push_str("</table:table></draw:frame>");
+            result
+        }
+    })
 }

@@ -41,6 +41,16 @@ pub struct Source {
     can_delete: bool,
 }
 impl Source {
+    pub fn can_rotate(&self, slide: u64, object: u64) -> bool {
+        let transform = self
+            .slides
+            .iter()
+            .find(|s| s.slide_id == slide)
+            .and_then(|s| s.objects.iter().find(|o| o.object_id == object))
+            .map(|o| o.transform)
+            .unwrap_or([1.0, 1.0, 0.0, 0.0]);
+        ((transform[0] * 720.0 / self.width) - (transform[1] * 405.0 / self.height)).abs() <= 1e-9
+    }
     pub fn can_edit_rich(&self, slide: u64, object: u64) -> bool {
         self.slides
             .iter()
@@ -446,6 +456,7 @@ fn decoration(
         y: (y * t[1] + t[3]) / height * 405.0,
         width: w * t[0] / width * 720.0,
         height: h * t[1] / height * 405.0,
+        rotation_degrees: 0.0,
         kind,
         fill,
         stroke,
@@ -657,8 +668,7 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
             else {
                 continue;
             };
-            if attr(xfrm, "rot").is_some_and(|v| v != "0")
-                || matches!(attr(xfrm, "flipH"), Some("1" | "true"))
+            if matches!(attr(xfrm, "flipH"), Some("1" | "true"))
                 || matches!(attr(xfrm, "flipV"), Some("1" | "true"))
             {
                 continue;
@@ -666,6 +676,15 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
             let Some(transform) = group_transform(node) else {
                 continue;
             };
+            let rotation = attr(xfrm, "rot")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+                / 60000.0;
+            if rotation.rem_euclid(360.0) != 0.0
+                && ((transform[0] * 720.0 / width) - (transform[1] * 405.0 / height)).abs() > 1e-9
+            {
+                continue;
+            }
             let (Some(off), Some(ext)) = (local(xfrm, "off"), local(xfrm, "ext")) else {
                 continue;
             };
@@ -758,6 +777,7 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
             object.y = (y * transform[1] + transform[3]) / height * 405.0;
             object.width = w * transform[0] / width * 720.0;
             object.height = h * transform[1] / height * 405.0;
+            object.rotation_degrees = rotation.rem_euclid(360.0);
             let props = node
                 .children()
                 .find(|n| n.is_element() && n.tag_name().name() == "spPr");
@@ -1527,7 +1547,18 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
             let changed_geometry = object.x != item.original.x
                 || object.y != item.original.y
                 || object.width != item.original.width
-                || object.height != item.original.height;
+                || object.height != item.original.height
+                || object.rotation_degrees != item.original.rotation_degrees;
+            if object.rotation_degrees.rem_euclid(360.0) != 0.0
+                && ((item.transform[0] * 720.0 / source.width)
+                    - (item.transform[1] * 405.0 / source.height))
+                    .abs()
+                    > 1e-9
+            {
+                return Err(
+                    "Rotating objects under a nonuniform PPTX transform is not supported".into(),
+                );
+            }
             if item.inherited_geometry && changed_geometry {
                 let props = node
                     .children()
@@ -1537,12 +1568,30 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
                 let y = (object.y / 405.0 * source.height - item.transform[3]) / item.transform[1];
                 let w = object.width / 720.0 * source.width / item.transform[0];
                 let h = object.height / 405.0 * source.height / item.transform[1];
-                let addition=format!("<a:xfrm xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:off x=\"{x:.0}\" y=\"{y:.0}\"/><a:ext cx=\"{w:.0}\" cy=\"{h:.0}\"/></a:xfrm>");
+                let rot = object.rotation_degrees.rem_euclid(360.0) * 60000.0;
+                let addition=format!("<a:xfrm xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" rot=\"{rot:.0}\"><a:off x=\"{x:.0}\" y=\"{y:.0}\"/><a:ext cx=\"{w:.0}\" cy=\"{h:.0}\"/></a:xfrm>");
                 let mut element = content[props.range()].to_owned();
                 prepend_element_content(&mut element, &addition)?;
                 patches.push((props.range(), element));
             } else if !item.inherited_geometry {
                 let transform = local(node, "xfrm").ok_or("PPTX transform missing")?;
+                if object.rotation_degrees != item.original.rotation_degrees {
+                    let value =
+                        format!("{:.0}", object.rotation_degrees.rem_euclid(360.0) * 60000.0);
+                    if attr(transform, "rot").is_some() {
+                        replace_attr(transform, "rot", value, content, &mut patches)?;
+                    } else {
+                        let start = transform.range().start;
+                        let end =
+                            content[start..].find('>').ok_or("Invalid PPTX transform")? + start;
+                        let at = if content.as_bytes().get(end.wrapping_sub(1)) == Some(&b'/') {
+                            end - 1
+                        } else {
+                            end
+                        };
+                        patches.push((at..at, format!(" rot=\"{value}\"")));
+                    }
+                }
                 let off = local(transform, "off").ok_or("PPTX offset missing")?;
                 let ext = local(transform, "ext").ok_or("PPTX extent missing")?;
                 if object.x != item.original.x {
@@ -1786,6 +1835,34 @@ fn retarget_relationship(bytes: &[u8], suffix: &str, value: &str) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rotation_roundtrips_new_and_source_overlay_with_history() {
+        use super::*;
+        let mut deck = Presentation::new();
+        let id = deck
+            .insert_object(ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let mut object = deck.slides()[0]
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap()
+            .clone();
+        object.rotation_degrees = 37.0;
+        deck.update_object(object).unwrap();
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].objects[0].rotation_degrees, 0.0);
+        assert!(deck.redo());
+        let bytes = export_new(&deck).unwrap();
+        let (mut reopened, source) = import(&bytes).unwrap();
+        assert_eq!(reopened.slides()[0].objects[0].rotation_degrees, 37.0);
+        let mut object = reopened.slides()[0].objects[0].clone();
+        object.rotation_degrees = 82.0;
+        reopened.update_object(object).unwrap();
+        let bytes = export(&reopened, &source).unwrap();
+        let (reopened, _) = import(&bytes).unwrap();
+        assert_eq!(reopened.slides()[0].objects[0].rotation_degrees, 82.0);
+    }
     use super::*;
     #[test]
     fn duplicate_slide_clones_notes_and_backlink() {
@@ -2101,6 +2178,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     y: 30.0 + row as f64 * 55.0,
                     width: 650.0,
                     height: 50.0,
+                    rotation_degrees: 0.0,
                     kind: ObjectKind::Text,
                     fill: [255, 255, 255],
                     stroke: [255, 255, 255],
@@ -2138,10 +2216,11 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
             let cx = emu(o.width, width, 720.0).max(1);
             let cy = emu(o.height, height, 405.0).max(1);
             let xfrm = format!(
-                "<a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>"
+                "<a:xfrm rot=\"{:.0}\"><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>", o.rotation_degrees.rem_euclid(360.0) * 60000.0
             );
             let fill = format!("{:02X}{:02X}{:02X}", o.fill[0], o.fill[1], o.fill[2]);
             let line = format!("{:02X}{:02X}{:02X}", o.stroke[0], o.stroke[1], o.stroke[2]);
+            let rot = (o.rotation_degrees.rem_euclid(360.0) * 60000.0).round() as i64;
             match o.kind {
                 ObjectKind::Rectangle
                 | ObjectKind::Ellipse
@@ -2212,7 +2291,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                         }
                         rows.push_str("</a:tr>");
                     }
-                    target.push_str(&format!("<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"));
+                    target.push_str(&format!("<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm rot=\"{rot}\"><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"));
                 }
             }
         }

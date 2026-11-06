@@ -1024,8 +1024,49 @@ unsafe fn poll_pending_open(hwnd: HWND) {
             });
             match ready {
                 None => {
-                    pending.phase = AsyncOpenPhase::Loading;
-                    Ok(Some(pending))
+                    let request = STATE.with(|s| {
+                        s.borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .app
+                            .take_async_open_password_request()
+                    });
+                    if let Some(request) = request {
+                        if let Some(mut values) =
+                            crate::prompt::show_options(hwnd, &request, false, true)
+                        {
+                            let result = STATE.with(|s| {
+                                s.borrow_mut()
+                                    .as_mut()
+                                    .unwrap()
+                                    .app
+                                    .submit_async_open_password(values.first().map(String::as_str))
+                            });
+                            for value in &mut values {
+                                value.as_bytes_mut().fill(0);
+                            }
+                            match result {
+                                Ok(()) => {
+                                    pending.phase = AsyncOpenPhase::Loading;
+                                    Ok(Some(pending))
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            STATE
+                                .with(|s| {
+                                    s.borrow_mut()
+                                        .as_mut()
+                                        .unwrap()
+                                        .app
+                                        .submit_async_open_password(None)
+                                })
+                                .map(|_| None)
+                        }
+                    } else {
+                        pending.phase = AsyncOpenPhase::Loading;
+                        Ok(Some(pending))
+                    }
                 }
                 Some(Err(e)) => Err(e),
                 Some(Ok(expected)) => {
@@ -1101,6 +1142,19 @@ unsafe fn poll_pending_open(hwnd: HWND) {
             STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.cancel_async_open());
             msg(hwnd, &e, MB_OK | MB_ICONERROR);
             refresh();
+        }
+    }
+}
+unsafe fn apply_requested_rich_selection() {
+    let (edit, selection) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut().unwrap();
+        (s.edit, s.app.take_requested_rich_selection())
+    });
+    if let Some(selection) = selection {
+        if !edit.is_null() {
+            crate::rich_edit::set_selection(edit, selection);
+            SetFocus(edit);
         }
     }
 }
@@ -1499,9 +1553,14 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 return;
             }
             if let Some(req) = request {
-                let multiline =
-                    STATE.with(|s| s.borrow().as_ref().unwrap().app.multiline_input(id));
-                if let Some(values) = crate::prompt::show_multiline(hwnd, &req, multiline) {
+                let (multiline, password) = STATE.with(|s| {
+                    let s = s.borrow();
+                    let a = &s.as_ref().unwrap().app;
+                    (a.multiline_input(id), a.password_input(id))
+                });
+                if let Some(mut values) =
+                    crate::prompt::show_options(hwnd, &req, multiline, password)
+                {
                     let r = STATE.with(|s| {
                         s.borrow_mut()
                             .as_mut()
@@ -1509,11 +1568,28 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                             .app
                             .input_action(id, &values)
                     });
+                    if password {
+                        for value in &mut values {
+                            value.as_bytes_mut().fill(0);
+                        }
+                    }
                     if let Err(e) = r {
                         msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                    } else if let Some(path) =
+                        STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.take_pending_open())
+                    {
+                        if confirm(hwnd) {
+                            if let Err(e) = open_document_path(path) {
+                                msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                            }
+                        } else {
+                            STATE
+                                .with(|s| s.borrow_mut().as_mut().unwrap().app.cancel_async_open());
+                        }
                     }
                 }
                 refresh();
+                apply_requested_rich_selection();
                 return;
             }
             let (edit, rich) = STATE.with(|s| {
@@ -1548,6 +1624,7 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         }
     }
     refresh();
+    apply_requested_rich_selection();
     if id == UNDO || id == REDO {
         let (edit, selection) = STATE.with(|s| {
             let s = s.borrow();
@@ -2803,11 +2880,24 @@ unsafe fn populate_table(table: HWND, rows: &[Vec<String>]) {
 }
 
 unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
+    draw_scene_items(dc, scene.viewport, &scene.items);
+}
+
+unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::SceneItem]) {
     use crate::{Point, SceneItem};
-    let cv = |p: Point| scene.viewport.document_to_view(p);
+    let cv = |p: Point| viewport.document_to_view(p);
     let rgb = |c: [u8; 3]| c[0] as u32 | (c[1] as u32) << 8 | (c[2] as u32) << 16;
-    for item in &scene.items {
+    for item in items {
         match item {
+            SceneItem::Transform {
+                center,
+                degrees,
+                items,
+            } => {
+                crate::scene_transform::with_rotation(dc, viewport, *center, *degrees, || {
+                    draw_scene_items(dc, viewport, items)
+                });
+            }
             SceneItem::Rect {
                 x,
                 y,
@@ -2889,9 +2979,7 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
                     continue;
                 }
                 let family = wide(&font.family);
-                let size = (font.points * scene.viewport.zoom)
-                    .round()
-                    .clamp(1.0, 32767.0) as i32;
+                let size = (font.points * viewport.zoom).round().clamp(1.0, 32767.0) as i32;
                 let handle = CreateFontW(
                     -size,
                     0,
@@ -2954,7 +3042,7 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
                     x: x + width,
                     y: y + height,
                 });
-                draw_rich_scene(dc, a, b, scene.viewport.zoom, paragraphs);
+                draw_rich_scene(dc, a, b, viewport.zoom, paragraphs);
             }
             SceneItem::Path {
                 points,
@@ -2989,8 +3077,8 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
                     dc,
                     p.x,
                     p.y,
-                    *width as f64 * scene.viewport.zoom,
-                    *height as f64 * scene.viewport.zoom,
+                    *width as f64 * viewport.zoom,
+                    *height as f64 * viewport.zoom,
                     *width,
                     *height,
                     rgba,
@@ -3010,8 +3098,8 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
                     dc,
                     p.x,
                     p.y,
-                    *width * scene.viewport.zoom,
-                    *height * scene.viewport.zoom,
+                    *width * viewport.zoom,
+                    *height * viewport.zoom,
                     *pixel_width,
                     *pixel_height,
                     rgba,
@@ -3367,7 +3455,20 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                 IntersectClipRect(dc, 0, 0, clip_w, clip_h);
                 let mut scene = page.scene.clone();
                 scene.viewport = crate::Viewport::default();
-                draw_scene(dc, &scene);
+                if GetDeviceCaps(dc, SHADEBLENDCAPS as i32) & SB_PIXEL_ALPHA as i32 == 0 {
+                    crate::scene_transform::print_flattened(
+                        dc,
+                        clip_w,
+                        clip_h,
+                        dpi_x.min(dpi_y),
+                        |memory, zoom| {
+                            scene.viewport.zoom = zoom;
+                            draw_scene(memory, &scene);
+                        },
+                    )?;
+                } else {
+                    draw_scene(dc, &scene);
+                }
                 RestoreDC(dc, saved);
                 if EndPage(dc) <= 0 {
                     return Err("Could not finish print page".into());
@@ -3376,33 +3477,57 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
             Ok(())
         }
         crate::PrintJob::RichText(job) => {
-            let edit = STATE.with(|s| s.borrow().as_ref().unwrap().edit);
+            let original = STATE.with(|s| s.borrow().as_ref().unwrap().edit);
+            let (edit, temporary) = crate::rich_notes::temporary_edit(original, job)?;
             let ox = (i64::from(offset_x) * 1440 / i64::from(dpi_x)) as i32;
             let oy = (i64::from(offset_y) * 1440 / i64::from(dpi_y)) as i32;
-            let pages = crate::rich_print::paginate(edit, dc, job.geometry, (ox, oy))?;
-            let mut result = Ok(());
-            for (page, (start, end)) in pages.iter().copied().enumerate() {
-                if StartPage(dc) <= 0 {
-                    result = Err("Could not start print page".into());
-                    break;
+            let result = (|| {
+                if job.notes.is_empty() {
+                    let pages = crate::rich_print::paginate(edit, dc, job.geometry, (ox, oy))?;
+                    for (page, (start, end)) in pages.iter().copied().enumerate() {
+                        if StartPage(dc) <= 0 {
+                            return Err("Could not start print page".into());
+                        }
+                        if crate::rich_print::body(edit, dc, job.geometry, (ox, oy), start) != end {
+                            return Err("Print pagination changed while rendering".into());
+                        }
+                        crate::rich_print::decorations(
+                            dc,
+                            job,
+                            (offset_x, offset_y),
+                            page,
+                            pages.len(),
+                        )?;
+                        if EndPage(dc) <= 0 {
+                            return Err("Could not finish print page".into());
+                        }
+                    }
+                } else {
+                    let layout = crate::rich_notes::paginate(edit, dc, job, (ox, oy))?;
+                    for page in 0..layout.pages.len() {
+                        if StartPage(dc) <= 0 {
+                            return Err("Could not start print page".into());
+                        }
+                        crate::rich_notes::draw_page(
+                            edit,
+                            dc,
+                            job,
+                            &layout,
+                            page,
+                            (ox, oy),
+                            (offset_x, offset_y),
+                        )?;
+                        if EndPage(dc) <= 0 {
+                            return Err("Could not finish print page".into());
+                        }
+                    }
                 }
-                let next = crate::rich_print::body(edit, dc, job.geometry, (ox, oy), start);
-                if next != end {
-                    result = Err("Print pagination changed while rendering".into());
-                    break;
-                }
-                if let Err(e) =
-                    crate::rich_print::decorations(dc, job, (offset_x, offset_y), page, pages.len())
-                {
-                    result = Err(e);
-                    break;
-                }
-                if EndPage(dc) <= 0 {
-                    result = Err("Could not finish print page".into());
-                    break;
-                }
-            }
+                Ok(())
+            })();
             crate::rich_print::release(edit);
+            if temporary {
+                DestroyWindow(edit);
+            }
             result
         }
     })();

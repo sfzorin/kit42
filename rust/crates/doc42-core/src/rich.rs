@@ -1,4 +1,6 @@
 //! Structured document state. Text positions are UTF-8 byte offsets.
+mod annotations;
+pub use annotations::ProjectedNote;
 mod docx;
 mod html;
 mod markdown;
@@ -9,6 +11,7 @@ mod rtf_lists;
 mod rtf_picture;
 mod rtf_read;
 mod table_edit;
+mod toc;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use suite42_core::{SnapshotHistory, TextValue};
@@ -241,6 +244,10 @@ pub struct Annotation {
     pub author: String,
     pub text: String,
     pub resolved: bool,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub initials: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +255,10 @@ pub struct Footnote {
     pub id: u64,
     pub at: Position,
     pub paragraphs: Vec<Paragraph>,
+    #[serde(default)]
+    pub endnote: bool,
+    #[serde(default)]
+    pub citation: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -272,6 +283,17 @@ pub enum FieldKind {
     Date,
     Custom(String),
 }
+/// Generated entries retain their heading identity independently of displayed text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocEntry {
+    pub paragraph: u64,
+    pub heading: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableOfContents {
+    pub id: u64,
+    pub entries: Vec<TocEntry>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
@@ -282,6 +304,8 @@ pub struct State {
     pub footnotes: Vec<Footnote>,
     pub revisions: Vec<Revision>,
     pub fields: Vec<Field>,
+    #[serde(default)]
+    pub tables_of_contents: Vec<TableOfContents>,
     pub next_id: u64,
     pub text_policy: TextValue,
     /// Opaque ancillary DOCX parts retained during supported edits.
@@ -320,6 +344,7 @@ impl Default for State {
             footnotes: vec![],
             revisions: vec![],
             fields: vec![],
+            tables_of_contents: vec![],
             next_id: 2,
             text_policy: TextValue::default(),
             docx_parts: Default::default(),
@@ -406,6 +431,11 @@ impl RichDocument {
         destination: &std::path::Path,
     ) -> Result<suite42_core::session::SaveBundle, Error> {
         validate(self.state())?;
+        if !self.state().tables_of_contents.is_empty() {
+            return Err(Error::Unsupported(
+                "table of contents Markdown export is under development".into(),
+            ));
+        }
         if !self.state().odt_parts.is_empty() || !self.state().docx_parts.is_empty() {
             return Err(Error::Unsupported(
                 "conversion would discard retained Office package parts".into(),
@@ -494,6 +524,13 @@ impl RichDocument {
     }
     pub fn encode(&self, format: Format) -> Result<Vec<u8>, Error> {
         validate(self.state())?;
+        if !self.state().tables_of_contents.is_empty()
+            && !matches!(format, Format::Project | Format::Odt | Format::Docx)
+        {
+            return Err(Error::Unsupported(
+                "table of contents format export is under development".into(),
+            ));
+        }
         if !self.state().odt_parts.is_empty() && !matches!(format, Format::Project | Format::Odt) {
             return Err(Error::Unsupported(
                 "conversion would discard retained OpenDocument package parts".into(),
@@ -558,6 +595,7 @@ fn plain(s: &State) -> bool {
         && s.footnotes.is_empty()
         && s.revisions.is_empty()
         && s.fields.is_empty()
+        && s.tables_of_contents.is_empty()
         && s.blocks.iter().all(|b| match b {
             Block::Paragraph(p) => {
                 p.style == ParagraphStyle::default()
@@ -700,6 +738,44 @@ fn validate(s: &State) -> Result<(), Error> {
     {
         return Err(Error::Invalid("invalid text position".into()));
     }
+    let body_paragraphs: std::collections::HashSet<u64> = s
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p.id),
+            _ => None,
+        })
+        .collect();
+    let mut toc_entries = std::collections::HashSet::new();
+    for toc in &s.tables_of_contents {
+        if toc.id == 0 || !ids.insert(toc.id) || toc.entries.is_empty() {
+            return Err(Error::Invalid("invalid table of contents identity".into()));
+        }
+        let positions = toc
+            .entries
+            .iter()
+            .map(|e| {
+                s.blocks
+                    .iter()
+                    .position(|b| matches!(b, Block::Paragraph(p) if p.id == e.paragraph))
+            })
+            .collect::<Option<Vec<_>>>();
+        if positions
+            .as_ref()
+            .is_none_or(|v| v.windows(2).any(|w| w[1] != w[0] + 1))
+        {
+            return Err(Error::Invalid("non-contiguous table of contents".into()));
+        }
+        for e in &toc.entries {
+            if e.paragraph == e.heading
+                || !body_paragraphs.contains(&e.paragraph)
+                || !body_paragraphs.contains(&e.heading)
+                || !toc_entries.insert(e.paragraph)
+            {
+                return Err(Error::Invalid("invalid table of contents entry".into()));
+            }
+        }
+    }
     if ids.iter().any(|id| *id >= s.next_id) {
         return Err(Error::Invalid("invalid next ID".into()));
     }
@@ -724,17 +800,13 @@ impl RichDocument {
         selection: Selection,
     ) -> Result<bool, Error> {
         self.transact(|s| {
-            if s.comments
+            if s.revisions
                 .iter()
                 .any(|x| x.start.paragraph == paragraph || x.end.paragraph == paragraph)
-                || s.revisions
-                    .iter()
-                    .any(|x| x.start.paragraph == paragraph || x.end.paragraph == paragraph)
-                || s.footnotes.iter().any(|x| x.at.paragraph == paragraph)
                 || s.fields.iter().any(|x| x.at.paragraph == paragraph)
             {
                 return Err(Error::Unsupported(
-                    "editing anchored annotations requires position remapping".into(),
+                    "editing revision or field anchors".into(),
                 ));
             }
             let p = paragraph_mut(s, paragraph)
@@ -782,6 +854,7 @@ impl RichDocument {
                 pos = end;
             }
             p.runs = out;
+            annotations::remap_edit(s, paragraph, range, text.len());
             s.selection = selection;
             Ok(())
         })
@@ -1187,6 +1260,8 @@ impl RichDocument {
         view.odt_source_page = None;
         view.odt_source_headers = None;
         view.odt_source_header_fields = None;
+        view.comments.clear();
+        view.footnotes.clear();
         let header_ids = self.header_field_ids();
         view.fields
             .retain(|f| !header_ids.contains(&f.at.paragraph));
@@ -1239,8 +1314,6 @@ impl RichDocument {
         let mut parsed = rtf_read::decode_projection(bytes)?;
         let old = self.state();
         if old.sections.len() != 1
-            || !old.comments.is_empty()
-            || !old.footnotes.is_empty()
             || !old.revisions.is_empty()
             || old
                 .fields
@@ -1277,12 +1350,54 @@ impl RichDocument {
                 "RichEdit removed a hyperlink target".into(),
             ));
         }
+        let mut matching: Vec<Option<usize>> = (0..parsed.blocks.len()).map(Some).collect();
+        if !old.comments.is_empty()
+            || !old.footnotes.is_empty()
+            || !old.tables_of_contents.is_empty()
+        {
+            matching.fill(None);
+            let mut a = 0usize;
+            let mut b = 0usize;
+            loop {
+                let old_object = (a..old.blocks.len())
+                    .find(|i| !matches!(old.blocks[*i], Block::Paragraph(_)))
+                    .unwrap_or(old.blocks.len());
+                let new_object = (b..parsed.blocks.len())
+                    .find(|i| !matches!(parsed.blocks[*i], Block::Paragraph(_)))
+                    .unwrap_or(parsed.blocks.len());
+                for offset in 0..(old_object - a).min(new_object - b) {
+                    matching[b + offset] = Some(a + offset);
+                }
+                if old_object == old.blocks.len() && new_object == parsed.blocks.len() {
+                    break;
+                }
+                if old_object == old.blocks.len() || new_object == parsed.blocks.len() {
+                    return Err(Error::Unsupported(
+                        "structural edits around annotated objects".into(),
+                    ));
+                }
+                let compatible = matches!(
+                    (&old.blocks[old_object], &parsed.blocks[new_object]),
+                    (Block::Table(_), Block::Table(_)) | (Block::Image(_), Block::Image(_))
+                );
+                if !compatible {
+                    return Err(Error::Unsupported(
+                        "structural edits around annotated objects".into(),
+                    ));
+                }
+                matching[new_object] = Some(old_object);
+                a = old_object + 1;
+                b = new_object + 1;
+            }
+        }
         let mut next_id = old.next_id;
         let mut used_images = std::collections::HashSet::new();
         for (i, block) in parsed.blocks.iter_mut().enumerate() {
             match block {
                 Block::Paragraph(p) => {
-                    if let Some(Block::Paragraph(previous)) = old.blocks.get(i) {
+                    if let Some(Block::Paragraph(previous)) =
+                        matching[i].and_then(|index| old.blocks.get(index))
+                    {
                         p.style.source_style = previous.style.source_style.clone();
                         p.style.odt_extra = previous.style.odt_extra.clone();
                         restore_run_metadata(&previous.runs, &mut p.runs)?;
@@ -1293,7 +1408,9 @@ impl RichDocument {
                     }
                 }
                 Block::Table(table) => {
-                    let Some(Block::Table(previous)) = old.blocks.get(i) else {
+                    let Some(Block::Table(previous)) =
+                        matching[i].and_then(|index| old.blocks.get(index))
+                    else {
                         return Err(Error::Unsupported(
                             "RichEdit inserted or moved a table".into(),
                         ));
@@ -1386,6 +1503,99 @@ impl RichDocument {
         parsed.odt_source_page = old.odt_source_page.clone();
         parsed.odt_source_headers = old.odt_source_headers.clone();
         parsed.odt_source_header_fields = old.odt_source_header_fields.clone();
+        let mut anchor_source = old.clone();
+        for toc in &old.tables_of_contents {
+            for entry in &toc.entries {
+                for paragraph in [entry.paragraph, entry.heading] {
+                    let at = Position {
+                        paragraph,
+                        offset: 0,
+                    };
+                    anchor_source.comments.push(Annotation {
+                        id: 0,
+                        start: at.clone(),
+                        end: at,
+                        author: String::new(),
+                        text: String::new(),
+                        resolved: false,
+                        date: None,
+                        initials: None,
+                    });
+                }
+            }
+        }
+        annotations::remap_projection(&anchor_source, &mut parsed)?;
+        let mapped = parsed.comments.split_off(old.comments.len());
+        let mut mapped = mapped.into_iter();
+        parsed.tables_of_contents = old.tables_of_contents.clone();
+        for toc in &mut parsed.tables_of_contents {
+            for entry in &mut toc.entries {
+                entry.paragraph = mapped
+                    .next()
+                    .ok_or_else(|| Error::Invalid("TOC anchor".into()))?
+                    .start
+                    .paragraph;
+                entry.heading = mapped
+                    .next()
+                    .ok_or_else(|| Error::Invalid("TOC heading anchor".into()))?
+                    .start
+                    .paragraph;
+            }
+        }
+        // An unchanged heading moved as a block retains its identity by its unique text.
+        // If a replacement removes its heading style entirely, reject the ambiguous edit.
+        for (before_toc, after_toc) in old
+            .tables_of_contents
+            .iter()
+            .zip(&mut parsed.tables_of_contents)
+        {
+            for (before_entry, after_entry) in before_toc.entries.iter().zip(&mut after_toc.entries)
+            {
+                let original = old
+                    .blocks
+                    .iter()
+                    .find_map(|b| match b {
+                        Block::Paragraph(p) if p.id == before_entry.heading => {
+                            Some(p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| Error::Invalid("TOC heading".into()))?;
+                let exact = parsed
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Paragraph(p)
+                            if p.style.outline_level.is_some()
+                                && p.runs.iter().map(|r| r.text.as_str()).collect::<String>()
+                                    == original =>
+                        {
+                            Some(p.id)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if exact.len() == 1 {
+                    after_entry.heading = exact[0];
+                }
+                if !parsed.blocks.iter().any(|b| matches!(b, Block::Paragraph(p) if p.id == after_entry.heading && p.style.outline_level.is_some())) {
+                    return Err(Error::Unsupported("editing removed a TOC heading; update or remove the table of contents first".into()));
+                }
+            }
+        }
+        let toc_links = parsed
+            .tables_of_contents
+            .iter()
+            .flat_map(|t| t.entries.iter())
+            .map(|e| (e.paragraph, e.heading))
+            .collect::<Vec<_>>();
+        for (paragraph, heading) in toc_links {
+            let p = paragraph_mut(&mut parsed, paragraph)
+                .ok_or_else(|| Error::Invalid("TOC paragraph".into()))?;
+            for run in &mut p.runs {
+                run.link = Some(format!("#DOC42_H{heading}"));
+            }
+        }
         validate(&parsed)?;
         let temp = Self {
             history: SnapshotHistory::new(parsed.clone(), 0),

@@ -1,5 +1,7 @@
 //! Bounded sparse workbook. Raw text remains authoritative for editing and CSV.
 mod analytics;
+mod tables;
+pub use tables::SpreadsheetTable;
 mod layout;
 pub use layout::{PrintSettings, SheetFilter};
 mod display;
@@ -168,6 +170,10 @@ struct Sheet {
     conditional_formats: Vec<ConditionalFormat>,
     charts: Vec<Chart>,
     pivots: Vec<Pivot>,
+    tables: Vec<SpreadsheetTable>,
+    opaque_table_headers: Vec<Range>,
+    protected_formula_ranges: Vec<Range>,
+    shared_formula_cells: Vec<(usize, usize)>,
     filter: Option<SheetFilter>,
     print: PrintSettings,
     copied_from: Option<SheetId>,
@@ -197,6 +203,10 @@ impl Sheet {
             conditional_formats: Vec::new(),
             charts: Vec::new(),
             pivots: Vec::new(),
+            tables: Vec::new(),
+            opaque_table_headers: Vec::new(),
+            protected_formula_ranges: Vec::new(),
+            shared_formula_cells: Vec::new(),
             filter: None,
             print: PrintSettings::default(),
             copied_from: None,
@@ -212,6 +222,7 @@ struct State {
     next_id: SheetId,
     styles: Vec<CellStyle>,
     selection: Range,
+    date_1904: bool,
 }
 impl State {
     fn sheet(&self) -> &Sheet {
@@ -252,6 +263,7 @@ impl Workbook {
                     active: 1,
                     next_id: 2,
                     styles: vec![CellStyle::default()],
+                    date_1904: false,
                     selection: Range {
                         top: 0,
                         left: 0,
@@ -313,14 +325,21 @@ impl Workbook {
         Ok(b)
     }
     pub fn display_grid(&self) -> Vec<Vec<String>> {
-        let mut grid = formula::display_grid(self);
+        self.display_grid_at(chrono::Local::now().naive_local())
+    }
+    fn display_grid_at(&self, now: chrono::NaiveDateTime) -> Vec<Vec<String>> {
+        let mut grid = formula::display_grid_at(self, now);
         if self
             .external_baseline
             .as_ref()
             .is_some_and(|base| base.sheets == self.history.current().sheets)
         {
             for (&(sheet, row, col), value) in &self.external_cache {
-                if sheet == self.active_sheet() && row < grid.len() && col < grid[row].len() {
+                if sheet == self.active_sheet()
+                    && row < grid.len()
+                    && col < grid[row].len()
+                    && grid[row][col] == "#ERROR!"
+                {
                     grid[row][col] = value.clone();
                 }
             }
@@ -443,6 +462,8 @@ impl Workbook {
                 right: col,
             },
         )?;
+        tables::reconcile_headers(self.history.current(), &mut state)?;
+        self.validate_external_table_edit(&state)?;
         Ok(self.history.apply(state))
     }
     pub fn can_add_row(&self) -> bool {
@@ -496,6 +517,7 @@ impl Workbook {
             || !state.sheet().conditional_formats.is_empty()
             || !state.sheet().charts.is_empty()
             || !state.sheet().pivots.is_empty()
+            || !state.sheet().tables.is_empty()
             || state.sheet().filter.is_some()
             || state.sheet().print != PrintSettings::default()
         {
@@ -542,6 +564,8 @@ impl Workbook {
             bottom: 0,
             right: 0,
         };
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn add_sheet(&mut self, name: &str) -> Result<SheetId, Error> {
@@ -595,7 +619,12 @@ impl Workbook {
             .find(|s| s.id == id)
             .cloned()
             .ok_or(Error::Bounds)?;
-        if !sheet.charts.is_empty() || !sheet.pivots.is_empty() {
+        if self.has_external_source() && !sheet.protected_formula_ranges.is_empty() {
+            return Err(Error::Invalid(
+                "Duplicating sheets with shared or array formulas is not yet supported safely",
+            ));
+        }
+        if !sheet.charts.is_empty() || !sheet.pivots.is_empty() || !sheet.tables.is_empty() {
             return Err(Error::Invalid(
                 "Duplicate chart and pivot sheets after removing their objects",
             ));
@@ -673,6 +702,8 @@ impl Workbook {
         if self.has_external_source() {
             self.validate_external_rename(&st)?;
         }
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn delete_sheet(&mut self, id: SheetId) -> Result<bool, Error> {
@@ -707,6 +738,27 @@ impl Workbook {
             return Err(Error::Protected);
         }
         let name = st.sheets[idx].name.clone();
+        let table_tokens: Vec<_> = st.sheets[idx]
+            .tables
+            .iter()
+            .map(|table| format!("{}[", table.name.to_ascii_lowercase()))
+            .collect();
+        if st
+            .sheets
+            .iter()
+            .filter(|s| s.id != id)
+            .flat_map(|s| s.cells.values())
+            .any(|cell| {
+                matches!(cell.text, CellContent::Formula(_))
+                    && table_tokens
+                        .iter()
+                        .any(|token| cell.text.raw().to_ascii_lowercase().contains(token))
+            })
+        {
+            return Err(Error::Invalid(
+                "Sheet contains a table referenced by another sheet",
+            ));
+        }
         if st
             .sheets
             .iter()
@@ -735,6 +787,8 @@ impl Workbook {
         if self.has_external_source() {
             self.validate_external_rename(&st)?;
         }
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn reorder_sheet(&mut self, id: SheetId, index: usize) -> Result<bool, Error> {
@@ -760,6 +814,8 @@ impl Workbook {
         if self.has_external_source() {
             self.validate_external_rename(&st)?;
         }
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn selection(&self) -> Range {
@@ -771,6 +827,8 @@ impl Workbook {
             return Err(Error::Bounds);
         }
         st.selection = range;
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn style(&self, row: usize, col: usize) -> Option<&CellStyle> {
@@ -838,6 +896,8 @@ impl Workbook {
                 }
             }
         }
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn merges(&self) -> &[Range] {
@@ -870,6 +930,8 @@ impl Workbook {
             return Err(Error::Invalid("merge would hide data"));
         }
         s.merges.push(range);
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn unmerge(&mut self, range: Range) -> Result<bool, Error> {
@@ -880,6 +942,8 @@ impl Workbook {
             return Err(Error::Protected);
         }
         s.merges.retain(|m| *m != range);
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn set_protected(&mut self, protected: bool) -> bool {
@@ -922,6 +986,11 @@ impl Workbook {
         }
         let mut st = self.history.current().clone();
         let active = st.active;
+        if !self.has_external_source() && !st.sheet().tables.is_empty() {
+            return Err(Error::Invalid(
+                "Resize or remove tables before structural edits",
+            ));
+        }
         if st.sheets.iter().any(|s| {
             s.charts
                 .iter()
@@ -984,6 +1053,10 @@ impl Workbook {
             || !delete && size.checked_add(count).is_none_or(|n| n > max)
         {
             return Err(Error::Bounds);
+        }
+        for table in &mut s.tables {
+            table.range = shift_range(table.range, rows, at, count, delete)
+                .ok_or(Error::Invalid("Deleting a whole table is not supported"))?;
         }
         s.merges = s
             .merges
@@ -1110,6 +1183,8 @@ impl Workbook {
         }
         st.selection = destination;
         rules::validate_range(&st, destination)?;
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn row_height(&self, row: usize) -> Option<u16> {
@@ -1144,6 +1219,8 @@ impl Workbook {
             return Err(Error::Bounds);
         }
         s.row_heights.insert(row, height);
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     pub fn set_column_width(&mut self, col: usize, width: u16) -> Result<bool, Error> {
@@ -1165,6 +1242,8 @@ impl Workbook {
             return Err(Error::Invalid("Column width exceeds Excel's limit"));
         }
         s.col_widths.insert(col, width);
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
 }
@@ -1239,6 +1318,8 @@ impl Workbook {
         }
         st.selection = destination;
         rules::validate_range(&st, destination)?;
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     /// Stable sort of complete rows within a rectangular region using visible values.
@@ -1303,6 +1384,8 @@ impl Workbook {
             }
         }
         rules::validate_range(&st, range)?;
+        tables::reconcile_headers(self.history.current(), &mut st)?;
+        self.validate_external_table_edit(&st)?;
         Ok(self.history.apply(st))
     }
     /// Return matching row indexes without modifying the sheet.
@@ -2287,6 +2370,8 @@ impl Workbook {
         }
         state.selection = dest;
         rules::validate_range(&state, dest)?;
+        tables::reconcile_headers(self.history.current(), &mut state)?;
+        self.validate_external_table_edit(&state)?;
         Ok(self.history.apply(state))
     }
 }

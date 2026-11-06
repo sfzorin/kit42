@@ -15,6 +15,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: ilammy/msvc-dev-cmd@v1
+      - name: Provision pinned PDFium for file-engine tests
+        shell: pwsh
+        run: |
+          python scripts/fetch-pdfium.py build/test-pdfium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force target/debug/deps | Out-Null
+          Copy-Item build/test-pdfium/pdfium.dll target/debug/deps/pdfium.dll
       - run: cargo test --locked --workspace
       - name: Build six native executables with Windows visual styles
         shell: pwsh

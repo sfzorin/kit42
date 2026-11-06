@@ -12,6 +12,7 @@ use win42::{App, CommandSpec, CommandState, DialogRequest, DialogResult, FileFor
 struct Doc {
     doc: RichDocument,
     selection: (usize, usize),
+    requested_selection: Option<(usize, usize)>,
     zoom_percent: u16,
     next_revision: u64,
     snapshots: HashMap<u64, State>,
@@ -21,6 +22,7 @@ impl Doc {
         Self {
             doc: RichDocument::new(),
             selection: (0, 0),
+            requested_selection: None,
             zoom_percent: 100,
             next_revision: 1,
             snapshots: HashMap::new(),
@@ -373,9 +375,37 @@ impl Doc {
         }
         Some(output)
     }
+    fn note_layout_supported(&self) -> bool {
+        self.doc
+            .state()
+            .footnotes
+            .iter()
+            .flat_map(|n| &n.paragraphs)
+            .all(|p| {
+                let s = &p.style;
+                s.left_twips == 0
+                    && s.right_twips == 0
+                    && s.first_line_twips == 0
+                    && s.before_twips == 0
+                    && s.after_twips == 0
+                    && s.line_twips == 0
+                    && s.tabs_twips.is_empty()
+                    && !s.keep_lines
+                    && !s.keep_with_next
+                    && !s.page_break_before
+                    && s.list.is_none()
+                    && s.outline_level.is_none()
+                    && p.runs
+                        .iter()
+                        .all(|r| !r.style.strike && r.style.highlight.is_none())
+            })
+    }
     fn rich_print(&self) -> Option<win42::RichPrint> {
         let s = self.doc.state();
-        if s.sections.len() != 1 || self.doc.rich_edit_projection().is_err() {
+        if s.sections.len() != 1
+            || (!s.footnotes.is_empty() && !self.note_layout_supported())
+            || self.doc.rich_edit_projection().is_err()
+        {
             return None;
         }
         let section = &s.sections[0];
@@ -391,12 +421,29 @@ impl Doc {
         if !geometry.valid() {
             return None;
         }
+        let (body_rtf, notes) = if s.footnotes.is_empty() {
+            (None, Vec::new())
+        } else {
+            let (rtf, projected) = self.doc.note_print_projection().ok()?;
+            let mut notes = Vec::new();
+            for note in projected {
+                notes.push(win42::RichPrintNote {
+                    marker: note.marker,
+                    label: note.label,
+                    endnote: note.endnote,
+                    paragraphs: self.print_decoration(&note.paragraphs)?,
+                });
+            }
+            (Some(rtf), notes)
+        };
         Some(win42::RichPrint {
             geometry,
             header_distance_twips: p.header_distance_twips.try_into().ok()?,
             footer_distance_twips: p.footer_distance_twips.try_into().ok()?,
             header: self.print_decoration(&section.header)?,
             footer: self.print_decoration(&section.footer)?,
+            body_rtf,
+            notes,
         })
     }
     fn visible_text(&self) -> String {
@@ -636,6 +683,9 @@ impl App for Doc {
         self.selection = selection;
         Ok(())
     }
+    fn take_requested_rich_selection(&mut self) -> Option<(usize, usize)> {
+        self.requested_selection.take()
+    }
     fn rich_selection_to_restore(&self) -> Option<(usize, usize)> {
         let selection = &self.doc.state().selection;
         Some((
@@ -776,6 +826,21 @@ impl App for Doc {
             (332, "Table cell border…", None),
             (333, "Table column width…", None),
             (334, "Merge rectangular cells…", None),
+            (335, "Add comment…", None),
+            (336, "Edit comment…", None),
+            (337, "Delete comment…", None),
+            (338, "List comments…", None),
+            (339, "Go to comment…", None),
+            (340, "Insert footnote…", None),
+            (341, "Insert endnote…", None),
+            (342, "Edit note…", None),
+            (343, "Delete note…", None),
+            (344, "List notes…", None),
+            (345, "Go to note…", None),
+            (346, "Insert table of contents", None),
+            (347, "Update table of contents", None),
+            (348, "Remove table of contents", None),
+            (349, "Go to TOC heading", None),
         ]
         .into_iter()
         .map(|(id, title, accelerator)| CommandSpec {
@@ -787,6 +852,34 @@ impl App for Doc {
         .collect()
     }
     fn command_state(&self, id: u16) -> CommandState {
+        if (346..=349).contains(&id) {
+            let at = self.doc.position_from_utf16(self.selection.0).ok();
+            return CommandState {
+                enabled: match id {
+                    346 => self.doc.state().blocks.iter().any(
+                        |b| matches!(b, Block::Paragraph(p) if p.style.outline_level.is_some()),
+                    ),
+                    349 => at
+                        .as_ref()
+                        .and_then(|p| self.doc.toc_target(p.paragraph))
+                        .is_some(),
+                    _ => !self.doc.state().tables_of_contents.is_empty(),
+                },
+                checked: false,
+            };
+        }
+        if (340..=345).contains(&id) {
+            return CommandState {
+                enabled: id == 340 || id == 341 || !self.doc.state().footnotes.is_empty(),
+                checked: false,
+            };
+        }
+        if (335..=339).contains(&id) {
+            return CommandState {
+                enabled: id == 335 || !self.doc.state().comments.is_empty(),
+                checked: false,
+            };
+        }
         if id == 319 || id == 320 {
             return CommandState {
                 enabled: self.header_input(id == 320).is_ok(),
@@ -870,7 +963,121 @@ impl App for Doc {
             }),
         }
     }
+    fn multiline_input(&self, id: u16) -> bool {
+        matches!(id, 335 | 336 | 338 | 340 | 341 | 342 | 344)
+    }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 340 || id == 341 {
+            return Some(win42::InputRequest {
+                title: if id == 340 {
+                    "Insert footnote"
+                } else {
+                    "Insert endnote"
+                },
+                fields: vec![("Note text", String::new())],
+            });
+        }
+        if id == 342 {
+            let first = self.doc.state().footnotes.first()?;
+            let text = first
+                .paragraphs
+                .iter()
+                .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            return Some(win42::InputRequest {
+                title: "Edit note",
+                fields: vec![("Note text", text), ("Note number", "1".into())],
+            });
+        }
+        if id == 343 || id == 345 {
+            return Some(win42::InputRequest {
+                title: if id == 343 {
+                    "Delete note"
+                } else {
+                    "Go to note anchor"
+                },
+                fields: vec![("Note number", "1".into())],
+            });
+        }
+        if id == 344 {
+            let list = self
+                .doc
+                .state()
+                .footnotes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    format!(
+                        "{}: {} — {}",
+                        i + 1,
+                        if n.endnote { "Endnote" } else { "Footnote" },
+                        n.paragraphs
+                            .iter()
+                            .flat_map(|p| p.runs.iter().map(|r| r.text.as_str()))
+                            .collect::<String>()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            return Some(win42::InputRequest {
+                title: "Notes",
+                fields: vec![("Notes", list)],
+            });
+        }
+        if id == 335 {
+            return Some(win42::InputRequest {
+                title: "Add comment to selection",
+                fields: vec![("Comment", String::new()), ("Author", String::new())],
+            });
+        }
+        if id == 336 {
+            let first = self.doc.state().comments.first()?;
+            return Some(win42::InputRequest {
+                title: "Edit comment",
+                fields: vec![
+                    ("Text", first.text.clone()),
+                    ("Comment number", "1".into()),
+                    (
+                        "Resolved (yes/no)",
+                        if first.resolved { "yes" } else { "no" }.into(),
+                    ),
+                ],
+            });
+        }
+        if id == 337 || id == 339 {
+            return Some(win42::InputRequest {
+                title: if id == 337 {
+                    "Delete comment"
+                } else {
+                    "Go to comment"
+                },
+                fields: vec![("Comment number", "1".into())],
+            });
+        }
+        if id == 338 {
+            let list = self
+                .doc
+                .state()
+                .comments
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    format!(
+                        "{}: {} — {}{}",
+                        i + 1,
+                        c.author,
+                        c.text.replace(['\r', '\n'], " "),
+                        if c.resolved { " (resolved)" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            return Some(win42::InputRequest {
+                title: "Comments",
+                fields: vec![("Comments", list)],
+            });
+        }
         if id == 319 || id == 320 {
             Some(win42::InputRequest {
                 title: if id == 319 {
@@ -1020,6 +1227,129 @@ impl App for Doc {
         }
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id == 340 || id == 341 {
+            if values.len() != 1 {
+                return Err("Invalid note".into());
+            }
+            let at = self
+                .doc
+                .position_from_utf16(self.selection.0.min(self.selection.1))
+                .map_err(|e| e.to_string())?;
+            self.doc
+                .add_note(at, values[0].clone(), id == 341)
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 344 {
+            return Ok(());
+        }
+        if matches!(id, 342 | 343 | 345) {
+            let expected = if id == 342 { 2 } else { 1 };
+            if values.len() != expected {
+                return Err("Invalid note selection".into());
+            }
+            let index = values[if id == 342 { 1 } else { 0 }]
+                .parse::<usize>()
+                .map_err(|_| "Invalid note number")?
+                .checked_sub(1)
+                .ok_or("Numbers start at 1")?;
+            let note = self
+                .doc
+                .state()
+                .footnotes
+                .get(index)
+                .cloned()
+                .ok_or("Note not found")?;
+            match id {
+                342 => {
+                    self.doc
+                        .edit_note(note.id, values[0].clone())
+                        .map_err(|e| e.to_string())?;
+                }
+                343 => {
+                    self.doc.delete_note(note.id).map_err(|e| e.to_string())?;
+                }
+                _ => {
+                    let pos = self
+                        .doc
+                        .position_to_utf16(&note.at)
+                        .map_err(|e| e.to_string())?;
+                    self.selection = (pos, pos);
+                    self.requested_selection = Some((pos, pos));
+                }
+            }
+            return Ok(());
+        }
+        if id == 335 {
+            if values.len() != 2 {
+                return Err("Invalid comment".into());
+            }
+            let first = self.selection.0.min(self.selection.1);
+            let last = self.selection.0.max(self.selection.1);
+            let start = self
+                .doc
+                .position_from_utf16(first)
+                .map_err(|e| e.to_string())?;
+            let end = self
+                .doc
+                .position_from_utf16(last)
+                .map_err(|e| e.to_string())?;
+            self.doc
+                .add_comment(start, end, values[1].clone(), values[0].clone())
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 338 {
+            return Ok(());
+        }
+        if matches!(id, 336 | 337 | 339) {
+            let required = if id == 336 { 3 } else { 1 };
+            if values.len() != required {
+                return Err("Invalid comment selection".into());
+            }
+            let index = values[if id == 336 { 1 } else { 0 }]
+                .parse::<usize>()
+                .map_err(|_| "Invalid comment number")?
+                .checked_sub(1)
+                .ok_or("Numbers start at 1")?;
+            let comment = self
+                .doc
+                .state()
+                .comments
+                .get(index)
+                .cloned()
+                .ok_or("Comment not found")?;
+            match id {
+                336 => {
+                    let resolved = match values[2].trim().to_ascii_lowercase().as_str() {
+                        "yes" => true,
+                        "no" => false,
+                        _ => return Err("Enter yes or no".into()),
+                    };
+                    self.doc
+                        .edit_comment(comment.id, values[0].clone(), resolved)
+                        .map_err(|e| e.to_string())?;
+                }
+                337 => {
+                    self.doc
+                        .delete_comment(comment.id)
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => {
+                    let start = self
+                        .doc
+                        .position_to_utf16(&comment.start)
+                        .map_err(|e| e.to_string())?;
+                    let end = self
+                        .doc
+                        .position_to_utf16(&comment.end)
+                        .map_err(|e| e.to_string())?;
+                    self.selection = (start, end);
+                    self.requested_selection = Some((start, end));
+                }
+            }
+            return Ok(());
+        }
         if id == 319 || id == 320 {
             if values.len() != 1 {
                 return Err("Invalid header/footer input".into());
@@ -1663,13 +1993,26 @@ impl App for Doc {
             .iter()
             .any(|s| !s.header.is_empty() || !s.footer.is_empty());
         format!(
-            "{} words · {}%{}",
+            "{} words · {}%{}{}",
             self.visible_text().split_whitespace().count(),
             self.zoom_percent,
             if headers {
                 " · header/footer stored; body view"
             } else {
                 ""
+            },
+            if self.doc.state().footnotes.is_empty() {
+                String::new()
+            } else if !self.note_layout_supported() {
+                format!(
+                    " · {} notes (printing unavailable for this layout)",
+                    self.doc.state().footnotes.len()
+                )
+            } else {
+                format!(
+                    " · {} notes (markers shown in print)",
+                    self.doc.state().footnotes.len()
+                )
             }
         )
     }
@@ -1782,6 +2125,52 @@ impl App for Doc {
     fn select(&mut self, _: usize) {}
     fn action(&mut self, id: u16) -> Result<(), String> {
         match id {
+            346 => {
+                let at = self
+                    .doc
+                    .position_from_utf16(self.selection.0)
+                    .map_err(|e| e.to_string())?;
+                self.doc
+                    .insert_toc(at.paragraph)
+                    .map_err(|e| e.to_string())?;
+            }
+            347 | 348 => {
+                let at = self.doc.position_from_utf16(self.selection.0).ok();
+                let toc = self
+                    .doc
+                    .state()
+                    .tables_of_contents
+                    .iter()
+                    .find(|t| {
+                        at.as_ref()
+                            .is_some_and(|p| t.entries.iter().any(|e| e.paragraph == p.paragraph))
+                    })
+                    .or_else(|| self.doc.state().tables_of_contents.first())
+                    .ok_or("No table of contents")?
+                    .id;
+                if id == 347 {
+                    self.doc.update_toc(toc)
+                } else {
+                    self.doc.remove_toc(toc)
+                }
+                .map_err(|e| e.to_string())?;
+            }
+            349 => {
+                let at = self
+                    .doc
+                    .position_from_utf16(self.selection.0)
+                    .map_err(|e| e.to_string())?;
+                let target = self
+                    .doc
+                    .toc_target(at.paragraph)
+                    .ok_or("Place the caret in a table-of-contents entry")?;
+                let offset = self
+                    .doc
+                    .position_to_utf16(&target)
+                    .map_err(|e| e.to_string())?;
+                self.selection = (offset, offset);
+                self.requested_selection = Some((offset, offset));
+            }
             4 => {
                 self.doc.undo();
             }
@@ -1946,6 +2335,46 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
+    fn toc_commands_insert_navigate_refresh_remove_and_undo() {
+        let mut app = Doc::new();
+        app.doc.set_plain_editor_text("Heading\nBody").unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Paragraph(p) = &mut s.blocks[0] else {
+                    panic!()
+                };
+                p.style.outline_level = Some(0);
+                Ok(())
+            })
+            .unwrap();
+        app.selection = (9, 9);
+        app.action(346).unwrap();
+        let entry = app.doc.state().tables_of_contents[0].entries[0].clone();
+        let position = app
+            .doc
+            .position_to_utf16(&doc42_core::rich::Position {
+                paragraph: entry.paragraph,
+                offset: 0,
+            })
+            .unwrap();
+        app.selection = (position, position);
+        app.action(349).unwrap();
+        assert_eq!(
+            app.selection.0,
+            app.doc
+                .position_to_utf16(&doc42_core::rich::Position {
+                    paragraph: entry.heading,
+                    offset: 0
+                })
+                .unwrap()
+        );
+        app.action(347).unwrap();
+        app.action(348).unwrap();
+        assert!(app.doc.state().tables_of_contents.is_empty());
+        app.action(4).unwrap();
+        assert_eq!(app.doc.state().tables_of_contents.len(), 1);
+    }
+    #[test]
     fn header_footer_page_fields_roundtrip_and_undo() {
         let mut app = Doc::new();
         app.set_header_input(false, "Page {PAGE} of {PAGES}")
@@ -2023,6 +2452,80 @@ mod tests {
         reopened.doc = RichDocument::decode(&updated, Format::Odt).unwrap();
         assert_eq!(reopened.header_input(false).unwrap(), "New {PAGES}");
         assert_eq!(reopened.doc.state().sections[0].page.margin_left, 1200);
+    }
+    #[test]
+    fn notes_commands_save_project_office_and_create_print_plan() {
+        let mut app = Doc::new();
+        app.edit("Hello world".into()).unwrap();
+        app.set_rich_selection((5, 5));
+        app.input_action(340, &["Footnote text".into()]).unwrap();
+        app.set_rich_selection((11, 11));
+        app.input_action(341, &["Endnote text".into()]).unwrap();
+        let print = app.rich_print().unwrap();
+        assert!(print.body_rtf.is_some());
+        assert_eq!(print.notes.len(), 2);
+        assert!(!print.notes[0].endnote);
+        assert!(print.notes[1].endnote);
+        for format in [Format::Project, Format::Docx, Format::Odt] {
+            let reopened = RichDocument::decode(&app.doc.encode(format).unwrap(), format).unwrap();
+            assert_eq!(reopened.state().footnotes.len(), 2, "{format:?}");
+            assert_eq!(
+                (
+                    reopened.state().footnotes[0].at.offset,
+                    reopened.state().footnotes[1].at.offset
+                ),
+                (5, 11)
+            );
+        }
+        app.input_action(342, &["Changed".into(), "1".into()])
+            .unwrap();
+        app.input_action(343, &["1".into()]).unwrap();
+        assert_eq!(app.doc.state().footnotes.len(), 1);
+        app.action(4).unwrap();
+        assert_eq!(
+            app.doc.state().footnotes[0].paragraphs[0].runs[0].text,
+            "Changed"
+        );
+        app.action(4).unwrap();
+        assert_eq!(
+            app.doc.state().footnotes[0].paragraphs[0].runs[0].text,
+            "Footnote text"
+        );
+    }
+    #[test]
+    fn comment_commands_project_and_docx_roundtrip() {
+        let mut app = Doc::new();
+        app.edit("Hello world".into()).unwrap();
+        app.set_rich_selection((6, 11));
+        app.input_action(335, &["Review this".into(), "Editor".into()])
+            .unwrap();
+        assert_eq!(app.doc.state().comments.len(), 1);
+        let view = app.rich_text().unwrap();
+        app.edit_rich_text(&view, (0, 0)).unwrap();
+        app.input_action(339, &["1".into()]).unwrap();
+        assert_eq!(app.take_requested_rich_selection(), Some((6, 11)));
+        for format in [Format::Project, Format::Docx, Format::Odt] {
+            let reopened = RichDocument::decode(&app.doc.encode(format).unwrap(), format).unwrap();
+            let saved_again =
+                RichDocument::decode(&reopened.encode(format).unwrap(), format).unwrap();
+            assert_eq!(saved_again.state().comments[0].text, "Review this");
+            assert_eq!(reopened.state().comments[0].text, "Review this");
+            assert_eq!(
+                (
+                    reopened.state().comments[0].start.offset,
+                    reopened.state().comments[0].end.offset
+                ),
+                (6, 11)
+            );
+        }
+        app.input_action(336, &["Revised".into(), "1".into(), "no".into()])
+            .unwrap();
+        app.input_action(337, &["1".into()]).unwrap();
+        assert!(app.doc.state().comments.is_empty());
+        app.action(4).unwrap();
+        assert_eq!(app.doc.state().comments[0].text, "Revised");
+        app.action(4).unwrap();
+        assert_eq!(app.doc.state().comments[0].text, "Review this");
     }
     #[test]
     fn insert_delete_around_and_through_merged_cells_preserves_content_and_undo() {
@@ -2317,6 +2820,8 @@ mod tests {
                     author: "author".into(),
                     text: "comment".into(),
                     resolved: false,
+                    date: None,
+                    initials: None,
                 });
                 Ok(())
             })

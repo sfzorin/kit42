@@ -26,7 +26,7 @@ struct State {
     attachments_added: Vec<(String, Vec<u8>)>,
     attachments_removed: HashSet<String>,
     bookmarks: Option<Vec<Bookmark>>,
-    imported_acroform: Option<ObjectId>,
+    imported_acroforms: Vec<ObjectId>,
     compress_streams: bool,
 }
 impl PartialEq for State {
@@ -45,7 +45,7 @@ impl PartialEq for State {
             && self.attachments_added == other.attachments_added
             && self.attachments_removed == other.attachments_removed
             && self.bookmarks == other.bookmarks
-            && self.imported_acroform == other.imported_acroform
+            && self.imported_acroforms == other.imported_acroforms
             && self.compress_streams == other.compress_streams
     }
 }
@@ -138,6 +138,12 @@ struct RasterPage {
     page_height: f64,
 }
 #[derive(Clone, Debug, PartialEq)]
+pub struct ImageStamp {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+#[derive(Clone, Debug, PartialEq)]
 struct Annotation {
     page: ObjectId,
     kind: AnnotationKind,
@@ -145,6 +151,7 @@ struct Annotation {
     contents: String,
     points: Vec<[f64; 2]>,
     quads: Vec<[f64; 4]>,
+    image: Option<ImageStamp>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnnotationKind {
@@ -159,6 +166,7 @@ pub enum AnnotationKind {
     Link,
     FreeText,
     Stamp,
+    ImageStamp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,6 +194,10 @@ struct FormField {
 
 pub struct SaveState(State);
 
+pub enum PdfOpenProbe {
+    Ready(PdfDocument),
+    PasswordRequired,
+}
 pub struct PdfDocument {
     doc: Document,
     root: ObjectId,
@@ -375,6 +387,313 @@ fn referenced_page_objects(doc: &Document, page: ObjectId) -> Result<HashSet<Obj
     }
     Ok(ids)
 }
+fn form_dictionary<'a>(
+    doc: &'a Document,
+    form: &'a Object,
+) -> Result<&'a lopdf::Dictionary, String> {
+    doc.dereference(form)
+        .map_err(|e| e.to_string())?
+        .1
+        .as_dict()
+        .map_err(|e| e.to_string())
+}
+fn form_fields_array(doc: &Document, form: &lopdf::Dictionary) -> Result<Vec<Object>, String> {
+    let value = form.get(b"Fields").map_err(|e| e.to_string())?;
+    Ok(doc
+        .dereference(value)
+        .map_err(|e| e.to_string())?
+        .1
+        .as_array()
+        .map_err(|e| e.to_string())?
+        .clone())
+}
+fn form_root_names(doc: &Document, form: &lopdf::Dictionary) -> Result<HashSet<String>, String> {
+    let mut names = HashSet::new();
+    for entry in form_fields_array(doc, form)? {
+        let d = doc
+            .dereference(&entry)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?;
+        let name = lopdf::decode_text_string(
+            d.get(b"T")
+                .map_err(|_| "Unnamed root field cannot be merged")?,
+        )
+        .map_err(|e| e.to_string())?;
+        if !names.insert(name) {
+            return Err("Duplicate root form field names cannot be merged".into());
+        }
+    }
+    Ok(names)
+}
+fn form_resource_keys(
+    doc: &Document,
+    form: &lopdf::Dictionary,
+) -> Result<HashSet<(Vec<u8>, Vec<u8>)>, String> {
+    let mut keys = HashSet::new();
+    if let Ok(dr) = form.get(b"DR") {
+        let dr = doc
+            .dereference(dr)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_dict()
+            .map_err(|e| e.to_string())?;
+        for (category, values) in dr.iter() {
+            if category.as_slice() == b"ProcSet" {
+                let arr = doc
+                    .dereference(values)
+                    .map_err(|e| e.to_string())?
+                    .1
+                    .as_array()
+                    .map_err(|_| "Invalid form ProcSet")?;
+                for value in arr {
+                    let name = value.as_name().map_err(|_| "Invalid form ProcSet")?;
+                    keys.insert((category.clone(), name.to_vec()));
+                }
+                continue;
+            }
+            let dict = doc
+                .dereference(values)
+                .map_err(|_| "Unsupported form resource category")?
+                .1
+                .as_dict()
+                .map_err(|_| "Unsupported non-dictionary form resources")?;
+            for (name, _) in dict.iter() {
+                keys.insert((category.clone(), name.clone()));
+            }
+        }
+    }
+    Ok(keys)
+}
+fn validate_form_for_merge(form: &lopdf::Dictionary) -> Result<(), String> {
+    for (key, _) in form.iter() {
+        if !matches!(
+            key.as_slice(),
+            b"Fields" | b"DA" | b"DR" | b"Q" | b"NeedAppearances" | b"SigFlags" | b"CO"
+        ) {
+            return Err("Cannot safely merge an AcroForm with unsupported global settings".into());
+        }
+    }
+    Ok(())
+}
+fn validate_import_graph(doc: &Document, roots: &[Object]) -> Result<(), String> {
+    let mut pending = roots.to_vec();
+    let mut seen = HashSet::new();
+    let mut count = 0usize;
+    while let Some(value) = pending.pop() {
+        count += 1;
+        if count > 1_000_000 {
+            return Err("Imported object graph exceeds inspection limit".into());
+        }
+        match value {
+            Object::Reference(id) => {
+                if seen.insert(id) {
+                    pending.push(
+                        doc.get_object(id)
+                            .map_err(|_| format!("Imported object {} {} is missing", id.0, id.1))?
+                            .clone(),
+                    );
+                }
+            }
+            Object::Array(a) => pending.extend(a),
+            Object::Dictionary(d) => pending.extend(d.iter().map(|(_, v)| v.clone())),
+            Object::Stream(s) => pending.extend(s.dict.iter().map(|(_, v)| v.clone())),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+fn guard_field_namespace_change(doc: &Document, form: &lopdf::Dictionary) -> Result<(), String> {
+    if let Ok(co) = form.get(b"CO") {
+        if !doc
+            .dereference(co)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_array()
+            .map_err(|e| e.to_string())?
+            .is_empty()
+        {
+            return Err("Cannot namespace imported form fields with calculation order; field references require rewriting".into());
+        }
+    }
+    let mut pending: Vec<&Object> = doc.objects.values().collect();
+    let mut count = 0usize;
+    while let Some(object) = pending.pop() {
+        count += 1;
+        if count > 1_000_000 {
+            return Err("Form action inspection limit exceeded".into());
+        }
+        let dict = match object {
+            Object::Dictionary(d) => Some(d),
+            Object::Stream(s) => Some(&s.dict),
+            Object::Array(a) => {
+                pending.extend(a);
+                None
+            }
+            _ => None,
+        };
+        if let Some(d) = dict {
+            if d.get(b"AA").is_ok() {
+                return Err("Cannot namespace imported fields with additional actions; field references require rewriting".into());
+            }
+            if matches!(
+                d.get(b"S").ok().and_then(|v| v.as_name().ok()),
+                Some(b"JavaScript" | b"SubmitForm" | b"ResetForm" | b"Hide")
+            ) {
+                return Err(
+                    "Cannot namespace imported fields with scripts or field-targeting actions"
+                        .into(),
+                );
+            }
+            pending.extend(d.iter().map(|(_, v)| v));
+        }
+    }
+    Ok(())
+}
+fn validate_form_merge_values(doc: &Document, form: &lopdf::Dictionary) -> Result<(), String> {
+    if let Ok(co) = form.get(b"CO") {
+        doc.dereference(co)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_array()
+            .map_err(|_| "Invalid AcroForm calculation order")?;
+    }
+    if let Ok(value) = form.get(b"NeedAppearances") {
+        doc.dereference(value)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_bool()
+            .map_err(|_| "Invalid AcroForm NeedAppearances")?;
+    }
+    if let Ok(value) = form.get(b"DA") {
+        doc.dereference(value)
+            .map_err(|e| e.to_string())?
+            .1
+            .as_str()
+            .map_err(|_| "Invalid AcroForm default appearance")?;
+    }
+    Ok(())
+}
+fn rewrite_form_da(
+    doc: &mut Document,
+    ids: &[ObjectId],
+    renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), String> {
+    let mut pending = ids.to_vec();
+    let mut seen = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) || seen.len() > 10000 {
+            return Err("Invalid field tree while renaming resources".into());
+        }
+        let d = doc.get_dictionary(id).map_err(|e| e.to_string())?;
+        let da = d.get(b"DA").ok().cloned();
+        let kids = d.get(b"Kids").ok().cloned();
+        if let Some(da) = da {
+            let bytes = doc
+                .dereference(&da)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_str()
+                .map_err(|e| e.to_string())?
+                .to_vec();
+            let mut content = lopdf::content::Content::decode(&bytes)
+                .map_err(|_| "Unsupported form default appearance")?;
+            for op in &mut content.operations {
+                if op.operator == "Tf" {
+                    let Some(Object::Name(name)) = op.operands.first_mut() else {
+                        return Err("Invalid font operator in form default appearance".into());
+                    };
+                    if let Some(replacement) = renames.get(name) {
+                        *name = replacement.clone();
+                    }
+                }
+            }
+            let bytes = content.encode().map_err(|e| e.to_string())?;
+            doc.get_dictionary_mut(id)
+                .map_err(|e| e.to_string())?
+                .set("DA", Object::string_literal(bytes));
+        }
+        if let Some(kids) = kids {
+            let kids = doc
+                .dereference(&kids)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_array()
+                .map_err(|e| e.to_string())?;
+            for kid in kids {
+                pending.push(
+                    kid.as_reference()
+                        .map_err(|_| "Direct form fields cannot be safely renamed")?,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+fn resolve_local_destination(doc: &Document, destination: &Object) -> Option<ObjectId> {
+    fn named_tree(
+        doc: &Document,
+        node: &Object,
+        key: &[u8],
+        seen: &mut HashSet<ObjectId>,
+    ) -> Option<Object> {
+        if let Ok(id) = node.as_reference() {
+            if !seen.insert(id) || seen.len() > 10000 {
+                return None;
+            }
+        }
+        let d = doc.dereference(node).ok()?.1.as_dict().ok()?;
+        if let Ok(names) = d.get(b"Names") {
+            let values = doc.dereference(names).ok()?.1.as_array().ok()?;
+            for pair in values.chunks_exact(2) {
+                if pair[0].as_str().ok() == Some(key) {
+                    return Some(pair[1].clone());
+                }
+            }
+        }
+        if let Ok(kids) = d.get(b"Kids") {
+            for kid in doc.dereference(kids).ok()?.1.as_array().ok()? {
+                if let Some(found) = named_tree(doc, kid, key, seen) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    fn resolve(doc: &Document, value: &Object, depth: usize) -> Option<ObjectId> {
+        if depth > 16 {
+            return None;
+        }
+        let value = doc.dereference(value).ok()?.1;
+        match value {
+            Object::Array(a) => a.first()?.as_reference().ok(),
+            Object::Dictionary(d) => resolve(doc, d.get(b"D").ok()?, depth + 1),
+            Object::Name(key) | Object::String(key, _) => {
+                let catalog = doc.catalog().ok()?;
+                if let Some(dest) = catalog
+                    .get(b"Dests")
+                    .ok()
+                    .and_then(|v| doc.dereference(v).ok())
+                    .and_then(|(_, v)| v.as_dict().ok())
+                    .and_then(|d| d.get(key).ok())
+                {
+                    return resolve(doc, dest, depth + 1);
+                }
+                let tree = catalog
+                    .get(b"Names")
+                    .ok()
+                    .and_then(|v| doc.dereference(v).ok())
+                    .and_then(|(_, v)| v.as_dict().ok())
+                    .and_then(|d| d.get(b"Dests").ok())?;
+                let found = named_tree(doc, tree, key, &mut HashSet::new())?;
+                resolve(doc, &found, depth + 1)
+            }
+            _ => None,
+        }
+    }
+    resolve(doc, destination, 0)
+}
 impl PdfDocument {
     pub fn open(path: &Path) -> Result<Self, String> {
         if fs::metadata(path).map_err(|e| e.to_string())?.len() > MAX_FILE {
@@ -391,14 +710,90 @@ impl PdfDocument {
         }
         Self::open_bytes(&data)
     }
-    fn open_bytes(data: &[u8]) -> Result<Self, String> {
+    /// Install PDFium-generated bytes as a new editable revision, without marking it saved.
+    pub fn from_edited_snapshot(data: &[u8], selected: usize) -> Result<Self, String> {
+        if data.len() as u64 > MAX_FILE {
+            return Err("Edited PDF exceeds file limit".into());
+        }
+        let mut doc = Self::open_bytes(data)?;
+        let mut state = doc.history.current().clone();
+        state.selected = *state.pages.get(selected).ok_or("page index out of range")?;
+        state.imported_revision = true;
+        doc.history.replace_current(state);
+        Ok(doc)
+    }
+    pub fn probe_open_bytes(data: &[u8]) -> Result<PdfOpenProbe, String> {
+        if data.len() as u64 > MAX_FILE {
+            return Err("PDF exceeds file limit".into());
+        }
+        let doc = Document::load_mem_with_options(
+            data,
+            LoadOptions {
+                max_decompressed_size: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if doc.is_encrypted() {
+            return Ok(PdfOpenProbe::PasswordRequired);
+        }
+        Ok(PdfOpenProbe::Ready(Self::from_loaded_document(doc, true)?))
+    }
+    /// Wrong password returns None; unsupported or malformed documents return an error.
+    pub fn try_open_with_password_bytes(
+        data: &[u8],
+        password: &str,
+    ) -> Result<Option<Self>, String> {
+        if data.len() as u64 > MAX_FILE {
+            return Err("PDF exceeds file limit".into());
+        }
         let options = LoadOptions {
+            password: Some(password.to_owned()),
             max_decompressed_size: Some(32 * 1024 * 1024),
             ..Default::default()
         };
-        let doc = Document::load_mem_with_options(data, options).map_err(|e| e.to_string())?;
-        if doc.is_encrypted() || doc.was_encrypted() {
-            return Err("encrypted PDF unsupported".into());
+        let doc = match Document::load_mem_with_options(data, options) {
+            Ok(doc) => doc,
+            Err(
+                lopdf::Error::InvalidPassword
+                | lopdf::Error::Decryption(lopdf::encryption::DecryptionError::IncorrectPassword),
+            ) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        if doc.is_encrypted() {
+            return Ok(None);
+        }
+        if !doc.was_encrypted() {
+            return Err("This PDF is not password-protected".into());
+        }
+        Ok(Some(Self::from_loaded_document(doc, true)?))
+    }
+    pub fn open_with_password_bytes(data: &[u8], password: &str) -> Result<Self, String> {
+        Self::try_open_with_password_bytes(data, password)?
+            .ok_or_else(|| "Incorrect password".into())
+    }
+    pub fn was_password_protected(&self) -> bool {
+        self.doc.was_encrypted()
+    }
+    pub fn allows_changes(&self) -> bool {
+        self.doc.encryption_state.as_ref().map_or(true, |s| {
+            s.permissions().contains(lopdf::Permissions::MODIFIABLE)
+        })
+    }
+    fn open_bytes(data: &[u8]) -> Result<Self, String> {
+        let doc = Document::load_mem_with_options(
+            data,
+            LoadOptions {
+                max_decompressed_size: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        Self::from_loaded_document(doc, false)
+    }
+    fn from_loaded_document(doc: Document, allow_protected: bool) -> Result<Self, String> {
+        if doc.is_encrypted() || (doc.was_encrypted() && !allow_protected) {
+            return Err("Password-protected PDF: use Open".into());
         }
         // Inspect every object including direct nested dictionaries and stream dictionaries.
         let mut pending: Vec<&Object> = doc.objects.values().collect();
@@ -461,7 +856,7 @@ impl PdfDocument {
                     attachments_added: Vec::new(),
                     attachments_removed: HashSet::new(),
                     bookmarks: None,
-                    imported_acroform: None,
+                    imported_acroforms: Vec::new(),
                     compress_streams: false,
                 },
                 20,
@@ -712,6 +1107,9 @@ impl PdfDocument {
             .pages
             .get(index)
             .ok_or("page index out of range")?;
+        if kind == AnnotationKind::ImageStamp {
+            return Err("Choose a stamp image first".into());
+        }
         if contents.len() > 32768 {
             return Err("Annotation text is too long".into());
         }
@@ -752,11 +1150,56 @@ impl PdfDocument {
             contents: contents.to_owned(),
             points: Vec::new(),
             quads: Vec::new(),
+            image: None,
         });
         self.history.apply(state);
         Ok(())
     }
 
+    pub fn add_image_stamp(
+        &mut self,
+        index: usize,
+        mut rect: [f64; 4],
+        image: ImageStamp,
+    ) -> Result<(), String> {
+        let page = *self
+            .history
+            .current()
+            .pages
+            .get(index)
+            .ok_or("page index out of range")?;
+        let pixels = (image.width as usize)
+            .checked_mul(image.height as usize)
+            .ok_or("Stamp image too large")?;
+        if image.width == 0
+            || image.height == 0
+            || pixels > 4_000_000
+            || image.rgba.len() != pixels * 4
+            || rect.iter().any(|v| !v.is_finite())
+        {
+            return Err("Invalid or oversized stamp image".into());
+        }
+        let b = self.page_box(index)?;
+        rect[0] = rect[0].clamp(b[0], b[2]);
+        rect[2] = rect[2].clamp(b[0], b[2]);
+        rect[1] = rect[1].clamp(b[1], b[3]);
+        rect[3] = rect[3].clamp(b[1], b[3]);
+        if (rect[2] - rect[0]).abs() < 2. || (rect[3] - rect[1]).abs() < 2. {
+            return Err("Drag a larger stamp area".into());
+        }
+        let mut state = self.history.current().clone();
+        state.annotations.push(Annotation {
+            page,
+            kind: AnnotationKind::ImageStamp,
+            rect,
+            contents: String::new(),
+            points: Vec::new(),
+            quads: Vec::new(),
+            image: Some(image),
+        });
+        self.history.apply(state);
+        Ok(())
+    }
     pub fn add_ink(&mut self, index: usize, points: &[[f64; 2]]) -> Result<(), String> {
         let page = *self
             .history
@@ -799,6 +1242,7 @@ impl PdfDocument {
             contents: String::new(),
             points,
             quads: Vec::new(),
+            image: None,
         });
         self.history.apply(state);
         Ok(())
@@ -862,6 +1306,7 @@ impl PdfDocument {
             contents: String::new(),
             points: Vec::new(),
             quads: clean,
+            image: None,
         });
         self.history.apply(state);
         Ok(())
@@ -1121,7 +1566,14 @@ impl PdfDocument {
             .1
             .as_dict()
             .map_err(|e| e.to_string())?;
-        let mut next = root.get(b"First").ok().and_then(|v| v.as_reference().ok());
+        let mut next = match root.get(b"First") {
+            Ok(value) => Some(
+                value
+                    .as_reference()
+                    .map_err(|_| "Direct bookmark objects cannot be safely imported")?,
+            ),
+            Err(_) => None,
+        };
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         while let Some(id) = next {
@@ -1135,17 +1587,17 @@ impl PdfDocument {
                 .and_then(|v| lopdf::decode_text_string(v).ok())
                 .unwrap_or_default();
             let destination = d.get(b"Dest").ok().or_else(|| {
-                d.get(b"A")
+                let action = d
+                    .get(b"A")
                     .ok()
                     .and_then(|v| self.doc.dereference(v).ok())
-                    .and_then(|(_, v)| v.as_dict().ok())
-                    .and_then(|d| d.get(b"D").ok())
+                    .and_then(|(_, v)| v.as_dict().ok())?;
+                if action.get(b"S").ok().and_then(|v| v.as_name().ok()) != Some(b"GoTo") {
+                    return None;
+                }
+                action.get(b"D").ok()
             });
-            let page = destination
-                .and_then(|v| self.doc.dereference(v).ok())
-                .and_then(|(_, v)| v.as_array().ok())
-                .and_then(|v| v.first())
-                .and_then(|v| v.as_reference().ok());
+            let page = destination.and_then(|v| resolve_local_destination(&self.doc, v));
             let descendants = d
                 .get(b"Count")
                 .ok()
@@ -1552,32 +2004,40 @@ impl PdfDocument {
                 );
             }
         }
-        let form = self
-            .history
-            .current()
-            .imported_acroform
-            .map(Object::Reference)
-            .or_else(|| {
-                self.doc
-                    .catalog()
-                    .ok()
-                    .and_then(|d| d.get(b"AcroForm").ok())
-                    .cloned()
-            });
-        let Some(fields) = form
-            .as_ref()
-            .and_then(|v| self.doc.dereference(v).ok())
-            .and_then(|(_, v)| v.as_dict().ok())
-            .and_then(|d| d.get(b"Fields").ok())
-            .and_then(|v| self.doc.dereference(v).ok())
-            .and_then(|(_, v)| v.as_array().ok())
-        else {
-            return Vec::new();
-        };
+        let mut forms = Vec::new();
+        if let Some(base) = self
+            .doc
+            .catalog()
+            .ok()
+            .and_then(|d| d.get(b"AcroForm").ok())
+            .cloned()
+        {
+            forms.push(base);
+        }
+        forms.extend(
+            self.history
+                .current()
+                .imported_acroforms
+                .iter()
+                .copied()
+                .map(Object::Reference),
+        );
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        for id in fields.iter().filter_map(|v| v.as_reference().ok()) {
-            walk(&self.doc, id, "", None, 0, Vec::new(), &mut seen, &mut out);
+        for form in forms {
+            if let Some(fields) = self
+                .doc
+                .dereference(&form)
+                .ok()
+                .and_then(|(_, v)| v.as_dict().ok())
+                .and_then(|d| d.get(b"Fields").ok())
+                .and_then(|v| self.doc.dereference(v).ok())
+                .and_then(|(_, v)| v.as_array().ok())
+            {
+                for id in fields.iter().filter_map(|v| v.as_reference().ok()) {
+                    walk(&self.doc, id, "", None, 0, Vec::new(), &mut seen, &mut out);
+                }
+            }
         }
         out
     }
@@ -1849,7 +2309,7 @@ impl PdfDocument {
         self.history.apply(state);
     }
     fn ensure_reorder_safe(&self) -> Result<(), String> {
-        if self.history.current().imported_acroform.is_some()
+        if !self.history.current().imported_acroforms.is_empty()
             || self
                 .history
                 .current()
@@ -1876,17 +2336,104 @@ impl PdfDocument {
         }
         Ok(())
     }
-    fn ensure_position_safe(&self) -> Result<(), String> {
-        if self
-            .doc
-            .catalog()
-            .map_err(|e| e.to_string())?
-            .get(b"PageLabels")
-            .is_ok()
-        {
-            return Err("Page changes with page labels require label remapping".into());
+    fn page_label_rules(&self) -> Result<Option<HashMap<ObjectId, lopdf::Dictionary>>, String> {
+        fn walk(
+            doc: &Document,
+            node: &Object,
+            seen: &mut HashSet<ObjectId>,
+            rules: &mut std::collections::BTreeMap<usize, lopdf::Dictionary>,
+        ) -> Result<(), String> {
+            if let Ok(id) = node.as_reference() {
+                if !seen.insert(id) || seen.len() > 10000 {
+                    return Err("Invalid page-label number tree".into());
+                }
+            }
+            let d = doc
+                .dereference(node)
+                .map_err(|e| e.to_string())?
+                .1
+                .as_dict()
+                .map_err(|e| e.to_string())?;
+            if let Ok(nums) = d.get(b"Nums") {
+                let nums = doc
+                    .dereference(nums)
+                    .map_err(|e| e.to_string())?
+                    .1
+                    .as_array()
+                    .map_err(|e| e.to_string())?;
+                if nums.len() % 2 != 0 {
+                    return Err("Invalid page-label number tree".into());
+                }
+                for pair in nums.chunks_exact(2) {
+                    let index = pair[0].as_i64().map_err(|e| e.to_string())?;
+                    if index < 0 {
+                        return Err("Invalid page-label index".into());
+                    }
+                    let rule = doc
+                        .dereference(&pair[1])
+                        .map_err(|e| e.to_string())?
+                        .1
+                        .as_dict()
+                        .map_err(|e| e.to_string())?
+                        .clone();
+                    if let Ok(style) = rule.get(b"S") {
+                        if !matches!(style.as_name().ok(), Some(b"D" | b"R" | b"r" | b"A" | b"a")) {
+                            return Err("Unsupported page-label style".into());
+                        }
+                    }
+                    if let Ok(start) = rule.get(b"St") {
+                        if start.as_i64().map_err(|e| e.to_string())? < 1 {
+                            return Err("Invalid page-label start".into());
+                        }
+                    }
+                    if rules.insert(index as usize, rule).is_some() {
+                        return Err("Duplicate page-label index".into());
+                    }
+                }
+            }
+            if let Ok(kids) = d.get(b"Kids") {
+                for kid in doc
+                    .dereference(kids)
+                    .map_err(|e| e.to_string())?
+                    .1
+                    .as_array()
+                    .map_err(|e| e.to_string())?
+                {
+                    walk(doc, kid, seen, rules)?;
+                }
+            }
+            Ok(())
         }
-        Ok(())
+        let catalog = self.doc.catalog().map_err(|e| e.to_string())?;
+        let Some(root) = catalog.get(b"PageLabels").ok() else {
+            return Ok(None);
+        };
+        let mut rules = std::collections::BTreeMap::new();
+        walk(&self.doc, root, &mut HashSet::new(), &mut rules)?;
+        let mut result = HashMap::new();
+        for (i, id) in self.original_pages.iter().enumerate() {
+            let mut rule = if let Some((&start, rule)) = rules.range(..=i).next_back() {
+                let mut r = rule.clone();
+                if r.get(b"S").is_ok() {
+                    let base = r.get(b"St").ok().and_then(|v| v.as_i64().ok()).unwrap_or(1);
+                    let value = base
+                        .checked_add((i - start) as i64)
+                        .ok_or("Page-label value overflow")?;
+                    r.set("St", value);
+                }
+                r
+            } else {
+                lopdf::dictionary! {"S"=>"D","St"=>(i+1) as i64}
+            };
+            if rule.get(b"S").is_err() {
+                rule.remove(b"St");
+            }
+            result.insert(*id, rule);
+        }
+        Ok(Some(result))
+    }
+    fn ensure_position_safe(&self) -> Result<(), String> {
+        self.page_label_rules().map(|_| ())
     }
     pub fn can_reorder(&self) -> bool {
         self.ensure_position_safe().is_ok()
@@ -1916,8 +2463,7 @@ impl PdfDocument {
         let mut source = PdfDocument::open(path)?;
         let source_catalog = source.doc.catalog().map_err(|e| e.to_string())?;
         for key in [
-            b"Outlines".as_slice(),
-            b"Names",
+            b"Names".as_slice(),
             b"Dests",
             b"PageLabels",
             b"StructTreeRoot",
@@ -1928,29 +2474,180 @@ impl PdfDocument {
                 return Err("Imported PDF navigation, names, page labels or tagged structure cannot yet be merged".into());
             }
         }
+        let has_outlines = source_catalog.get(b"Outlines").is_ok();
         let source_form = source_catalog.get(b"AcroForm").ok().cloned();
-        if source_form.is_some()
-            && (self
+        if let Some(form) = source_form {
+            let form_id = match form.as_reference() {
+                Ok(id) => id,
+                Err(_) => {
+                    let id = source.doc.add_object(form);
+                    source
+                        .doc
+                        .catalog_mut()
+                        .map_err(|e| e.to_string())?
+                        .set("AcroForm", id);
+                    id
+                }
+            };
+            let mut source_dict = source
+                .doc
+                .get_dictionary(form_id)
+                .map_err(|e| e.to_string())?
+                .clone();
+            if source_dict.get(b"XFA").is_ok() {
+                return Err("XFA forms cannot be safely merged".into());
+            }
+            let mut existing = Vec::new();
+            if let Ok(base) = self
                 .doc
                 .catalog()
                 .map_err(|e| e.to_string())?
                 .get(b"AcroForm")
-                .is_ok()
-                || self.history.current().imported_acroform.is_some())
-        {
-            return Err(
-                "Cannot merge two AcroForms: field-name and resource collisions require resolution"
-                    .into(),
+            {
+                existing.push(base.clone());
+            }
+            existing.extend(
+                self.history
+                    .current()
+                    .imported_acroforms
+                    .iter()
+                    .copied()
+                    .map(Object::Reference),
             );
-        }
-        if let Some(form) = source_form {
-            if form.as_reference().is_err() {
-                let form = source.doc.add_object(form);
+            if !existing.is_empty() {
+                validate_form_for_merge(&source_dict)?;
+                validate_form_merge_values(&source.doc, &source_dict)?;
+                let source_names = form_root_names(&source.doc, &source_dict)?;
+                let source_resources = form_resource_keys(&source.doc, &source_dict)?;
+                let mut used_names = HashSet::new();
+                let mut used_resources = HashSet::new();
+                for form in existing {
+                    let target = form_dictionary(&self.doc, &form)?;
+                    validate_form_for_merge(target)?;
+                    validate_form_merge_values(&self.doc, target)?;
+                    used_names.extend(form_root_names(&self.doc, target)?);
+                    used_resources.extend(form_resource_keys(&self.doc, target)?);
+                }
+                let mut fields = form_fields_array(&source.doc, &source_dict)?;
+                if !source_names.is_disjoint(&used_names) {
+                    guard_field_namespace_change(&source.doc, &source_dict)?;
+                    let mut n = 1usize;
+                    let namespace = loop {
+                        let name = format!("Imported_{n}");
+                        if !used_names.contains(&name) && !source_names.contains(&name) {
+                            break name;
+                        }
+                        n += 1;
+                        if n > 10000 {
+                            return Err("Could not allocate an imported form namespace".into());
+                        }
+                    };
+                    let parent = source.doc.new_object_id();
+                    for field in &fields {
+                        let id = field
+                            .as_reference()
+                            .map_err(|_| "Direct root form fields cannot be safely imported")?;
+                        source
+                            .doc
+                            .get_dictionary_mut(id)
+                            .map_err(|e| e.to_string())?
+                            .set("Parent", parent);
+                    }
+                    let source_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("PDF");
+                    source.doc.objects.insert(parent,Object::Dictionary(lopdf::dictionary!{"T"=>lopdf::text_string(&namespace),"TU"=>lopdf::text_string(&format!("Imported from {source_name}")),"Kids"=>fields.clone()}));
+                    fields = vec![Object::Reference(parent)];
+                    source_dict.set("Fields", fields.clone());
+                }
+                let mut renames = HashMap::new();
+                let mut all_resources = used_resources.clone();
+                all_resources.extend(source_resources.iter().cloned());
+                for (category, name) in &source_resources {
+                    if used_resources.contains(&(category.clone(), name.clone())) {
+                        if category.as_slice() != b"Font" {
+                            return Err(
+                                "Cannot safely rename a colliding non-font form resource".into()
+                            );
+                        }
+                        let mut n = 1usize;
+                        let new = loop {
+                            let candidate = format!("S42Font{n}").into_bytes();
+                            if !all_resources.contains(&(category.clone(), candidate.clone())) {
+                                break candidate;
+                            }
+                            n += 1;
+                            if n > 10000 {
+                                return Err("Could not allocate a form font name".into());
+                            }
+                        };
+                        all_resources.insert((category.clone(), new.clone()));
+                        renames.insert(name.clone(), new);
+                    }
+                }
+                if !renames.is_empty() {
+                    let dr = source_dict.get(b"DR").map_err(|e| e.to_string())?;
+                    let mut dr = source
+                        .doc
+                        .dereference(dr)
+                        .map_err(|e| e.to_string())?
+                        .1
+                        .as_dict()
+                        .map_err(|e| e.to_string())?
+                        .clone();
+                    let fonts = dr.get(b"Font").map_err(|e| e.to_string())?;
+                    let mut fonts = source
+                        .doc
+                        .dereference(fonts)
+                        .map_err(|e| e.to_string())?
+                        .1
+                        .as_dict()
+                        .map_err(|e| e.to_string())?
+                        .clone();
+                    for (old, new) in &renames {
+                        let value = fonts.remove(old).ok_or("Missing renamed form font")?;
+                        fonts.set(new.clone(), value);
+                    }
+                    dr.set("Font", fonts);
+                    source_dict.set("DR", dr);
+                    source
+                        .doc
+                        .objects
+                        .insert(form_id, Object::Dictionary(source_dict.clone()));
+                    let root_ids = fields
+                        .iter()
+                        .map(|v| {
+                            v.as_reference().map_err(|_| {
+                                "Direct root form fields cannot be safely imported".to_string()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rewrite_form_da(&mut source.doc, &[form_id], &renames)?;
+                    rewrite_form_da(&mut source.doc, &root_ids, &renames)?;
+                    source_dict = source
+                        .doc
+                        .get_dictionary(form_id)
+                        .map_err(|e| e.to_string())?
+                        .clone();
+                }
+                for field in &fields {
+                    let id = field
+                        .as_reference()
+                        .map_err(|_| "Direct root form fields cannot be safely imported")?;
+                    let field = source
+                        .doc
+                        .get_dictionary_mut(id)
+                        .map_err(|e| e.to_string())?;
+                    for key in [b"DA".as_slice(), b"Q"] {
+                        if field.get(key).is_err() {
+                            if let Ok(value) = source_dict.get(key) {
+                                field.set(key, value.clone());
+                            }
+                        }
+                    }
+                }
                 source
                     .doc
-                    .catalog_mut()
-                    .map_err(|e| e.to_string())?
-                    .set("AcroForm", form);
+                    .objects
+                    .insert(form_id, Object::Dictionary(source_dict));
             }
         }
         let source_pages = source.history.current().pages.clone();
@@ -1958,6 +2655,28 @@ impl PdfDocument {
             return Err("page limit exceeded".into());
         }
         flatten_pages(&mut source.doc, source.root, &source_pages)?;
+        let mut roots: Vec<Object> = source_pages
+            .iter()
+            .copied()
+            .map(Object::Reference)
+            .collect();
+        if let Ok(form) = source
+            .doc
+            .catalog()
+            .map_err(|e| e.to_string())?
+            .get(b"AcroForm")
+        {
+            roots.push(form.clone());
+        }
+        if let Ok(outlines) = source
+            .doc
+            .catalog()
+            .map_err(|e| e.to_string())?
+            .get(b"Outlines")
+        {
+            roots.push(outlines.clone());
+        }
+        validate_import_graph(&source.doc, &roots)?;
         let start = self
             .doc
             .max_id
@@ -1965,6 +2684,22 @@ impl PdfDocument {
             .ok_or("PDF object limit exceeded")?;
         source.doc.renumber_objects_with(start);
         let pages: Vec<_> = source.doc.get_pages().values().copied().collect();
+        let imported_bookmarks = if has_outlines {
+            source.base_bookmarks()?
+        } else {
+            Vec::new()
+        };
+        let mut combined_bookmarks = if imported_bookmarks.is_empty() {
+            None
+        } else {
+            Some(self.current_bookmarks()?)
+        };
+        if let Some(bookmarks) = &mut combined_bookmarks {
+            if bookmarks.len().saturating_add(imported_bookmarks.len()) > 10_000 {
+                return Err("Bookmark limit exceeded".into());
+            }
+            bookmarks.extend(imported_bookmarks);
+        }
         let imported_form = source
             .doc
             .catalog()
@@ -1979,21 +2714,39 @@ impl PdfDocument {
                 .map_err(|e| e.to_string())?
                 .set("Parent", self.root);
         }
+        let old_max = self.doc.max_id;
+        let imported_ids: Vec<_> = source.doc.objects.keys().copied().collect();
         self.doc.max_id = self.doc.max_id.max(source.doc.max_id);
         self.doc.objects.extend(source.doc.objects);
         let mut state = self.history.current().clone();
-        if imported_form.is_some() {
-            state.imported_acroform = imported_form;
+        if let Some(form) = imported_form {
+            state.imported_acroforms.push(form);
+        }
+        if let Some(bookmarks) = combined_bookmarks {
+            state.bookmarks = Some(bookmarks);
         }
         state
             .pages
             .splice(index + 1..index + 1, pages.iter().copied());
         state.selected = pages[0];
+        let candidate = Self {
+            doc: self.doc.clone(),
+            root: self.root,
+            original_pages: self.original_pages.clone(),
+            history: SnapshotHistory::new(state.clone(), 20),
+        };
+        if let Err(error) = candidate.save_snapshot() {
+            for id in imported_ids {
+                self.doc.objects.remove(&id);
+            }
+            self.doc.max_id = old_max;
+            return Err(error);
+        }
         self.history.apply(state);
         Ok(())
     }
     pub fn extract_page(&self, index: usize, path: &Path) -> Result<(), String> {
-        self.ensure_reorder_safe()?;
+        self.ensure_position_safe()?;
         if index >= self.page_count() {
             return Err("page index out of range".into());
         }
@@ -2013,6 +2766,18 @@ impl PdfDocument {
             .as_reference()
             .map_err(|e| e.to_string())?;
         flatten_pages(&mut doc, root, &[pages[index]])?;
+        if let Some(labels) = self.page_label_rules()? {
+            let rule = labels
+                .get(&self.history.current().pages[index])
+                .cloned()
+                .unwrap_or_else(|| lopdf::dictionary! {"S"=>"D","St"=>(index+1) as i64});
+            let tree = doc.add_object(
+                lopdf::dictionary! {"Nums"=>vec![Object::Integer(0),Object::Dictionary(rule)]},
+            );
+            doc.catalog_mut()
+                .map_err(|e| e.to_string())?
+                .set("PageLabels", tree);
+        }
         doc.prune_objects();
         if pages
             .iter()
@@ -2026,7 +2791,7 @@ impl PdfDocument {
         write_new(path, &out).map_err(|e| e.to_string())
     }
     pub fn delete(&mut self, index: usize) -> Result<(), String> {
-        self.ensure_reorder_safe()?;
+        self.ensure_position_safe()?;
         let mut state = self.history.current().clone();
         if state.pages.len() == 1 {
             return Err("cannot delete last page".into());
@@ -2036,6 +2801,13 @@ impl PdfDocument {
         }
         state.pages.remove(index);
         state.selected = state.pages[index.min(state.pages.len() - 1)];
+        let candidate = Self {
+            doc: self.doc.clone(),
+            root: self.root,
+            original_pages: self.original_pages.clone(),
+            history: SnapshotHistory::new(state.clone(), 20),
+        };
+        candidate.save_snapshot()?;
         self.history.apply(state);
         Ok(())
     }
@@ -2056,7 +2828,131 @@ impl PdfDocument {
         // Export from a disposable copy: pruning must not destroy undo state.
         let mut doc = self.doc.clone();
         let state = self.history.current();
-        if let Some(form) = state.imported_acroform {
+        if !state.imported_acroforms.is_empty() {
+            let base = doc
+                .catalog()
+                .map_err(|e| e.to_string())?
+                .get(b"AcroForm")
+                .ok()
+                .cloned();
+            let mut forms = Vec::new();
+            if let Some(base) = base {
+                forms.push(base);
+            }
+            forms.extend(
+                state
+                    .imported_acroforms
+                    .iter()
+                    .copied()
+                    .map(Object::Reference),
+            );
+            let mut merged = form_dictionary(&doc, &forms[0])?.clone();
+            let mut fields = form_fields_array(&doc, &merged)?;
+            for form in forms.iter().skip(1) {
+                let incoming = form_dictionary(&doc, form)?.clone();
+                fields.extend(form_fields_array(&doc, &incoming)?);
+                if let Ok(incoming_dr) = incoming.get(b"DR") {
+                    let incoming_dr = doc
+                        .dereference(incoming_dr)
+                        .map_err(|e| e.to_string())?
+                        .1
+                        .as_dict()
+                        .map_err(|e| e.to_string())?
+                        .clone();
+                    let mut dr = match merged.get(b"DR") {
+                        Ok(value) => doc
+                            .dereference(value)
+                            .map_err(|e| e.to_string())?
+                            .1
+                            .as_dict()
+                            .map_err(|e| e.to_string())?
+                            .clone(),
+                        Err(_) => lopdf::Dictionary::new(),
+                    };
+                    for (category, value) in incoming_dr.iter() {
+                        if category.as_slice() == b"ProcSet" {
+                            let incoming = doc
+                                .dereference(value)
+                                .map_err(|e| e.to_string())?
+                                .1
+                                .as_array()
+                                .map_err(|e| e.to_string())?;
+                            let mut all = match dr.get(category) {
+                                Ok(v) => doc
+                                    .dereference(v)
+                                    .map_err(|e| e.to_string())?
+                                    .1
+                                    .as_array()
+                                    .map_err(|e| e.to_string())?
+                                    .clone(),
+                                Err(_) => Vec::new(),
+                            };
+                            for item in incoming {
+                                if !all.contains(item) {
+                                    all.push(item.clone());
+                                }
+                            }
+                            dr.set(category.clone(), all);
+                            continue;
+                        }
+                        let additions = doc
+                            .dereference(value)
+                            .map_err(|e| e.to_string())?
+                            .1
+                            .as_dict()
+                            .map_err(|e| e.to_string())?;
+                        let mut target = match dr.get(category) {
+                            Ok(value) => doc
+                                .dereference(value)
+                                .map_err(|e| e.to_string())?
+                                .1
+                                .as_dict()
+                                .map_err(|e| e.to_string())?
+                                .clone(),
+                            Err(_) => lopdf::Dictionary::new(),
+                        };
+                        for (name, value) in additions.iter() {
+                            if target.get(name).is_ok() {
+                                return Err("AcroForm resource collision".into());
+                            }
+                            target.set(name.clone(), value.clone());
+                        }
+                        dr.set(category.clone(), target);
+                    }
+                    merged.set("DR", dr);
+                }
+                if incoming
+                    .get(b"NeedAppearances")
+                    .ok()
+                    .and_then(|v| v.as_bool().ok())
+                    == Some(true)
+                {
+                    merged.set("NeedAppearances", true);
+                }
+                if let Ok(co) = incoming.get(b"CO") {
+                    let mut all = match merged.get(b"CO") {
+                        Ok(v) => doc
+                            .dereference(v)
+                            .map_err(|e| e.to_string())?
+                            .1
+                            .as_array()
+                            .map_err(|e| e.to_string())?
+                            .clone(),
+                        Err(_) => Vec::new(),
+                    };
+                    all.extend(
+                        doc.dereference(co)
+                            .map_err(|e| e.to_string())?
+                            .1
+                            .as_array()
+                            .map_err(|e| e.to_string())?
+                            .clone(),
+                    );
+                    merged.set("CO", all);
+                }
+            }
+            merged.set("Fields", fields);
+            let form = doc.add_object(merged);
             doc.catalog_mut()
                 .map_err(|e| e.to_string())?
                 .set("AcroForm", form);
@@ -2449,6 +3345,20 @@ impl PdfDocument {
                         };
                         (subtype, drawing)
                     }
+                    AnnotationKind::ImageStamp => {
+                        let image = annotation.image.as_ref().ok_or("Missing stamp image")?;
+                        let scale = (w / image.width as f64).min(h / image.height as f64);
+                        let iw = image.width as f64 * scale;
+                        let ih = image.height as f64 * scale;
+                        (
+                            "Stamp",
+                            format!(
+                                "q {iw} 0 0 {ih} {} {} cm /Im0 Do Q",
+                                (w - iw) / 2.,
+                                (h - ih) / 2.
+                            ),
+                        )
+                    }
                     AnnotationKind::Link => (
                         "Link",
                         format!(
@@ -2460,6 +3370,27 @@ impl PdfDocument {
                 }
             };
             let mut resources = lopdf::dictionary! {"ExtGState"=>lopdf::dictionary!{"GS"=>lopdf::dictionary!{"Type"=>"ExtGState", "BM"=>"Multiply", "ca"=>0.35}}};
+            if let Some(image) = &annotation.image {
+                let mut rgb = Vec::with_capacity(image.width as usize * image.height as usize * 3);
+                let mut alpha = Vec::with_capacity(image.width as usize * image.height as usize);
+                for p in image.rgba.chunks_exact(4) {
+                    rgb.extend_from_slice(&p[..3]);
+                    alpha.push(p[3]);
+                }
+                let mut mask = lopdf::Stream::new(
+                    lopdf::dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>image.width as i64,"Height"=>image.height as i64,"ColorSpace"=>"DeviceGray","BitsPerComponent"=>8},
+                    alpha,
+                );
+                mask.compress().map_err(|e| e.to_string())?;
+                let mask = doc.add_object(mask);
+                let mut stamp = lopdf::Stream::new(
+                    lopdf::dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>image.width as i64,"Height"=>image.height as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8,"SMask"=>mask},
+                    rgb,
+                );
+                stamp.compress().map_err(|e| e.to_string())?;
+                let stamp = doc.add_object(stamp);
+                resources.set("XObject", lopdf::dictionary! {"Im0"=>stamp});
+            }
             if let Some(font) = &font {
                 resources.set("Font", lopdf::dictionary! {"F1"=>font.id});
             }
@@ -2535,14 +3466,22 @@ impl PdfDocument {
         }
         if state.pages != self.original_pages || !state.raster_pages.is_empty() {
             flatten_pages(&mut doc, self.root, &state.pages)?;
-            doc.prune_objects();
-            if self
-                .original_pages
-                .iter()
-                .filter(|id| !state.pages.contains(id))
-                .any(|id| doc.objects.contains_key(id))
-            {
-                return Err("deleted pages remain referenced; cannot safely save".into());
+            if state.pages != self.original_pages {
+                if let Some(labels) = self.page_label_rules()? {
+                    let mut nums = Vec::new();
+                    for (i, id) in state.pages.iter().enumerate() {
+                        let rule = labels
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| lopdf::dictionary! {"S"=>"D","St"=>(i+1) as i64});
+                        nums.push(Object::Integer(i as i64));
+                        nums.push(Object::Dictionary(rule));
+                    }
+                    let tree = doc.add_object(lopdf::dictionary! {"Nums"=>nums});
+                    doc.catalog_mut()
+                        .map_err(|e| e.to_string())?
+                        .set("PageLabels", tree);
+                }
             }
         }
         if let Some(bookmarks) = &state.bookmarks {
@@ -2653,6 +3592,16 @@ impl PdfDocument {
             }
         }
         doc.prune_objects();
+        if self
+            .original_pages
+            .iter()
+            .filter(|id| !state.pages.contains(id))
+            .any(|id| doc.objects.contains_key(id))
+        {
+            return Err(
+                "Deleted page remains referenced by navigation, forms or another object".into(),
+            );
+        }
         if redacted_objects
             .iter()
             .any(|id| doc.objects.contains_key(id))
@@ -2668,6 +3617,59 @@ impl PdfDocument {
             return Err("output exceeds limit".into());
         }
         Ok((out, SaveState(captured)))
+    }
+    /// Encrypt a disposable snapshot with AES-128; the editing model stays decrypted in memory.
+    pub fn save_encrypted_snapshot(&self, password: &str) -> Result<(Vec<u8>, SaveState), String> {
+        use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
+        if password.is_empty()
+            || password.len() > 32
+            || !password.bytes().all(|b| (32..=126).contains(&b))
+        {
+            return Err("AES-128 PDF passwords must be 1–32 printable ASCII bytes".into());
+        }
+        let (bytes, state) = self.save_snapshot()?;
+        let mut doc = Document::load_mem_with_options(
+            &bytes,
+            LoadOptions {
+                max_decompressed_size: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if matches!(
+            doc.version.as_str(),
+            "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5"
+        ) {
+            doc.version = "1.6".into();
+        }
+        let mut id = [0u8; 16];
+        getrandom::fill(&mut id).map_err(|e| format!("Cannot generate PDF encryption ID: {e}"))?;
+        doc.trailer.set(
+            "ID",
+            vec![
+                Object::String(id.to_vec(), lopdf::StringFormat::Hexadecimal),
+                Object::String(id.to_vec(), lopdf::StringFormat::Hexadecimal),
+            ],
+        );
+        let filter: std::sync::Arc<dyn CryptFilter> = std::sync::Arc::new(Aes128CryptFilter);
+        let encryption = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V4 {
+            document: &doc,
+            encrypt_metadata: true,
+            crypt_filters: std::collections::BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: password,
+            user_password: password,
+            permissions: lopdf::Permissions::all(),
+        })
+        .map_err(|e| e.to_string())?;
+        doc.encrypt(&encryption).map_err(|e| e.to_string())?;
+        let mut output = Vec::new();
+        doc.save_to(&mut output).map_err(|e| e.to_string())?;
+        if output.len() as u64 > MAX_FILE * 2 {
+            return Err("Encrypted PDF exceeds output limit".into());
+        }
+        Ok((output, state))
     }
     pub fn mark_saved_snapshot(&mut self, state: SaveState) {
         self.history.mark_saved_snapshot(state.0);
@@ -3420,6 +4422,494 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn protected_pdf_requires_password_and_decrypted_copy_is_explicit() {
+        use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("pdf42-password-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        d.trailer.set(
+            "ID",
+            vec![
+                Object::string_literal("0123456789abcdef"),
+                Object::string_literal("0123456789abcdef"),
+            ],
+        );
+        let filter: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
+        let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V4 {
+            document: &d,
+            encrypt_metadata: true,
+            crypt_filters: std::collections::BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: "owner-pass",
+            user_password: "user-pass",
+            permissions: lopdf::Permissions::all(),
+        })
+        .unwrap();
+        d.encrypt(&state).unwrap();
+        d.save(&input).unwrap();
+        let bytes = fs::read(&input).unwrap();
+        assert!(PdfDocument::open(&input).is_err());
+        assert!(PdfDocument::open_with_password_bytes(&bytes, "incorrect").is_err());
+        let p = PdfDocument::open_with_password_bytes(&bytes, "user-pass").unwrap();
+        assert!(p.was_password_protected());
+        assert!(p.allows_changes());
+        let (plain, _) = p.save_snapshot().unwrap();
+        assert!(!Document::load_mem(&plain).unwrap().is_encrypted());
+        assert_eq!(fs::read(&input).unwrap(), bytes);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn image_stamp_preserves_pixels_alpha_aspect_and_history() {
+        let dir = std::env::temp_dir().join(format!("pdf42-image-stamp-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        sample(&input, false);
+        let mut p = PdfDocument::open(&input).unwrap();
+        let image = ImageStamp {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 128, 0, 0, 255, 0].into(),
+        };
+        p.add_image_stamp(0, [20., 20., 100., 100.], image).unwrap();
+        assert!(p.undo());
+        assert!(p.redo());
+        let (bytes, _) = p.save_snapshot().unwrap();
+        let d = Document::load_mem(&bytes).unwrap();
+        let page = *d.get_pages().values().next().unwrap();
+        let a = d
+            .get_dictionary(
+                d.get_dictionary(page)
+                    .unwrap()
+                    .get(b"Annots")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()[0]
+                    .as_reference()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(a.get(b"Subtype").unwrap().as_name().unwrap(), b"Stamp");
+        let ap = d
+            .get_object(
+                a.get(b"AP")
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"N")
+                    .unwrap()
+                    .as_reference()
+                    .unwrap(),
+            )
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&ap.content).contains("80 0 0 40"));
+        let image = d
+            .get_object(
+                ap.dict
+                    .get(b"Resources")
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"XObject")
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"Im0")
+                    .unwrap()
+                    .as_reference()
+                    .unwrap(),
+            )
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert_eq!(image.dict.get(b"Width").unwrap().as_i64().unwrap(), 2);
+        let alpha = d
+            .get_object(image.dict.get(b"SMask").unwrap().as_reference().unwrap())
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        let actual = if alpha.dict.get(b"Filter").is_ok() {
+            alpha.decompressed_content().unwrap()
+        } else {
+            alpha.content.clone()
+        };
+        assert_eq!(actual, vec![128, 0]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn reordered_pages_retain_their_effective_labels() {
+        let dir = std::env::temp_dir().join(format!("pdf42-labels-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        let labels=d.add_object(lopdf::dictionary!{"Nums"=>vec![0.into(),Object::Dictionary(lopdf::dictionary!{"S"=>"D","P"=>Object::string_literal("A-"),"St"=>5}),2.into(),Object::Dictionary(lopdf::dictionary!{"S"=>"r","P"=>Object::string_literal("B-"),"St"=>1})]});
+        d.catalog_mut().unwrap().set("PageLabels", labels);
+        d.save(&input).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.move_page(2, 0).unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        let out = Document::load_mem(&bytes).unwrap();
+        let tree = out
+            .catalog()
+            .unwrap()
+            .get(b"PageLabels")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let nums = out
+            .get_dictionary(tree)
+            .unwrap()
+            .get(b"Nums")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let rules: Vec<_> = nums
+            .chunks_exact(2)
+            .map(|pair| pair[1].as_dict().unwrap())
+            .collect();
+        assert_eq!(rules[0].get(b"S").unwrap().as_name().unwrap(), b"r");
+        assert_eq!(rules[0].get(b"St").unwrap().as_i64().unwrap(), 1);
+        assert_eq!(rules[1].get(b"St").unwrap().as_i64().unwrap(), 5);
+        assert_eq!(rules[2].get(b"St").unwrap().as_i64().unwrap(), 6);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn merged_forms_namespace_fields_and_rename_colliding_fonts() {
+        fn make(path: &Path, name: &str, font_name: &str) {
+            sample(path, false);
+            let mut d = Document::load(path).unwrap();
+            let page = *d.get_pages().values().next().unwrap();
+            let widget=d.add_object(lopdf::dictionary!{"Subtype"=>"Widget","FT"=>"Tx","T"=>Object::string_literal(name),"Rect"=>vec![0.into(),0.into(),100.into(),30.into()],"P"=>page});
+            d.get_dictionary_mut(page)
+                .unwrap()
+                .set("Annots", vec![Object::Reference(widget)]);
+            let font = d.add_object(
+                lopdf::dictionary! {"Type"=>"Font","Subtype"=>"Type1","BaseFont"=>"Helvetica"},
+            );
+            let mut fonts = lopdf::Dictionary::new();
+            fonts.set(font_name.as_bytes(), font);
+            let form=d.add_object(lopdf::dictionary!{"Fields"=>vec![Object::Reference(widget)],"DA"=>Object::string_literal(format!("/{font_name} 10 Tf 0 g")),"DR"=>lopdf::dictionary!{"Font"=>fonts}});
+            d.catalog_mut().unwrap().set("AcroForm", form);
+            d.save(path).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("pdf42-form-merge-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.pdf");
+        let source = dir.join("source.pdf");
+        let same_name = dir.join("name.pdf");
+        let same_font = dir.join("font.pdf");
+        let output = dir.join("out.pdf");
+        let scripted_collision = dir.join("scripted-collision.pdf");
+        let scripted_disjoint = dir.join("scripted-disjoint.pdf");
+        let broken = dir.join("broken.pdf");
+        make(&scripted_collision, "Name", "F3");
+        make(&scripted_disjoint, "City", "F3");
+        make(&broken, "Zip", "F4");
+        for path in [&scripted_collision, &scripted_disjoint] {
+            let mut d = Document::load(path).unwrap();
+            let form = d
+                .catalog()
+                .unwrap()
+                .get(b"AcroForm")
+                .unwrap()
+                .as_reference()
+                .unwrap();
+            let field = d
+                .get_dictionary(form)
+                .unwrap()
+                .get(b"Fields")
+                .unwrap()
+                .as_array()
+                .unwrap()[0]
+                .as_reference()
+                .unwrap();
+            d.get_dictionary_mut(field).unwrap().set("AA",lopdf::dictionary!{"V"=>lopdf::dictionary!{"S"=>"JavaScript","JS"=>Object::string_literal("this.getField('Name')")}});
+            d.save(path).unwrap();
+        }
+        {
+            let mut d = Document::load(&broken).unwrap();
+            let form = d
+                .catalog()
+                .unwrap()
+                .get(b"AcroForm")
+                .unwrap()
+                .as_reference()
+                .unwrap();
+            let form = d.get_dictionary_mut(form).unwrap();
+            let dr = form.get_mut(b"DR").unwrap().as_dict_mut().unwrap();
+            dr.get_mut(b"Font")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .set("F4", Object::Reference((999999, 0)));
+            d.save(&broken).unwrap();
+        }
+        make(&target, "Name", "F1");
+        make(&source, "City", "F2");
+        make(&same_name, "Name", "F1");
+        make(&same_font, "Zip", "F1");
+        let mut p = PdfDocument::open(&target).unwrap();
+        let original_ids = p.doc.objects.len();
+        let original_max = p.doc.max_id;
+        assert!(p.insert_pdf_after(0, &scripted_collision).is_err());
+        assert!(p.insert_pdf_after(0, &broken).is_err());
+        assert!(!p.is_dirty());
+        assert!(!p.can_undo());
+        assert_eq!(p.doc.objects.len(), original_ids);
+        assert_eq!(p.doc.max_id, original_max);
+        p.insert_pdf_after(0, &scripted_disjoint).unwrap();
+        assert!(p.form_fields().iter().any(|f| f.0 == "City"));
+        assert!(p.undo());
+        p.insert_pdf_after(0, &same_name).unwrap();
+        assert!(p.form_fields().iter().any(|f| f.0 == "Imported_1.Name"));
+        p.set_form_value("Imported_1.Name", "Имя").unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        let reopened = PdfDocument::open(&output).unwrap();
+        assert!(reopened
+            .form_fields()
+            .iter()
+            .any(|f| f.0 == "Imported_1.Name" && f.2 == "Имя"));
+        assert!(p.undo());
+        assert!(p.undo());
+        assert!(!p.is_dirty());
+        p.insert_pdf_after(0, &same_font).unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        let reopened = PdfDocument::open(&output).unwrap();
+        let form = reopened.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+        let dict = reopened.doc.dereference(form).unwrap().1.as_dict().unwrap();
+        let fonts = dict
+            .get(b"DR")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Font")
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        assert!(fonts.get(b"F1").is_ok());
+        assert!(fonts.get(b"S42Font1").is_ok());
+        let id = reopened
+            .form_definitions()
+            .into_iter()
+            .find(|f| f.name == "Zip")
+            .unwrap()
+            .id;
+        let da = reopened
+            .doc
+            .get_dictionary(id)
+            .unwrap()
+            .get(b"DA")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(String::from_utf8_lossy(da).contains("/S42Font1"));
+        assert!(p.undo());
+        p.insert_pdf_after(0, &source).unwrap();
+        let fields = p.form_fields();
+        assert!(fields.iter().any(|f| f.0 == "Name"));
+        assert!(fields.iter().any(|f| f.0 == "City"));
+        p.set_form_value("City", "Москва").unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        let r = PdfDocument::open(&output).unwrap();
+        assert!(r
+            .form_fields()
+            .iter()
+            .any(|f| f.0 == "City" && f.2 == "Москва"));
+        assert!(r.form_fields().iter().any(|f| f.0 == "Name"));
+        let form = r.doc.catalog().unwrap().get(b"AcroForm").unwrap();
+        let dict = r.doc.dereference(form).unwrap().1.as_dict().unwrap();
+        let dr = dict.get(b"DR").unwrap().as_dict().unwrap();
+        let fonts = dr.get(b"Font").unwrap().as_dict().unwrap();
+        assert!(fonts.get(b"F1").is_ok());
+        assert!(fonts.get(b"F2").is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn delete_and_extract_preserve_unaffected_form_and_bookmark_references() {
+        let dir = std::env::temp_dir().join(format!("pdf42-delete-nav-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let source = dir.join("source.pdf");
+        let extracted = dir.join("one.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        let page = *d.get_pages().values().next().unwrap();
+        let widget=d.add_object(lopdf::dictionary!{"Subtype"=>"Widget","FT"=>"Tx","T"=>Object::string_literal("Name"),"Rect"=>vec![0.into(),0.into(),100.into(),30.into()],"P"=>page});
+        d.get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![Object::Reference(widget)]);
+        let form = d.add_object(lopdf::dictionary! {"Fields"=>vec![Object::Reference(widget)]});
+        d.catalog_mut().unwrap().set("AcroForm", form);
+        d.save(&input).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.add_bookmark("first").unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&source, bytes).unwrap();
+        let mut p = PdfDocument::open(&source).unwrap();
+        p.delete(2).unwrap();
+        assert_eq!(p.page_count(), 2);
+        assert!(p.undo());
+        assert_eq!(p.page_count(), 3);
+        let before = p.is_dirty();
+        assert!(p.delete(0).is_err());
+        assert_eq!(p.page_count(), 3);
+        assert_eq!(p.is_dirty(), before);
+        p.extract_page(0, &extracted).unwrap();
+        let mut r = PdfDocument::open(&extracted).unwrap();
+        assert_eq!(r.page_count(), 1);
+        assert_eq!(r.form_fields()[0].0, "Name");
+        r.select_bookmark(0).unwrap();
+        assert_eq!(r.current(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn reopened_annotations_reuse_verified_font_file() {
+        let dir = std::env::temp_dir().join(format!("pdf42-font-reuse-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let mid = dir.join("mid.pdf");
+        sample(&input, false);
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.add_annotation(0, AnnotationKind::FreeText, [10., 10., 100., 60.], "Привет")
+            .unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&mid, bytes).unwrap();
+        let mut p = PdfDocument::open(&mid).unwrap();
+        p.add_annotation(0, AnnotationKind::Note, [10., 70., 100., 120.], "Мир")
+            .unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        let d = Document::load_mem(&bytes).unwrap();
+        let font_size =
+            include_bytes!("../../doc42-layout-probe/fixtures/NotoSans.ttf").len() as i64;
+        let count = d
+            .objects
+            .values()
+            .filter_map(|o| o.as_stream().ok())
+            .filter(|s| {
+                s.dict.get(b"Length1").ok().and_then(|v| v.as_i64().ok()) == Some(font_size)
+            })
+            .count();
+        assert_eq!(count, 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn protected_permissions_restrict_editing() {
+        use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("pdf42-permissions-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        d.trailer.set(
+            "ID",
+            vec![
+                Object::string_literal("0123456789abcdef"),
+                Object::string_literal("0123456789abcdef"),
+            ],
+        );
+        let filter: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
+        let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V4 {
+            document: &d,
+            encrypt_metadata: true,
+            crypt_filters: std::collections::BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: "owner",
+            user_password: "reader",
+            permissions: lopdf::Permissions::all() & !lopdf::Permissions::MODIFIABLE,
+        })
+        .unwrap();
+        d.encrypt(&state).unwrap();
+        d.save(&input).unwrap();
+        let pdf =
+            PdfDocument::open_with_password_bytes(&fs::read(&input).unwrap(), "reader").unwrap();
+        assert!(pdf.was_password_protected());
+        assert!(!pdf.allows_changes());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn named_bookmark_destinations_follow_reordered_pages() {
+        let dir = std::env::temp_dir().join(format!("pdf42-named-dest-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let output = dir.join("out.pdf");
+        sample(&input, false);
+        let mut d = Document::load(&input).unwrap();
+        let pages: Vec<_> = d.get_pages().values().copied().collect();
+        let root = d.new_object_id();
+        let first = d.new_object_id();
+        let second = d.new_object_id();
+        d.objects.insert(first,Object::Dictionary(lopdf::dictionary!{"Title"=>Object::string_literal("one"),"Parent"=>root,"Next"=>second,"Dest"=>Object::Name(b"legacy".to_vec())}));
+        d.objects.insert(second,Object::Dictionary(lopdf::dictionary!{"Title"=>Object::string_literal("two"),"Parent"=>root,"Prev"=>first,"A"=>lopdf::dictionary!{"S"=>"GoTo","D"=>Object::string_literal("tree")}}));
+        d.objects.insert(
+            root,
+            Object::Dictionary(
+                lopdf::dictionary! {"Type"=>"Outlines","First"=>first,"Last"=>second,"Count"=>2},
+            ),
+        );
+        let tree=d.add_object(lopdf::dictionary!{"Names"=>vec![Object::string_literal("tree"),Object::Array(vec![Object::Reference(pages[2]),Object::Name(b"Fit".to_vec())])]});
+        d.catalog_mut().unwrap().set("Outlines", root);
+        d.catalog_mut().unwrap().set("Dests",lopdf::dictionary!{"legacy"=>vec![Object::Reference(pages[1]),Object::Name(b"Fit".to_vec())]});
+        d.catalog_mut()
+            .unwrap()
+            .set("Names", lopdf::dictionary! {"Dests"=>tree});
+        d.save(&input).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.select_bookmark(0).unwrap();
+        assert_eq!(p.current(), 1);
+        p.select_bookmark(1).unwrap();
+        assert_eq!(p.current(), 2);
+        p.move_page(2, 0).unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        let mut r = PdfDocument::open(&output).unwrap();
+        r.select_bookmark(1).unwrap();
+        assert_eq!(r.current(), 0);
+        r.select_bookmark(0).unwrap();
+        assert_eq!(r.current(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn imported_bookmarks_follow_remapped_page_objects() {
+        let dir = std::env::temp_dir().join(format!("pdf42-import-outline-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let source = dir.join("source.pdf");
+        let output = dir.join("out.pdf");
+        sample(&input, false);
+        sample(&source, false);
+        let mut source_doc = PdfDocument::open(&source).unwrap();
+        source_doc.select(2).unwrap();
+        source_doc.add_bookmark("Imported target").unwrap();
+        let (bytes, _) = source_doc.save_snapshot().unwrap();
+        fs::write(&source, bytes).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.add_bookmark("Original").unwrap();
+        p.insert_pdf_after(0, &source).unwrap();
+        assert_eq!(p.bookmarks().unwrap(), vec!["Original", "Imported target"]);
+        p.select_bookmark(1).unwrap();
+        assert_eq!(p.current(), 3);
+        let (bytes, _) = p.save_snapshot().unwrap();
+        fs::write(&output, bytes).unwrap();
+        let mut r = PdfDocument::open(&output).unwrap();
+        r.select_bookmark(1).unwrap();
+        assert_eq!(r.current(), 3);
+        assert!(p.undo());
+        assert!(p.bookmarks().unwrap().contains(&"Original".to_string()));
+        assert_eq!(p.bookmarks().unwrap().len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn metadata_history_and_reopen() {
         let path = std::env::temp_dir().join(format!("pdf42-metadata-{}.pdf", std::process::id()));
         let output =
@@ -3574,8 +5064,11 @@ mod tests {
         d.save(&path).unwrap();
         let mut p = PdfDocument::open(&path).unwrap();
         assert!(!p.can_restructure());
-        assert!(p.delete(0).is_err());
-        assert!(p.move_page(0, 1).is_err());
+        assert!(p.can_reorder());
+        p.move_page(0, 1).unwrap();
+        let (bytes, _) = p.save_snapshot().unwrap();
+        let reopened = Document::load_mem(&bytes).unwrap();
+        assert!(reopened.catalog().unwrap().get(b"PageLabels").is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

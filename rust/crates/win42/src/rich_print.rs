@@ -101,7 +101,7 @@ fn text(t: &PrintText, page: usize, count: usize) -> String {
         PrintText::PageCount => count.to_string(),
     }
 }
-unsafe fn font(f: &SceneFont, dpi: i32) -> Result<HFONT, String> {
+pub(super) unsafe fn font(f: &SceneFont, dpi: i32) -> Result<HFONT, String> {
     if !f.points.is_finite() || !(1.0..=1000.0).contains(&f.points) {
         return Err("Invalid header/footer font size".into());
     }

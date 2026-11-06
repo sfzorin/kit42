@@ -25,7 +25,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                 let n = GetWindowTextLengthW(field) as usize;
                 let mut buf = vec![0u16; n + 1];
                 GetWindowTextW(field, buf.as_mut_ptr(), (n + 1) as i32);
-                match String::from_utf16(&buf[..n]) {
+                let decoded = String::from_utf16(&buf[..n]);
+                buf.fill(0);
+                match decoded {
                     Ok(s) => values.push(s),
                     Err(_) => {
                         MessageBoxW(
@@ -58,12 +60,13 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
     }
 }
 pub unsafe fn show(owner: HWND, req: &InputRequest) -> Option<Vec<String>> {
-    show_multiline(owner, req, false)
+    show_options(owner, req, false, false)
 }
-pub unsafe fn show_multiline(
+pub unsafe fn show_options(
     owner: HWND,
     req: &InputRequest,
     multiline: bool,
+    password: bool,
 ) -> Option<Vec<String>> {
     if PROMPT.with(|p| p.borrow().is_some()) {
         return None;
@@ -135,6 +138,11 @@ pub unsafe fn show_multiline(
                     WS_VSCROLL | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32
                 } else {
                     ES_AUTOHSCROLL as u32
+                        | if password && i == 0 {
+                            ES_PASSWORD as u32
+                        } else {
+                            0
+                        }
                 },
             scale(12),
             y + scale(21),

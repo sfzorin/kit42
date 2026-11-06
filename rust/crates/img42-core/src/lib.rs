@@ -19,6 +19,7 @@ pub enum Error {
     Io(io::Error),
     Decode(image::ImageError),
     UnsupportedFormat,
+    IncompatibleProfile,
     TooLarge,
     InvalidImage,
     DestinationExists,
@@ -33,6 +34,7 @@ impl fmt::Display for Error {
             Self::Io(e) => write!(f, "I/O: {e}"),
             Self::Decode(e) => write!(f, "image: {e}"),
             Self::UnsupportedFormat => write!(f, "unsupported image format"),
+            Self::IncompatibleProfile => write!(f, "The embedded ICC profile is incompatible with the output color model; color-managed conversion is unavailable"),
             Self::TooLarge => write!(f, "image exceeds size limits"),
             Self::InvalidImage => write!(f, "invalid image dimensions or pixels"),
             Self::SvgResourcesDisallowed => write!(
@@ -67,12 +69,87 @@ impl From<image::ImageError> for Error {
     }
 }
 
+/// Validate and retain bounded PNG color-interpretation chunks. None means the
+/// source has ambiguous/invalid color metadata and must not be overwritten.
+fn png_color_chunks(bytes: &[u8]) -> Option<Vec<([u8; 4], Vec<u8>)>> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let mut pos = 8usize;
+    let mut chunks = Vec::new();
+    let mut seen_icc = false;
+    let mut seen_srgb = false;
+    let mut seen_pixels = false;
+    while pos.checked_add(12)? <= bytes.len() {
+        let n = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let end = pos.checked_add(12)?.checked_add(n)?;
+        if end > bytes.len() {
+            return None;
+        }
+        let tag: [u8; 4] = bytes[pos + 4..pos + 8].try_into().ok()?;
+        let data = &bytes[pos + 8..pos + 8 + n];
+        if tag == *b"PLTE" || tag == *b"IDAT" {
+            seen_pixels = true;
+        }
+        if tag == *b"iCCP" {
+            if seen_icc || seen_pixels {
+                return None;
+            }
+            seen_icc = true;
+        }
+        if matches!(&tag, b"gAMA" | b"cHRM" | b"sRGB") {
+            if seen_pixels || chunks.iter().any(|(t, _)| *t == tag) {
+                return None;
+            }
+            let valid = match &tag {
+                b"gAMA" => n == 4 && data != [0, 0, 0, 0],
+                b"cHRM" => n == 32,
+                b"sRGB" => {
+                    seen_srgb = true;
+                    n == 1 && data[0] <= 3
+                }
+                _ => false,
+            };
+            if !valid {
+                return None;
+            }
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(&tag);
+            crc.update(data);
+            if crc.finalize() != u32::from_be_bytes(bytes[pos + 8 + n..end].try_into().ok()?) {
+                return None;
+            }
+            chunks.push((tag, data.to_vec()));
+        }
+        pos = end;
+        if tag == *b"IEND" {
+            if seen_icc && seen_srgb {
+                return None;
+            }
+            chunks.sort_by_key(|(tag, _)| match tag {
+                b"gAMA" => 0,
+                b"cHRM" => 1,
+                _ => 2,
+            });
+            return Some(chunks);
+        }
+    }
+    None
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SampleModel {
+    Gray,
+    GrayAlpha,
+    Rgb,
+    Rgba,
+}
 #[derive(Clone, PartialEq, Eq)]
 struct Raster {
     width: u32,
     height: u32,
     pixels: Arc<[u8]>,
     pixels16: Option<Arc<[u16]>>,
+    sample_model: SampleModel,
     dpi: Option<(u32, u32)>,
 }
 impl Raster {
@@ -92,6 +169,7 @@ impl Raster {
             height,
             pixels: pixels.into(),
             pixels16: None,
+            sample_model: SampleModel::Rgba,
             dpi: None,
         })
     }
@@ -138,6 +216,7 @@ impl Raster {
             height: h,
             pixels: out.into(),
             pixels16: out16.map(Into::into),
+            sample_model: self.sample_model,
             dpi: if swap {
                 self.dpi.map(|(x, y)| (y, x))
             } else {
@@ -158,6 +237,7 @@ pub struct SaveState(Raster);
 
 pub struct ImageDocument {
     exif: Option<exif_metadata::Metadata>,
+    png_color: Vec<([u8; 4], Vec<u8>)>,
     tiff_text: Vec<(tiff::tags::Tag, String)>,
     icc: Option<Vec<u8>>,
     current: Raster,
@@ -179,6 +259,7 @@ impl ImageDocument {
         raster.dpi = dpi;
         Ok(Self {
             exif: None,
+            png_color: Vec::new(),
             tiff_text: Vec::new(),
             icc: None,
             saved: raster.clone(),
@@ -413,11 +494,39 @@ impl ImageDocument {
         if u64::from(w) * u64::from(h) > MAX_PIXELS {
             return Err(Error::TooLarge);
         }
-        let image = image::DynamicImage::from_decoder(decoder)?.into_rgba8();
-        let mut raster = Raster::new(w, h, image.into_raw())?.orient(orientation);
+        let color = decoder.color_type();
+        let is_png16 = format == ImageFormat::Png
+            && matches!(
+                color,
+                image::ColorType::L16
+                    | image::ColorType::La16
+                    | image::ColorType::Rgb16
+                    | image::ColorType::Rgba16
+            );
+        if is_png16 && u64::from(w) * u64::from(h) * 12 > MAX_PIXELS * 4 {
+            return Err(Error::TooLarge);
+        }
+        let image = image::DynamicImage::from_decoder(decoder)?;
+        let mut raster = if is_png16 {
+            let mut raster = Raster::new16(w, h, image.into_rgba16().into_raw())?;
+            raster.sample_model = match color {
+                image::ColorType::L16 => SampleModel::Gray,
+                image::ColorType::La16 => SampleModel::GrayAlpha,
+                image::ColorType::Rgb16 => SampleModel::Rgb,
+                _ => SampleModel::Rgba,
+            };
+            raster.orient(orientation)
+        } else {
+            Raster::new(w, h, image.into_rgba8().into_raw())?.orient(orientation)
+        };
         raster.dpi = Self::source_dpi(path)?;
         Ok(Self {
             exif,
+            png_color: if format == ImageFormat::Png {
+                png_color_chunks(&bytes).unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             tiff_text: Vec::new(),
             icc,
             saved: raster.clone(),
@@ -613,6 +722,43 @@ impl ImageDocument {
                 d.next_image().map_err(|_| Error::InvalidImage)?;
             }
         }
+        if format == ImageFormat::Png {
+            if png_color_chunks(&bytes).is_none() {
+                return Ok(true);
+            }
+            // Metadata not represented by the editor must not be discarded in place.
+            let mut pos = 8usize;
+            while pos.checked_add(12).is_some_and(|end| end <= bytes.len()) {
+                let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+                let Some(end) = pos.checked_add(12).and_then(|n| n.checked_add(len)) else {
+                    return Err(Error::InvalidImage);
+                };
+                if end > bytes.len() {
+                    return Err(Error::InvalidImage);
+                }
+                let tag = &bytes[pos + 4..pos + 8];
+                if !matches!(
+                    tag,
+                    b"IHDR"
+                        | b"IDAT"
+                        | b"IEND"
+                        | b"PLTE"
+                        | b"tRNS"
+                        | b"pHYs"
+                        | b"iCCP"
+                        | b"eXIf"
+                        | b"gAMA"
+                        | b"cHRM"
+                        | b"sRGB"
+                ) {
+                    return Ok(true);
+                }
+                pos = end;
+                if tag == b"IEND" {
+                    break;
+                }
+            }
+        }
         if format == ImageFormat::Gif {
             use image::AnimationDecoder;
             let mut frames =
@@ -638,7 +784,7 @@ impl ImageDocument {
         reader.limits(limits);
         let mut d = reader.into_decoder()?;
         let color = d.color_type();
-        if format != ImageFormat::Tiff
+        if !matches!(format, ImageFormat::Tiff | ImageFormat::Png)
             && color.bits_per_pixel() > u16::from(color.channel_count()) * 8
         {
             return Ok(true);
@@ -776,6 +922,7 @@ impl ImageDocument {
                 raster.dpi = page_dpi.get(docs.len()).copied().flatten();
                 docs.push(Self {
                     exif: None,
+                    png_color: Vec::new(),
                     tiff_text,
                     icc,
                     saved: raster.clone(),
@@ -820,6 +967,7 @@ impl ImageDocument {
                 }
                 docs.push(Self {
                     exif: None,
+                    png_color: Vec::new(),
                     tiff_text: Vec::new(),
                     icc: None,
                     saved: raster.clone(),
@@ -894,6 +1042,13 @@ impl ImageDocument {
             let mut encoder =
                 tiff::encoder::TiffEncoder::new(&mut output).map_err(|_| Error::InvalidImage)?;
             for page in pages {
+                if page
+                    .icc
+                    .as_ref()
+                    .is_some_and(|p| p.len() >= 20 && &p[16..20] == b"GRAY")
+                {
+                    return Err(Error::IncompatibleProfile);
+                }
                 let r = &page.current;
                 macro_rules! write_page {
                     ($kind:ty, $pixels:expr) => {{
@@ -1071,6 +1226,7 @@ impl ImageDocument {
             )?
         };
         next.dpi = self.current.dpi;
+        next.sample_model = self.current.sample_model;
         Self::push(&mut self.undo, self.current.clone());
         self.current = next;
         self.redo.clear();
@@ -1078,6 +1234,7 @@ impl ImageDocument {
     }
     fn apply_raster(&mut self, mut next: Raster) {
         next.dpi = self.current.dpi;
+        next.sample_model = self.current.sample_model;
         // Paint and masks are generated in the display buffer. Preserve exact untouched
         // 16-bit samples and promote changed display channels to 16-bit.
         if next.pixels16.is_none()
@@ -1555,6 +1712,13 @@ impl ImageDocument {
                 }
             }
             if format == "jpeg" {
+                if self
+                    .icc
+                    .as_ref()
+                    .is_some_and(|p| p.len() >= 20 && &p[16..20] == b"GRAY")
+                {
+                    return Err(Error::IncompatibleProfile);
+                }
                 let mut encoder =
                     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
                 if let Some((x, y)) = state.dpi {
@@ -1630,12 +1794,71 @@ impl ImageDocument {
                 .set_icc_profile(icc.clone())
                 .map_err(|_| Error::UnsupportedFormat)?;
         }
-        encoder.write_image(
-            &state.pixels,
-            state.width,
-            state.height,
-            image::ExtendedColorType::Rgba8,
-        )?;
+        if let Some(high) = &state.pixels16 {
+            let gray = matches!(
+                state.sample_model,
+                SampleModel::Gray | SampleModel::GrayAlpha
+            ) && high.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2]);
+            let alpha = matches!(
+                state.sample_model,
+                SampleModel::GrayAlpha | SampleModel::Rgba
+            ) || high.chunks_exact(4).any(|p| p[3] != u16::MAX);
+            let (kind, channels) = match (gray, alpha) {
+                (true, false) => (image::ExtendedColorType::L16, 1),
+                (true, true) => (image::ExtendedColorType::La16, 2),
+                (false, false) => (image::ExtendedColorType::Rgb16, 3),
+                (false, true) => (image::ExtendedColorType::Rgba16, 4),
+            };
+            if let Some(profile) = &self.icc {
+                if profile.len() >= 20
+                    && ((gray && &profile[16..20] == b"RGB ")
+                        || (!gray && &profile[16..20] == b"GRAY"))
+                {
+                    return Err(Error::IncompatibleProfile);
+                }
+            }
+            let mut encoded = Vec::with_capacity(high.len() / 4 * channels * 2);
+            for p in high.chunks_exact(4) {
+                let values: &[u16] = match (gray, alpha) {
+                    (true, false) => &p[..1],
+                    (false, false) => &p[..3],
+                    (false, true) => p,
+                    (true, true) => &[],
+                };
+                if gray && alpha {
+                    encoded.extend_from_slice(&p[0].to_ne_bytes());
+                    encoded.extend_from_slice(&p[3].to_ne_bytes());
+                } else {
+                    for v in values {
+                        encoded.extend_from_slice(&v.to_ne_bytes());
+                    }
+                }
+            }
+            encoder.write_image(&encoded, state.width, state.height, kind)?;
+        } else {
+            encoder.write_image(
+                &state.pixels,
+                state.width,
+                state.height,
+                image::ExtendedColorType::Rgba8,
+            )?;
+        }
+        if !self.png_color.is_empty() {
+            if self.icc.is_some() && self.png_color.iter().any(|(tag, _)| tag == b"sRGB") {
+                return Err(Error::IncompatibleProfile);
+            }
+            let mut chunks = Vec::new();
+            for (tag, data) in &self.png_color {
+                chunks.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                chunks.extend_from_slice(tag);
+                chunks.extend_from_slice(data);
+                let mut crc = crc32fast::Hasher::new();
+                crc.update(tag);
+                crc.update(data);
+                chunks.extend_from_slice(&crc.finalize().to_be_bytes());
+            }
+            bytes.splice(33..33, chunks);
+        }
         if let Some((x, y)) = state.dpi {
             let mut data = Vec::with_capacity(9);
             data.extend_from_slice(&((x as f64 / 0.0254).round() as u32).to_be_bytes());
@@ -1694,12 +1917,279 @@ mod tests {
         let r = fixture();
         ImageDocument {
             exif: None,
+            png_color: Vec::new(),
             tiff_text: Vec::new(),
             icc: None,
             current: r.clone(),
             saved: r,
             undo: vec![],
             redo: vec![],
+        }
+    }
+    #[test]
+    fn png_color_chunks_handle_icc_and_reject_duplicates() {
+        let mut raster = Raster::new16(1, 1, vec![1, 257, 4097, 65535]).unwrap();
+        raster.sample_model = SampleModel::Rgb;
+        let mut profile = vec![0; 128];
+        profile[16..20].copy_from_slice(b"RGB ");
+        let d = ImageDocument {
+            exif: None,
+            png_color: vec![(*b"gAMA", 45455u32.to_be_bytes().to_vec())],
+            tiff_text: vec![],
+            icc: Some(profile.clone()),
+            current: raster.clone(),
+            saved: raster,
+            undo: vec![],
+            redo: vec![],
+        };
+        let out = d.save_snapshot_format("png").unwrap().0;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("icc.png");
+        std::fs::write(&path, &out).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&path).unwrap());
+        let loaded = ImageDocument::open(&path).unwrap();
+        assert_eq!(loaded.icc, Some(profile));
+        assert_eq!(loaded.png_color, d.png_color);
+        let chunk = &out[33..49];
+        assert_eq!(&chunk[4..8], b"gAMA");
+        let mut duplicate = out.clone();
+        duplicate.splice(33..33, chunk.iter().copied());
+        let path = dir.path().join("duplicate.png");
+        std::fs::write(&path, duplicate).unwrap();
+        assert!(ImageDocument::has_conversion_risk(&path).unwrap());
+    }
+    #[test]
+    fn png_color_chunks_and_exact_pixels_survive_geometry_save() {
+        use image::{ImageDecoder, ImageEncoder};
+        let mut png = Vec::new();
+        let pixels = [1u16, 257, 4097, 65535, 60001, 32769];
+        let raw: Vec<u8> = pixels.into_iter().flat_map(u16::to_ne_bytes).collect();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&raw, 2, 1, image::ExtendedColorType::Rgb16)
+            .unwrap();
+        let metadata: Vec<([u8; 4], Vec<u8>)> = vec![
+            (*b"gAMA", 45455u32.to_be_bytes().to_vec()),
+            (*b"cHRM", vec![0; 32]),
+            (*b"sRGB", vec![0]),
+        ];
+        let mut insert = Vec::new();
+        for (tag, data) in &metadata {
+            insert.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            insert.extend_from_slice(tag);
+            insert.extend_from_slice(data);
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(tag);
+            crc.update(data);
+            insert.extend_from_slice(&crc.finalize().to_be_bytes());
+        }
+        png.splice(33..33, insert);
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.png");
+        std::fs::write(&src, png).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&src).unwrap());
+        let mut d = ImageDocument::open(&src).unwrap();
+        d.rotate_cw().unwrap();
+        let expected = d.current.pixels16.clone();
+        let output = d.save_snapshot_format("png").unwrap().0;
+        // Independently inspect every output chunk, including CRC, order and uniqueness.
+        let mut pos = 8usize;
+        let mut seen = Vec::new();
+        let mut before_data = true;
+        while pos < output.len() {
+            let n = u32::from_be_bytes(output[pos..pos + 4].try_into().unwrap()) as usize;
+            let tag = &output[pos + 4..pos + 8];
+            let payload = &output[pos + 8..pos + 8 + n];
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(tag);
+            crc.update(payload);
+            assert_eq!(
+                crc.finalize(),
+                u32::from_be_bytes(output[pos + 8 + n..pos + 12 + n].try_into().unwrap())
+            );
+            if tag == b"IDAT" {
+                before_data = false;
+            }
+            if [b"gAMA", b"cHRM", b"sRGB"]
+                .iter()
+                .any(|t| t.as_slice() == tag)
+            {
+                assert!(before_data);
+                seen.push((tag.to_vec(), payload.to_vec()));
+            }
+            pos += 12 + n;
+        }
+        assert_eq!(
+            seen,
+            metadata
+                .iter()
+                .map(|(a, b)| (a.to_vec(), b.clone()))
+                .collect::<Vec<_>>()
+        );
+        let saved = dir.path().join("saved.png");
+        std::fs::write(&saved, output).unwrap();
+        let decoder = image::ImageReader::open(&saved)
+            .unwrap()
+            .into_decoder()
+            .unwrap();
+        assert_eq!(decoder.color_type(), image::ColorType::Rgb16);
+        let reopened = ImageDocument::open(&saved).unwrap();
+        assert_eq!(reopened.current.pixels16, expected);
+    }
+    #[test]
+    fn png_color_metadata_requires_converted_copy() {
+        use image::ImageEncoder;
+        let mut png = Vec::new();
+        let samples: Vec<u8> = [1u16, 257, 4097]
+            .into_iter()
+            .flat_map(u16::to_ne_bytes)
+            .collect();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&samples, 1, 1, image::ExtendedColorType::Rgb16)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for (tag, data) in [
+            (b"sBIT", vec![16, 16, 16]),
+            (b"tEXt", b"Key\0Value".to_vec()),
+        ] {
+            let mut chunk = Vec::new();
+            chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            chunk.extend_from_slice(tag);
+            chunk.extend_from_slice(&data);
+            let mut crc = crc32fast::Hasher::new();
+            crc.update(tag);
+            crc.update(&data);
+            chunk.extend_from_slice(&crc.finalize().to_be_bytes());
+            let mut bytes = png.clone();
+            bytes.splice(33..33, chunk);
+            let path = dir
+                .path()
+                .join(format!("{}.png", String::from_utf8_lossy(tag)));
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                ImageDocument::has_conversion_risk(&path).unwrap(),
+                "{}",
+                String::from_utf8_lossy(tag)
+            );
+        }
+    }
+    #[test]
+    fn sixteen_bit_png_preserves_icc_exif_and_density() {
+        let field = exif::Field {
+            tag: exif::Tag::Artist,
+            ifd_num: exif::In::PRIMARY,
+            value: exif::Value::Ascii(vec![b"Photographer".to_vec()]),
+        };
+        let mut writer = exif::experimental::Writer::new();
+        writer.push_field(&field);
+        let mut raw = Cursor::new(Vec::new());
+        writer.write(&mut raw, true).unwrap();
+        let mut raster =
+            Raster::new16(2, 1, vec![1, 257, 4097, 65535, 32001, 60002, 7, 32769]).unwrap();
+        raster.sample_model = SampleModel::Rgba;
+        raster.dpi = Some((300, 150));
+        let mut profile = vec![0u8; 128];
+        profile[16..20].copy_from_slice(b"RGB ");
+        let mut d = ImageDocument {
+            exif: Some(exif_metadata::Metadata::parse(raw.into_inner()).unwrap()),
+            png_color: Vec::new(),
+            tiff_text: vec![],
+            icc: Some(profile.clone()),
+            current: raster.clone(),
+            saved: raster,
+            undo: vec![],
+            redo: vec![],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        std::fs::write(&path, d.save_snapshot_format("png").unwrap().0).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&path).unwrap());
+        d = ImageDocument::open(&path).unwrap();
+        assert_eq!(d.icc.as_deref(), Some(profile.as_slice()));
+        assert_eq!(d.dpi(), Some((300, 150)));
+        d.rotate_cw().unwrap();
+        let path = dir.path().join("saved.png");
+        std::fs::write(&path, d.save_snapshot_format("png").unwrap().0).unwrap();
+        let reopened = ImageDocument::open(&path).unwrap();
+        assert_eq!(reopened.icc.as_deref(), Some(profile.as_slice()));
+        assert_eq!(reopened.dpi(), Some((150, 300)));
+        assert_eq!(reopened.current.pixels16, d.current.pixels16);
+        let metadata = exif::Reader::new()
+            .read_from_container(&mut BufReader::new(File::open(path).unwrap()))
+            .unwrap();
+        assert!(metadata
+            .get_field(exif::Tag::Artist, exif::In::PRIMARY)
+            .is_some());
+        assert_eq!(
+            metadata
+                .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(1)
+        );
+    }
+    #[test]
+    fn sixteen_bit_png_models_roundtrip_edits_and_history() {
+        use image::ImageEncoder;
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures: Vec<(image::ExtendedColorType, Vec<u16>)> = vec![
+            (image::ExtendedColorType::L16, vec![1, 4097, 32001, 65534]),
+            (
+                image::ExtendedColorType::La16,
+                vec![1, 65535, 4097, 32769, 32001, 0, 65534, 100],
+            ),
+            (
+                image::ExtendedColorType::Rgb16,
+                vec![
+                    1, 257, 4097, 32001, 60002, 7, 65534, 40001, 12345, 33333, 22222, 11111,
+                ],
+            ),
+            (
+                image::ExtendedColorType::Rgba16,
+                vec![
+                    1, 257, 4097, 65535, 32001, 60002, 7, 32769, 65534, 40001, 12345, 0, 33333,
+                    22222, 11111, 100,
+                ],
+            ),
+        ];
+        for (i, (kind, samples)) in fixtures.into_iter().enumerate() {
+            let mut input = Vec::new();
+            let raw: Vec<u8> = samples.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            image::codecs::png::PngEncoder::new(&mut input)
+                .write_image(&raw, 2, 2, kind)
+                .unwrap();
+            let path = dir.path().join(format!("{i}.png"));
+            std::fs::write(&path, &input).unwrap();
+            assert!(!ImageDocument::has_conversion_risk(&path).unwrap());
+            let mut d = ImageDocument::open(&path).unwrap();
+            assert!(d.is_16bit());
+            let original = d.current.pixels16.as_ref().unwrap().to_vec();
+            d.rotate_cw().unwrap();
+            d.crop(0, 0, 1, 2).unwrap();
+            let expected = d.current.pixels16.as_ref().unwrap().to_vec();
+            let (out, snapshot) = d.save_snapshot_format("png").unwrap();
+            let saved = dir.path().join(format!("{i}-saved.png"));
+            std::fs::write(&saved, out).unwrap();
+            let decoder = image::ImageReader::open(&saved)
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            use image::ImageDecoder;
+            assert_eq!(image::ExtendedColorType::from(decoder.color_type()), kind);
+            let reopened = ImageDocument::open(&saved).unwrap();
+            assert_eq!(
+                reopened.current.pixels16.as_deref(),
+                Some(expected.as_slice())
+            );
+            d.mark_saved_snapshot(snapshot);
+            assert!(!d.is_dirty());
+            assert!(d.undo());
+            assert!(d.is_dirty());
+            assert!(d.undo());
+            assert_eq!(d.current.pixels16.as_deref(), Some(original.as_slice()));
+            assert!(d.redo());
+            assert!(d.redo());
+            assert!(!d.is_dirty());
         }
     }
     #[test]
@@ -1711,6 +2201,7 @@ mod tests {
         let raster = Raster::new16(2, 2, source.clone()).unwrap();
         let mut d = ImageDocument {
             exif: None,
+            png_color: Vec::new(),
             tiff_text: Vec::new(),
             icc: None,
             current: raster.clone(),
@@ -1971,6 +2462,7 @@ mod tests {
         let raster = Raster::new(180, 60, vec![255; 180 * 60 * 4]).unwrap();
         let mut d = ImageDocument {
             exif: None,
+            png_color: Vec::new(),
             tiff_text: Vec::new(),
             icc: None,
             current: raster.clone(),

@@ -978,6 +978,7 @@ dependencies = [
  "img42-core",
  "suite42-core",
  "suite42-pdf-raster",
+ "tempfile",
  "win42",
  "windows-sys",
 ]
@@ -1386,7 +1387,9 @@ dependencies = [
  "pdf42-core",
  "png 0.18.1",
  "scn42-core",
+ "suite42-core",
  "suite42-pdf-raster",
+ "suite42-pdf-text",
  "tempfile",
  "win42",
  "windows",
@@ -1398,6 +1401,7 @@ name = "pdf42-core"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "getrandom",
  "lopdf",
  "suite42-core",
  "suite42-pdf-text",

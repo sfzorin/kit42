@@ -40,6 +40,14 @@ pub trait App {
     ) -> Option<Result<suite42_core::session::FileIdentity, String>> {
         None
     }
+    /// Request a masked credential while an asynchronous open remains pending.
+    fn take_async_open_password_request(&mut self) -> Option<InputRequest> {
+        None
+    }
+    /// Resume the same pending open with a credential, or cancel it.
+    fn submit_async_open_password(&mut self, _password: Option<&str>) -> Result<(), String> {
+        Err("This open does not accept a password".into())
+    }
     /// Atomically install the prepared model and return its clean revision.
     /// On error the previously open model must remain unchanged.
     fn commit_async_open(&mut self) -> Result<u64, String> {
@@ -172,6 +180,10 @@ pub trait App {
     fn multiline_input(&self, _id: u16) -> bool {
         false
     }
+    /// Mask the first native input field and clear the returned buffers after dispatch.
+    fn password_input(&self, _id: u16) -> bool {
+        false
+    }
     fn input_request(&self, _id: u16) -> Option<InputRequest> {
         None
     }
@@ -295,6 +307,10 @@ pub trait App {
     }
     fn set_rich_selection(&mut self, _selection_utf16: (usize, usize)) {}
     /// Selection captured by the document history, restored after Undo or Redo.
+    /// Select an app-requested rich-text range after a command refresh.
+    fn take_requested_rich_selection(&mut self) -> Option<(usize, usize)> {
+        None
+    }
     fn rich_selection_to_restore(&self) -> Option<(usize, usize)> {
         None
     }
@@ -312,16 +328,22 @@ mod grid;
 mod grid_geometry;
 #[cfg(windows)]
 mod native;
+#[cfg(any(windows, test))]
+mod note_pagination;
 #[cfg(windows)]
 mod prompt;
 #[cfg(windows)]
 mod rich_edit;
+#[cfg(windows)]
+mod rich_notes;
 #[cfg(windows)]
 mod rich_preview;
 #[cfg(windows)]
 mod rich_print;
 #[cfg(windows)]
 mod rich_ruler;
+#[cfg(windows)]
+mod scene_transform;
 #[cfg(windows)]
 pub use native::run;
 #[cfg(not(windows))]
@@ -551,6 +573,12 @@ pub enum CanvasEvent {
 /// Device-independent scene in document coordinates. Colors are RGB bytes.
 #[derive(Clone, Debug)]
 pub enum SceneItem {
+    /// Rotate nested scene items clockwise around `center` in logical scene units.
+    Transform {
+        center: Point,
+        degrees: f64,
+        items: Vec<SceneItem>,
+    },
     Rect {
         x: f64,
         y: f64,
@@ -717,12 +745,22 @@ pub struct PrintParagraph {
     pub fragments: Vec<PrintFragment>,
 }
 #[derive(Clone, Debug)]
+pub struct RichPrintNote {
+    pub marker: String,
+    pub label: String,
+    pub endnote: bool,
+    pub paragraphs: Vec<PrintParagraph>,
+}
+#[derive(Clone, Debug)]
 pub struct RichPrint {
     pub geometry: PrintGeometry,
     pub header_distance_twips: i32,
     pub footer_distance_twips: i32,
     pub header: Vec<PrintParagraph>,
     pub footer: Vec<PrintParagraph>,
+    /// Optional print-only RTF body with note markers; never an editing authority.
+    pub body_rtf: Option<Vec<u8>>,
+    pub notes: Vec<RichPrintNote>,
 }
 #[derive(Clone, Debug)]
 pub enum PrintJob {

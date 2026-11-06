@@ -50,7 +50,10 @@ replacement. Multi-file saves stage sidecars first with verified reuse and best-
 replacement of the whole bundle. Async open retains the existing document/session through verification, cancellation
 and progress. The UI provides canvas drawing, rich text and scaled images, asynchronous jobs with generation-based
 cancellation, and printing using twips and DPI. DOC42 separates its editable RichEdit model from the read-only
-paginated preview. Common controls v6 and PerMonitorV2 are declared in the application manifest.
+paginated preview. PDF password retries use the captured source bytes; async open rechecks identity before replacing the prior session.
+DOC42 reserves note space in preview/print and refreshes linked TOC entries explicitly. Scene transforms rotate objects
+and groups; where a printer lacks `SB_PIXEL_ALPHA`, scene printing uses a bounded white raster fallback at up to
+200 DPI. Common controls v6 and PerMonitorV2 are declared in the application manifest.
 
 These are implementation contracts, not evidence of native event dispatch, rendering, printing or lifecycle behavior.
 See [rust/README.md](rust/README.md) for formats, dependencies and verification limits.
