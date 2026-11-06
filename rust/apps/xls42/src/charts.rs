@@ -286,6 +286,23 @@ pub fn print_scene(data: &ChartData, width: f64, height: f64) -> CanvasScene {
                 *height *= scale;
                 font.points *= scale
             }
+            SceneItem::RichText {
+                x,
+                y,
+                width,
+                height,
+                paragraphs,
+            } => {
+                *x *= scale;
+                *y *= scale;
+                *width *= scale;
+                *height *= scale;
+                for p in paragraphs {
+                    for r in &mut p.runs {
+                        r.font.points *= scale;
+                    }
+                }
+            }
             SceneItem::Path { points, .. } => {
                 for p in points {
                     p.x *= scale;

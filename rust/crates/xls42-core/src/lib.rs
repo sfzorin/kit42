@@ -170,6 +170,16 @@ struct Sheet {
     pivots: Vec<Pivot>,
     filter: Option<SheetFilter>,
     print: PrintSettings,
+    copied_from: Option<SheetId>,
+    source_structure: bool,
+    source_edits: Vec<StructuralEdit>,
+}
+#[derive(Clone, Debug, PartialEq)]
+struct StructuralEdit {
+    rows: bool,
+    at: usize,
+    count: usize,
+    delete: bool,
 }
 impl Sheet {
     fn new(id: SheetId, name: String, rows: usize, cols: usize) -> Self {
@@ -189,6 +199,9 @@ impl Sheet {
             pivots: Vec::new(),
             filter: None,
             print: PrintSettings::default(),
+            copied_from: None,
+            source_structure: false,
+            source_edits: Vec::new(),
         }
     }
 }
@@ -532,7 +545,14 @@ impl Workbook {
         Ok(self.history.apply(st))
     }
     pub fn add_sheet(&mut self, name: &str) -> Result<SheetId, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Sheet changes in this external format are not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         validate_name(&st, name, None)?;
         if st.sheets.len() >= MAX_SHEETS {
@@ -549,11 +569,21 @@ impl Workbook {
             bottom: 0,
             right: 0,
         };
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         self.history.apply(st);
         Ok(id)
     }
     pub fn duplicate_sheet(&mut self, id: SheetId, name: &str) -> Result<SheetId, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Sheet changes in this external format are not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         validate_name(&st, name, None)?;
         if st.sheets.len() >= MAX_SHEETS {
@@ -570,8 +600,31 @@ impl Workbook {
                 "Duplicate chart and pivot sheets after removing their objects",
             ));
         }
+        if self.has_external_source() {
+            let source = if let Some(source_id) = sheet.copied_from {
+                source_id
+            } else {
+                id
+            };
+            if self
+                .external_baseline
+                .as_ref()
+                .is_some_and(|base| base.sheets.iter().any(|s| s.id == source))
+            {
+                sheet.copied_from = Some(source);
+            } else {
+                sheet.copied_from = None;
+            }
+        }
+        let source_name = sheet.name.clone();
         sheet.id = st.next_id;
         sheet.name = name.into();
+        for cell in sheet.cells.values_mut() {
+            if matches!(cell.text, CellContent::Formula(_)) {
+                cell.text =
+                    CellContent::from_raw(rewrite_sheet_refs(cell.text.raw(), &source_name, name));
+            }
+        }
         st.next_id += 1;
         let new_id = sheet.id;
         st.sheets.push(sheet);
@@ -579,11 +632,21 @@ impl Workbook {
         if st.bytes() > MAX_TEXT {
             return Err(Error::Limit);
         }
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         self.history.apply(st);
         Ok(new_id)
     }
     pub fn rename_sheet(&mut self, id: SheetId, name: &str) -> Result<bool, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Renaming sheets in this external format is not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         validate_name(&st, name, Some(id))?;
         let old = st
@@ -607,10 +670,20 @@ impl Workbook {
         if st.bytes() > MAX_TEXT {
             return Err(Error::Limit);
         }
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         Ok(self.history.apply(st))
     }
     pub fn delete_sheet(&mut self, id: SheetId) -> Result<bool, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Sheet changes in this external format are not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         if st.sheets.len() == 1 {
             return Err(Error::Invalid("cannot delete last sheet"));
@@ -629,6 +702,9 @@ impl Workbook {
                     .any(|p| p.source_sheet == id || p.destination_sheet == id)
         }) {
             return Err(Error::Invalid("Sheet is used by a chart or pivot"));
+        }
+        if self.has_external_source() && st.sheets[idx].protected {
+            return Err(Error::Protected);
         }
         let name = st.sheets[idx].name.clone();
         if st
@@ -656,10 +732,20 @@ impl Workbook {
                 right: 0,
             }
         }
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         Ok(self.history.apply(st))
     }
     pub fn reorder_sheet(&mut self, id: SheetId, index: usize) -> Result<bool, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Reordering sheets in this external format is not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         if index >= st.sheets.len() {
             return Err(Error::Bounds);
@@ -671,6 +757,9 @@ impl Workbook {
             .ok_or(Error::Bounds)?;
         let s = st.sheets.remove(old);
         st.sheets.insert(index, s);
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         Ok(self.history.apply(st))
     }
     pub fn selection(&self) -> Range {
@@ -823,7 +912,14 @@ impl Workbook {
         count: usize,
         delete: bool,
     ) -> Result<(), Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source()
+            && !matches!(self.external_format.as_deref(), Some("xlsx" | "ods"))
+        {
+            return Err(Error::Invalid(
+                "Structural edits are not yet supported for this external format",
+            ));
+        }
         let mut st = self.history.current().clone();
         let active = st.active;
         if st.sheets.iter().any(|s| {
@@ -839,19 +935,33 @@ impl Workbook {
             ));
         }
         let name = st.sheet().name.clone();
-        if st.sheets.iter().any(|sheet| {
-            sheet.cells.values().any(|cell| {
+        if st
+            .sheets
+            .iter()
+            .flat_map(|sheet| sheet.cells.values())
+            .any(|cell| {
                 matches!(cell.text, CellContent::Formula(_))
-                    && ((sheet.id == active && cell.text.raw().contains('!'))
-                        || rewrite_sheet_refs(cell.text.raw(), &name, "XLS42_Structural_Guard")
-                            != cell.text.raw())
+                    && has_3d_sheet_reference(cell.text.raw())
             })
-        }) {
+        {
             return Err(Error::Invalid(
-                "Structural edit has cross-sheet references that cannot yet be adjusted safely",
+                "Three-dimensional sheet references cannot yet be shifted safely",
             ));
         }
+        let external = self.has_external_source();
         let s = st.sheet_mut();
+        if external {
+            if s.source_edits.len() >= 4096 {
+                return Err(Error::Limit);
+            }
+            s.source_structure = true;
+            s.source_edits.push(StructuralEdit {
+                rows,
+                at,
+                count,
+                delete,
+            });
+        }
         if !s.validations.is_empty()
             || !s.conditional_formats.is_empty()
             || !s.charts.is_empty()
@@ -875,9 +985,12 @@ impl Workbook {
         {
             return Err(Error::Bounds);
         }
-        if !s.merges.is_empty() {
-            return Err(Error::Invalid("unmerge cells before structural edits"));
-        }
+        s.merges = s
+            .merges
+            .iter()
+            .filter_map(|range| shift_range(*range, rows, at, count, delete))
+            .filter(|range| range.top != range.bottom || range.left != range.right)
+            .collect();
         let old = std::mem::take(&mut s.cells);
         for ((r, c), mut cell) in old {
             let n = if rows { r } else { c };
@@ -894,7 +1007,9 @@ impl Workbook {
             let (r, c) = if rows { (n, c) } else { (r, n) };
             let raw = cell.text.raw();
             if matches!(cell.text, CellContent::Formula(_)) {
-                cell.text = CellContent::from_raw(adjust_refs(raw, rows, at, count, delete));
+                cell.text = CellContent::from_raw(adjust_formula_refs(
+                    raw, &name, true, rows, at, count, delete,
+                ));
             }
             s.cells.insert((r, c), cell);
         }
@@ -905,12 +1020,30 @@ impl Workbook {
             s.cols = if delete { size - count } else { size + count };
             shift_geometry(&mut s.col_widths, at, count, delete)
         }
+        for sheet in st.sheets.iter_mut().filter(|sheet| sheet.id != active) {
+            for cell in sheet.cells.values_mut() {
+                if matches!(cell.text, CellContent::Formula(_)) {
+                    cell.text = CellContent::from_raw(adjust_formula_refs(
+                        cell.text.raw(),
+                        &name,
+                        false,
+                        rows,
+                        at,
+                        count,
+                        delete,
+                    ));
+                }
+            }
+        }
         st.selection = Range {
             top: 0,
             left: 0,
             bottom: 0,
             right: 0,
         };
+        if self.has_external_source() {
+            self.validate_external_rename(&st)?;
+        }
         self.history.apply(st);
         Ok(())
     }
@@ -996,7 +1129,12 @@ impl Workbook {
         }
     }
     pub fn set_row_height(&mut self, row: usize, height: u16) -> Result<bool, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source() && self.external_format.as_deref() != Some("xlsx") {
+            return Err(Error::Invalid(
+                "Resizing this external Office format is not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         let s = st.sheet_mut();
         if s.protected {
@@ -1009,7 +1147,12 @@ impl Workbook {
         Ok(self.history.apply(st))
     }
     pub fn set_column_width(&mut self, col: usize, width: u16) -> Result<bool, Error> {
-        self.require_structural_edit()?;
+        self.require_editable()?;
+        if self.has_external_source() && self.external_format.as_deref() != Some("xlsx") {
+            return Err(Error::Invalid(
+                "Resizing this external Office format is not yet supported",
+            ));
+        }
         let mut st = self.history.current().clone();
         let s = st.sheet_mut();
         if s.protected {
@@ -1017,6 +1160,9 @@ impl Workbook {
         }
         if col >= s.cols || width == 0 {
             return Err(Error::Bounds);
+        }
+        if width > 1785 {
+            return Err(Error::Invalid("Column width exceeds Excel's limit"));
         }
         s.col_widths.insert(col, width);
         Ok(self.history.apply(st))
@@ -1192,6 +1338,349 @@ fn validate_name(st: &State, name: &str, except: Option<SheetId>) -> Result<(), 
         Ok(())
     }
 }
+fn has_3d_sheet_reference(input: &str) -> bool {
+    input
+        .split('!')
+        .take(input.matches('!').count())
+        .any(|prefix| {
+            let name = prefix
+                .rsplit(|c: char| {
+                    matches!(c, '+' | '-' | '*' | '/' | '(' | ')' | ',' | '=' | '<' | '>')
+                })
+                .next()
+                .unwrap_or("");
+            name.contains(':')
+        })
+}
+fn shift_range(
+    mut range: Range,
+    rows: bool,
+    at: usize,
+    count: usize,
+    delete: bool,
+) -> Option<Range> {
+    let (lo, hi) = if rows {
+        (range.top, range.bottom)
+    } else {
+        (range.left, range.right)
+    };
+    let (lo, hi) = if delete {
+        let last = at + count - 1;
+        if lo >= at && hi <= last {
+            return None;
+        }
+        (
+            if lo >= at && lo <= last {
+                at
+            } else if lo > last {
+                lo - count
+            } else {
+                lo
+            },
+            if hi >= at && hi <= last {
+                at.saturating_sub(1)
+            } else if hi > last {
+                hi - count
+            } else {
+                hi
+            },
+        )
+    } else {
+        (
+            if lo >= at { lo + count } else { lo },
+            if hi >= at { hi + count } else { hi },
+        )
+    };
+    if rows {
+        range.top = lo;
+        range.bottom = hi;
+    } else {
+        range.left = lo;
+        range.right = hi;
+    }
+    Some(range)
+}
+fn parse_a1_endpoint(input: &str, start: usize) -> Option<(usize, usize, usize, bool, bool)> {
+    let b = input.as_bytes();
+    let mut i = start;
+    let abs_col = b.get(i) == Some(&b'$');
+    if abs_col {
+        i += 1;
+    }
+    let begin = i;
+    let mut col = 0usize;
+    while i < b.len() && b[i].is_ascii_alphabetic() {
+        col = col
+            .checked_mul(26)?
+            .checked_add((b[i].to_ascii_uppercase() - b'A' + 1) as usize)?;
+        i += 1;
+    }
+    if i == begin || i - begin > 3 {
+        return None;
+    }
+    let abs_row = b.get(i) == Some(&b'$');
+    if abs_row {
+        i += 1;
+    }
+    let begin = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == begin
+        || i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'!' | b'('))
+    {
+        return None;
+    }
+    let row = input[begin..i].parse::<usize>().ok()?;
+    if row == 0 || col == 0 {
+        return None;
+    }
+    Some((i, row, col, abs_col, abs_row))
+}
+fn write_a1_endpoint(out: &mut String, row: usize, col: usize, abs_col: bool, abs_row: bool) {
+    if abs_col {
+        out.push('$');
+    }
+    let mut n = col;
+    let mut letters = Vec::new();
+    while n > 0 {
+        n -= 1;
+        letters.push((b'A' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    out.extend(letters.iter().rev());
+    if abs_row {
+        out.push('$');
+    }
+    out.push_str(&row.to_string());
+}
+fn parse_axis_range(input: &str, start: usize) -> Option<(usize, usize, usize, bool, bool, bool)> {
+    fn part(input: &str, start: usize) -> Option<(usize, usize, bool, bool)> {
+        let b = input.as_bytes();
+        let mut i = start;
+        let absolute = b.get(i) == Some(&b'$');
+        if absolute {
+            i += 1;
+        }
+        let begin = i;
+        let rows = b.get(i)?.is_ascii_digit();
+        let mut value = 0usize;
+        while i < b.len()
+            && if rows {
+                b[i].is_ascii_digit()
+            } else {
+                b[i].is_ascii_alphabetic()
+            }
+        {
+            value = value
+                .checked_mul(if rows { 10 } else { 26 })?
+                .checked_add(if rows {
+                    (b[i] - b'0') as usize
+                } else {
+                    (b[i].to_ascii_uppercase() - b'A' + 1) as usize
+                })?;
+            i += 1;
+        }
+        if i == begin || !rows && i - begin > 3 || value == 0 {
+            return None;
+        }
+        Some((i, value - 1, absolute, rows))
+    }
+    let (i, first, abs1, rows) = part(input, start)?;
+    if input.as_bytes().get(i) != Some(&b':') {
+        return None;
+    }
+    let (end, last, abs2, row2) = part(input, i + 1)?;
+    if rows != row2
+        || input
+            .as_bytes()
+            .get(end)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        return None;
+    }
+    Some((end, first, last, abs1, abs2, rows))
+}
+fn adjust_axis_range(
+    reference: &str,
+    rows: bool,
+    at: usize,
+    count: usize,
+    delete: bool,
+) -> Option<String> {
+    let (_, first, last, abs1, abs2, axis_rows) = parse_axis_range(reference, 0)?;
+    if axis_rows != rows {
+        return Some(reference.to_owned());
+    }
+    let range = if rows {
+        Range {
+            top: first.min(last),
+            bottom: first.max(last),
+            left: 0,
+            right: 0,
+        }
+    } else {
+        Range {
+            left: first.min(last),
+            right: first.max(last),
+            top: 0,
+            bottom: 0,
+        }
+    };
+    let Some(range) = shift_range(range, rows, at, count, delete) else {
+        return Some("#REF!".into());
+    };
+    let (lo, hi) = if rows {
+        (range.top, range.bottom)
+    } else {
+        (range.left, range.right)
+    };
+    let (first, last) = if first <= last { (lo, hi) } else { (hi, lo) };
+    let part = |v: usize, absolute: bool| -> String {
+        let mut result = String::new();
+        if absolute {
+            result.push('$');
+        }
+        if rows {
+            result.push_str(&(v + 1).to_string());
+        } else {
+            let mut n = v + 1;
+            let mut chars = Vec::new();
+            while n > 0 {
+                n -= 1;
+                chars.push((b'A' + (n % 26) as u8) as char);
+                n /= 26;
+            }
+            result.extend(chars.iter().rev());
+        }
+        result
+    };
+    Some(format!("{}:{}", part(first, abs1), part(last, abs2)))
+}
+fn adjust_formula_refs(
+    input: &str,
+    target: &str,
+    local: bool,
+    rows: bool,
+    at: usize,
+    count: usize,
+    delete: bool,
+) -> String {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut text = String::new();
+    let mut qualified = Vec::new();
+    let mut in_string = false;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            text.push('"');
+            i += 1;
+            if in_string && bytes.get(i) == Some(&b'"') {
+                text.push('"');
+                i += 1;
+            } else {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if in_string {
+            let ch = input[i..].chars().next().unwrap();
+            text.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let start = i;
+        if bytes[i] == b'[' {
+            let mut depth = 1usize;
+            i += 1;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'[' {
+                    depth += 1;
+                }
+                if bytes[i] == b']' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            let marker = format!("\u{1}{}\u{2}", qualified.len());
+            qualified.push(input[start..i].to_owned());
+            text.push_str(&marker);
+            continue;
+        }
+        let mut name = String::new();
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < bytes.len() {
+                let ch = input[i..].chars().next().unwrap();
+                i += ch.len_utf8();
+                if ch == '\'' {
+                    if bytes.get(i) == Some(&b'\'') {
+                        name.push('\'');
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    name.push(ch);
+                }
+            }
+        } else if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'.'))
+            {
+                i += 1;
+            }
+            name.push_str(&input[start..i]);
+        } else {
+            let ch = input[i..].chars().next().unwrap();
+            text.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if bytes.get(i) != Some(&b'!') {
+            text.push_str(&input[start..i]);
+            continue;
+        }
+        i += 1;
+        let ref_start = i;
+        let (mut end, axis) = if let Some((end, _, _, _, _)) = parse_a1_endpoint(input, i) {
+            (end, false)
+        } else if let Some((end, _, _, _, _, _)) = parse_axis_range(input, i) {
+            (end, true)
+        } else {
+            text.push_str(&input[start..i]);
+            continue;
+        };
+        if !axis && bytes.get(end) == Some(&b':') {
+            if let Some((next, _, _, _, _)) = parse_a1_endpoint(input, end + 1) {
+                end = next;
+            }
+        }
+        let reference = &input[ref_start..end];
+        let replacement = if name.eq_ignore_ascii_case(target) {
+            if axis {
+                adjust_axis_range(reference, rows, at, count, delete)
+                    .unwrap_or_else(|| reference.to_owned())
+            } else {
+                adjust_refs(reference, rows, at, count, delete)
+            }
+        } else {
+            reference.to_owned()
+        };
+        let marker = format!("\u{1}{}\u{2}", qualified.len());
+        qualified.push(format!("{}{}", &input[start..ref_start], replacement));
+        text.push_str(&marker);
+        i = end;
+    }
+    if local {
+        text = adjust_refs(&text, rows, at, count, delete);
+    }
+    for (index, value) in qualified.into_iter().enumerate() {
+        text = text.replace(&format!("\u{1}{index}\u{2}"), &value);
+    }
+    text
+}
 // Shift unqualified A1 references, including absolute references, without altering quoted text.
 fn adjust_refs(input: &str, rows: bool, at: usize, count: usize, delete: bool) -> String {
     let b = input.as_bytes();
@@ -1256,6 +1745,66 @@ fn adjust_refs(input: &str, rows: bool, at: usize, count: usize, delete: bool) -
                 }
                 let row = input[rs..j].parse::<usize>().unwrap_or(0);
                 if row > 0 && col > 0 {
+                    if j < b.len() && b[j] == b':' {
+                        if let Some((end, row2, col2, abs_col2, abs_row2)) =
+                            parse_a1_endpoint(input, j + 1)
+                        {
+                            let a = if rows { row - 1 } else { col - 1 };
+                            let z = if rows { row2 - 1 } else { col2 - 1 };
+                            let lo = a.min(z);
+                            let hi = a.max(z);
+                            let shifted = if delete {
+                                let last = at + count - 1;
+                                if lo >= at && hi <= last {
+                                    None
+                                } else {
+                                    let new_lo = if lo >= at && lo <= last {
+                                        at
+                                    } else if lo > last {
+                                        lo - count
+                                    } else {
+                                        lo
+                                    };
+                                    let new_hi = if hi >= at && hi <= last {
+                                        at.saturating_sub(1)
+                                    } else if hi > last {
+                                        hi - count
+                                    } else {
+                                        hi
+                                    };
+                                    Some(if a <= z {
+                                        (new_lo, new_hi)
+                                    } else {
+                                        (new_hi, new_lo)
+                                    })
+                                }
+                            } else {
+                                Some((
+                                    if a >= at { a + count } else { a },
+                                    if z >= at { z + count } else { z },
+                                ))
+                            };
+                            if let Some((first, second)) = shifted {
+                                let (r1, c1) = if rows {
+                                    (first + 1, col)
+                                } else {
+                                    (row, first + 1)
+                                };
+                                let (r2, c2) = if rows {
+                                    (second + 1, col2)
+                                } else {
+                                    (row2, second + 1)
+                                };
+                                write_a1_endpoint(&mut out, r1, c1, abs_col, abs_row);
+                                out.push(':');
+                                write_a1_endpoint(&mut out, r2, c2, abs_col2, abs_row2);
+                            } else {
+                                out.push_str("#REF!");
+                            }
+                            i = end;
+                            continue;
+                        }
+                    }
                     let coord = if rows { row - 1 } else { col - 1 };
                     if delete && coord >= at && coord < at + count {
                         out.push_str("#REF!")
@@ -1301,6 +1850,20 @@ fn adjust_refs(input: &str, rows: bool, at: usize, count: usize, delete: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structural_range_references_shrink_on_deletion() {
+        assert_eq!(
+            adjust_refs("=SUM($A$1:B5)", true, 0, 2, true),
+            "=SUM($A$1:B3)"
+        );
+        assert_eq!(adjust_refs("=SUM(A1:B5)", true, 3, 3, true), "=SUM(A1:B3)");
+        assert_eq!(adjust_refs("=SUM(A2:B3)", true, 1, 2, true), "=SUM(#REF!)");
+        assert_eq!(adjust_refs("=SUM(A1:B5)", true, 2, 1, false), "=SUM(A1:B6)");
+        assert_eq!(
+            adjust_formula_refs("Data!$1:$3,Data!$A:$B", "Data", false, true, 0, 1, false),
+            "Data!$2:$4,Data!$A:$B"
+        );
+    }
     #[test]
     fn csv_edit_dimensions_history_roundtrip() {
         let dir = std::env::temp_dir().join(format!("xls42-{}", std::process::id()));

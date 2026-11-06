@@ -60,22 +60,82 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
             Block::Paragraph(p) => write_paragraph(&mut body, p, &s.fields)?,
             Block::Table(t) => {
                 body.push_str("<w:tbl>");
-                for row in &t.rows {
+                if !t.column_widths_twips.is_empty() {
+                    body.push_str("<w:tblGrid>");
+                    for width in &t.column_widths_twips {
+                        body.push_str(&format!("<w:gridCol w:w=\"{width}\"/>"));
+                    }
+                    body.push_str("</w:tblGrid>");
+                }
+                let layout = super::table_edit::table_layout(t)?;
+                for (row_index, row) in t.rows.iter().enumerate() {
                     body.push_str("<w:tr>");
-                    for cell in row {
-                        if cell.row_span != 1
-                            || cell.col_span != 1
-                            || cell.border.is_some()
-                            || cell.fill.is_some()
-                            || cell.paragraphs.is_empty()
-                        {
+                    for (index, cell) in row.iter().enumerate() {
+                        let (owner_row, owner_col) = layout[row_index][index];
+                        if index != owner_col {
+                            continue;
+                        }
+                        let visual = &t.rows[owner_row][owner_col];
+                        if cell.paragraphs.is_empty() {
                             return Err(Error::Unsupported(
                                 "DOCX merged, bordered, shaded or empty table cells".into(),
                             ));
                         }
                         body.push_str("<w:tc>");
-                        for p in &cell.paragraphs {
-                            write_paragraph(&mut body, p, &s.fields)?;
+                        if visual.col_span > 1
+                            || visual.row_span > 1
+                            || visual.fill.is_some()
+                            || visual.border.is_some()
+                        {
+                            body.push_str("<w:tcPr>");
+                            if visual.col_span > 1 {
+                                body.push_str(&format!(
+                                    "<w:gridSpan w:val=\"{}\"/>",
+                                    visual.col_span
+                                ));
+                            }
+                            if visual.row_span > 1 {
+                                body.push_str(if row_index == owner_row {
+                                    "<w:vMerge w:val=\"restart\"/>"
+                                } else {
+                                    "<w:vMerge/>"
+                                });
+                            }
+                            if let Some(fill) = visual.fill {
+                                if fill > 0xffffff {
+                                    return Err(bad("invalid cell background"));
+                                }
+                                body.push_str(&format!("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill:06X}\"/>"));
+                            }
+                            if let Some(border) = &visual.border {
+                                if border.width_twips == 0
+                                    || border.width_twips % 5 != 0
+                                    || border.color > 0xffffff
+                                {
+                                    return Err(Error::Unsupported(
+                                        "DOCX table border width or color".into(),
+                                    ));
+                                }
+                                body.push_str("<w:tcBorders>");
+                                for edge in ["top", "left", "bottom", "right"] {
+                                    let bottom = owner_row + visual.row_span as usize - 1;
+                                    if edge == "top" && row_index != owner_row
+                                        || edge == "bottom" && row_index != bottom
+                                    {
+                                        continue;
+                                    }
+                                    body.push_str(&format!("<w:{edge} w:val=\"single\" w:sz=\"{}\" w:space=\"0\" w:color=\"{:06X}\"/>", u32::from(border.width_twips) * 2 / 5, border.color));
+                                }
+                                body.push_str("</w:tcBorders>");
+                            }
+                            body.push_str("</w:tcPr>");
+                        }
+                        if row_index == owner_row {
+                            for p in &cell.paragraphs {
+                                write_paragraph(&mut body, p, &s.fields)?;
+                            }
+                        } else {
+                            body.push_str("<w:p/>");
                         }
                         body.push_str("</w:tc>");
                     }
@@ -379,12 +439,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
         }
         let accepted: &[&str] = match n.tag_name().name() {
             "document" | "body" | "p" | "pPr" | "r" | "rPr" | "sectPr" | "tbl" | "tr" | "tc"
-            | "numPr" | "tabs" => &[],
+            | "numPr" | "tabs" | "tcPr" | "tcBorders" | "tblGrid" => &[],
             "headerReference" | "footerReference" => &["type", "id"],
+            "gridCol" => &["w"],
+            "vMerge" => &["val"],
             "fldSimple" => &["instr"],
+            "fldChar" => &["fldCharType", "dirty", "fldLock"],
+            "instrText" => &["space"],
             "jc" | "sz" | "b" | "i" | "u" | "strike" | "pStyle" | "rStyle" | "ilvl" | "numId"
-            | "keepNext" | "keepLines" | "pageBreakBefore" | "outlineLvl" => &["val"],
+            | "keepNext" | "keepLines" | "pageBreakBefore" | "outlineLvl" | "gridSpan" => &["val"],
             "tab" => &["val", "pos"],
+            "shd" => &["val", "color", "fill"],
+            "top" | "left" | "bottom" | "right" => &["val", "sz", "space", "color"],
             "color" => &["val", "themeColor", "themeTint", "themeShade"],
             "ind" => &["left", "right", "firstLine", "hanging"],
             "spacing" => &["before", "after", "line"],
@@ -420,7 +486,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                     && a.name() == "id"
                 {
                     Some("http://schemas.openxmlformats.org/officeDocument/2006/relationships")
-                } else if n.tag_name().name() == "t" && a.name() == "space" {
+                } else if matches!(n.tag_name().name(), "t" | "instrText") && a.name() == "space" {
                     Some("http://www.w3.org/XML/1998/namespace")
                 } else {
                     Some(W)
@@ -476,17 +542,120 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                 )?));
             }
             "tbl" => {
-                allowed(node, &["tr"])?;
+                allowed(node, &["tr", "tblGrid"])?;
+                let mut widths = Vec::new();
+                if let Some(grid) = node.children().find(|n| n.has_tag_name((W, "tblGrid"))) {
+                    allowed(grid, &["gridCol"])?;
+                    for column in grid.children().filter(|n| n.is_element()) {
+                        let width = num(column, "w", 0u32)?;
+                        if width == 0 || width > 2_000_000 {
+                            return Err(bad("invalid table column width"));
+                        }
+                        widths.push(width);
+                    }
+                }
                 let id = s.next_id;
                 s.next_id += 1;
                 let mut rows = Vec::new();
-                for row in node.children().filter(|n| n.is_element()) {
+                let mut vertical = Vec::new();
+                let mut border_rows = Vec::new();
+                for row in node.children().filter(|n| n.has_tag_name((W, "tr"))) {
                     allowed(row, &["tc"])?;
                     let mut cells = Vec::new();
+                    let mut vertical_row = Vec::new();
+                    let mut border_row = Vec::new();
                     for cell in row.children().filter(|n| n.is_element()) {
-                        allowed(cell, &["p"])?;
+                        allowed(cell, &["p", "tcPr"])?;
+                        let properties = cell.children().find(|n| n.has_tag_name((W, "tcPr")));
+                        if let Some(p) = properties {
+                            allowed(p, &["gridSpan", "shd", "tcBorders", "vMerge"])?;
+                        }
+                        let span = properties
+                            .and_then(|p| p.children().find(|n| n.has_tag_name((W, "gridSpan"))))
+                            .map(|n| num(n, "val", 1u16))
+                            .transpose()?
+                            .unwrap_or(1);
+                        let vertical_flag = if let Some(v) = properties
+                            .and_then(|p| p.children().find(|n| n.has_tag_name((W, "vMerge"))))
+                        {
+                            match val(v, "val") {
+                                Some("restart") => 1,
+                                None | Some("continue") => 2,
+                                _ => {
+                                    return Err(Error::Unsupported(
+                                        "DOCX vertical merge marker".into(),
+                                    ))
+                                }
+                            }
+                        } else {
+                            0
+                        };
+                        let mut edge_values: [Option<Border>; 4] = Default::default();
+                        if let Some(borders) = properties
+                            .and_then(|p| p.children().find(|n| n.has_tag_name((W, "tcBorders"))))
+                        {
+                            allowed(borders, &["top", "left", "bottom", "right"])?;
+                            for (index, name) in
+                                ["top", "left", "bottom", "right"].into_iter().enumerate()
+                            {
+                                let Some(edge) =
+                                    borders.children().find(|n| n.has_tag_name((W, name)))
+                                else {
+                                    continue;
+                                };
+                                if val(edge, "val") != Some("single")
+                                    || val(edge, "space").is_some_and(|v| v != "0")
+                                {
+                                    return Err(Error::Unsupported(
+                                        "DOCX cell border style".into(),
+                                    ));
+                                }
+                                let eighths = num(edge, "sz", 0u16)?;
+                                if eighths == 0 || eighths % 2 != 0 {
+                                    return Err(Error::Unsupported(
+                                        "DOCX fractional cell border".into(),
+                                    ));
+                                }
+                                let width_twips = u16::try_from(u32::from(eighths) * 5 / 2)
+                                    .map_err(|_| Error::Limit)?;
+                                let raw =
+                                    val(edge, "color").ok_or_else(|| bad("cell border color"))?;
+                                if raw.len() != 6 {
+                                    return Err(Error::Unsupported(
+                                        "DOCX cell border color".into(),
+                                    ));
+                                }
+                                edge_values[index] = Some(Border {
+                                    width_twips,
+                                    color: u32::from_str_radix(raw, 16).map_err(bad)?,
+                                });
+                            }
+                        }
+                        let fill = if let Some(shading) = properties
+                            .and_then(|p| p.children().find(|n| n.has_tag_name((W, "shd"))))
+                        {
+                            if val(shading, "val").is_some_and(|v| v != "clear")
+                                || val(shading, "color").is_some_and(|v| v != "auto")
+                            {
+                                return Err(Error::Unsupported(
+                                    "DOCX patterned table shading".into(),
+                                ));
+                            }
+                            match val(shading, "fill") {
+                                None | Some("auto") => None,
+                                Some(v) if v.len() == 6 => {
+                                    Some(u32::from_str_radix(v, 16).map_err(bad)?)
+                                }
+                                _ => return Err(bad("invalid cell background")),
+                            }
+                        } else {
+                            None
+                        };
+                        if span == 0 || span > 256 {
+                            return Err(bad("invalid table cell span"));
+                        }
                         let mut paragraphs = Vec::new();
-                        for p in cell.children().filter(|n| n.is_element()) {
+                        for p in cell.children().filter(|n| n.has_tag_name((W, "p"))) {
                             let pid = s.next_id;
                             s.next_id += 1;
                             paragraphs.push(read_paragraph(
@@ -503,14 +672,60 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
                         cells.push(Cell {
                             paragraphs,
                             row_span: 1,
-                            col_span: 1,
+                            col_span: span,
                             border: None,
-                            fill: None,
+                            fill,
                         });
+                        for i in 0..span as usize {
+                            border_row.push([
+                                edge_values[0].clone(),
+                                if i == 0 { edge_values[1].clone() } else { None },
+                                edge_values[2].clone(),
+                                if i + 1 == span as usize {
+                                    edge_values[3].clone()
+                                } else {
+                                    None
+                                },
+                            ]);
+                        }
+                        vertical_row.extend(std::iter::repeat_n(vertical_flag, span as usize));
+                        for _ in 1..span {
+                            let pid = s.next_id;
+                            s.next_id = s.next_id.checked_add(1).ok_or(Error::Limit)?;
+                            cells.push(Cell {
+                                paragraphs: vec![Paragraph {
+                                    id: pid,
+                                    style: ParagraphStyle::default(),
+                                    runs: vec![Run {
+                                        text: String::new(),
+                                        style: TextStyle::default(),
+                                        link: None,
+                                    }],
+                                }],
+                                row_span: 1,
+                                col_span: 1,
+                                border: None,
+                                fill: None,
+                            });
+                        }
                     }
                     rows.push(cells);
+                    vertical.push(vertical_row);
+                    border_rows.push(border_row);
                 }
-                s.blocks.push(Block::Table(Table { id, rows }));
+                if !widths.is_empty() && rows.iter().any(|row| row.len() != widths.len()) {
+                    return Err(Error::Unsupported(
+                        "DOCX table grid does not match cells".into(),
+                    ));
+                }
+                let mut table = Table {
+                    id,
+                    rows,
+                    column_widths_twips: widths,
+                };
+                super::table_edit::resolve_vertical(&mut table, &vertical)?;
+                super::table_edit::apply_perimeter_borders(&mut table, &border_rows)?;
+                s.blocks.push(Block::Table(table));
             }
             "sectPr" => {}
             _ => unreachable!(),
@@ -590,6 +805,25 @@ pub(super) fn decode(bytes: &[u8]) -> Result<State, Error> {
     Ok(s)
 }
 
+fn page_field(instruction: &str) -> Result<FieldKind, Error> {
+    let mut words = instruction.split_whitespace();
+    let kind = match words.next().unwrap_or("").to_ascii_uppercase().as_str() {
+        "PAGE" => FieldKind::PageNumber,
+        "NUMPAGES" => FieldKind::PageCount,
+        _ => return Err(Error::Unsupported("DOCX field instruction".into())),
+    };
+    while let Some(switch) = words.next() {
+        let value = words
+            .next()
+            .ok_or_else(|| Error::Unsupported("DOCX field switches".into()))?;
+        if switch != "\\*"
+            || !(value.eq_ignore_ascii_case("MERGEFORMAT") || value.eq_ignore_ascii_case("ARABIC"))
+        {
+            return Err(Error::Unsupported("DOCX field switches".into()));
+        }
+    }
+    Ok(kind)
+}
 fn read_paragraph(
     p: roxmltree::Node<'_, '_>,
     id: u64,
@@ -637,22 +871,33 @@ fn read_paragraph(
         }
     }
     let mut runs = Vec::new();
+    // Word commonly stores fields as begin/instruction/separate/result/end runs.
+    // Keep the field itself, not its cached result, as the authoritative content.
+    let mut field: Option<(String, bool)> = None;
     for r in p
         .children()
         .filter(|n| n.is_element() && !n.has_tag_name((W, "pPr")))
     {
         if r.has_tag_name((W, "fldSimple")) {
-            let instruction = val(r, "instr").unwrap_or("").trim().to_ascii_uppercase();
-            let kind = match instruction.as_str() {
-                "PAGE" => FieldKind::PageNumber,
-                "NUMPAGES" => FieldKind::PageCount,
-                _ => return Err(Error::Unsupported("DOCX field instruction".into())),
-            };
+            if field.is_some() {
+                return Err(Error::Unsupported("nested DOCX field".into()));
+            }
+            allowed(r, &["r"])?;
+            for cached in r.children().filter(|n| n.is_element()) {
+                allowed(cached, &["rPr", "t"])?;
+                if let Some(properties) = cached.children().find(|n| n.has_tag_name((W, "rPr"))) {
+                    allowed(
+                        properties,
+                        &["rStyle", "rFonts", "sz", "b", "i", "u", "strike", "color"],
+                    )?;
+                }
+            }
+            let kind = page_field(val(r, "instr").unwrap_or(""))?;
             let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
             markers.push((id, offset, kind));
             continue;
         }
-        allowed(r, &["rPr", "t"])?;
+        allowed(r, &["rPr", "t", "fldChar", "instrText"])?;
         let rp = r.children().find(|n| n.has_tag_name((W, "rPr")));
         if let Some(n) = rp {
             allowed(
@@ -660,17 +905,59 @@ fn read_paragraph(
                 &["rStyle", "rFonts", "sz", "b", "i", "u", "strike", "color"],
             )?;
         }
-        let style = styles.run(rp, &base)?;
-        let text = r
+        let run_style = styles.run(rp, &base)?;
+        for child in r
             .children()
-            .filter(|n| n.has_tag_name((W, "t")))
-            .map(|n| n.text().unwrap_or(""))
-            .collect::<String>();
-        runs.push(Run {
-            text,
-            style,
-            link: None,
-        });
+            .filter(|n| n.is_element() && !n.has_tag_name((W, "rPr")))
+        {
+            allowed(child, &[])?;
+            if child.has_tag_name((W, "fldChar"))
+                && val(child, "fldLock").is_some_and(|v| !matches!(v, "0" | "false" | "off"))
+            {
+                return Err(Error::Unsupported("locked DOCX field".into()));
+            }
+            match child.tag_name().name() {
+                "fldChar" => match val(child, "fldCharType") {
+                    Some("begin") if field.is_none() => field = Some((String::new(), false)),
+                    Some("separate") => {
+                        let (instruction, separated) = field
+                            .as_mut()
+                            .ok_or_else(|| bad("DOCX field separator without begin"))?;
+                        if *separated {
+                            return Err(bad("duplicate DOCX field separator"));
+                        }
+                        let kind = page_field(instruction)?;
+                        let offset = runs.iter().map(|r: &Run| r.text.len()).sum();
+                        markers.push((id, offset, kind));
+                        *separated = true;
+                    }
+                    Some("end") if field.as_ref().is_some_and(|(_, separated)| *separated) => {
+                        field = None;
+                    }
+                    _ => return Err(Error::Unsupported("nested or malformed DOCX field".into())),
+                },
+                "instrText" => match field.as_mut() {
+                    Some((instruction, false)) => instruction.push_str(child.text().unwrap_or("")),
+                    _ => return Err(bad("DOCX instruction outside field")),
+                },
+                "t" => {
+                    if field.as_ref().is_some_and(|(_, separated)| !separated) {
+                        return Err(bad("DOCX field result before separator"));
+                    }
+                    if field.is_none() {
+                        runs.push(Run {
+                            text: child.text().unwrap_or("").into(),
+                            style: run_style.clone(),
+                            link: None,
+                        });
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    if field.is_some() {
+        return Err(bad("unclosed DOCX field"));
     }
     Ok(Paragraph { id, style, runs })
 }
@@ -678,6 +965,61 @@ fn read_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_word_vertical_merge_is_reconstructed() {
+        let xml = format!(
+            r#"<w:document xmlns:w="{W}"><w:body><w:tbl><w:tblGrid><w:gridCol w:w="1200"/><w:gridCol w:w="1800"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>External</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc></w:tr></w:tbl><w:sectPr/></w:body></w:document>"#
+        );
+        let mut parts = std::collections::BTreeMap::new();
+        parts.insert("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_vec());
+        parts.insert("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+        parts.insert("word/document.xml".into(), xml.into_bytes());
+        let state = decode(&package(&parts).unwrap()).unwrap();
+        let Block::Table(t) = &state.blocks[0] else {
+            panic!()
+        };
+        assert_eq!((t.rows[0][0].row_span, t.rows[0][0].col_span), (2, 2));
+        assert_eq!(t.column_widths_twips, [1200, 1800]);
+        assert_eq!(t.rows[0][0].paragraphs[0].runs[0].text, "External");
+    }
+    #[test]
+    fn word_complex_page_fields_in_header_are_retained() {
+        use std::io::Read;
+        let mut state = State::default();
+        state.sections[0].header.push(Paragraph {
+            id: 2,
+            style: ParagraphStyle::default(),
+            runs: vec![Run {
+                text: "placeholder".into(),
+                style: TextStyle::default(),
+                link: None,
+            }],
+        });
+        state.next_id = 3;
+        let bytes = encode(&state).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut parts = std::collections::BTreeMap::new();
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().to_owned();
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).unwrap();
+            parts.insert(name, data);
+        }
+        let header = format!(
+            r#"<w:hdr xmlns:w="{W}"><w:p><w:r><w:t>Page </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#
+        );
+        parts.insert("word/headerDOC420.xml".into(), header.into_bytes());
+        let decoded = decode(&package(&parts).unwrap()).unwrap();
+        assert_eq!(decoded.fields.len(), 1);
+        assert_eq!(decoded.fields[0].kind, FieldKind::PageNumber);
+        assert_eq!(decoded.fields[0].at.offset, 5);
+        assert_eq!(decoded.sections[0].header[0].runs[0].text, "Page ");
+        let roundtrip = decode(&encode(&decoded).unwrap()).unwrap();
+        assert_eq!(roundtrip.fields.len(), 1);
+        assert!(page_field("PAGE \\* ARABIC \\* MERGEFORMAT").is_ok());
+        assert!(page_field("PAGE \\* ROMAN").is_err());
+    }
     #[test]
     fn independently_authored_word_xml_with_metadata_opens() {
         let xml=br#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="w14"><w:body><w:p w:rsidR="00112233"><w:r><w:t>Hello external</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>"#;
@@ -808,6 +1150,7 @@ mod tests {
             }],
         };
         s.blocks.push(Block::Table(Table {
+            column_widths_twips: Vec::new(),
             id: 2,
             rows: vec![vec![Cell {
                 paragraphs: vec![p],

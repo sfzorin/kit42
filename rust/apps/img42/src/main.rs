@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod pdf_view;
 use img42_core::ImageDocument;
 use std::path::Path;
 #[derive(Default)]
@@ -9,7 +10,15 @@ struct Img {
     delays: Vec<image::Delay>,
     animation_loop: img42_core::AnimationLoop,
     conversion_risk: bool,
+    original_16bit: Vec<bool>,
+    pending_16bit: Vec<bool>,
     print_pending: Option<std::sync::mpsc::Receiver<Result<win42::PrintJob, String>>>,
+    pdf_pending: Option<(
+        pdf_view::Receiver,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    )>,
+    pdf_prepared: Option<pdf_view::Prepared>,
     source_path: Option<std::path::PathBuf>,
     pending_open: Option<std::path::PathBuf>,
     pending_save_path: Option<std::path::PathBuf>,
@@ -23,7 +32,88 @@ struct Img {
     ink_color: [u8; 3],
     ink_width: u32,
 }
+impl Img {
+    fn loses_precision(&self) -> bool {
+        self.original_16bit.iter().enumerate().any(|(i, was_16)| {
+            *was_16
+                && !(if i == self.frame_index {
+                    self.doc.as_ref()
+                } else {
+                    self.frames.get(i).and_then(Option::as_ref)
+                })
+                .is_some_and(ImageDocument::is_16bit)
+        })
+    }
+}
 impl win42::App for Img {
+    fn begin_async_open(&mut self, path: &Path) -> Result<bool, String> {
+        if !path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+        {
+            return Ok(false);
+        }
+        self.cancel_async_open();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rx = pdf_view::start(path.to_path_buf(), cancel.clone(), progress.clone());
+        self.pdf_pending = Some((rx, cancel, progress));
+        Ok(true)
+    }
+    fn take_async_open_result(
+        &mut self,
+    ) -> Option<Result<suite42_core::session::FileIdentity, String>> {
+        let result = self
+            .pdf_pending
+            .as_ref()
+            .and_then(|(rx, _, _)| match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(_) => Some(Err("PDF renderer stopped".into())),
+            });
+        if let Some(result) = result {
+            self.pdf_pending = None;
+            return Some(match result {
+                Ok(prepared) => {
+                    let identity = prepared.identity.clone();
+                    self.pdf_prepared = Some(prepared);
+                    Ok(identity)
+                }
+                Err(e) => Err(e),
+            });
+        }
+        None
+    }
+    fn commit_async_open(&mut self) -> Result<u64, String> {
+        let prepared = self.pdf_prepared.take().ok_or("No prepared PDF")?;
+        if prepared.docs.is_empty() {
+            return Err("PDF has no pages".into());
+        }
+        let count = prepared.docs.len();
+        self.original_16bit = vec![false; count];
+        self.frames = prepared.docs.into_iter().map(Some).collect();
+        self.frame_index = 0;
+        self.doc = self.frames[0].take();
+        self.delays = vec![image::Delay::from_numer_denom_ms(0, 1); count];
+        self.animation_loop = img42_core::AnimationLoop::Once;
+        self.conversion_risk = true;
+        self.source_path = Some(prepared.path);
+        self.print_pending = None;
+        self.zoom = None;
+        self.selection = None;
+        self.mask = None;
+        self.gesture.clear();
+        self.pending = None;
+        self.pending_save_path = None;
+        Ok(0)
+    }
+    fn cancel_async_open(&mut self) {
+        if let Some((_, cancel, _)) = self.pdf_pending.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.pdf_prepared = None;
+    }
     fn save_formats(&self) -> Vec<win42::FileFormat> {
         if self.frames.len() > 1 {
             return vec![
@@ -86,7 +176,7 @@ impl win42::App for Img {
         result
     }
     fn can_save_in_place(&self) -> bool {
-        !self.conversion_risk
+        !self.conversion_risk && !self.loses_precision()
     }
     fn save_snapshot_to(
         &mut self,
@@ -94,7 +184,7 @@ impl win42::App for Img {
         path: &Path,
         is_current: bool,
     ) -> Result<Option<(u64, Vec<u8>)>, String> {
-        if is_current && self.conversion_risk {
+        if is_current && (self.conversion_risk || self.loses_precision()) {
             return Err("Saving here would discard source metadata or precision. Choose a different destination for the converted copy.".into());
         }
         let result = self.save_snapshot(format)?;
@@ -130,6 +220,20 @@ impl win42::App for Img {
                 .map_err(|e| e.to_string())?;
             (bytes, vec![state])
         };
+        self.pending_16bit = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                format == "tiff"
+                    && (if i == self.frame_index {
+                        self.doc.as_ref()
+                    } else {
+                        f.as_ref()
+                    })
+                    .is_some_and(ImageDocument::is_16bit)
+            })
+            .collect();
         self.next_save = self.next_save.wrapping_add(1);
         let revision = self.next_save;
         self.pending = Some((revision, states));
@@ -140,6 +244,7 @@ impl win42::App for Img {
         if self.pending.as_ref().is_some_and(|(r, _)| *r == revision) {
             if let Some((_, states)) = self.pending.take() {
                 self.conversion_risk = false;
+                self.original_16bit = std::mem::take(&mut self.pending_16bit);
                 if let Some(path) = self.pending_save_path.take() {
                     self.source_path = Some(path);
                 }
@@ -164,15 +269,15 @@ impl win42::App for Img {
         "png"
     }
     fn format_name(&self) -> &'static str {
-        "PNG / JPEG / BMP / TIFF / GIF / WebP image"
+        "PNG / JPEG / BMP / TIFF / GIF / WebP / SVG / PDF image"
     }
     fn open_filter(&self) -> String {
-        "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.gif;*.webp".into()
+        "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.gif;*.webp;*.svg;*.pdf".into()
     }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[win42::FileAction {
             id: 40,
-            title: "Export selected pixels...",
+            title: "Export selected pixels (8-bit PNG)...",
             save: true,
             extension: "png",
             format: "PNG image",
@@ -223,6 +328,7 @@ impl win42::App for Img {
             (36, "Print all pages..."),
             (37, "Previous image in folder"),
             (38, "Next image in folder"),
+            (39, "Lasso selection tool"),
         ]
     }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
@@ -371,7 +477,6 @@ impl win42::App for Img {
         if id == 17 || id == 18 {
             self.selection = None;
             self.mask = None;
-            self.mask = None;
             self.gesture.clear();
         }
         let d = self.doc.as_mut().ok_or("Open an image first")?;
@@ -464,7 +569,7 @@ impl win42::App for Img {
             }
             PointerMove(p) if !self.gesture.is_empty() => {
                 let p = point(p);
-                if self.gesture.last() != Some(&p) {
+                if self.gesture.last() != Some(&p) && self.gesture.len() < 4095 {
                     self.gesture.push(p);
                 }
             }
@@ -473,6 +578,9 @@ impl win42::App for Img {
                 if self.tool == 1 {
                     self.selection =
                         Some(rectangle(self.gesture[0], *self.gesture.last().unwrap()));
+                } else if self.tool == 6 {
+                    self.mask = Some(polygon_mask(d.width(), d.height(), &self.gesture)?);
+                    self.selection = None;
                 } else {
                     let start = self.gesture[0];
                     let end = *self.gesture.last().unwrap();
@@ -499,6 +607,12 @@ impl win42::App for Img {
         self.zoom
     }
     fn status(&self) -> String {
+        if let Some((_, _, progress)) = &self.pdf_pending {
+            return format!(
+                "Opening PDF: {} pages rendered",
+                progress.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        }
         self.doc
             .as_ref()
             .map(|d| {
@@ -530,11 +644,18 @@ impl win42::App for Img {
         self.doc.is_some()
     }
     fn open(&mut self, p: &Path) -> Result<(), String> {
+        if p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+        {
+            return Err("PDF opening must use the asynchronous host".into());
+        }
         let (docs, delays) = ImageDocument::open_frames(p).map_err(|e| e.to_string())?;
         let animation_loop = ImageDocument::animation_loop(p).map_err(|e| e.to_string())?;
         let conversion_risk = ImageDocument::has_conversion_risk(p).map_err(|e| e.to_string())?;
         self.source_path = Some(p.to_path_buf());
         self.print_pending = None;
+        self.original_16bit = docs.iter().map(ImageDocument::is_16bit).collect();
         self.frames = docs.into_iter().map(Some).collect();
         self.frame_index = 0;
         self.doc = self.frames[0].take();
@@ -548,8 +669,11 @@ impl win42::App for Img {
         Ok(())
     }
     fn save(&mut self, p: &Path) -> Result<(), String> {
-        if self.conversion_risk {
-            return Err("Choose a different destination for the converted copy".into());
+        if self.conversion_risk
+            || self.loses_precision()
+            || self.doc.as_ref().is_some_and(ImageDocument::is_16bit)
+        {
+            return Err("Use Save As for a converted 8-bit PNG copy".into());
         }
         if self.frames.len() > 1 {
             return Err("Use TIFF or GIF save to retain every frame".into());
@@ -587,9 +711,12 @@ impl win42::App for Img {
                 .filter(|p| {
                     p.is_file()
                         && p.extension().and_then(|v| v.to_str()).is_some_and(|e| {
-                            ["png", "jpg", "jpeg", "bmp", "tif", "tiff", "gif", "webp"]
-                                .iter()
-                                .any(|x| e.eq_ignore_ascii_case(x))
+                            [
+                                "png", "jpg", "jpeg", "bmp", "tif", "tiff", "gif", "webp", "svg",
+                                "pdf",
+                            ]
+                            .iter()
+                            .any(|x| e.eq_ignore_ascii_case(x))
                         })
                 })
                 .collect();
@@ -711,6 +838,10 @@ impl win42::App for Img {
                 self.tool = 1;
                 self.gesture.clear();
             }
+            39 => {
+                self.tool = 6;
+                self.gesture.clear();
+            }
             24 => {
                 self.tool = 2;
                 self.gesture.clear();
@@ -728,6 +859,41 @@ impl win42::App for Img {
         }
         Ok(())
     }
+}
+/// Scanline even-odd polygon fill in image coordinates.
+fn polygon_mask(width: u32, height: u32, points: &[(u32, u32)]) -> Result<Vec<bool>, String> {
+    if points.len() < 3 || points.len() > 4096 {
+        return Err("Draw a lasso with 3–4096 points".into());
+    }
+    let mut mask = vec![false; width as usize * height as usize];
+    let min_y = points.iter().map(|p| p.1).min().unwrap();
+    let max_y = points
+        .iter()
+        .map(|p| p.1)
+        .max()
+        .unwrap()
+        .min(height.saturating_sub(1));
+    for y in min_y..=max_y {
+        let scan = y as f64 + 0.5;
+        let mut intersections = Vec::new();
+        for i in 0..points.len() {
+            let (x1, y1) = points[i];
+            let (x2, y2) = points[(i + 1) % points.len()];
+            let (y1, y2) = (y1 as f64, y2 as f64);
+            if (y1 <= scan && scan < y2) || (y2 <= scan && scan < y1) {
+                intersections.push(x1 as f64 + (scan - y1) * (x2 as f64 - x1 as f64) / (y2 - y1));
+            }
+        }
+        intersections.sort_by(f64::total_cmp);
+        for pair in intersections.chunks_exact(2) {
+            let x1 = (pair[0] - 0.5).ceil().max(0.0) as u32;
+            let x2 = (pair[1] - 0.5).ceil().min(width as f64).max(0.0) as u32;
+            for x in x1.min(width)..x2 {
+                mask[(y * width + x) as usize] = true;
+            }
+        }
+    }
+    Ok(mask)
 }
 fn rectangle(a: (u32, u32), b: (u32, u32)) -> (u32, u32, u32, u32) {
     (
@@ -779,4 +945,51 @@ fn shape_points(
 }
 fn main() {
     win42::run(Box::new(Img::default()))
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn prepared_pdf_is_atomic_and_cancellable() {
+        use win42::App;
+        let original = ImageDocument::from_rgba(1, 1, vec![1, 2, 3, 255], None).unwrap();
+        let next = ImageDocument::from_rgba(1, 1, vec![4, 5, 6, 255], None).unwrap();
+        let mut app = Img::default();
+        app.frames = vec![None];
+        app.doc = Some(original);
+        app.original_16bit = vec![false];
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        app.pdf_pending = Some((rx, cancel, progress));
+        let identity = suite42_core::session::FileIdentity::from_bytes(b"pdf", None);
+        tx.send(Ok(pdf_view::Prepared {
+            path: "x.pdf".into(),
+            identity: identity.clone(),
+            docs: vec![next],
+        }))
+        .unwrap();
+        assert_eq!(app.take_async_open_result().unwrap().unwrap(), identity);
+        assert_eq!(app.doc.as_ref().unwrap().pixels(), &[1, 2, 3, 255]);
+        app.cancel_async_open();
+        assert!(app.commit_async_open().is_err());
+        assert_eq!(app.doc.as_ref().unwrap().pixels(), &[1, 2, 3, 255]);
+        app.pdf_prepared = Some(pdf_view::Prepared {
+            path: "x.pdf".into(),
+            identity,
+            docs: vec![ImageDocument::from_rgba(1, 1, vec![4, 5, 6, 255], None).unwrap()],
+        });
+        app.commit_async_open().unwrap();
+        assert_eq!(app.doc.as_ref().unwrap().pixels(), &[4, 5, 6, 255]);
+        assert!(!app.dirty());
+    }
+    #[test]
+    fn lasso_fills_polygon_and_rejects_degenerate() {
+        let m = polygon_mask(4, 4, &[(0, 0), (3, 0), (3, 3), (0, 3)]).unwrap();
+        assert!(m[0]);
+        assert!(m[10]);
+        assert!(!m[15]);
+        assert!(polygon_mask(4, 4, &[(0, 0), (1, 1)]).is_err());
+    }
 }

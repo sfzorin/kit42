@@ -1,6 +1,11 @@
 //! Small native slide-deck model; this is not PPTX compatibility.
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, io::Read, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io::Read,
+    path::Path,
+};
 use suite42_core::{write_new, SnapshotHistory, TextValue};
 pub mod odp;
 pub mod pptx;
@@ -33,6 +38,8 @@ fn first_object_id() -> u64 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlideObject {
     pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<u64>,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -47,6 +54,8 @@ pub struct SlideObject {
     pub text: String,
     #[serde(default, skip_serializing_if = "TextStyle::is_default")]
     pub text_style: TextStyle,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paragraphs: Vec<RichParagraph>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -73,6 +82,17 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RichRun {
+    pub text: String,
+    pub style: TextStyle,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RichParagraph {
+    pub runs: Vec<RichRun>,
+    pub align: TextAlign,
+    pub bullet: bool,
 }
 impl Default for TextStyle {
     fn default() -> Self {
@@ -184,6 +204,29 @@ impl Deck {
                                     && o.text_style.points.is_finite()
                                     && (1.0..=512.0).contains(&o.text_style.points)
                                     && o.text_style.family.len() <= 256
+                                    && (o.paragraphs.is_empty()
+                                        || (o.paragraphs.len() <= 2048
+                                            && o.paragraphs.iter().all(|p| {
+                                                p.runs.len() <= 4096
+                                                    && p.runs.iter().all(|r| {
+                                                        r.text.len() <= MAX_TEXT
+                                                            && r.style.points.is_finite()
+                                                            && (1.0..=512.0)
+                                                                .contains(&r.style.points)
+                                                            && r.style.family.len() <= 256
+                                                    })
+                                            })
+                                            && o.paragraphs
+                                                .iter()
+                                                .map(|p| {
+                                                    p.runs
+                                                        .iter()
+                                                        .map(|r| r.text.as_str())
+                                                        .collect::<String>()
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join("\n")
+                                                == o.text))
                                     && o.media.len() <= 16 * 1024 * 1024
                                     && o.cells.len() <= 100
                                     && o.cells.iter().all(|r| {
@@ -323,6 +366,7 @@ impl Presentation {
         slide.next_object_id = id.checked_add(1).ok_or("object identity exhausted")?;
         slide.objects.push(SlideObject {
             id,
+            group_id: None,
             x: 100.0,
             y: 120.0,
             width: 180.0,
@@ -334,6 +378,7 @@ impl Presentation {
             stroke_visible: true,
             text,
             text_style: TextStyle::default(),
+            paragraphs: Vec::new(),
             media,
             cells,
         });
@@ -467,7 +512,35 @@ impl Presentation {
             return Err("Invalid selection".into());
         }
         let mut created = Vec::new();
+        let mut groups = HashMap::new();
         for mut object in selected {
+            if let Some(old) = object.group_id {
+                let count = ids
+                    .iter()
+                    .filter(|id| {
+                        slide
+                            .objects
+                            .iter()
+                            .any(|o| o.id == **id && o.group_id == Some(old))
+                    })
+                    .count();
+                if count >= 2 {
+                    let group = if let Some(id) = groups.get(&old) {
+                        *id
+                    } else {
+                        let id = slide.next_object_id;
+                        slide.next_object_id = slide
+                            .next_object_id
+                            .checked_add(1)
+                            .ok_or("object identity exhausted")?;
+                        groups.insert(old, id);
+                        id
+                    };
+                    object.group_id = Some(group)
+                } else {
+                    object.group_id = None
+                }
+            }
             object.id = slide.next_object_id;
             slide.next_object_id = slide
                 .next_object_id
@@ -484,14 +557,164 @@ impl Presentation {
         self.history.apply(state);
         Ok(created)
     }
+    pub fn copy_objects(&self, ids: &[u64]) -> Result<Vec<u8>, String> {
+        let selected = self.slides()[self.current()]
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() || selected.len() != ids.len() {
+            return Err("Invalid selection".into());
+        }
+        let bytes = serde_json::to_vec(&selected).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_MEDIA_FILE {
+            return Err("Clipboard exceeds size limit".into());
+        }
+        Ok(bytes)
+    }
+    pub fn paste_objects(&mut self, bytes: &[u8]) -> Result<Vec<u64>, String> {
+        if bytes.len() as u64 > MAX_MEDIA_FILE {
+            return Err("Clipboard exceeds size limit".into());
+        }
+        let objects: Vec<SlideObject> =
+            serde_json::from_slice(bytes).map_err(|_| "Invalid presentation clipboard")?;
+        if objects.is_empty() {
+            return Err("Clipboard is empty".into());
+        }
+        let mut state = self.history.current().clone();
+        let slide = &mut state.deck.slides[self.current()];
+        let mut ids = Vec::new();
+        let mut groups = HashMap::new();
+        let counts =
+            objects
+                .iter()
+                .filter_map(|o| o.group_id)
+                .fold(HashMap::new(), |mut map, id| {
+                    *map.entry(id).or_insert(0usize) += 1;
+                    map
+                });
+        for mut object in objects {
+            if let Some(old) = object.group_id {
+                if counts.get(&old).copied().unwrap_or(0) >= 2 {
+                    let group = if let Some(id) = groups.get(&old) {
+                        *id
+                    } else {
+                        let id = slide.next_object_id;
+                        slide.next_object_id = slide
+                            .next_object_id
+                            .checked_add(1)
+                            .ok_or("object identity exhausted")?;
+                        groups.insert(old, id);
+                        id
+                    };
+                    object.group_id = Some(group)
+                } else {
+                    object.group_id = None
+                }
+            }
+            object.id = slide.next_object_id;
+            slide.next_object_id = slide
+                .next_object_id
+                .checked_add(1)
+                .ok_or("object identity exhausted")?;
+            object.x += 12.0;
+            object.y += 12.0;
+            ids.push(object.id);
+            slide.objects.push(object);
+        }
+        if !state.deck.valid() {
+            return Err("Invalid clipboard objects or deck exceeds limits".into());
+        }
+        self.history.apply(state);
+        Ok(ids)
+    }
+    pub fn clipboard_has_groups(bytes: &[u8]) -> Result<bool, String> {
+        if bytes.len() as u64 > MAX_MEDIA_FILE {
+            return Err("Clipboard exceeds size limit".into());
+        }
+        let objects: Vec<SlideObject> =
+            serde_json::from_slice(bytes).map_err(|_| "Invalid presentation clipboard")?;
+        Ok(objects.iter().any(|o| o.group_id.is_some()))
+    }
+    pub fn group_objects(&mut self, ids: &[u64]) -> Result<(), String> {
+        if ids.len() < 2 {
+            return Err("Select at least two objects".into());
+        }
+        let mut state = self.history.current().clone();
+        let slide = &mut state.deck.slides[self.current()];
+        if ids.iter().collect::<HashSet<_>>().len() != ids.len()
+            || ids.iter().any(|id| {
+                !slide
+                    .objects
+                    .iter()
+                    .any(|o| o.id == *id && o.group_id.is_none())
+            })
+        {
+            return Err("Select ungrouped objects".into());
+        }
+        let group = slide.next_object_id;
+        slide.next_object_id = group.checked_add(1).ok_or("object identity exhausted")?;
+        for object in &mut slide.objects {
+            if ids.contains(&object.id) {
+                object.group_id = Some(group);
+            }
+        }
+        if !state.deck.valid() {
+            return Err("deck exceeds limits".into());
+        }
+        self.history.apply(state);
+        Ok(())
+    }
+    pub fn ungroup_objects(&mut self, ids: &[u64]) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        let slide = &mut state.deck.slides[self.current()];
+        let groups = slide
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .filter_map(|o| o.group_id)
+            .collect::<HashSet<_>>();
+        if groups.is_empty() {
+            return Err("Select grouped objects".into());
+        }
+        for object in &mut slide.objects {
+            if object.group_id.is_some_and(|id| groups.contains(&id)) {
+                object.group_id = None;
+            }
+        }
+        self.history.apply(state);
+        Ok(())
+    }
     pub fn delete_object(&mut self, id: u64) -> Result<(), String> {
+        self.delete_objects(&[id])
+    }
+    pub fn delete_objects(&mut self, ids: &[u64]) -> Result<(), String> {
         let mut state = self.history.current().clone();
         let objects = &mut state.deck.slides[self.current()].objects;
-        let i = objects
-            .iter()
-            .position(|o| o.id == id)
-            .ok_or("object not found")?;
-        objects.remove(i);
+        if ids.is_empty()
+            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
+            || ids.iter().any(|id| !objects.iter().any(|o| o.id == *id))
+        {
+            return Err("Invalid object selection".into());
+        }
+        objects.retain(|o| !ids.contains(&o.id));
+        let counts =
+            objects
+                .iter()
+                .filter_map(|o| o.group_id)
+                .fold(HashMap::new(), |mut map, id| {
+                    *map.entry(id).or_insert(0usize) += 1;
+                    map
+                });
+        for object in objects.iter_mut() {
+            if object
+                .group_id
+                .is_some_and(|id| counts.get(&id).copied().unwrap_or(0) < 2)
+            {
+                object.group_id = None;
+            }
+        }
         self.history.apply(state);
         Ok(())
     }
@@ -650,6 +873,50 @@ impl Presentation {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grouped_objects_roundtrip_and_clipboard_preserve_independent_identity() {
+        let mut deck = super::Presentation::new();
+        let a = deck
+            .insert_object(super::ObjectKind::Rectangle, "a".into())
+            .unwrap();
+        let b = deck
+            .insert_object(super::ObjectKind::Ellipse, "b".into())
+            .unwrap();
+        deck.group_objects(&[a, b]).unwrap();
+        let group = deck.slides()[0].objects[0].group_id;
+        assert!(group.is_some());
+        assert_eq!(deck.slides()[0].objects[1].group_id, group);
+        for reopened in [
+            super::pptx::import(&super::pptx::export_new(&deck).unwrap())
+                .unwrap()
+                .0,
+            super::odp::import(&super::odp::export(&deck).unwrap()).unwrap(),
+        ] {
+            assert!(reopened.slides()[0].objects[0].group_id.is_some());
+            assert_eq!(
+                reopened.slides()[0].objects[0].group_id,
+                reopened.slides()[0].objects[1].group_id
+            );
+        }
+        let copy = deck.copy_objects(&[a, b]).unwrap();
+        let ids = deck.paste_objects(&copy).unwrap();
+        let cloned = deck.slides()[0]
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .collect::<Vec<_>>();
+        assert_ne!(cloned[0].group_id, group);
+        assert_eq!(cloned[0].group_id, cloned[1].group_id);
+        assert!(deck.undo());
+        assert_eq!(deck.slides()[0].objects.len(), 2);
+        deck.ungroup_objects(&[a, b]).unwrap();
+        assert!(deck.slides()[0]
+            .objects
+            .iter()
+            .all(|o| o.group_id.is_none()));
+        assert!(deck.undo());
+        assert!(deck.slides()[0].objects[0].group_id.is_some());
+    }
     #[test]
     fn alignment_and_duplicate_are_atomic_history_steps() {
         let mut deck = super::Presentation::new();

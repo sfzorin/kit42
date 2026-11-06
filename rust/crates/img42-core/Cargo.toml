@@ -11,4 +11,9 @@ gif = "0.14"
 image-webp = "0.2"
 cosmic-text = "0.14"
 crc32fast = "1"
+resvg = "=0.45.1"
+roxmltree = "0.20"
 tempfile = "3"
+
+[dev-dependencies]
+base64 = "0.22"

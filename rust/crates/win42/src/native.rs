@@ -15,7 +15,8 @@ use windows_sys::Win32::{
         Controls::{Dialogs::*, *},
         HiDpi::*,
         Input::KeyboardAndMouse::{
-            EnableWindow, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_SHIFT,
+            EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL,
+            VK_SHIFT,
         },
         WindowsAndMessaging::*,
     },
@@ -34,10 +35,23 @@ const LIST: usize = 100;
 const EDIT: usize = 101;
 const TABLE: usize = 102;
 const TOOLBAR_MORE: u16 = 65520;
+const CANCEL_OPEN: u16 = 65519;
+struct AsyncOpen {
+    path: PathBuf,
+    phase: AsyncOpenPhase,
+}
+enum AsyncOpenPhase {
+    Loading,
+    Checking {
+        expected: suite42_core::session::FileIdentity,
+        result: std::sync::mpsc::Receiver<std::io::Result<suite42_core::session::FileIdentity>>,
+    },
+}
 struct State {
     app: Box<dyn App>,
     path: Option<PathBuf>,
     session: suite42_core::session::DocumentSession,
+    async_open: Option<AsyncOpen>,
     hwnd: HWND,
     list: HWND,
     table: HWND,
@@ -152,7 +166,7 @@ unsafe fn save_mode(hwnd: HWND, save_as: bool) -> bool {
     legacy_save(hwnd)
 }
 unsafe fn save_snapshot(hwnd: HWND, save_as: bool) -> bool {
-    use suite42_core::session::{publish, FileIdentity};
+    use suite42_core::session::{publish_bundle, FileIdentity};
     let (formats, existing) = STATE.with(|s| {
         let s = s.borrow();
         let s = s.as_ref().unwrap();
@@ -235,9 +249,9 @@ unsafe fn save_snapshot(hwnd: HWND, save_as: bool) -> bool {
             .as_mut()
             .unwrap()
             .app
-            .save_snapshot_to(format.id, &path, is_current)
+            .save_bundle_to(format.id, &path, is_current)
     });
-    let (revision, bytes) = match snapshot {
+    let (revision, bundle) = match snapshot {
         Ok(Some(v)) => v,
         Ok(None) => {
             msg(
@@ -252,7 +266,7 @@ unsafe fn save_snapshot(hwnd: HWND, save_as: bool) -> bool {
             return false;
         }
     };
-    if let Err(e) = publish(&path, &bytes, expected.as_ref()) {
+    if let Err(e) = publish_bundle(&path, &bundle, expected.as_ref()) {
         msg(hwnd, &e.to_string(), MB_OK | MB_ICONERROR);
         return false;
     }
@@ -380,7 +394,11 @@ unsafe fn refresh() {
                 .map(|v| v.0)
                 .unwrap_or_else(|| s.app.items()),
             s.app.text(),
-            s.app.status(),
+            if s.async_open.is_some() {
+                format!("{} · Opening… (Esc to cancel)", s.app.status())
+            } else {
+                s.app.status()
+            },
             s.app.can_undo(),
             s.app.can_redo(),
             s.app.list_visible(),
@@ -393,8 +411,15 @@ unsafe fn refresh() {
     SetWindowTextW(hwnd, wide(&title).as_ptr());
     SetWindowTextW(status, wide(&info).as_ptr());
     let rich = STATE.with(|s| s.borrow().as_ref().unwrap().app.rich_text());
+    let focus_rich = rich.is_some() && IsWindowVisible(edit) == 0;
     if let Some(rtf) = rich {
-        let selection = crate::rich_edit::selection(edit);
+        let selection = if focus_rich {
+            STATE
+                .with(|s| s.borrow().as_ref().unwrap().app.rich_selection_to_restore())
+                .unwrap_or_else(|| crate::rich_edit::selection(edit))
+        } else {
+            crate::rich_edit::selection(edit)
+        };
         let _ = crate::rich_edit::load(edit, &rtf);
         crate::rich_edit::set_selection(edit, selection);
     } else {
@@ -438,6 +463,12 @@ unsafe fn refresh() {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
+    let opening = STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()));
+    EnableMenuItem(
+        menu,
+        CANCEL_OPEN as u32,
+        MF_BYCOMMAND | if opening { MF_ENABLED } else { MF_GRAYED },
+    );
     EnableMenuItem(
         menu,
         SAVE as u32,
@@ -486,7 +517,18 @@ unsafe fn refresh() {
             SW_HIDE
         },
     );
-    ShowWindow(edit, if image { SW_HIDE } else { SW_SHOW });
+    let inline = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .unwrap()
+            .app
+            .inline_rich_rect()
+            .is_some()
+    });
+    ShowWindow(edit, if image && !inline { SW_HIDE } else { SW_SHOW });
+    if focus_rich && (!image || inline) {
+        SetFocus(edit);
+    }
     ShowWindow(canvas, if image { SW_SHOW } else { SW_HIDE });
     InvalidateRect(canvas, null(), 1);
     EnableMenuItem(
@@ -787,6 +829,43 @@ unsafe fn layout(hwnd: HWND) {
         (r.bottom - sh - bar_height).max(0),
         1,
     );
+    let inline = STATE.with(|s| {
+        let s = s.borrow();
+        let a = &s.as_ref().unwrap().app;
+        (
+            a.inline_rich_rect(),
+            a.canvas_scene(),
+            a.presentation_size(),
+        )
+    });
+    if let (Some(rect), Some(scene), size) = inline {
+        let view = scene_for_canvas(canvas, scene, size).viewport;
+        let a = view.document_to_view(crate::Point {
+            x: rect.x,
+            y: rect.y,
+        });
+        let b = view.document_to_view(crate::Point {
+            x: rect.x + rect.width,
+            y: rect.y + rect.height,
+        });
+        MoveWindow(
+            edit,
+            left + a.x.round() as i32,
+            bar_height + a.y.round() as i32,
+            (b.x - a.x).round().max(1.0) as i32,
+            (b.y - a.y).round().max(1.0) as i32,
+            1,
+        );
+        SetWindowPos(
+            edit,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+    }
     MoveWindow(status, 0, (r.bottom - sh).max(0), r.right, sh, 1);
     if has_ruler {
         sync_rulers(hwnd);
@@ -868,7 +947,40 @@ unsafe fn sync_rulers(_hwnd: HWND) {
     crate::rich_ruler::update(horizontal, data.clone(), page_left - scroll.x);
     crate::rich_ruler::update(vertical, data, -scroll.y);
 }
+unsafe fn cancel_pending_open() {
+    let canceled = STATE.with(|s| {
+        if let Some(state) = s.borrow_mut().as_mut() {
+            if state.async_open.take().is_some() {
+                state.app.cancel_async_open();
+                return true;
+            }
+        }
+        false
+    });
+    if canceled {
+        update_caption();
+    }
+}
 unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
+    cancel_pending_open();
+    let async_started = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut().unwrap();
+        if s.app.open_is_add() {
+            Ok(false)
+        } else {
+            s.app.begin_async_open(&path)
+        }
+    })?;
+    if async_started {
+        STATE.with(|s| {
+            s.borrow_mut().as_mut().unwrap().async_open = Some(AsyncOpen {
+                path,
+                phase: AsyncOpenPhase::Loading,
+            })
+        });
+        return Ok(());
+    }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let s = s.as_mut().unwrap();
@@ -894,6 +1006,103 @@ unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
         }
         result
     })
+}
+unsafe fn poll_pending_open(hwnd: HWND) {
+    use std::sync::mpsc::{self, TryRecvError};
+    let pending = STATE.with(|s| s.borrow_mut().as_mut().and_then(|s| s.async_open.take()));
+    let Some(mut pending) = pending else {
+        return;
+    };
+    let result = match pending.phase {
+        AsyncOpenPhase::Loading => {
+            let ready = STATE.with(|s| {
+                s.borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .app
+                    .take_async_open_result()
+            });
+            match ready {
+                None => {
+                    pending.phase = AsyncOpenPhase::Loading;
+                    Ok(Some(pending))
+                }
+                Some(Err(e)) => Err(e),
+                Some(Ok(expected)) => {
+                    let path = pending.path.clone();
+                    let (sender, receiver) = mpsc::channel();
+                    match std::thread::Builder::new()
+                        .name("suite42-open-verify".into())
+                        .spawn(move || {
+                            let _ = sender.send(suite42_core::session::FileIdentity::read(&path));
+                        }) {
+                        Ok(_) => {
+                            pending.phase = AsyncOpenPhase::Checking {
+                                expected,
+                                result: receiver,
+                            };
+                            Ok(Some(pending))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+            }
+        }
+        AsyncOpenPhase::Checking { expected, result } => match result.try_recv() {
+            Err(TryRecvError::Empty) => {
+                pending.phase = AsyncOpenPhase::Checking { expected, result };
+                Ok(Some(pending))
+            }
+            Err(TryRecvError::Disconnected) => Err("Could not verify the opened file".into()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Ok(Ok(actual)) => {
+                if actual != expected
+                    || !expected
+                        .metadata_matches(&pending.path)
+                        .map_err(|e| e.to_string())
+                        .unwrap_or(false)
+                {
+                    Err("The source file changed while it was opening. Open it again.".into())
+                } else {
+                    STATE.with(|s| {
+                        let mut s = s.borrow_mut();
+                        let s = s.as_mut().unwrap();
+                        let format = pending
+                            .path
+                            .extension()
+                            .and_then(|x| x.to_str())
+                            .unwrap_or("");
+                        let all = s.app.open_formats().into_iter().chain(s.app.save_formats());
+                        let format = all
+                            .into_iter()
+                            .find(|f| f.extensions.iter().any(|e| e.eq_ignore_ascii_case(format)))
+                            .map(|f| f.id.to_string())
+                            .unwrap_or_else(|| format.to_ascii_lowercase());
+                        let revision = s.app.commit_async_open()?;
+                        s.session = suite42_core::session::DocumentSession::opened_with_identity(
+                            pending.path.clone(),
+                            format,
+                            revision,
+                            expected,
+                        );
+                        s.path = Some(pending.path);
+                        Ok(None)
+                    })
+                }
+            }
+        },
+    };
+    match result {
+        Ok(Some(pending)) => {
+            STATE.with(|s| s.borrow_mut().as_mut().unwrap().async_open = Some(pending))
+        }
+        Ok(None) => refresh(),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.cancel_async_open());
+            msg(hwnd, &e, MB_OK | MB_ICONERROR);
+            refresh();
+        }
+    }
 }
 unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
     if id == TOOLBAR_MORE {
@@ -946,6 +1155,14 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
     }
     if REFRESHING.with(|x| x.get()) {
         return;
+    }
+    if id == CANCEL_OPEN {
+        cancel_pending_open();
+        refresh();
+        return;
+    }
+    if id != LIST as u16 && (id != EDIT as u16 || notify == EN_CHANGE as u16) {
+        cancel_pending_open();
     }
     if id == EDIT as u16 && notify == EN_CHANGE as u16 {
         let h = STATE.with(|s| s.borrow().as_ref().unwrap().edit);
@@ -1148,6 +1365,21 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             msg(hwnd, &text, MB_OK | MB_ICONINFORMATION);
         }
         _ => {
+            let (edit, rich) = STATE.with(|s| {
+                let s = s.borrow();
+                let s = s.as_ref().unwrap();
+                (s.edit, s.app.uses_rich_edit())
+            });
+            if rich {
+                let selection = crate::rich_edit::selection(edit);
+                STATE.with(|s| {
+                    s.borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .app
+                        .set_rich_selection(selection)
+                });
+            }
             let (file_action, request, enabled) = STATE.with(|s| {
                 let s = s.borrow();
                 let a = &s.as_ref().unwrap().app;
@@ -1345,7 +1577,11 @@ unsafe fn update_caption() {
                 if s.app.dirty() { " *" } else { "" },
                 s.app.name()
             ),
-            s.app.status(),
+            if s.async_open.is_some() {
+                format!("{} · Opening… (Esc to cancel)", s.app.status())
+            } else {
+                s.app.status()
+            },
             s.app.can_undo(),
             s.app.can_redo(),
             s.app
@@ -1403,6 +1639,12 @@ unsafe fn update_caption() {
         REDO as u32,
         MF_BYCOMMAND | if r { MF_ENABLED } else { MF_GRAYED },
     );
+    let opening = STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()));
+    EnableMenuItem(
+        menu,
+        CANCEL_OPEN as u32,
+        MF_BYCOMMAND | if opening { MF_ENABLED } else { MF_GRAYED },
+    );
     DrawMenuBar(h);
 }
 unsafe fn select_grid_cell(row: usize, col: Option<usize>) {
@@ -1430,6 +1672,10 @@ unsafe fn select_grid_cell(row: usize, col: Option<usize>) {
 unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match m {
         WM_TIMER if w == 42 => {
+            poll_pending_open(h);
+            if STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some())) {
+                update_caption();
+            }
             let changed = STATE.with(|s| {
                 s.borrow_mut()
                     .as_mut()
@@ -1459,6 +1705,19 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
             0
         }
         WM_COMMAND => {
+            let id = (w & 0xffff) as usize;
+            if id != EDIT && !REFRESHING.with(|r| r.get()) {
+                let table = STATE.with(|s| {
+                    s.borrow()
+                        .as_ref()
+                        .and_then(|s| s.app.uses_custom_grid().then_some(s.table))
+                });
+                if let Some(table) = table.filter(|h| !h.is_null()) {
+                    if !crate::grid::finish_pending(table) {
+                        return 0;
+                    }
+                }
+            }
             command(h, (w & 0xffff) as u16, (w >> 16) as u16);
             0
         }
@@ -1730,6 +1989,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                 })
             });
             if let Some(action) = action {
+                cancel_pending_open();
                 let result = STATE.with(|s| {
                     s.borrow_mut()
                         .as_mut()
@@ -1764,7 +2024,18 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
             0
         }
         WM_CLOSE => {
+            let table = STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .and_then(|s| s.app.uses_custom_grid().then_some(s.table))
+            });
+            if let Some(table) = table.filter(|h| !h.is_null()) {
+                if !crate::grid::finish_pending(table) {
+                    return 0;
+                }
+            }
             if confirm(h) {
+                cancel_pending_open();
                 DestroyWindow(h);
             }
             0
@@ -1799,6 +2070,7 @@ pub fn run(app: Box<dyn App>) {
         }
         let canvas_class = wide("Suite42Canvas");
         let cc = WNDCLASSW {
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(canvas_proc),
             hInstance: instance,
             hbrBackground: (COLOR_WINDOW + 1) as HBRUSH,
@@ -1812,6 +2084,7 @@ pub fn run(app: Box<dyn App>) {
             item(file, NEW, "&New\tCtrl+N");
         }
         item(file, OPEN, "&Open...\tCtrl+O");
+        item(file, CANCEL_OPEN, "Cancel opening\tEsc");
         item(file, SAVE, "&Save\tCtrl+S");
         item(file, SAVE_AS, "Save &As...\tCtrl+Shift+S");
         for a in app.file_actions() {
@@ -1865,6 +2138,7 @@ pub fn run(app: Box<dyn App>) {
                 app,
                 path: None,
                 session: Default::default(),
+                async_open: None,
                 hwnd: null_mut(),
                 list: null_mut(),
                 table: null_mut(),
@@ -1935,20 +2209,25 @@ pub fn run(app: Box<dyn App>) {
             dwICC: ICC_LISTVIEW_CLASSES,
         };
         InitCommonControlsEx(&icc);
-        let table = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            wide("SysListView32").as_ptr(),
-            null(),
-            WS_CHILD | WS_TABSTOP | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-            0,
-            0,
-            0,
-            0,
-            h,
-            TABLE as HMENU,
-            instance,
-            null(),
-        );
+        let custom_grid = STATE.with(|s| s.borrow().as_ref().unwrap().app.uses_custom_grid());
+        let table = if custom_grid {
+            crate::grid::create(h, TABLE)
+        } else {
+            CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                wide("SysListView32").as_ptr(),
+                null(),
+                WS_CHILD | WS_TABSTOP | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+                0,
+                0,
+                0,
+                0,
+                h,
+                TABLE as HMENU,
+                instance,
+                null(),
+            )
+        };
         let list = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             wide("LISTBOX").as_ptr(),
@@ -2120,6 +2399,35 @@ pub fn run(app: Box<dyn App>) {
         ShowWindow(h, SW_SHOW);
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
+            if m.message == WM_KEYDOWN
+                && m.wParam == windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE as usize
+                && STATE.with(|s| {
+                    s.borrow()
+                        .as_ref()
+                        .is_some_and(|s| s.app.inline_rich_rect().is_some() && GetFocus() == s.edit)
+                })
+            {
+                let result = STATE.with(|s| {
+                    s.borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .app
+                        .finish_inline_rich(false)
+                });
+                if let Err(e) = result {
+                    msg(h, &e, MB_OK | MB_ICONERROR);
+                }
+                refresh();
+                continue;
+            }
+            if m.message == WM_KEYDOWN
+                && m.wParam == windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE as usize
+                && STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()))
+            {
+                cancel_pending_open();
+                refresh();
+                continue;
+            }
             if TranslateAcceleratorW(h, a, &m) == 0 && IsDialogMessageW(h, &m) == 0 {
                 TranslateMessage(&m);
                 DispatchMessageW(&m);
@@ -2144,6 +2452,7 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
         return 0;
     }
     if m == WM_KEYDOWN {
+        cancel_pending_open();
         let was_presenting = STATE.with(|s| {
             s.borrow()
                 .as_ref()
@@ -2173,8 +2482,32 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
         InvalidateRect(h, null(), 0);
         return 0;
     }
-    if matches!(m, WM_LBUTTONDOWN | WM_MOUSEMOVE | WM_LBUTTONUP) {
+    if matches!(
+        m,
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_MOUSEMOVE | WM_LBUTTONUP
+    ) {
         if m == WM_LBUTTONDOWN {
+            if STATE.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .unwrap()
+                    .app
+                    .inline_rich_rect()
+                    .is_some()
+            }) {
+                let result = STATE.with(|s| {
+                    s.borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .app
+                        .finish_inline_rich(true)
+                });
+                if let Err(e) = result {
+                    msg(h, &e, MB_OK | MB_ICONERROR);
+                }
+                refresh();
+            }
+            cancel_pending_open();
             DRAGGING.with(|d| d.set(true));
             SetCapture(h);
             SetFocus(h);
@@ -2197,6 +2530,26 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
             };
             if let Some(point) = scene.viewport.view_to_document(p) {
                 let event = match m {
+                    WM_LBUTTONDBLCLK => crate::CanvasEvent::DoubleClick(point),
+                    WM_LBUTTONDOWN
+                        if STATE.with(|s| {
+                            s.borrow().as_ref().unwrap().app.canvas_pointer_modifiers()
+                        }) && (GetKeyState(VK_CONTROL as i32) < 0
+                            || GetKeyState(VK_SHIFT as i32) < 0) =>
+                    {
+                        crate::CanvasEvent::PointerDownModified {
+                            point,
+                            modifiers: (if GetKeyState(VK_CONTROL as i32) < 0 {
+                                1
+                            } else {
+                                0
+                            }) | (if GetKeyState(VK_SHIFT as i32) < 0 {
+                                2
+                            } else {
+                                0
+                            }),
+                        }
+                    }
                     WM_LBUTTONDOWN => crate::CanvasEvent::PointerDown(point),
                     WM_LBUTTONUP => crate::CanvasEvent::PointerUp(point),
                     _ => crate::CanvasEvent::PointerMove(point),
@@ -2206,7 +2559,20 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
                 if let Err(e) = result {
                     msg(h, &e, MB_OK | MB_ICONERROR);
                 }
-                update_caption();
+                if m == WM_LBUTTONDBLCLK
+                    && STATE.with(|s| {
+                        s.borrow()
+                            .as_ref()
+                            .unwrap()
+                            .app
+                            .inline_rich_rect()
+                            .is_some()
+                    })
+                {
+                    refresh();
+                } else {
+                    update_caption();
+                }
                 InvalidateRect(h, null(), 0);
             }
         }
@@ -2318,6 +2684,22 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
 }
 
 unsafe fn update_table(table: HWND, rows: Option<&[Vec<String>]>) {
+    let custom = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .is_some_and(|s| s.app.uses_custom_grid())
+    });
+    if custom {
+        STATE.with(|s| {
+            if let Some(s) = s.borrow_mut().as_mut() {
+                s.grid_cache = rows.map(|v| v.to_vec())
+            }
+        });
+        if rows.is_some() {
+            crate::grid::refresh(table)
+        }
+        return;
+    }
     let Some(rows) = rows else {
         STATE.with(|s| s.borrow_mut().as_mut().unwrap().grid_cache = None);
         return;
@@ -2560,6 +2942,20 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
                 SelectObject(dc, old);
                 DeleteObject(handle as _);
             }
+            SceneItem::RichText {
+                x,
+                y,
+                width,
+                height,
+                paragraphs,
+            } => {
+                let a = cv(Point { x: *x, y: *y });
+                let b = cv(Point {
+                    x: x + width,
+                    y: y + height,
+                });
+                draw_rich_scene(dc, a, b, scene.viewport.zoom, paragraphs);
+            }
             SceneItem::Path {
                 points,
                 color,
@@ -2625,7 +3021,164 @@ unsafe fn draw_scene(dc: HDC, scene: &crate::CanvasScene) {
     }
 }
 
-/// Draw an RGBA raster into a logical destination rect, compositing transparency on white.
+unsafe fn draw_rich_scene(
+    dc: HDC,
+    a: crate::Point,
+    b: crate::Point,
+    zoom: f64,
+    paragraphs: &[crate::SceneParagraph],
+) {
+    if b.x <= a.x || b.y <= a.y || !zoom.is_finite() || zoom <= 0.0 {
+        return;
+    }
+    struct Segment {
+        text: Vec<u16>,
+        font: HFONT,
+        color: [u8; 3],
+        width: i32,
+        height: i32,
+    }
+    let saved = SaveDC(dc);
+    if saved == 0 {
+        return;
+    }
+    IntersectClipRect(dc, a.x as i32, a.y as i32, b.x as i32, b.y as i32);
+    SetBkMode(dc, TRANSPARENT as i32);
+    let max_width = (b.x - a.x).floor().max(1.0) as i32;
+    let mut y = a.y as i32;
+    let mut fonts = Vec::new();
+    for paragraph in paragraphs {
+        let mut lines: Vec<Vec<Segment>> = vec![Vec::new()];
+        let mut width = 0i32;
+        let mut runs = paragraph.runs.clone();
+        if paragraph.bullet {
+            let style = runs.first().cloned().unwrap_or(crate::SceneRun {
+                text: String::new(),
+                font: crate::SceneFont {
+                    family: "Arial".into(),
+                    points: 12.0,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                },
+                color: [0, 0, 0],
+            });
+            runs.insert(
+                0,
+                crate::SceneRun {
+                    text: "• ".into(),
+                    ..style
+                },
+            );
+        }
+        for run in &runs {
+            if !run.font.points.is_finite() || run.font.points <= 0.0 {
+                continue;
+            }
+            let family = wide(&run.font.family);
+            let size = (run.font.points * zoom).round().clamp(1.0, 32767.0) as i32;
+            let font = CreateFontW(
+                -size,
+                0,
+                0,
+                0,
+                if run.font.bold { 700 } else { 400 },
+                run.font.italic as u32,
+                run.font.underline as u32,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                DEFAULT_QUALITY as u32,
+                DEFAULT_PITCH as u32,
+                family.as_ptr(),
+            );
+            if font.is_null() {
+                continue;
+            }
+            fonts.push(font);
+            let old = SelectObject(dc, font as _);
+            let mut metrics: TEXTMETRICW = zeroed();
+            GetTextMetricsW(dc, &mut metrics);
+            let height = metrics.tmHeight.max(1);
+            for token in run.text.split_inclusive(char::is_whitespace) {
+                let text = token.encode_utf16().collect::<Vec<_>>();
+                if text.is_empty() {
+                    continue;
+                }
+                let mut size: SIZE = zeroed();
+                if GetTextExtentPoint32W(
+                    dc,
+                    text.as_ptr(),
+                    text.len().min(i32::MAX as usize) as i32,
+                    &mut size,
+                ) == 0
+                {
+                    continue;
+                }
+                let token_width = size.cx.max(0);
+                if width > 0 && width.saturating_add(token_width) > max_width {
+                    lines.push(Vec::new());
+                    width = 0;
+                }
+                lines.last_mut().unwrap().push(Segment {
+                    text,
+                    font,
+                    color: run.color,
+                    width: token_width,
+                    height,
+                });
+                width = width.saturating_add(token_width);
+            }
+            SelectObject(dc, old);
+        }
+        for line in lines {
+            let line_width = line.iter().map(|s| s.width).sum::<i32>();
+            let line_height = line
+                .iter()
+                .map(|s| s.height)
+                .max()
+                .unwrap_or((12.0 * zoom).round().max(1.0) as i32);
+            let mut x = a.x as i32
+                + match paragraph.align {
+                    crate::TextAlign::Left => 0,
+                    crate::TextAlign::Center => (max_width - line_width).max(0) / 2,
+                    crate::TextAlign::Right => (max_width - line_width).max(0),
+                };
+            for segment in line {
+                let old = SelectObject(dc, segment.font as _);
+                SetTextColor(
+                    dc,
+                    segment.color[0] as u32
+                        | ((segment.color[1] as u32) << 8)
+                        | ((segment.color[2] as u32) << 16),
+                );
+                TextOutW(
+                    dc,
+                    x,
+                    y,
+                    segment.text.as_ptr(),
+                    segment.text.len().min(i32::MAX as usize) as i32,
+                );
+                SelectObject(dc, old);
+                x = x.saturating_add(segment.width);
+            }
+            y = y.saturating_add(line_height);
+            if y >= b.y as i32 {
+                break;
+            }
+        }
+        if y >= b.y as i32 {
+            break;
+        }
+    }
+    RestoreDC(dc, saved);
+    for font in fonts {
+        DeleteObject(font as _);
+    }
+}
+
+/// Draw an RGBA raster over the existing destination using premultiplied alpha.
 unsafe fn draw_rgba(
     dc: HDC,
     x: f64,
@@ -2659,9 +3212,9 @@ unsafe fn draw_rgba(
     for p in rgba.chunks_exact(4) {
         let a = p[3] as u16;
         for v in [p[2], p[1], p[0]] {
-            pixels.push(((v as u16 * a + 255 * (255 - a) + 127) / 255) as u8);
+            pixels.push(((v as u16 * a + 127) / 255) as u8);
         }
-        pixels.push(255);
+        pixels.push(p[3]);
     }
     let mut bmi: BITMAPINFO = zeroed();
     bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
@@ -2670,25 +3223,42 @@ unsafe fn draw_rgba(
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
-    let old_mode = SetStretchBltMode(dc, HALFTONE);
-    StretchDIBits(
+    let memory = CreateCompatibleDC(dc);
+    if memory.is_null() {
+        return;
+    }
+    let mut bits = null_mut();
+    let bitmap = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
+        DeleteDC(memory);
+        return;
+    }
+    std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
+    let previous = SelectObject(memory, bitmap as _);
+    AlphaBlend(
         dc,
         x as i32,
         y as i32,
         width.round().max(1.0) as i32,
         height.round().max(1.0) as i32,
+        memory,
         0,
         0,
         pixel_width as i32,
         pixel_height as i32,
-        pixels.as_ptr() as _,
-        &bmi,
-        DIB_RGB_COLORS,
-        SRCCOPY,
+        BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        },
     );
-    if old_mode != 0 {
-        SetStretchBltMode(dc, old_mode);
-    }
+    SelectObject(memory, previous);
+    DeleteObject(bitmap as _);
+    DeleteDC(memory);
 }
 
 /// Print explicit page coordinates against the selected printer's physical geometry.
@@ -2851,4 +3421,94 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
     };
     DeleteDC(dc);
     final_result
+}
+
+pub(super) fn grid_snapshot() -> Option<crate::grid::Snapshot> {
+    STATE.with(|s| {
+        let s = s.borrow();
+        let s = s.as_ref()?;
+        let rows = s.grid_cache.as_ref()?.clone();
+        let cols = rows.first().map_or(0, Vec::len);
+        let widths = (0..cols)
+            .map(|c| s.app.grid_column_width(c) as i32)
+            .collect();
+        let heights = (0..rows.len())
+            .map(|r| s.app.grid_row_height(r) as i32)
+            .collect();
+        let labels = (0..rows.len()).map(|r| s.app.grid_row_label(r)).collect();
+        Some(crate::grid::Snapshot {
+            rows,
+            widths,
+            heights,
+            labels,
+            selected: s.app.selected_cell(),
+            range: s.app.grid_selection(),
+            readonly: s.app.text_readonly(),
+            clipboard: s.app.grid_clipboard_commands(),
+        })
+    })
+}
+pub(super) fn grid_style(row: usize, col: usize) -> Option<crate::GridCellStyle> {
+    STATE.with(|s| s.borrow().as_ref()?.app.grid_cell_style(row, col))
+}
+pub(super) fn grid_editor_text() -> String {
+    STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map_or_else(String::new, |s| s.app.text())
+    })
+}
+pub(super) unsafe fn grid_select(row: usize, col: usize) {
+    grid_select_range(
+        crate::GridRange {
+            top: row,
+            left: col,
+            bottom: row,
+            right: col,
+        },
+        (row, col),
+    )
+}
+pub(super) unsafe fn grid_select_range(range: crate::GridRange, focus: (usize, usize)) {
+    STATE.with(|s| {
+        if let Some(s) = s.borrow_mut().as_mut() {
+            s.app.select_grid_range_with_focus(range, focus)
+        }
+    });
+    refresh();
+}
+pub(super) unsafe fn grid_resize(row: bool, index: usize, pixels: u16) {
+    cancel_pending_open();
+    let (window, result) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut().unwrap();
+        let result = if row {
+            s.app.resize_grid_row(index, pixels)
+        } else {
+            s.app.resize_grid_column(index, pixels)
+        };
+        (s.hwnd, result)
+    });
+    if let Err(e) = result {
+        msg(window, &e, MB_OK | MB_ICONERROR);
+    }
+    refresh();
+}
+pub(super) unsafe fn grid_commit(value: String) -> bool {
+    cancel_pending_open();
+    let (window, result) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut().unwrap();
+        (s.hwnd, s.app.edit(value))
+    });
+    match result {
+        Ok(()) => {
+            refresh();
+            true
+        }
+        Err(e) => {
+            msg(window, &e, MB_OK | MB_ICONERROR);
+            false
+        }
+    }
 }

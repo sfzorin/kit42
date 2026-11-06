@@ -3,6 +3,7 @@ name = "pdf42"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
+suite42-pdf-raster = { path = "../../crates/suite42-pdf-raster" }
 win42 = { path = "../../crates/win42" }
 pdf42-core = { path = "../../crates/pdf42-core" }
 lopdf = "0.47"

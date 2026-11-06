@@ -28,6 +28,25 @@ pub trait App {
     fn take_pending_open(&mut self) -> Option<PathBuf> {
         None
     }
+    /// Begin an asynchronous replacement, or return false to use `open`.
+    /// The old model remains intact until `commit_async_open` succeeds.
+    fn begin_async_open(&mut self, _path: &Path) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// A worker returns the identity of the exact bytes it prepared; it must
+    /// retain that prepared model until commit or cancellation.
+    fn take_async_open_result(
+        &mut self,
+    ) -> Option<Result<suite42_core::session::FileIdentity, String>> {
+        None
+    }
+    /// Atomically install the prepared model and return its clean revision.
+    /// On error the previously open model must remain unchanged.
+    fn commit_async_open(&mut self) -> Result<u64, String> {
+        Err("No prepared document".into())
+    }
+    /// Signal cancellation and discard prepared state without joining the worker.
+    fn cancel_async_open(&mut self) {}
     fn poll_background(&mut self) -> bool {
         false
     }
@@ -53,6 +72,25 @@ pub trait App {
     ) -> Result<Option<(u64, Vec<u8>)>, String> {
         self.save_snapshot(format)
     }
+    /// Capture a main file and optional immutable sidecars for a concrete destination.
+    fn save_bundle_to(
+        &mut self,
+        format: &str,
+        path: &Path,
+        is_current: bool,
+    ) -> Result<Option<(u64, suite42_core::session::SaveBundle)>, String> {
+        Ok(self
+            .save_snapshot_to(format, path, is_current)?
+            .map(|(revision, main)| {
+                (
+                    revision,
+                    suite42_core::session::SaveBundle {
+                        main,
+                        sidecars: Vec::new(),
+                    },
+                )
+            }))
+    }
     /// Mark precisely the published revision as saved, even if editing continued.
     fn saved_snapshot(&mut self, _revision: u64) {}
     fn open_formats(&self) -> Vec<FileFormat> {
@@ -72,6 +110,16 @@ pub trait App {
     }
     fn canvas_scene(&self) -> Option<CanvasScene> {
         None
+    }
+    fn canvas_pointer_modifiers(&self) -> bool {
+        false
+    }
+    /// A RichEdit overlay in canvas document coordinates; None uses normal layout.
+    fn inline_rich_rect(&self) -> Option<CanvasRect> {
+        None
+    }
+    fn finish_inline_rich(&mut self, _commit: bool) -> Result<(), String> {
+        Ok(())
     }
     /// Logical scene dimensions while presenting fullscreen, or None in editing mode.
     fn presentation_size(&self) -> Option<(f64, f64)> {
@@ -169,6 +217,28 @@ pub trait App {
     fn enabled(&self, _id: u16) -> bool {
         true
     }
+    /// Opt in to the variable-geometry grid instead of the legacy list view.
+    fn uses_custom_grid(&self) -> bool {
+        false
+    }
+    fn grid_column_width(&self, _column: usize) -> u16 {
+        80
+    }
+    fn grid_row_height(&self, _row: usize) -> u16 {
+        20
+    }
+    fn resize_grid_column(&mut self, _column: usize, _pixels: u16) -> Result<(), String> {
+        Err("Column resizing is unavailable".into())
+    }
+    fn resize_grid_row(&mut self, _row: usize, _pixels: u16) -> Result<(), String> {
+        Err("Row resizing is unavailable".into())
+    }
+    fn grid_row_label(&self, row: usize) -> String {
+        (row + 1).to_string()
+    }
+    fn grid_clipboard_commands(&self) -> Option<(u16, u16)> {
+        None
+    }
     /// Sheet names and selected index for grid-based applications.
     fn grid_sheets(&self) -> Option<(Vec<String>, usize)> {
         None
@@ -178,6 +248,9 @@ pub trait App {
         None
     }
     fn select_grid_range(&mut self, _range: GridRange) {}
+    fn select_grid_range_with_focus(&mut self, range: GridRange, _focus: (usize, usize)) {
+        self.select_grid_range(range)
+    }
     fn grid_cell_style(&self, _row: usize, _column: usize) -> Option<GridCellStyle> {
         None
     }
@@ -233,6 +306,10 @@ pub trait App {
 mod clipboard;
 #[cfg(windows)]
 mod dialogs;
+#[cfg(windows)]
+mod grid;
+#[cfg(any(windows, test))]
+mod grid_geometry;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
@@ -424,6 +501,13 @@ pub struct Point {
     pub y: f64,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
     pub zoom: f64,
     pub pan: Point,
@@ -456,6 +540,8 @@ impl Viewport {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CanvasEvent {
     PointerDown(Point),
+    PointerDownModified { point: Point, modifiers: u32 },
+    DoubleClick(Point),
     PointerMove(Point),
     PointerUp(Point),
     Cancel,
@@ -498,6 +584,13 @@ pub enum SceneItem {
         align: TextAlign,
         wrap: bool,
     },
+    RichText {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        paragraphs: Vec<SceneParagraph>,
+    },
     Path {
         points: Vec<Point>,
         color: [u8; 3],
@@ -528,6 +621,18 @@ pub struct SceneFont {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+}
+#[derive(Clone, Debug)]
+pub struct SceneRun {
+    pub text: String,
+    pub font: SceneFont,
+    pub color: [u8; 3],
+}
+#[derive(Clone, Debug)]
+pub struct SceneParagraph {
+    pub runs: Vec<SceneRun>,
+    pub align: TextAlign,
+    pub bullet: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {

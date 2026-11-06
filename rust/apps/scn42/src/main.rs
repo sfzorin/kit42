@@ -1,4 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod ocr_settings;
+mod pdf_import;
 mod wia;
 use scn42_core::ScanDocument;
 use std::path::Path;
@@ -11,7 +13,18 @@ struct Scn {
     generation: u64,
     scan: Option<std::sync::mpsc::Receiver<wia::ResultMessage>>,
     scan_status: String,
+    pdf_import: Option<(
+        pdf_import::Receiver,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    )>,
+    pdf_first: u32,
+    pdf_last: u32,
+    pdf_dpi: u32,
+    jpeg_quality: u8,
+    compress_pdf: bool,
     tesseract_path: String,
+    ocr_language: String,
     language_discovery: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     print_pending: Option<std::sync::mpsc::Receiver<(u64, Result<win42::PrintJob, String>)>>,
     ocr: Option<(
@@ -45,6 +58,25 @@ impl win42::App for Scn {
         self.window = window;
     }
     fn poll_background(&mut self) -> bool {
+        let import_result = self
+            .pdf_import
+            .as_ref()
+            .and_then(|(rx, _, _)| rx.try_recv().ok());
+        if let Some((generation, result)) = import_result {
+            self.pdf_import = None;
+            self.scan_status = if generation != self.generation {
+                "PDF import discarded because the project changed".into()
+            } else {
+                match result.and_then(|pages| self.doc.add_pages_with_dpi(pages)) {
+                    Ok(()) => {
+                        self.index = self.doc.pages().len().saturating_sub(1);
+                        "PDF pages imported".into()
+                    }
+                    Err(e) => e,
+                }
+            };
+            return true;
+        }
         if let Some(result) = self
             .language_discovery
             .as_ref()
@@ -146,12 +178,20 @@ impl win42::App for Scn {
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[
             win42::FileAction {
+                id: 33,
+                title: "Import PDF pages...",
+                save: false,
+                extension: "pdf",
+                format: "PDF",
+                pattern: "*.pdf",
+            },
+            win42::FileAction {
                 id: 20,
-                title: "&Import Image...",
+                title: "&Import Image (convert to 8-bit)...",
                 save: false,
                 extension: "png",
-                format: "PNG / JPEG / BMP / TIFF / GIF / WebP image",
-                pattern: "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.gif;*.webp",
+                format: "PNG / JPEG / BMP / TIFF / GIF / WebP / SVG image",
+                pattern: "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.gif;*.webp;*.svg",
             },
             win42::FileAction {
                 id: 22,
@@ -200,6 +240,25 @@ impl win42::App for Scn {
             self.generation = self.generation.wrapping_add(1);
         }
         match id {
+            33 => {
+                if self.pdf_import.is_some() {
+                    return Err("PDF import is already running".into());
+                }
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let rx = pdf_import::start(
+                    p.to_path_buf(),
+                    self.generation,
+                    self.pdf_first,
+                    self.pdf_last,
+                    self.pdf_dpi,
+                    cancel.clone(),
+                    progress.clone(),
+                );
+                self.pdf_import = Some((rx, cancel, progress));
+                self.scan_status = "Importing PDF pages…".into();
+                Ok(())
+            }
             20 => {
                 let (images, _) =
                     img42_core::ImageDocument::open_frames(p).map_err(|e| e.to_string())?;
@@ -246,7 +305,10 @@ impl win42::App for Scn {
                         .0
                 } else {
                     images[0]
-                        .save_snapshot_format(if id == 31 { "png" } else { "jpeg" })
+                        .save_snapshot_format_quality(
+                            if id == 31 { "png" } else { "jpeg" },
+                            self.jpeg_quality,
+                        )
                         .map_err(|e| e.to_string())?
                         .0
                 };
@@ -258,7 +320,7 @@ impl win42::App for Scn {
                     .map_err(|e| e.to_string())?;
                 file.write_all(&bytes).map_err(|e| e.to_string())
             }
-            21 => self.doc.export_pdf(p),
+            21 => self.doc.export_pdf_compressed(p, self.compress_pdf),
             22 => {
                 use std::io::Write;
                 let text = self.doc.recognized_text();
@@ -291,9 +353,34 @@ impl win42::App for Scn {
             (27, "Print all pages..."),
             (28, "Deskew page..."),
             (29, "Perspective correction..."),
+            (34, "PDF import settings..."),
+            (35, "Cancel PDF import"),
+            (36, "Export quality settings..."),
         ]
     }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 36 {
+            return Some(win42::InputRequest {
+                title: "Export quality and compression",
+                fields: vec![
+                    ("JPEG quality (1–100)", self.jpeg_quality.to_string()),
+                    (
+                        "Compress PDF streams (1 yes, 0 no)",
+                        (self.compress_pdf as u8).to_string(),
+                    ),
+                ],
+            });
+        }
+        if id == 34 {
+            return Some(win42::InputRequest {
+                title: "PDF import page range and DPI",
+                fields: vec![
+                    ("First page (1-based)", self.pdf_first.to_string()),
+                    ("Last page (0 = all)", self.pdf_last.to_string()),
+                    ("Raster DPI (36–600)", self.pdf_dpi.to_string()),
+                ],
+            });
+        }
         if id == 25 {
             return Some(win42::InputRequest {
                 title: "Find installed Tesseract languages",
@@ -306,9 +393,12 @@ impl win42::App for Scn {
                 fields: vec![
                     (
                         "Tesseract executable path (install separately)",
-                        "tesseract".into(),
+                        self.tesseract_path.clone(),
                     ),
-                    ("Installed language codes (e.g. eng+rus)", "eng".into()),
+                    (
+                        "Installed language codes (e.g. eng+rus)",
+                        self.ocr_language.clone(),
+                    ),
                 ],
             });
         }
@@ -357,6 +447,35 @@ impl win42::App for Scn {
         })
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id == 36 {
+            let nums: Vec<u32> = values
+                .iter()
+                .map(|v| v.parse::<u32>().map_err(|_| "Enter integers"))
+                .collect::<Result<_, _>>()?;
+            if let [q, c] = nums.as_slice() {
+                if (1..=100).contains(q) && *c <= 1 {
+                    self.jpeg_quality = *q as u8;
+                    self.compress_pdf = *c == 1;
+                    return Ok(());
+                }
+            }
+            return Err("Invalid export settings".into());
+        }
+        if id == 34 {
+            let nums: Vec<u32> = values
+                .iter()
+                .map(|v| v.parse::<u32>().map_err(|_| "Enter nonnegative integers"))
+                .collect::<Result<_, _>>()?;
+            if let [first, last, dpi] = nums.as_slice() {
+                if *first > 0 && (*last == 0 || last >= first) && (36..=600).contains(dpi) {
+                    self.pdf_first = *first;
+                    self.pdf_last = *last;
+                    self.pdf_dpi = *dpi;
+                    return Ok(());
+                }
+            }
+            return Err("Invalid range or DPI".into());
+        }
         if id == 25 {
             let executable = values.first().ok_or("Missing executable path")?.clone();
             if executable.trim().is_empty() {
@@ -408,6 +527,12 @@ impl win42::App for Scn {
             let executable = values.first().ok_or("Missing executable path")?.clone();
             let language = values.get(1).ok_or("Missing language")?.clone();
             self.tesseract_path = executable.clone();
+            self.ocr_language = language.clone();
+            ocr_settings::save(&ocr_settings::Settings {
+                executable: executable.clone(),
+                language: language.clone(),
+            })
+            .map_err(|e| format!("Cannot save OCR settings: {e}"))?;
             let page = self.doc.pages().get(self.index).ok_or("No page")?.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -483,7 +608,22 @@ impl win42::App for Scn {
             .map(|p| (p.width, p.height, p.pixels.clone()))
     }
     fn status(&self) -> String {
-        format!("{} pages | {}", self.doc.pages().len(), self.scan_status)
+        let progress = self
+            .pdf_import
+            .as_ref()
+            .map(|(_, _, p)| {
+                format!(
+                    " | {} PDF pages rendered",
+                    p.load(std::sync::atomic::Ordering::Relaxed)
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "{} pages | {}{}",
+            self.doc.pages().len(),
+            self.scan_status,
+            progress
+        )
     }
     fn dirty(&self) -> bool {
         self.doc.is_dirty()
@@ -504,6 +644,8 @@ impl win42::App for Scn {
             25 => self.language_discovery.is_none(),
             26 | 28 | 29 | 30 | 31 | 32 => n > 0,
             27 => n > 0 && self.print_pending.is_none(),
+            33 => self.pdf_import.is_none(),
+            35 => self.pdf_import.is_some(),
             12 => n > 0 && self.index > 0,
             13 => self.index + 1 < n,
             _ => true,
@@ -533,6 +675,13 @@ impl win42::App for Scn {
             self.generation = self.generation.wrapping_add(1);
         }
         match id {
+            35 => {
+                if let Some((_, cancel, _)) = &self.pdf_import {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.generation = self.generation.wrapping_add(1);
+                self.scan_status = "Cancelling PDF import…".into();
+            }
             4 => {
                 self.doc.undo();
             }
@@ -613,6 +762,7 @@ impl win42::App for Scn {
     }
 }
 fn main() {
+    let settings = ocr_settings::load();
     win42::run(Box::new(Scn {
         pending: None,
         next_save: 0,
@@ -622,7 +772,14 @@ fn main() {
         generation: 0,
         scan: None,
         scan_status: String::new(),
-        tesseract_path: "tesseract".into(),
+        pdf_import: None,
+        pdf_first: 1,
+        pdf_last: 0,
+        pdf_dpi: 150,
+        jpeg_quality: 90,
+        compress_pdf: true,
+        tesseract_path: settings.executable,
+        ocr_language: settings.language,
         language_discovery: None,
         print_pending: None,
         ocr: None,
@@ -646,7 +803,14 @@ mod tests {
             generation: 0,
             scan: None,
             scan_status: String::new(),
+            pdf_import: None,
+            pdf_first: 1,
+            pdf_last: 0,
+            pdf_dpi: 150,
+            jpeg_quality: 90,
+            compress_pdf: true,
             tesseract_path: "tesseract".into(),
+            ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
             ocr: None,
@@ -682,7 +846,14 @@ mod tests {
             generation: 1,
             scan: None,
             scan_status: String::new(),
+            pdf_import: None,
+            pdf_first: 1,
+            pdf_last: 0,
+            pdf_dpi: 150,
+            jpeg_quality: 90,
+            compress_pdf: true,
             tesseract_path: "tesseract".into(),
+            ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
             ocr: None,
@@ -696,6 +867,39 @@ mod tests {
         assert!(a.doc.pages().is_empty());
     }
     #[test]
+    fn stale_pdf_import_cannot_modify_new_project() {
+        let mut app = Scn {
+            pending: None,
+            next_save: 0,
+            doc: ScanDocument::new(),
+            index: 0,
+            window: 0,
+            generation: 1,
+            scan: None,
+            scan_status: String::new(),
+            pdf_import: None,
+            pdf_first: 1,
+            pdf_last: 0,
+            pdf_dpi: 150,
+            jpeg_quality: 90,
+            compress_pdf: true,
+            tesseract_path: "tesseract".into(),
+            ocr_language: "eng".into(),
+            language_discovery: None,
+            print_pending: None,
+            ocr: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        app.pdf_import = Some((rx, cancel, progress));
+        app.new_document().unwrap();
+        tx.send((1, Ok(vec![(1, 1, vec![1, 2, 3, 255], 150, 150)])))
+            .unwrap();
+        assert!(app.poll_background());
+        assert!(app.doc.pages().is_empty());
+    }
+    #[test]
     fn boundary_commands_match_actions() {
         let mut a = Scn {
             pending: None,
@@ -706,7 +910,14 @@ mod tests {
             generation: 0,
             scan: None,
             scan_status: String::new(),
+            pdf_import: None,
+            pdf_first: 1,
+            pdf_last: 0,
+            pdf_dpi: 150,
+            jpeg_quality: 90,
+            compress_pdf: true,
             tesseract_path: "tesseract".into(),
+            ocr_language: "eng".into(),
             language_discovery: None,
             print_pending: None,
             ocr: None,

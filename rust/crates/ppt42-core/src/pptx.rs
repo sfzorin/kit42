@@ -17,6 +17,7 @@ struct ObjectSource {
     writable_cells: Vec<Vec<bool>>,
     transform: [f64; 4],
     inherited_geometry: bool,
+    rich_safe: bool,
 }
 #[derive(Clone)]
 struct SlideSource {
@@ -40,6 +41,14 @@ pub struct Source {
     can_delete: bool,
 }
 impl Source {
+    pub fn can_edit_rich(&self, slide: u64, object: u64) -> bool {
+        self.slides
+            .iter()
+            .find(|s| s.slide_id == slide)
+            .and_then(|s| s.objects.iter().find(|o| o.object_id == object))
+            .map(|o| o.rich_safe)
+            .unwrap_or(true)
+    }
     pub fn background(&self, slide: u64) -> Option<[u8; 3]> {
         self.slides
             .iter()
@@ -200,6 +209,148 @@ fn content(node: roxmltree::Node<'_, '_>) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+fn rich_paragraphs(node: roxmltree::Node<'_, '_>, base: &TextStyle) -> Vec<RichParagraph> {
+    let Some(body) = node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "txBody")
+    else {
+        return Vec::new();
+    };
+    let mut paragraphs = Vec::new();
+    for p in body
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "p")
+    {
+        let properties = p
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "pPr");
+        let align = match properties.and_then(|n| attr(n, "algn")) {
+            Some("ctr") => TextAlign::Center,
+            Some("r") => TextAlign::Right,
+            _ => TextAlign::Left,
+        };
+        let bullet = properties.is_some_and(|n| {
+            n.children()
+                .any(|v| v.is_element() && matches!(v.tag_name().name(), "buChar" | "buAutoNum"))
+        });
+        let mut runs = Vec::new();
+        for run in p
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "r")
+        {
+            let Some(text) = run
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "t")
+            else {
+                continue;
+            };
+            let mut style = base.clone();
+            style.align = align;
+            if let Some(pr) = run
+                .children()
+                .find(|n| n.is_element() && n.tag_name().name() == "rPr")
+            {
+                if let Some(v) = attr(pr, "sz").and_then(|v| v.parse::<f64>().ok()) {
+                    let v = v / 100.0;
+                    if (1.0..=512.0).contains(&v) {
+                        style.points = v;
+                    }
+                }
+                if let Some(v) = attr(pr, "b") {
+                    style.bold = matches!(v, "1" | "true");
+                }
+                if let Some(v) = attr(pr, "i") {
+                    style.italic = matches!(v, "1" | "true");
+                }
+                if let Some(v) = attr(pr, "u") {
+                    style.underline = v != "none";
+                }
+                if let Some(f) = local(pr, "latin").and_then(|n| attr(n, "typeface")) {
+                    if !f.is_empty() && f.len() <= 256 {
+                        style.family = f.into();
+                    }
+                }
+                if let Some(c) = color(pr, "solidFill") {
+                    style.color = c;
+                }
+            }
+            runs.push(RichRun {
+                text: text.text().unwrap_or("").into(),
+                style,
+            });
+        }
+        if runs.is_empty() {
+            runs.push(RichRun {
+                text: String::new(),
+                style: base.clone(),
+            });
+        }
+        paragraphs.push(RichParagraph {
+            runs,
+            align,
+            bullet,
+        });
+    }
+    if paragraphs.len() == 1 && paragraphs[0].runs.len() == 1 && !paragraphs[0].bullet {
+        Vec::new()
+    } else {
+        paragraphs
+    }
+}
+fn rich_edit_safe(node: roxmltree::Node<'_, '_>) -> bool {
+    let Some(body) = node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "txBody")
+    else {
+        return false;
+    };
+    let paragraphs = body
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "p")
+        .collect::<Vec<_>>();
+    if paragraphs.is_empty() {
+        return false;
+    }
+    paragraphs.iter().all(|p| {
+        p.children()
+            .filter(|n| n.is_element())
+            .all(|child| match child.tag_name().name() {
+                "pPr" => {
+                    child.attributes().all(|a| a.name() == "algn")
+                        && child
+                            .children()
+                            .filter(|n| n.is_element())
+                            .all(|n| matches!(n.tag_name().name(), "buChar" | "buNone"))
+                }
+                "r" => {
+                    child
+                        .children()
+                        .filter(|n| n.is_element())
+                        .all(|n| match n.tag_name().name() {
+                            "t" => true,
+                            "rPr" => {
+                                n.attributes()
+                                    .all(|a| matches!(a.name(), "sz" | "b" | "i" | "u"))
+                                    && n.children().filter(|c| c.is_element()).all(|c| {
+                                        match c.tag_name().name() {
+                                            "latin" => {
+                                                c.attributes().all(|a| a.name() == "typeface")
+                                            }
+                                            "solidFill" => c
+                                                .children()
+                                                .filter(|v| v.is_element())
+                                                .all(|v| v.tag_name().name() == "srgbClr"),
+                                            _ => false,
+                                        }
+                                    })
+                            }
+                            _ => false,
+                        })
+                }
+                _ => false,
+            })
+    })
+}
 fn target(base: &str, value: &str) -> Option<String> {
     if value.contains(':') || value.starts_with('/') {
         return None;
@@ -290,6 +441,7 @@ fn decoration(
         .unwrap_or(fill);
     Some(SlideObject {
         id: 0,
+        group_id: None,
         x: (x * t[0] + t[2]) / width * 720.0,
         y: (y * t[1] + t[3]) / height * 405.0,
         width: w * t[0] / width * 720.0,
@@ -301,6 +453,7 @@ fn decoration(
         stroke_visible: true,
         text: content(node),
         text_style: TextStyle::default(),
+        paragraphs: Vec::new(),
         media: Vec::new(),
         cells: Vec::new(),
     })
@@ -347,6 +500,7 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
         let slide_bytes = read(&mut z, &path)?;
         let tree = xml(&slide_bytes)?;
         let mut objects = Vec::new();
+        let mut group_ids: HashMap<usize, u64> = HashMap::new();
         let (directory, filename) = path.rsplit_once('/').ok_or("Invalid slide path")?;
         let relpath = format!("{directory}/_rels/{filename}.rels");
         let relbytes = read(&mut z, &relpath).ok();
@@ -591,6 +745,15 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
                 .find(|o| o.id == object_id)
                 .unwrap()
                 .clone();
+            if let Some(group) = node
+                .ancestors()
+                .filter(|n| n.is_element() && n.tag_name().name() == "grpSp")
+                .last()
+            {
+                let key = group.range().start;
+                let id = *group_ids.entry(key).or_insert(object.id);
+                object.group_id = Some(id);
+            }
             object.x = (x * transform[0] + transform[2]) / width * 720.0;
             object.y = (y * transform[1] + transform[3]) / height * 405.0;
             object.width = w * transform[0] / width * 720.0;
@@ -668,6 +831,18 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
                     _ => TextAlign::Left,
                 };
             }
+            object.paragraphs = rich_paragraphs(node, &object.text_style);
+            if !object.paragraphs.is_empty()
+                && object
+                    .paragraphs
+                    .iter()
+                    .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    != object.text
+            {
+                object.paragraphs.clear();
+            }
             deck.update_object(object.clone())?;
             objects.push(ObjectSource {
                 object_id,
@@ -697,6 +872,7 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
                     .unwrap_or_default(),
                 transform,
                 inherited_geometry: explicit.is_none(),
+                rich_safe: node.tag_name().name() == "sp" && rich_edit_safe(node),
             });
         }
         let notes_cloneable = if let Some(ref note) = notes_path {
@@ -970,6 +1146,9 @@ fn patch_text_style(
         }
     }
     Ok(())
+}
+fn rich_xml(paragraphs: &[RichParagraph]) -> String {
+    paragraphs.iter().map(|p|{let align=match p.align{TextAlign::Left=>"l",TextAlign::Center=>"ctr",TextAlign::Right=>"r"};let bullet=if p.bullet{"<a:buChar char=\"•\"/>"}else{"<a:buNone/>"};let runs=p.runs.iter().map(|r|{let s=&r.style;let underline=if s.underline{"sng"}else{"none"};format!("<a:r><a:rPr sz=\"{:.0}\" b=\"{}\" i=\"{}\" u=\"{underline}\"><a:solidFill><a:srgbClr val=\"{:02X}{:02X}{:02X}\"/></a:solidFill><a:latin typeface=\"{}\"/></a:rPr><a:t xml:space=\"preserve\">{}</a:t></a:r>",s.points*100.0,s.bold as u8,s.italic as u8,s.color[0],s.color[1],s.color[2],escape(&s.family),escape(&r.text))}).collect::<String>();format!("<a:p xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:pPr algn=\"{align}\">{bullet}</a:pPr>{runs}</a:p>")}).collect()
 }
 fn relation_owner(path: &str) -> Option<String> {
     if path == "_rels/.rels" {
@@ -1308,6 +1487,7 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
                 continue;
             };
             if object.kind != item.original.kind
+                || object.group_id != item.original.group_id
                 || object.fill != item.original.fill
                 || object.stroke != item.original.stroke
                 || object.fill_visible != item.original.fill_visible
@@ -1416,10 +1596,40 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
                     )?
                 }
             }
-            if object.text != item.original.text {
+            let rich_changed = object.paragraphs != item.original.paragraphs;
+            if rich_changed {
+                if !item.rich_safe || object.paragraphs.is_empty() {
+                    return Err(
+                        "This PPTX text structure cannot be safely edited as rich text".into(),
+                    );
+                }
+                let body = node
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "txBody")
+                    .ok_or("PPTX text body missing")?;
+                let paragraphs = body
+                    .children()
+                    .filter(|n| n.is_element() && n.tag_name().name() == "p")
+                    .collect::<Vec<_>>();
+                if paragraphs.is_empty() {
+                    return Err("PPTX paragraph missing".into());
+                }
+                let replacement = rich_xml(&object.paragraphs);
+                for (index, p) in paragraphs.iter().enumerate() {
+                    patches.push((
+                        p.range(),
+                        if index == 0 {
+                            replacement.clone()
+                        } else {
+                            String::new()
+                        },
+                    ));
+                }
+            }
+            if !rich_changed && object.text != item.original.text {
                 patch_text(node, &object.text, content, &mut patches)?;
             }
-            if object.text_style != item.original.text_style {
+            if !rich_changed && object.text_style != item.original.text_style {
                 patch_text_style(
                     node,
                     &item.original.text_style,
@@ -1817,19 +2027,42 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
     fn emu(v: f64, extent: f64, canvas: f64) -> i64 {
         (v / canvas * extent).round() as i64
     }
-    fn run(s: &str, style: &TextStyle) -> String {
-        let align = match style.align {
+    fn run_piece(s: &str, style: &TextStyle) -> String {
+        let underline = if style.underline { "sng" } else { "none" };
+        format!("<a:r><a:rPr sz=\"{:.0}\" b=\"{}\" i=\"{}\" u=\"{underline}\"><a:solidFill><a:srgbClr val=\"{:02X}{:02X}{:02X}\"/></a:solidFill><a:latin typeface=\"{}\"/></a:rPr><a:t xml:space=\"preserve\">{}</a:t></a:r>",style.points*100.0,style.bold as u8,style.italic as u8,style.color[0],style.color[1],style.color[2],escape(&style.family),escape(s))
+    }
+    fn paragraph(runs: &[RichRun], align: TextAlign, bullet: bool) -> String {
+        let align = match align {
             TextAlign::Left => "l",
             TextAlign::Center => "ctr",
             TextAlign::Right => "r",
         };
-        let underline = if style.underline { "sng" } else { "none" };
-        let rpr=format!("<a:rPr sz=\"{:.0}\" b=\"{}\" i=\"{}\" u=\"{underline}\"><a:solidFill><a:srgbClr val=\"{:02X}{:02X}{:02X}\"/></a:solidFill><a:latin typeface=\"{}\"/></a:rPr>",style.points*100.0,style.bold as u8,style.italic as u8,style.color[0],style.color[1],style.color[2],escape(&style.family));
+        let bullet = if bullet {
+            "<a:buChar char=\"•\"/>"
+        } else {
+            "<a:buNone/>"
+        };
+        let runs = runs
+            .iter()
+            .map(|r| run_piece(&r.text, &r.style))
+            .collect::<String>();
+        format!("<a:p><a:pPr algn=\"{align}\">{bullet}</a:pPr>{runs}</a:p>")
+    }
+    fn run(s: &str, style: &TextStyle) -> String {
+        let _align = match style.align {
+            TextAlign::Left => "l",
+            TextAlign::Center => "ctr",
+            TextAlign::Right => "r",
+        };
         s.split('\n')
             .map(|p| {
-                format!(
-                    "<a:p><a:pPr algn=\"{align}\"/><a:r>{rpr}<a:t xml:space=\"preserve\">{}</a:t></a:r></a:p>",
-                    escape(p)
+                paragraph(
+                    &[RichRun {
+                        text: p.into(),
+                        style: style.clone(),
+                    }],
+                    style.align,
+                    false,
                 )
             })
             .collect()
@@ -1863,6 +2096,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
             if !value.is_empty() {
                 objects.push(SlideObject {
                     id: next,
+                    group_id: None,
                     x: 35.0,
                     y: 30.0 + row as f64 * 55.0,
                     width: 650.0,
@@ -1874,6 +2108,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     stroke_visible: false,
                     text: (*value).clone(),
                     text_style: TextStyle::default(),
+                    paragraphs: Vec::new(),
                     media: Vec::new(),
                     cells: Vec::new(),
                 });
@@ -1881,8 +2116,22 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
             }
         }
         let mut shapes = String::new();
+        let mut group_shapes: HashMap<u64, String> = HashMap::new();
+        let mut group_order = Vec::new();
         let mut rels=format!("<Relationship Id=\"layout\" Type=\"{rns}/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>");
         for (j, o) in objects.iter().enumerate() {
+            if let Some(group_id) = o.group_id {
+                if !group_shapes.contains_key(&group_id) {
+                    shapes.push_str(&format!("<!--suite42-group-{group_id}-->"));
+                    group_shapes.insert(group_id, String::new());
+                    group_order.push(group_id);
+                }
+            }
+            let target = if let Some(group_id) = o.group_id {
+                group_shapes.get_mut(&group_id).unwrap()
+            } else {
+                &mut shapes
+            };
             let id = j + 2;
             let x = emu(o.x, width, 720.0);
             let y = emu(o.y, height, 405.0);
@@ -1908,7 +2157,14 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     } else {
                         format!(
                             "<p:txBody><a:bodyPr/><a:lstStyle/>{}</p:txBody>",
-                            run(&o.text, &o.text_style)
+                            if o.paragraphs.is_empty() {
+                                run(&o.text, &o.text_style)
+                            } else {
+                                o.paragraphs
+                                    .iter()
+                                    .map(|p| paragraph(&p.runs, p.align, p.bullet))
+                                    .collect()
+                            }
                         )
                     };
                     let fill_xml = if o.fill_visible {
@@ -1923,7 +2179,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     } else {
                         "<a:ln><a:noFill/></a:ln>".into()
                     };
-                    shapes.push_str(&format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"Object {id}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{xfrm}<a:prstGeom prst=\"{geom}\"><a:avLst/></a:prstGeom>{fill_xml}{line_xml}</p:spPr>{body}</p:sp>"));
+                    target.push_str(&format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"Object {id}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{xfrm}<a:prstGeom prst=\"{geom}\"><a:avLst/></a:prstGeom>{fill_xml}{line_xml}</p:spPr>{body}</p:sp>"));
                 }
                 ObjectKind::Picture => {
                     let (ext, _mime) = if o.media.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -1937,7 +2193,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     let name = format!("image{n}_{id}.{ext}");
                     rels.push_str(&format!("<Relationship Id=\"{rid}\" Type=\"{rns}/image\" Target=\"../media/{name}\"/>"));
                     parts.push((format!("ppt/media/{name}"), o.media.clone()));
-                    shapes.push_str(&format!("<p:pic><p:nvPicPr><p:cNvPr id=\"{id}\" name=\"Picture {id}\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"{rid}\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{xfrm}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>"));
+                    target.push_str(&format!("<p:pic><p:nvPicPr><p:cNvPr id=\"{id}\" name=\"Picture {id}\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"{rid}\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{xfrm}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>"));
                 }
                 ObjectKind::Table => {
                     let cols = o.cells.first().map_or(0, Vec::len);
@@ -1956,9 +2212,15 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                         }
                         rows.push_str("</a:tr>");
                     }
-                    shapes.push_str(&format!("<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"));
+                    target.push_str(&format!("<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"));
                 }
             }
+        }
+        for (index, group_id) in group_order.iter().enumerate() {
+            let id = objects.len() + 2 + index;
+            let children = group_shapes.remove(group_id).unwrap();
+            let xml=format!("<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"{id}\" name=\"Group {id}\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"9144000\" cy=\"5143500\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"9144000\" cy=\"5143500\"/></a:xfrm></p:grpSpPr>{children}</p:grpSp>");
+            shapes = shapes.replace(&format!("<!--suite42-group-{group_id}-->"), &xml);
         }
         parts.push((format!("ppt/slides/slide{n}.xml"),format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><p:sld xmlns:p=\"{pns}\" xmlns:a=\"{ans}\" xmlns:r=\"{rns}\"><p:cSld><p:spTree>{group}{shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>").into_bytes()));
         parts.push((

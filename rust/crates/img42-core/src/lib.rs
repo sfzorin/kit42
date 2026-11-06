@@ -1,7 +1,5 @@
-//! Portable raster editor. PNG, JPEG and BMP decode to straight RGBA8, applying
-//! EXIF orientation when present. Snapshot exports support PNG, JPEG and BMP;
-//! JPEG and BMP composite transparency over white. Metadata, colour profiles,
-//! animation and high bit depth are not preserved.
+//! Portable raster editor with bounded codecs and versioned image snapshots.
+mod exif_metadata;
 use image::{ImageFormat, ImageReader, Limits};
 use std::{
     fmt,
@@ -27,6 +25,7 @@ pub enum Error {
     MultiframeRequiresGif,
     MultipageTiffUnsupported,
     MultiframeRequiresNavigation,
+    SvgResourcesDisallowed,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -36,6 +35,10 @@ impl fmt::Display for Error {
             Self::UnsupportedFormat => write!(f, "unsupported image format"),
             Self::TooLarge => write!(f, "image exceeds size limits"),
             Self::InvalidImage => write!(f, "invalid image dimensions or pixels"),
+            Self::SvgResourcesDisallowed => write!(
+                f,
+                "SVG resource is external, invalid, unsupported or exceeds embedded-image limits"
+            ),
             Self::MultiframeRequiresNavigation => write!(
                 f,
                 "Animated image requires frame navigation; import its frames separately"
@@ -69,6 +72,7 @@ struct Raster {
     width: u32,
     height: u32,
     pixels: Arc<[u8]>,
+    pixels16: Option<Arc<[u16]>>,
     dpi: Option<(u32, u32)>,
 }
 impl Raster {
@@ -87,8 +91,18 @@ impl Raster {
             width,
             height,
             pixels: pixels.into(),
+            pixels16: None,
             dpi: None,
         })
+    }
+    fn new16(width: u32, height: u32, pixels: Vec<u16>) -> Result<Self, Error> {
+        let display = pixels
+            .iter()
+            .map(|v| ((u32::from(*v) + 128) / 257) as u8)
+            .collect();
+        let mut raster = Self::new(width, height, display)?;
+        raster.pixels16 = Some(pixels.into());
+        Ok(raster)
     }
     fn orient(&self, orientation: u16) -> Self {
         let swap = (5..=8).contains(&orientation);
@@ -98,6 +112,7 @@ impl Raster {
             (self.width, self.height)
         };
         let mut out = vec![0; self.pixels.len()];
+        let mut out16 = self.pixels16.as_ref().map(|v| vec![0u16; v.len()]);
         for y in 0..self.height {
             for x in 0..self.width {
                 let (dx, dy) = match orientation {
@@ -113,12 +128,16 @@ impl Raster {
                 let src = ((y as usize * self.width as usize) + x as usize) * 4;
                 let dst = ((dy as usize * w as usize) + dx as usize) * 4;
                 out[dst..dst + 4].copy_from_slice(&self.pixels[src..src + 4]);
+                if let (Some(source), Some(target)) = (&self.pixels16, &mut out16) {
+                    target[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
+                }
             }
         }
         Self {
             width: w,
             height: h,
             pixels: out.into(),
+            pixels16: out16.map(Into::into),
             dpi: if swap {
                 self.dpi.map(|(x, y)| (y, x))
             } else {
@@ -138,6 +157,8 @@ pub enum AnimationLoop {
 pub struct SaveState(Raster);
 
 pub struct ImageDocument {
+    exif: Option<exif_metadata::Metadata>,
+    tiff_text: Vec<(tiff::tags::Tag, String)>,
     icc: Option<Vec<u8>>,
     current: Raster,
     saved: Raster,
@@ -157,6 +178,8 @@ impl ImageDocument {
         let mut raster = Raster::new(width, height, pixels)?;
         raster.dpi = dpi;
         Ok(Self {
+            exif: None,
+            tiff_text: Vec::new(),
             icc: None,
             saved: raster.clone(),
             current: raster,
@@ -164,8 +187,148 @@ impl ImageDocument {
             redo: Vec::new(),
         })
     }
+    pub fn is_16bit(&self) -> bool {
+        self.current.pixels16.is_some()
+    }
     pub fn dpi(&self) -> Option<(u32, u32)> {
         self.current.dpi
+    }
+    /// Render a self-contained SVG snapshot with a bounded canvas and bundled font.
+    /// Bounded PNG/JPEG data URLs are supported; local/network resources are rejected.
+    pub fn open_svg(bytes: &[u8]) -> Result<Self, Error> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        if bytes.len() > 4 * 1024 * 1024 {
+            return Err(Error::TooLarge);
+        }
+        // Avoid unbounded SVGZ expansion and prohibit XML document types/entities.
+        if bytes.starts_with(&[0x1f, 0x8b]) || bytes.windows(9).any(|v| v == b"<!DOCTYPE") {
+            return Err(Error::UnsupportedFormat);
+        }
+        let xml = std::str::from_utf8(bytes).map_err(|_| Error::InvalidImage)?;
+        let tree = roxmltree::Document::parse(xml).map_err(|_| Error::InvalidImage)?;
+        for node in tree.descendants().filter(|n| n.is_element()) {
+            for attr in node.attributes() {
+                if attr.name().eq_ignore_ascii_case("href") {
+                    let value = attr.value().trim();
+                    if !value.starts_with('#')
+                        && !(node.tag_name().name() == "image" && value.starts_with("data:"))
+                    {
+                        return Err(Error::SvgResourcesDisallowed);
+                    }
+                }
+                let value = attr.value().to_ascii_lowercase();
+                if value.contains("@import") {
+                    return Err(Error::SvgResourcesDisallowed);
+                }
+                for part in value.split("url(").skip(1) {
+                    let target = part.trim_start().trim_start_matches(['\"', '\'']);
+                    if !target.starts_with('#') {
+                        return Err(Error::SvgResourcesDisallowed);
+                    }
+                }
+            }
+            if node.tag_name().name() == "style" {
+                let css = node.text().unwrap_or("").to_ascii_lowercase();
+                if css.contains("@import")
+                    || css.split("url(").skip(1).any(|part| {
+                        !part
+                            .trim_start()
+                            .trim_start_matches(['\"', '\''])
+                            .starts_with('#')
+                    })
+                {
+                    return Err(Error::SvgResourcesDisallowed);
+                }
+            }
+        }
+        let rejected = Arc::new(AtomicBool::new(false));
+        let mut options = resvg::usvg::Options::default();
+        options.font_family = "Noto Sans".into();
+        options.fontdb_mut().load_font_data(
+            include_bytes!("../../doc42-layout-probe/fixtures/NotoSans.ttf").to_vec(),
+        );
+        let a = rejected.clone();
+        let b = rejected.clone();
+        let used = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        options.image_href_resolver = resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(move |mime, data, _| {
+                use image::ImageDecoder;
+                let format = match mime {
+                    "image/png" => ImageFormat::Png,
+                    "image/jpeg" | "image/jpg" => ImageFormat::Jpeg,
+                    _ => {
+                        a.store(true, Ordering::Relaxed);
+                        return None;
+                    }
+                };
+                if data.len() > 2 * 1024 * 1024 || image::guess_format(&data).ok() != Some(format) {
+                    a.store(true, Ordering::Relaxed);
+                    return None;
+                }
+                let mut reader = ImageReader::with_format(Cursor::new(data.as_slice()), format);
+                let mut limits = Limits::default();
+                limits.max_image_width = Some(4096);
+                limits.max_image_height = Some(4096);
+                limits.max_alloc = Some(16 * 1024 * 1024);
+                reader.limits(limits);
+                let Ok(decoder) = reader.into_decoder() else {
+                    a.store(true, Ordering::Relaxed);
+                    return None;
+                };
+                let (w, h) = decoder.dimensions();
+                let count = w as usize * h as usize;
+                if count == 0
+                    || count > 4_000_000
+                    || used
+                        .fetch_add(count, Ordering::Relaxed)
+                        .saturating_add(count)
+                        > 4_000_000
+                    || image::DynamicImage::from_decoder(decoder).is_err()
+                {
+                    a.store(true, Ordering::Relaxed);
+                    return None;
+                }
+                Some(match format {
+                    ImageFormat::Png => resvg::usvg::ImageKind::PNG(data),
+                    _ => resvg::usvg::ImageKind::JPEG(data),
+                })
+            }),
+            resolve_string: Box::new(move |_, _| {
+                b.store(true, Ordering::Relaxed);
+                None
+            }),
+        };
+        let tree =
+            resvg::usvg::Tree::from_data(bytes, &options).map_err(|_| Error::InvalidImage)?;
+        if rejected.load(Ordering::Relaxed) {
+            return Err(Error::SvgResourcesDisallowed);
+        }
+        let width = tree.size().width().ceil() as u32;
+        let height = tree.size().height().ceil() as u32;
+        if width == 0
+            || height == 0
+            || width > MAX_DIMENSION
+            || height > MAX_DIMENSION
+            || u64::from(width) * u64::from(height) > MAX_PIXELS
+        {
+            return Err(Error::TooLarge);
+        }
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or(Error::TooLarge)?;
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
+        let mut pixels = pixmap.take();
+        for p in pixels.chunks_exact_mut(4) {
+            let a = u32::from(p[3]);
+            if a > 0 {
+                for c in &mut p[..3] {
+                    *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
+        }
+        Self::from_rgba(width, height, pixels, Some((96, 96)))
     }
     pub fn open(path: &Path) -> Result<Self, Error> {
         let file = File::open(path)?;
@@ -177,6 +340,13 @@ impl ImageDocument {
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(Error::TooLarge);
         }
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Self::open_svg(&bytes);
+        }
         let format = image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)?;
         if format == ImageFormat::Tiff {
             let decoder = tiff::decoder::Decoder::new(Cursor::new(&bytes))
@@ -184,6 +354,8 @@ impl ImageDocument {
             if decoder.more_images() {
                 return Err(Error::MultipageTiffUnsupported);
             }
+            let (mut pages, _) = Self::open_frames(path)?;
+            return pages.pop().ok_or(Error::InvalidImage);
         }
         if !matches!(
             format,
@@ -232,6 +404,11 @@ impl ImageDocument {
         let mut decoder = reader.into_decoder()?;
         use image::ImageDecoder;
         let icc = decoder.icc_profile()?;
+        let exif = decoder
+            .exif_metadata()?
+            .map(exif_metadata::Metadata::parse)
+            .transpose()
+            .map_err(|_| Error::InvalidImage)?;
         let (w, h) = decoder.dimensions();
         if u64::from(w) * u64::from(h) > MAX_PIXELS {
             return Err(Error::TooLarge);
@@ -240,6 +417,8 @@ impl ImageDocument {
         let mut raster = Raster::new(w, h, image.into_raw())?.orient(orientation);
         raster.dpi = Self::source_dpi(path)?;
         Ok(Self {
+            exif,
+            tiff_text: Vec::new(),
             icc,
             saved: raster.clone(),
             current: raster,
@@ -255,6 +434,13 @@ impl ImageDocument {
         }
         let mut bytes = Vec::new();
         file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok(Some((96, 96)));
+        }
         let format = image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)?;
         let mut dpi = None;
         let exif = exif::Reader::new()
@@ -343,6 +529,13 @@ impl ImageDocument {
         }
         let mut bytes = Vec::new();
         file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok(vec![Some((96, 96))]);
+        }
         if image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)? != ImageFormat::Tiff {
             return Ok(vec![Self::source_dpi(path)?]);
         }
@@ -394,24 +587,23 @@ impl ImageDocument {
         }
         let mut bytes = Vec::new();
         file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok(true);
+        }
         let format = image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)?;
         if format == ImageFormat::Tiff {
             let mut d = tiff::decoder::Decoder::new(Cursor::new(&bytes))
                 .map_err(|_| Error::InvalidImage)?;
             loop {
-                let color = d.colortype().map_err(|_| Error::InvalidImage)?;
-                if color.bit_depth() > 8 {
-                    return Ok(true);
-                }
+                let _ = d.colortype().map_err(|_| Error::InvalidImage)?;
                 use tiff::tags::Tag;
-                if [
-                    Tag::ImageDescription,
-                    Tag::Artist,
-                    Tag::DateTime,
-                    Tag::Software,
-                ]
-                .iter()
-                .any(|tag| d.get_tag(*tag).is_ok())
+                if [Tag::ExifDirectory, Tag::GpsDirectory]
+                    .iter()
+                    .any(|tag| d.get_tag(*tag).is_ok())
                 {
                     return Ok(true);
                 }
@@ -445,11 +637,20 @@ impl ImageDocument {
         limits.max_alloc = Some(MAX_PIXELS * 8);
         reader.limits(limits);
         let mut d = reader.into_decoder()?;
-        if d.exif_metadata()?.is_some()
-            || (!matches!(
-                format,
-                ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Tiff
-            ) && d.icc_profile()?.is_some())
+        let color = d.color_type();
+        if format != ImageFormat::Tiff
+            && color.bits_per_pixel() > u16::from(color.channel_count()) * 8
+        {
+            return Ok(true);
+        }
+        let exif = d.exif_metadata()?;
+        if exif.as_ref().is_some_and(|raw| {
+            !matches!(format, ImageFormat::Png | ImageFormat::Jpeg)
+                || exif_metadata::Metadata::parse(raw.clone()).map_or(true, |m| m.lossy)
+        }) || (!matches!(
+            format,
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Tiff
+        ) && d.icc_profile()?.is_some())
         {
             return Ok(true);
         }
@@ -466,6 +667,16 @@ impl ImageDocument {
         file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(Error::TooLarge);
+        }
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok((
+                vec![Self::open_svg(&bytes)?],
+                vec![image::Delay::from_numer_denom_ms(0, 1)],
+            ));
         }
         let format = image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)?;
         if format == ImageFormat::Tiff {
@@ -494,14 +705,25 @@ impl ImageDocument {
                 }
                 let color = decoder.colortype().map_err(|_| Error::InvalidImage)?;
                 let icc = decoder.get_tag_u8_vec(Tag::IccProfile).ok();
+                let tiff_text = [
+                    Tag::Artist,
+                    Tag::Copyright,
+                    Tag::DateTime,
+                    Tag::ImageDescription,
+                    Tag::Make,
+                    Tag::Model,
+                    Tag::Software,
+                    Tag::HostComputer,
+                ]
+                .into_iter()
+                .filter_map(|tag| match decoder.get_tag(tag) {
+                    Ok(tiff::decoder::ifd::Value::Ascii(value)) => Some((tag, value)),
+                    _ => None,
+                })
+                .collect();
                 let orientation = decoder
                     .get_tag_unsigned::<u16>(Tag::Orientation)
                     .unwrap_or(1);
-                let samples = match decoder.read_image().map_err(|_| Error::InvalidImage)? {
-                    DecodingResult::U8(v) => v,
-                    DecodingResult::U16(v) => v.into_iter().map(|n| (n >> 8) as u8).collect(),
-                    _ => return Err(Error::UnsupportedFormat),
-                };
                 let channels = match color {
                     ColorType::Gray(8 | 16) => 1,
                     ColorType::GrayA(8 | 16) => 2,
@@ -509,26 +731,52 @@ impl ImageDocument {
                     ColorType::RGBA(8 | 16) => 4,
                     _ => return Err(Error::UnsupportedFormat),
                 };
-                if samples.len() != w as usize * h as usize * channels {
-                    return Err(Error::InvalidImage);
-                }
-                let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-                for p in samples.chunks_exact(channels) {
-                    match channels {
-                        1 => rgba.extend_from_slice(&[p[0], p[0], p[0], 255]),
-                        2 => rgba.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
-                        3 => rgba.extend_from_slice(&[p[0], p[1], p[2], 255]),
-                        _ => rgba.extend_from_slice(p),
+                let orient = if (1..=8).contains(&orientation) {
+                    orientation
+                } else {
+                    1
+                };
+                let mut raster = match decoder.read_image().map_err(|_| Error::InvalidImage)? {
+                    DecodingResult::U8(samples) => {
+                        if samples.len() != w as usize * h as usize * channels {
+                            return Err(Error::InvalidImage);
+                        }
+                        let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+                        for p in samples.chunks_exact(channels) {
+                            match channels {
+                                1 => rgba.extend_from_slice(&[p[0], p[0], p[0], 255]),
+                                2 => rgba.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
+                                3 => rgba.extend_from_slice(&[p[0], p[1], p[2], 255]),
+                                _ => rgba.extend_from_slice(p),
+                            }
+                        }
+                        Raster::new(w, h, rgba)?.orient(orient)
                     }
-                }
-                let mut raster =
-                    Raster::new(w, h, rgba)?.orient(if (1..=8).contains(&orientation) {
-                        orientation
-                    } else {
-                        1
-                    });
+                    DecodingResult::U16(samples) => {
+                        if samples.len() != w as usize * h as usize * channels {
+                            return Err(Error::InvalidImage);
+                        }
+                        total += u64::from(w) * u64::from(h) * 8;
+                        if total > MAX_PIXELS * 4 {
+                            return Err(Error::TooLarge);
+                        }
+                        let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+                        for p in samples.chunks_exact(channels) {
+                            match channels {
+                                1 => rgba.extend_from_slice(&[p[0], p[0], p[0], u16::MAX]),
+                                2 => rgba.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
+                                3 => rgba.extend_from_slice(&[p[0], p[1], p[2], u16::MAX]),
+                                _ => rgba.extend_from_slice(p),
+                            }
+                        }
+                        Raster::new16(w, h, rgba)?.orient(orient)
+                    }
+                    _ => return Err(Error::UnsupportedFormat),
+                };
                 raster.dpi = page_dpi.get(docs.len()).copied().flatten();
                 docs.push(Self {
+                    exif: None,
+                    tiff_text,
                     icc,
                     saved: raster.clone(),
                     current: raster,
@@ -571,6 +819,8 @@ impl ImageDocument {
                     return Err(Error::TooLarge);
                 }
                 docs.push(Self {
+                    exif: None,
+                    tiff_text: Vec::new(),
                     icc: None,
                     saved: raster.clone(),
                     current: raster,
@@ -598,6 +848,13 @@ impl ImageDocument {
         }
         let mut bytes = Vec::new();
         file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok(AnimationLoop::Once);
+        }
         let format = image::guess_format(&bytes).map_err(|_| Error::UnsupportedFormat)?;
         match format {
             ImageFormat::Gif => {
@@ -638,33 +895,46 @@ impl ImageDocument {
                 tiff::encoder::TiffEncoder::new(&mut output).map_err(|_| Error::InvalidImage)?;
             for page in pages {
                 let r = &page.current;
-                let mut image = encoder
-                    .new_image::<tiff::encoder::colortype::RGBA8>(r.width, r.height)
-                    .map_err(|_| Error::InvalidImage)?;
-                if let Some((x, y)) = r.dpi {
-                    use tiff::encoder::Rational;
-                    image
-                        .encoder()
-                        .write_tag(tiff::tags::Tag::XResolution, Rational { n: x, d: 1 })
-                        .map_err(|_| Error::InvalidImage)?;
-                    image
-                        .encoder()
-                        .write_tag(tiff::tags::Tag::YResolution, Rational { n: y, d: 1 })
-                        .map_err(|_| Error::InvalidImage)?;
-                    image
-                        .encoder()
-                        .write_tag(tiff::tags::Tag::ResolutionUnit, 2u16)
-                        .map_err(|_| Error::InvalidImage)?;
+                macro_rules! write_page {
+                    ($kind:ty, $pixels:expr) => {{
+                        let mut image = encoder
+                            .new_image::<$kind>(r.width, r.height)
+                            .map_err(|_| Error::InvalidImage)?;
+                        if let Some((x, y)) = r.dpi {
+                            use tiff::encoder::Rational;
+                            image
+                                .encoder()
+                                .write_tag(tiff::tags::Tag::XResolution, Rational { n: x, d: 1 })
+                                .map_err(|_| Error::InvalidImage)?;
+                            image
+                                .encoder()
+                                .write_tag(tiff::tags::Tag::YResolution, Rational { n: y, d: 1 })
+                                .map_err(|_| Error::InvalidImage)?;
+                            image
+                                .encoder()
+                                .write_tag(tiff::tags::Tag::ResolutionUnit, 2u16)
+                                .map_err(|_| Error::InvalidImage)?;
+                        }
+                        for (tag, text) in &page.tiff_text {
+                            image
+                                .encoder()
+                                .write_tag(*tag, text.as_str())
+                                .map_err(|_| Error::InvalidImage)?;
+                        }
+                        if let Some(icc) = &page.icc {
+                            image
+                                .encoder()
+                                .write_tag(tiff::tags::Tag::IccProfile, icc.as_slice())
+                                .map_err(|_| Error::InvalidImage)?;
+                        }
+                        image.write_data($pixels).map_err(|_| Error::InvalidImage)?;
+                    }};
                 }
-                if let Some(icc) = &page.icc {
-                    image
-                        .encoder()
-                        .write_tag(tiff::tags::Tag::IccProfile, icc.as_slice())
-                        .map_err(|_| Error::InvalidImage)?;
+                if let Some(pixels) = &r.pixels16 {
+                    write_page!(tiff::encoder::colortype::RGBA16, pixels);
+                } else {
+                    write_page!(tiff::encoder::colortype::RGBA8, &r.pixels);
                 }
-                image
-                    .write_data(&r.pixels)
-                    .map_err(|_| Error::InvalidImage)?;
             }
         }
         Ok((
@@ -778,10 +1048,28 @@ impl ImageDocument {
         if (width, height) == (self.width(), self.height()) {
             return Ok(());
         }
-        let image = image::RgbaImage::from_raw(self.width(), self.height(), self.pixels().to_vec())
+        let mut next = if let Some(src) = &self.current.pixels16 {
+            let image = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
+                self.width(),
+                self.height(),
+                src.to_vec(),
+            )
             .ok_or(Error::InvalidImage)?;
-        let pixels = image::imageops::resize(&image, width, height, filter).into_raw();
-        let mut next = Raster::new(width, height, pixels)?;
+            Raster::new16(
+                width,
+                height,
+                image::imageops::resize(&image, width, height, filter).into_raw(),
+            )?
+        } else {
+            let image =
+                image::RgbaImage::from_raw(self.width(), self.height(), self.pixels().to_vec())
+                    .ok_or(Error::InvalidImage)?;
+            Raster::new(
+                width,
+                height,
+                image::imageops::resize(&image, width, height, filter).into_raw(),
+            )?
+        };
         next.dpi = self.current.dpi;
         Self::push(&mut self.undo, self.current.clone());
         self.current = next;
@@ -790,6 +1078,35 @@ impl ImageDocument {
     }
     fn apply_raster(&mut self, mut next: Raster) {
         next.dpi = self.current.dpi;
+        // Paint and masks are generated in the display buffer. Preserve exact untouched
+        // 16-bit samples and promote changed display channels to 16-bit.
+        if next.pixels16.is_none()
+            && (next.width, next.height) == (self.current.width, self.current.height)
+        {
+            if let Some(source) = &self.current.pixels16 {
+                let mut high = source.to_vec();
+                for ((old, new), target) in self
+                    .current
+                    .pixels
+                    .chunks_exact(4)
+                    .zip(next.pixels.chunks_exact(4))
+                    .zip(high.chunks_exact_mut(4))
+                {
+                    if old != new {
+                        if new[3] == 0 {
+                            target.fill(0);
+                        } else {
+                            for c in 0..4 {
+                                if old[c] != new[c] {
+                                    target[c] = u16::from(new[c]) * 257;
+                                }
+                            }
+                        }
+                    }
+                }
+                next.pixels16 = Some(high.into());
+            }
+        }
         if next != self.current {
             Self::push(&mut self.undo, self.current.clone());
             self.current = next;
@@ -810,7 +1127,17 @@ impl ImageDocument {
             let start = ((row * self.width() + x) as usize) * 4;
             pixels.extend_from_slice(&self.pixels()[start..start + width as usize * 4]);
         }
-        self.apply_raster(Raster::new(width, height, pixels)?);
+        let next = if let Some(src) = &self.current.pixels16 {
+            let mut pixels16 = Vec::with_capacity(width as usize * height as usize * 4);
+            for row in y..y + height {
+                let start = ((row * self.width() + x) * 4) as usize;
+                pixels16.extend_from_slice(&src[start..start + width as usize * 4]);
+            }
+            Raster::new16(width, height, pixels16)?
+        } else {
+            Raster::new(width, height, pixels)?
+        };
+        self.apply_raster(next);
         Ok(())
     }
     /// Apply brightness (-255..255), contrast (-100..100) and saturation (-100..100).
@@ -820,6 +1147,22 @@ impl ImageDocument {
             || !(-100..=100).contains(&saturation)
         {
             return Err(Error::InvalidImage);
+        }
+        if let Some(src) = &self.current.pixels16 {
+            let mut pixels = src.to_vec();
+            let c = (100.0 + contrast as f32) / 100.0;
+            let sat = (100.0 + saturation as f32) / 100.0;
+            for p in pixels.chunks_exact_mut(4) {
+                let gray = 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+                for v in &mut p[..3] {
+                    let value = gray + (*v as f32 - gray) * sat;
+                    *v = ((value - 32767.5) * c + 32767.5 + brightness as f32 * 257.0)
+                        .round()
+                        .clamp(0.0, 65535.0) as u16;
+                }
+            }
+            self.apply_raster(Raster::new16(self.width(), self.height(), pixels)?);
+            return Ok(());
         }
         let mut pixels = self.pixels().to_vec();
         let c = (100.0 + contrast as f32) / 100.0;
@@ -855,6 +1198,54 @@ impl ImageDocument {
             || !(0..=100).contains(&sharpness)
         {
             return Err(Error::InvalidImage);
+        }
+        if let Some(src) = &self.current.pixels16 {
+            let mut pixels = src.to_vec();
+            let exposure = 2f32.powf(exposure as f32 / 100.0);
+            let gamma = 100.0 / gamma as f32;
+            for p in pixels.chunks_exact_mut(4) {
+                let lum =
+                    (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 65535.0;
+                let shadow = shadows as f32 / 100.0 * (1.0 - lum).powi(2) * 0.35;
+                let highlight = highlights as f32 / 100.0 * lum.powi(2) * 0.35;
+                for (c, v) in p[..3].iter_mut().enumerate() {
+                    let tint = match c {
+                        0 => temperature as f32 / 500.0,
+                        2 => -temperature as f32 / 500.0,
+                        _ => 0.0,
+                    };
+                    *v = (((*v as f32 / 65535.0 * exposure).clamp(0.0, 1.0).powf(gamma)
+                        + shadow
+                        + highlight
+                        + tint)
+                        .clamp(0.0, 1.0)
+                        * 65535.0)
+                        .round() as u16;
+                }
+            }
+            if sharpness > 0 {
+                let image = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
+                    self.width(),
+                    self.height(),
+                    pixels,
+                )
+                .ok_or(Error::InvalidImage)?;
+                let blurred = image::imageops::blur(&image, 1.0);
+                let mut out = image.into_raw();
+                for (p, b) in out
+                    .chunks_exact_mut(4)
+                    .zip(blurred.as_raw().chunks_exact(4))
+                {
+                    for c in 0..3 {
+                        p[c] = (p[c] as f32 + (p[c] as f32 - b[c] as f32) * sharpness as f32 / 50.0)
+                            .round()
+                            .clamp(0.0, 65535.0) as u16;
+                    }
+                }
+                pixels = out;
+            }
+            self.apply_raster(Raster::new16(self.width(), self.height(), pixels)?);
+            return Ok(());
         }
         let mut pixels = self.pixels().to_vec();
         let exposure = 2f32.powf(exposure as f32 / 100.0);
@@ -1142,6 +1533,16 @@ impl ImageDocument {
     }
     /// Encode a snapshot. JPEG composites transparency against white; metadata is not preserved.
     pub fn save_snapshot_format(&self, format: &str) -> Result<(Vec<u8>, SaveState), Error> {
+        self.save_snapshot_format_quality(format, 90)
+    }
+    pub fn save_snapshot_format_quality(
+        &self,
+        format: &str,
+        quality: u8,
+    ) -> Result<(Vec<u8>, SaveState), Error> {
+        if !(1..=100).contains(&quality) {
+            return Err(Error::InvalidImage);
+        }
         let state = self.current.clone();
         let mut bytes = Vec::new();
         if format == "jpeg" || format == "bmp" {
@@ -1155,12 +1556,23 @@ impl ImageDocument {
             }
             if format == "jpeg" {
                 let mut encoder =
-                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90);
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
                 if let Some((x, y)) = state.dpi {
                     encoder.set_pixel_density(image::codecs::jpeg::PixelDensity {
                         density: (x as u16, y as u16),
                         unit: image::codecs::jpeg::PixelDensityUnit::Inches,
                     });
+                }
+                if let Some(exif) = &self.exif {
+                    let bytes = exif
+                        .encode(state.width, state.height, state.dpi)
+                        .map_err(|_| Error::InvalidImage)?;
+                    if bytes.len() > 65527 {
+                        return Err(Error::TooLarge);
+                    }
+                    encoder
+                        .set_exif_metadata(bytes)
+                        .map_err(|_| Error::UnsupportedFormat)?;
                 }
                 if let Some(icc) = &self.icc {
                     encoder
@@ -1205,6 +1617,14 @@ impl ImageDocument {
         }
         use image::ImageEncoder;
         let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+        if let Some(exif) = &self.exif {
+            encoder
+                .set_exif_metadata(
+                    exif.encode(state.width, state.height, state.dpi)
+                        .map_err(|_| Error::InvalidImage)?,
+                )
+                .map_err(|_| Error::UnsupportedFormat)?;
+        }
         if let Some(icc) = &self.icc {
             encoder
                 .set_icc_profile(icc.clone())
@@ -1273,12 +1693,232 @@ mod tests {
     fn document() -> ImageDocument {
         let r = fixture();
         ImageDocument {
+            exif: None,
+            tiff_text: Vec::new(),
             icc: None,
             current: r.clone(),
             saved: r,
             undo: vec![],
             redo: vec![],
         }
+    }
+    #[test]
+    fn sixteen_bit_markup_retains_untouched_samples_and_undo() {
+        let source = vec![
+            1000, 2000, 3000, 65535, 1001, 2001, 3001, 65535, 1002, 2002, 3002, 65535, 1003, 2003,
+            3003, 65535,
+        ];
+        let raster = Raster::new16(2, 2, source.clone()).unwrap();
+        let mut d = ImageDocument {
+            exif: None,
+            tiff_text: Vec::new(),
+            icc: None,
+            current: raster.clone(),
+            saved: raster,
+            undo: vec![],
+            redo: vec![],
+        };
+        d.draw_line(0, 0, 0, 0, [255, 0, 0, 255]).unwrap();
+        assert!(d.is_16bit());
+        let painted = d.current.pixels16.as_ref().unwrap();
+        assert_eq!(&painted[4..], &source[4..]);
+        d.erase_mask(&[false, true, false, false]).unwrap();
+        let erased = d.current.pixels16.as_ref().unwrap();
+        assert_eq!(&erased[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&erased[8..], &source[8..]);
+        d.undo();
+        d.undo();
+        assert_eq!(d.current.pixels16.as_deref(), Some(source.as_slice()));
+    }
+    #[test]
+    fn tiff_camera_and_capture_fields_are_preserved() {
+        use tiff::tags::Tag;
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut e = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+            let mut im = e.new_image::<tiff::encoder::colortype::RGB8>(2, 1).unwrap();
+            im.encoder().write_tag(Tag::Make, "Camera").unwrap();
+            im.encoder()
+                .write_tag(Tag::DateTime, "2026:11:06 12:00:00")
+                .unwrap();
+            im.write_data(&[12, 34, 56, 78, 90, 12]).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("in.tif");
+        std::fs::write(&path, bytes.into_inner()).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&path).unwrap());
+        let mut d = ImageDocument::open(&path).unwrap();
+        d.rotate_cw().unwrap();
+        let (out, _) = d.save_snapshot_format("tiff").unwrap();
+        let mut decoded = tiff::decoder::Decoder::new(Cursor::new(out)).unwrap();
+        assert!(
+            matches!(decoded.get_tag(Tag::Make).unwrap(),tiff::decoder::ifd::Value::Ascii(ref x) if x=="Camera")
+        );
+        assert!(
+            matches!(decoded.get_tag(Tag::DateTime).unwrap(),tiff::decoder::ifd::Value::Ascii(ref x) if x=="2026:11:06 12:00:00")
+        );
+    }
+    #[test]
+    fn exif_metadata_is_rebuilt_with_normalized_geometry_and_no_thumbnail() {
+        use image::ImageEncoder;
+        let fields = [
+            exif::Field {
+                tag: exif::Tag::Orientation,
+                ifd_num: exif::In::PRIMARY,
+                value: exif::Value::Short(vec![6]),
+            },
+            exif::Field {
+                tag: exif::Tag::Artist,
+                ifd_num: exif::In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"Author".to_vec()]),
+            },
+            exif::Field {
+                tag: exif::Tag::DateTimeOriginal,
+                ifd_num: exif::In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"2026:11:06 12:00:00".to_vec()]),
+            },
+            exif::Field {
+                tag: exif::Tag::GPSLatitudeRef,
+                ifd_num: exif::In::PRIMARY,
+                value: exif::Value::Ascii(vec![b"N".to_vec()]),
+            },
+            exif::Field {
+                tag: exif::Tag::GPSLatitude,
+                ifd_num: exif::In::PRIMARY,
+                value: exif::Value::Rational(vec![
+                    exif::Rational { num: 41, denom: 1 },
+                    exif::Rational { num: 1, denom: 1 },
+                    exif::Rational { num: 2, denom: 1 },
+                ]),
+            },
+        ];
+        let mut writer = exif::experimental::Writer::new();
+        for f in &fields {
+            writer.push_field(f);
+        }
+        writer.set_jpeg(b"stale-thumbnail-secret", exif::In::THUMBNAIL);
+        let mut raw = Cursor::new(Vec::new());
+        writer.write(&mut raw, true).unwrap();
+        let mut jpeg = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut jpeg);
+        encoder.set_exif_metadata(raw.into_inner()).unwrap();
+        encoder
+            .write_image(&[128; 18], 2, 3, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("source.jpg");
+        std::fs::write(&input, jpeg).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&input).unwrap());
+        let doc = ImageDocument::open(&input).unwrap();
+        assert_eq!((doc.width(), doc.height()), (3, 2));
+        let (output, _) = doc.save_snapshot_format("jpeg").unwrap();
+        assert!(!output
+            .windows(b"stale-thumbnail-secret".len())
+            .any(|v| v == b"stale-thumbnail-secret"));
+        let saved = dir.path().join("saved.jpg");
+        std::fs::write(&saved, output).unwrap();
+        let exif = exif::Reader::new()
+            .read_from_container(&mut BufReader::new(File::open(&saved).unwrap()))
+            .unwrap();
+        assert_eq!(
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(1)
+        );
+        assert_eq!(
+            exif.get_field(exif::Tag::PixelXDimension, exif::In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(3)
+        );
+        assert_eq!(
+            exif.get_field(exif::Tag::PixelYDimension, exif::In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(2)
+        );
+        assert!(exif
+            .get_field(exif::Tag::Artist, exif::In::PRIMARY)
+            .is_some());
+        assert!(exif
+            .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+            .is_some());
+        assert!(exif
+            .get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
+            .is_some());
+        assert!(exif.fields().all(|f| f.ifd_num == exif::In::PRIMARY));
+    }
+    #[test]
+    fn sixteen_bit_tiff_survives_rotation_crop_and_history() {
+        let pixels = vec![
+            1u16, 257, 4097, 65535, 1234, 2345, 3456, 65535, 50000, 40000, 30000, 65535, 65000,
+            500, 100, 65535,
+        ];
+        let mut raw = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut raw).unwrap();
+            encoder
+                .write_image::<tiff::encoder::colortype::RGBA16>(2, 2, &pixels)
+                .unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("16.tif");
+        std::fs::write(&path, raw.into_inner()).unwrap();
+        assert!(!ImageDocument::has_conversion_risk(&path).unwrap());
+        let (mut frames, _) = ImageDocument::open_frames(&path).unwrap();
+        let d = &mut frames[0];
+        assert!(d.is_16bit());
+        assert_eq!(d.current.pixels16.as_deref(), Some(pixels.as_slice()));
+        d.rotate_cw().unwrap();
+        d.crop(0, 0, 1, 2).unwrap();
+        let expected = d.current.pixels16.as_ref().unwrap().to_vec();
+        let (out, _) = d.save_snapshot_format("tiff").unwrap();
+        let saved = dir.path().join("out.tif");
+        std::fs::write(&saved, out).unwrap();
+        let reopened = ImageDocument::open(&saved).unwrap();
+        assert_eq!(
+            reopened.current.pixels16.as_deref(),
+            Some(expected.as_slice())
+        );
+        d.undo();
+        d.undo();
+        assert_eq!(d.current.pixels16.as_deref(), Some(pixels.as_slice()));
+        d.redo();
+        d.redo();
+        assert_eq!(d.current.pixels16.as_deref(), Some(expected.as_slice()));
+    }
+    #[test]
+    fn svg_render_and_resource_policy() {
+        let svg=br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="8" height="4" fill="#ff0000"/></svg>"##;
+        let doc = ImageDocument::open_svg(svg).unwrap();
+        assert_eq!((doc.width(), doc.height()), (8, 4));
+        assert_eq!(&doc.pixels()[..4], &[255, 0, 0, 255]);
+        let external=br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><image href="/tmp/private.png" width="2" height="2"/></svg>"#;
+        assert!(matches!(
+            ImageDocument::open_svg(external),
+            Err(Error::SvgResourcesDisallowed)
+        ));
+        use base64::Engine;
+        use image::ImageEncoder;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let valid = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="data:image/png;base64,{}" width="1" height="1"/></svg>"#,
+            base64::engine::general_purpose::STANDARD.encode(png)
+        );
+        let image = ImageDocument::open_svg(valid.as_bytes()).unwrap();
+        assert_eq!(image.pixels(), &[255, 0, 0, 255]);
+        let embedded=br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><image href="data:image/png;base64,aGVsbG8=" width="2" height="2"/></svg>"#;
+        assert!(matches!(
+            ImageDocument::open_svg(embedded),
+            Err(Error::SvgResourcesDisallowed)
+        ));
     }
     #[test]
     fn density_roundtrips_and_rotates_with_history() {
@@ -1330,6 +1970,8 @@ mod tests {
     fn cyrillic_text_is_rendered_and_undoable() {
         let raster = Raster::new(180, 60, vec![255; 180 * 60 * 4]).unwrap();
         let mut d = ImageDocument {
+            exif: None,
+            tiff_text: Vec::new(),
             icc: None,
             current: raster.clone(),
             saved: raster,

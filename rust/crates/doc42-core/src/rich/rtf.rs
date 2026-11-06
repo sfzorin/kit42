@@ -80,6 +80,44 @@ pub(super) fn rtf_export(s: &State) -> Result<Vec<u8>, Error> {
             }
         }
     }
+    for color in s
+        .blocks
+        .iter()
+        .filter_map(|b| {
+            if let Block::Table(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .flat_map(|t| t.rows.iter().flatten().filter_map(|c| c.fill))
+    {
+        if color > 0xffffff {
+            return Err(Error::Invalid("invalid cell color".into()));
+        }
+        if !colors.contains(&color) {
+            colors.push(color);
+        }
+    }
+    for border in s
+        .blocks
+        .iter()
+        .filter_map(|b| {
+            if let Block::Table(t) = b {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .flat_map(|t| t.rows.iter().flatten().filter_map(|c| c.border.as_ref()))
+    {
+        if border.color > 0xffffff || border.width_twips == 0 {
+            return Err(Error::Invalid("invalid cell border".into()));
+        }
+        if !colors.contains(&border.color) {
+            colors.push(border.color);
+        }
+    }
     let mut out = String::from("{\\rtf1\\ansi\\deff0\\uc1{\\fonttbl");
     for (i, font) in fonts.iter().enumerate() {
         write!(out, "{{\\f{i} ").unwrap();
@@ -143,20 +181,70 @@ pub(super) fn rtf_export(s: &State) -> Result<Vec<u8>, Error> {
             }
             Block::Paragraph(p) => write_paragraph(&mut out, p, &fonts, &colors, false, &s.fields)?,
             Block::Table(t) => {
-                for row in &t.rows {
+                let widths = super::table_edit::column_widths(t);
+                let layout = super::table_edit::table_layout(t)?;
+                for (row_index, row) in t.rows.iter().enumerate() {
                     out.push_str("\\trowd");
+                    let mut boundary = 0u32;
                     for (i, cell) in row.iter().enumerate() {
-                        if cell.row_span != 1
-                            || cell.col_span != 1
-                            || cell.fill.is_some()
-                            || cell.border.is_some()
-                            || cell.paragraphs.is_empty()
-                        {
+                        let (owner_row, anchor) = layout[row_index][i];
+                        let visual = &t.rows[owner_row][anchor];
+                        if cell.paragraphs.is_empty() {
                             return Err(Error::Unsupported(
                                 "RTF merged or styled table cells".into(),
                             ));
                         }
-                        write!(out, "\\cellx{}", (i + 1) * 1440).unwrap();
+                        if let Some(border) = &visual.border {
+                            let index = colors
+                                .iter()
+                                .position(|v| *v == border.color)
+                                .ok_or_else(|| Error::Invalid("missing border color".into()))?
+                                + 1;
+                            let end = anchor + visual.col_span as usize - 1;
+                            let bottom = owner_row + visual.row_span as usize - 1;
+                            for edge in ["t", "l", "b", "r"] {
+                                if edge == "l" && i != anchor
+                                    || edge == "r" && i != end
+                                    || edge == "t" && row_index != owner_row
+                                    || edge == "b" && row_index != bottom
+                                {
+                                    continue;
+                                }
+                                write!(
+                                    out,
+                                    "\\clbrdr{edge}\\brdrs\\brdrw{}\\brdrcf{index}",
+                                    border.width_twips
+                                )
+                                .unwrap();
+                            }
+                        }
+                        if let Some(fill) = visual.fill {
+                            let index = colors
+                                .iter()
+                                .position(|v| *v == fill)
+                                .ok_or_else(|| Error::Invalid("missing cell color".into()))?
+                                + 1;
+                            write!(out, "\\clcbpat{index}").unwrap();
+                        }
+                        if visual.col_span > 1 {
+                            out.push_str(if i == anchor { "\\clmgf" } else { "\\clmrg" });
+                        }
+                        if visual.row_span > 1 {
+                            out.push_str(if row_index == owner_row {
+                                "\\clvmgf"
+                            } else {
+                                "\\clvmrg"
+                            });
+                        }
+                        boundary = boundary
+                            .checked_add(*widths.get(i).ok_or_else(|| {
+                                Error::Invalid("missing table column width".into())
+                            })?)
+                            .ok_or(Error::Limit)?;
+                        if boundary > i32::MAX as u32 {
+                            return Err(Error::Limit);
+                        }
+                        write!(out, "\\cellx{boundary}").unwrap();
                     }
                     out.push(' ');
                     for cell in row {

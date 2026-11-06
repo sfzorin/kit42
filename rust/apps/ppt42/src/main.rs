@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 use ppt42_core::Presentation;
 use std::path::Path;
+mod rich;
 fn decode_image(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -19,10 +20,129 @@ struct Ppt {
     pptx_source: Option<ppt42_core::pptx::Source>,
     odp_source: Option<ppt42_core::odp::Source>,
     selected_object: Option<u64>,
-    drag: Option<(win42::Point, ppt42_core::SlideObject)>,
+    selected_objects: Vec<u64>,
+    drag: Option<Drag>,
+    rubber_band: Option<(win42::Point, win42::Point, bool)>,
     presenting: bool,
+    rich_edit_object: Option<u64>,
+    rich_draft: Option<ppt42_core::SlideObject>,
+    rich_selection: (usize, usize),
+}
+enum Drag {
+    Move(win42::Point, Vec<ppt42_core::SlideObject>),
+    Resize(win42::Point, ppt42_core::SlideObject),
 }
 impl Ppt {
+    fn rich_object(&self) -> Result<ppt42_core::SlideObject, String> {
+        if let Some(object) = &self.rich_draft {
+            return Ok(object.clone());
+        }
+        let id = self
+            .rich_edit_object
+            .ok_or("No text object is being edited")?;
+        self.deck.slides()[self.deck.current()]
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .cloned()
+            .ok_or("Text object no longer exists".into())
+    }
+    fn save_rich_document(&mut self, doc: &doc42_core::rich::RichDocument) -> Result<(), String> {
+        let mut object = self.rich_object()?;
+        rich::update_object(&mut object, doc)?;
+        self.rich_draft = Some(object);
+        Ok(())
+    }
+    fn finish_rich(&mut self, commit: bool) -> Result<(), String> {
+        let draft = self.rich_draft.take();
+        self.rich_edit_object = None;
+        if commit {
+            if let Some(object) = draft {
+                self.deck.update_object(object)?;
+            }
+        }
+        Ok(())
+    }
+    fn format_rich_selection(&mut self, id: u16) -> Result<(), String> {
+        let object = self.rich_object()?;
+        let mut doc = rich::document(&object)?;
+        let (paragraph, range, mut style, selection) =
+            rich::selection_style(&doc, self.rich_selection)?;
+        match id {
+            59 => style.bold = !style.bold,
+            60 => style.italic = !style.italic,
+            61 => style.underline = !style.underline,
+            _ => return Err("Unknown formatting action".into()),
+        }
+        doc.apply_text_style(paragraph, range, style, selection)
+            .map_err(|e| e.to_string())?;
+        self.save_rich_document(&doc)
+    }
+    fn format_rich_font(&mut self, font: win42::FontChoice) -> Result<(), String> {
+        let object = self.rich_object()?;
+        let mut doc = rich::document(&object)?;
+        let (p, range, mut style, selection) = rich::selection_style(&doc, self.rich_selection)?;
+        style.font = font.family;
+        style.size_half_points = (font.points * 2.0).round().clamp(2.0, 1024.0) as u16;
+        style.bold = font.bold;
+        style.italic = font.italic;
+        style.underline = font.underline;
+        style.color =
+            Some((font.color[0] as u32) << 16 | (font.color[1] as u32) << 8 | font.color[2] as u32);
+        doc.apply_text_style(p, range, style, selection)
+            .map_err(|e| e.to_string())?;
+        self.save_rich_document(&doc)
+    }
+    fn format_rich_paragraph(&mut self, id: u16) -> Result<(), String> {
+        use doc42_core::rich::{Alignment, Block, ListMarker, Selection};
+        let object = self.rich_object()?;
+        let mut doc = rich::document(&object)?;
+        let start = doc
+            .position_from_utf16(self.rich_selection.0.min(self.rich_selection.1))
+            .map_err(|e| e.to_string())?;
+        let end = doc
+            .position_from_utf16(self.rich_selection.0.max(self.rich_selection.1))
+            .map_err(|e| e.to_string())?;
+        if start.paragraph != end.paragraph {
+            return Err("Select within one paragraph".into());
+        }
+        let mut style = doc
+            .state()
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Paragraph(p) if p.id == start.paragraph => Some(p.style.clone()),
+                _ => None,
+            })
+            .ok_or("Paragraph missing")?;
+        match id {
+            43 => style.alignment = Alignment::Left,
+            44 => style.alignment = Alignment::Center,
+            45 => style.alignment = Alignment::Right,
+            62 => {
+                style.list = if style.list.is_some() {
+                    None
+                } else {
+                    Some(ListMarker {
+                        id: 1,
+                        level: 0,
+                        numbered: false,
+                    })
+                }
+            }
+            _ => return Err("Unknown paragraph action".into()),
+        };
+        doc.set_paragraph_style(
+            start.paragraph,
+            style,
+            Selection {
+                anchor: Some(start),
+                focus: Some(end),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        self.save_rich_document(&doc)
+    }
     fn new(deck: Presentation) -> Self {
         Self {
             deck,
@@ -31,12 +151,105 @@ impl Ppt {
             pending: None,
             next_save: 0,
             selected_object: None,
+            selected_objects: Vec::new(),
+            rubber_band: None,
             drag: None,
             presenting: false,
+            rich_edit_object: None,
+            rich_draft: None,
+            rich_selection: (0, 0),
         }
     }
 }
 impl Ppt {
+    fn selection(&self) -> Vec<u64> {
+        let slide = &self.deck.slides()[self.deck.current()];
+        let mut ids = self
+            .selected_objects
+            .iter()
+            .copied()
+            .filter(|id| slide.objects.iter().any(|o| o.id == *id))
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            if let Some(id) = self.selected_object {
+                if slide.objects.iter().any(|o| o.id == id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+    fn pointer_down(&mut self, p: win42::Point, add: bool) {
+        let selected = self.selection();
+        if !add && selected.len() == 1 {
+            if let Some(object) = self.deck.slides()[self.deck.current()]
+                .objects
+                .iter()
+                .find(|o| {
+                    o.id == selected[0]
+                        && (p.x - (o.x + o.width)).abs() <= 7.0
+                        && (p.y - (o.y + o.height)).abs() <= 7.0
+                })
+                .cloned()
+            {
+                self.drag = Some(Drag::Resize(p, object));
+                self.rubber_band = None;
+                return;
+            }
+        }
+        let object = self.deck.slides()[self.deck.current()]
+            .objects
+            .iter()
+            .rev()
+            .find(|o| p.x >= o.x && p.x <= o.x + o.width && p.y >= o.y && p.y <= o.y + o.height)
+            .cloned();
+        if let Some(object) = object {
+            let mut selection = selected;
+            let members = if let Some(group) = object.group_id {
+                self.deck.slides()[self.deck.current()]
+                    .objects
+                    .iter()
+                    .filter(|o| o.group_id == Some(group))
+                    .map(|o| o.id)
+                    .collect::<Vec<_>>()
+            } else {
+                vec![object.id]
+            };
+            if add {
+                if selection.contains(&object.id) {
+                    selection.retain(|id| !members.contains(id));
+                    self.selected_object = selection.last().copied();
+                    self.selected_objects = selection;
+                    self.drag = None;
+                    return;
+                }
+                for id in members {
+                    if !selection.contains(&id) {
+                        selection.push(id);
+                    }
+                }
+            } else if !selection.contains(&object.id) {
+                selection = members;
+            }
+            self.selected_object = Some(object.id);
+            self.selected_objects = selection.clone();
+            let objects = self.deck.slides()[self.deck.current()]
+                .objects
+                .iter()
+                .filter(|o| selection.contains(&o.id))
+                .cloned()
+                .collect();
+            self.drag = Some(Drag::Move(p, objects));
+            self.rubber_band = None;
+        } else {
+            if !add {
+                self.selected_object = None;
+                self.selected_objects.clear();
+            }
+            self.drag = None;
+            self.rubber_band = Some((p, p, add));
+        }
+    }
     fn scene_for(&self, index: usize, show_selection: bool) -> Option<win42::CanvasScene> {
         use win42::{CanvasScene, Point, SceneItem};
         let slide = &self.deck.slides()[index];
@@ -102,15 +315,14 @@ impl Ppt {
             let o = self
                 .drag
                 .as_ref()
-                .filter(|(_, o)| {
-                    editable
-                        && show_selection
-                        && index == self.deck.current()
-                        && o.id == original.id
+                .filter(|_| editable && show_selection && index == self.deck.current())
+                .and_then(|drag| match drag {
+                    Drag::Move(_, objects) => objects.iter().find(|o| o.id == original.id),
+                    Drag::Resize(_, object) if object.id == original.id => Some(object),
+                    _ => None,
                 })
-                .map(|(_, o)| o)
                 .unwrap_or(original);
-            let stroke = if editable && show_selection && self.selected_object == Some(o.id) {
+            let stroke = if editable && show_selection && self.selection().contains(&o.id) {
                 [0, 100, 220]
             } else {
                 o.stroke
@@ -125,9 +337,7 @@ impl Ppt {
                             height: o.height,
                             fill: o.fill,
                             stroke: if o.stroke_visible
-                                || (editable
-                                    && show_selection
-                                    && self.selected_object == Some(o.id))
+                                || (editable && show_selection && self.selection().contains(&o.id))
                             {
                                 stroke
                             } else {
@@ -135,7 +345,7 @@ impl Ppt {
                             },
                         })
                     } else if o.stroke_visible
-                        || (editable && show_selection && self.selected_object == Some(o.id))
+                        || (editable && show_selection && self.selection().contains(&o.id))
                     {
                         items.push(SceneItem::Path {
                             points: vec![
@@ -177,7 +387,7 @@ impl Ppt {
                         height: o.height,
                         fill: o.fill_visible.then_some(o.fill),
                         stroke: (o.stroke_visible
-                            || (editable && show_selection && self.selected_object == Some(o.id)))
+                            || (editable && show_selection && self.selection().contains(&o.id)))
                         .then_some(stroke),
                     });
                 }
@@ -193,7 +403,7 @@ impl Ppt {
                             pixel_height: pixels.height(),
                             rgba: pixels.into_raw(),
                         });
-                        if editable && show_selection && self.selected_object == Some(o.id) {
+                        if editable && show_selection && self.selection().contains(&o.id) {
                             items.push(SceneItem::Path {
                                 points: vec![
                                     Point { x: o.x, y: o.y },
@@ -258,26 +468,90 @@ impl Ppt {
             }
             if !o.text.is_empty() {
                 let style = &o.text_style;
-                items.push(SceneItem::TextBox {
-                    x: o.x + 5.0,
-                    y: o.y + 5.0,
-                    width: (o.width - 10.0).max(1.0),
-                    height: (o.height - 10.0).max(1.0),
-                    text: o.text.clone(),
-                    color: style.color,
-                    font: win42::SceneFont {
-                        family: style.family.clone(),
-                        points: style.points,
-                        bold: style.bold,
-                        italic: style.italic,
-                        underline: style.underline,
-                    },
-                    align: match style.align {
-                        ppt42_core::TextAlign::Left => win42::TextAlign::Left,
-                        ppt42_core::TextAlign::Center => win42::TextAlign::Center,
-                        ppt42_core::TextAlign::Right => win42::TextAlign::Right,
-                    },
-                    wrap: true,
+                if o.paragraphs.is_empty() {
+                    items.push(SceneItem::TextBox {
+                        x: o.x + 5.0,
+                        y: o.y + 5.0,
+                        width: (o.width - 10.0).max(1.0),
+                        height: (o.height - 10.0).max(1.0),
+                        text: o.text.clone(),
+                        color: style.color,
+                        font: win42::SceneFont {
+                            family: style.family.clone(),
+                            points: style.points,
+                            bold: style.bold,
+                            italic: style.italic,
+                            underline: style.underline,
+                        },
+                        align: match style.align {
+                            ppt42_core::TextAlign::Left => win42::TextAlign::Left,
+                            ppt42_core::TextAlign::Center => win42::TextAlign::Center,
+                            ppt42_core::TextAlign::Right => win42::TextAlign::Right,
+                        },
+                        wrap: true,
+                    });
+                } else {
+                    items.push(SceneItem::RichText {
+                        x: o.x + 5.0,
+                        y: o.y + 5.0,
+                        width: (o.width - 10.0).max(1.0),
+                        height: (o.height - 10.0).max(1.0),
+                        paragraphs: o
+                            .paragraphs
+                            .iter()
+                            .map(|p| win42::SceneParagraph {
+                                align: match p.align {
+                                    ppt42_core::TextAlign::Left => win42::TextAlign::Left,
+                                    ppt42_core::TextAlign::Center => win42::TextAlign::Center,
+                                    ppt42_core::TextAlign::Right => win42::TextAlign::Right,
+                                },
+                                bullet: p.bullet,
+                                runs: p
+                                    .runs
+                                    .iter()
+                                    .map(|r| win42::SceneRun {
+                                        text: r.text.clone(),
+                                        font: win42::SceneFont {
+                                            family: r.style.family.clone(),
+                                            points: r.style.points,
+                                            bold: r.style.bold,
+                                            italic: r.style.italic,
+                                            underline: r.style.underline,
+                                        },
+                                        color: r.style.color,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    });
+                }
+            }
+            if editable
+                && show_selection
+                && self.selection().len() == 1
+                && self.selection().contains(&o.id)
+            {
+                items.push(SceneItem::Rect {
+                    x: o.x + o.width - 4.0,
+                    y: o.y + o.height - 4.0,
+                    width: 8.0,
+                    height: 8.0,
+                    fill: [255, 255, 255],
+                    stroke: [0, 100, 220],
+                });
+            }
+        }
+        if show_selection {
+            if let Some((a, b, _)) = self.rubber_band {
+                items.push(SceneItem::Path {
+                    points: vec![
+                        Point { x: a.x, y: a.y },
+                        Point { x: b.x, y: a.y },
+                        Point { x: b.x, y: b.y },
+                        Point { x: a.x, y: b.y },
+                    ],
+                    color: [0, 100, 220],
+                    closed: true,
                 });
             }
         }
@@ -288,6 +562,73 @@ impl Ppt {
     }
 }
 impl win42::App for Ppt {
+    fn inline_rich_rect(&self) -> Option<win42::CanvasRect> {
+        let o = self.rich_draft.as_ref()?;
+        Some(win42::CanvasRect {
+            x: o.x + 5.0,
+            y: o.y + 5.0,
+            width: (o.width - 10.0).max(1.0),
+            height: (o.height - 10.0).max(1.0),
+        })
+    }
+    fn finish_inline_rich(&mut self, commit: bool) -> Result<(), String> {
+        self.finish_rich(commit)
+    }
+    fn uses_rich_edit(&self) -> bool {
+        true
+    }
+    fn rich_text(&self) -> Option<Vec<u8>> {
+        let object = self.rich_object().ok()?;
+        rich::document(&object).ok()?.rich_edit_projection().ok()
+    }
+    fn edit_rich_text(&mut self, rtf: &[u8], selection: (usize, usize)) -> Result<(), String> {
+        let object = self.rich_object()?;
+        let mut doc = rich::document(&object)?;
+        doc.apply_rich_edit_projection(rtf, selection)
+            .map_err(|e| e.to_string())?;
+        self.rich_selection = selection;
+        self.save_rich_document(&doc)
+    }
+    fn set_rich_selection(&mut self, selection: (usize, usize)) {
+        self.rich_selection = selection;
+    }
+    fn rich_selection_to_restore(&self) -> Option<(usize, usize)> {
+        self.rich_edit_object.map(|_| self.rich_selection)
+    }
+    fn canvas_pointer_modifiers(&self) -> bool {
+        true
+    }
+    fn clipboard_request(&self, id: u16) -> Option<win42::ClipboardRequest> {
+        match id {
+            56 => self.deck.copy_objects(&self.selection()).ok().map(|bytes| {
+                win42::ClipboardRequest::WriteData {
+                    format: "Suite42.Presentation.Objects.v1".into(),
+                    bytes,
+                }
+            }),
+            57 => Some(win42::ClipboardRequest::ReadData(
+                "Suite42.Presentation.Objects.v1".into(),
+            )),
+            _ => None,
+        }
+    }
+    fn clipboard_data(&mut self, id: u16, bytes: Vec<u8>) -> Result<(), String> {
+        if id != 57 {
+            return Err("Unknown clipboard command".into());
+        }
+        if (self.pptx_source.is_some() || self.odp_source.is_some())
+            && Presentation::clipboard_has_groups(&bytes)?
+        {
+            return Err(
+                "Pasting grouped objects into an existing office package is not supported yet"
+                    .into(),
+            );
+        }
+        let ids = self.deck.paste_objects(&bytes)?;
+        self.selected_object = ids.last().copied();
+        self.selected_objects = ids;
+        Ok(())
+    }
     fn presentation_size(&self) -> Option<(f64, f64)> {
         self.presenting.then_some((720.0, 405.0))
     }
@@ -368,6 +709,23 @@ impl win42::App for Ppt {
                         *width *= sx;
                         *height *= sy;
                         font.points *= sy;
+                    }
+                    win42::SceneItem::RichText {
+                        x,
+                        y,
+                        width,
+                        height,
+                        paragraphs,
+                    } => {
+                        *x *= sx;
+                        *y *= sy;
+                        *width *= sx;
+                        *height *= sy;
+                        for p in paragraphs {
+                            for r in &mut p.runs {
+                                r.font.points *= sy;
+                            }
+                        }
                     }
                     win42::SceneItem::Path { points, .. } => {
                         for p in points {
@@ -455,6 +813,7 @@ impl win42::App for Ppt {
         }
         decode_image(&bytes)?;
         self.selected_object = Some(self.deck.insert_picture(bytes)?);
+        self.selected_objects.clear();
         Ok(())
     }
     fn dialog_request(&self, id: u16) -> Option<win42::DialogRequest> {
@@ -472,6 +831,12 @@ impl win42::App for Ppt {
         }
     }
     fn dialog_result(&mut self, id: u16, result: win42::DialogResult) -> Result<(), String> {
+        if id == 42 && self.rich_edit_object.is_some() {
+            return match result {
+                win42::DialogResult::Font(font) => self.format_rich_font(font),
+                _ => Err("Expected a font".into()),
+            };
+        }
         let object_id = self.selected_object.ok_or("Select an object")?;
         let mut object = self.deck.slides()[self.deck.current()]
             .objects
@@ -490,6 +855,11 @@ impl win42::App for Ppt {
                 style.italic = font.italic;
                 style.underline = font.underline;
                 style.color = font.color;
+                for paragraph in &mut object.paragraphs {
+                    for run in &mut paragraph.runs {
+                        run.style = style.clone();
+                    }
+                }
             }
             _ => return Err("Unknown color action".into()),
         }
@@ -550,6 +920,7 @@ impl win42::App for Ppt {
                 let rows = values[0].parse().map_err(|_| "Invalid row count")?;
                 let cols = values[1].parse().map_err(|_| "Invalid column count")?;
                 self.selected_object = Some(self.deck.insert_table(rows, cols)?);
+                self.selected_objects.clear();
                 Ok(())
             }
             34 if values.len() == 3 => {
@@ -616,6 +987,7 @@ impl win42::App for Ppt {
                     .cloned()
                     .ok_or("Object no longer exists")?;
                 object.text = values[0].clone();
+                object.paragraphs.clear();
                 self.deck.update_object(object)
             }
             26 if values.len() == 4 => {
@@ -670,38 +1042,93 @@ impl win42::App for Ppt {
             return Ok(());
         }
         match event {
-            PointerDown(p) => {
-                let object = self.deck.slides()[self.deck.current()]
-                    .objects
-                    .iter()
-                    .rev()
-                    .find(|o| {
-                        p.x >= o.x && p.x <= o.x + o.width && p.y >= o.y && p.y <= o.y + o.height
-                    })
-                    .cloned();
-                self.selected_object = object.as_ref().map(|o| o.id);
-                self.drag = object.map(|o| (p, o));
+            DoubleClick(p) => {
+                self.pointer_down(p, false);
+                self.drag = None;
+                if self.enabled(58) {
+                    self.action(58)?;
+                }
             }
+            PointerDown(p) => self.pointer_down(p, false),
+            PointerDownModified { point, modifiers } => self.pointer_down(point, modifiers != 0),
             PointerMove(p) => {
-                if let Some((start, ref mut object)) = self.drag {
-                    object.x += p.x - start.x;
-                    object.y += p.y - start.y;
-                    self.drag.as_mut().unwrap().0 = p;
+                if let Some(drag) = self.drag.as_mut() {
+                    match drag {
+                        Drag::Move(start, objects) => {
+                            for object in objects {
+                                object.x += p.x - start.x;
+                                object.y += p.y - start.y;
+                            }
+                            *start = p;
+                        }
+                        Drag::Resize(start, object) => {
+                            object.width = (object.width + p.x - start.x).max(1.0);
+                            object.height = (object.height + p.y - start.y).max(1.0);
+                            *start = p;
+                        }
+                    }
+                }
+                if let Some((_, ref mut current, _)) = self.rubber_band {
+                    *current = p;
                 }
             }
             PointerUp(p) => {
-                if let Some((start, mut object)) = self.drag.take() {
-                    object.x += p.x - start.x;
-                    object.y += p.y - start.y;
-                    self.deck.update_object(object)?;
+                if let Some(drag) = self.drag.take() {
+                    match drag {
+                        Drag::Move(start, mut objects) => {
+                            for object in &mut objects {
+                                object.x += p.x - start.x;
+                                object.y += p.y - start.y;
+                            }
+                            self.deck.update_objects(objects)?;
+                        }
+                        Drag::Resize(start, mut object) => {
+                            object.width = (object.width + p.x - start.x).max(1.0);
+                            object.height = (object.height + p.y - start.y).max(1.0);
+                            self.deck.update_object(object)?;
+                        }
+                    }
+                }
+                if let Some((a, _, add)) = self.rubber_band.take() {
+                    let (left, right) = (a.x.min(p.x), a.x.max(p.x));
+                    let (top, bottom) = (a.y.min(p.y), a.y.max(p.y));
+                    let mut ids = if add { self.selection() } else { Vec::new() };
+                    for o in &self.deck.slides()[self.deck.current()].objects {
+                        if o.x >= left
+                            && o.y >= top
+                            && o.x + o.width <= right
+                            && o.y + o.height <= bottom
+                            && !ids.contains(&o.id)
+                        {
+                            ids.push(o.id);
+                        }
+                    }
+                    let groups = self.deck.slides()[self.deck.current()]
+                        .objects
+                        .iter()
+                        .filter(|o| ids.contains(&o.id))
+                        .filter_map(|o| o.group_id)
+                        .collect::<Vec<_>>();
+                    for o in &self.deck.slides()[self.deck.current()].objects {
+                        if o.group_id.is_some_and(|id| groups.contains(&id)) && !ids.contains(&o.id)
+                        {
+                            ids.push(o.id);
+                        }
+                    }
+                    self.selected_object = ids.last().copied();
+                    self.selected_objects = ids;
                 }
             }
-            Cancel => self.drag = None,
+            Cancel => {
+                self.drag = None;
+                self.rubber_band = None;
+            }
             Key { code: 46, .. } => {
                 if self.enabled(27) {
-                    if let Some(id) = self.selected_object.take() {
-                        self.deck.delete_object(id)?;
-                    }
+                    let ids = self.selection();
+                    self.deck.delete_objects(&ids)?;
+                    self.selected_object = None;
+                    self.selected_objects.clear();
                 }
             }
             _ => {}
@@ -742,6 +1169,9 @@ impl win42::App for Ppt {
         ]
     }
     fn save_snapshot(&mut self, format: &str) -> Result<Option<(u64, Vec<u8>)>, String> {
+        if self.rich_edit_object.is_some() {
+            self.finish_rich(true)?;
+        }
         let (native_bytes, state) = (&self.deck).save_snapshot().map_err(|e| e.to_string())?;
         let bytes = match (format, self.pptx_source.as_ref()) {
             ("json", None) if self.odp_source.is_none() => native_bytes,
@@ -818,6 +1248,25 @@ impl win42::App for Ppt {
             (43, "Align Text Left"),
             (44, "Align Text Center"),
             (45, "Align Text Right"),
+            (46, "Select All Objects"),
+            (47, "Align Objects Left"),
+            (48, "Align Objects Center"),
+            (49, "Align Objects Right"),
+            (50, "Align Objects Top"),
+            (51, "Align Objects Middle"),
+            (52, "Align Objects Bottom"),
+            (53, "Distribute Horizontally"),
+            (54, "Distribute Vertically"),
+            (55, "Duplicate Objects"),
+            (56, "Copy Objects"),
+            (57, "Paste Objects"),
+            (58, "Edit Rich Text / Done"),
+            (59, "Bold Selection"),
+            (60, "Italic Selection"),
+            (61, "Underline Selection"),
+            (62, "Toggle Paragraph Bullet"),
+            (63, "Group Objects"),
+            (64, "Ungroup Objects"),
         ]
     }
     fn items(&self) -> Vec<String> {
@@ -833,6 +1282,9 @@ impl win42::App for Ppt {
         format!("{}\r\n{}", s.title, win42::to_native_text(&s.body))
     }
     fn status(&self) -> String {
+        if self.rich_edit_object.is_some() {
+            return "Editing text in place | Select text for formatting | click outside or Done to commit; Esc cancels".into();
+        }
         if self.odp_source.is_some() {
             return format!("Slide {} of {} | ODP: supported objects editable; other content preserved but may not be displayed",self.deck.current()+1,self.deck.slides().len());
         }
@@ -847,12 +1299,25 @@ impl win42::App for Ppt {
     }
     fn dirty(&self) -> bool {
         self.deck.is_dirty()
+            || self.rich_draft.as_ref().is_some_and(|draft| {
+                self.deck.slides()[self.deck.current()]
+                    .objects
+                    .iter()
+                    .find(|o| o.id == draft.id)
+                    .is_none_or(|o| o != draft)
+            })
     }
     fn can_undo(&self) -> bool {
-        self.deck.can_undo()
+        self.rich_draft.as_ref().is_some_and(|draft| {
+            self.deck.slides()[self.deck.current()]
+                .objects
+                .iter()
+                .find(|o| o.id == draft.id)
+                .is_none_or(|o| o != draft)
+        }) || self.deck.can_undo()
     }
     fn can_redo(&self) -> bool {
-        self.deck.can_redo()
+        self.rich_draft.is_none() && self.deck.can_redo()
     }
     fn selected(&self) -> usize {
         self.deck.current()
@@ -890,6 +1355,9 @@ impl win42::App for Ppt {
         Ok(())
     }
     fn save(&mut self, p: &Path) -> Result<(), String> {
+        if self.rich_edit_object.is_some() {
+            self.finish_rich(true)?;
+        }
         if let Some(source) = &self.odp_source {
             use std::io::Write;
             let bytes = ppt42_core::odp::export_overlay(&self.deck, source)?;
@@ -920,10 +1388,20 @@ impl win42::App for Ppt {
         self.deck.edit(title.into(), body.into())
     }
     fn select(&mut self, i: usize) {
+        if self.rich_edit_object.is_some() {
+            let _ = self.finish_rich(true);
+        }
         let _ = self.deck.select(i);
         self.selected_object = None;
+        self.selected_objects.clear();
+        self.rich_edit_object = None;
+        self.drag = None;
+        self.rubber_band = None;
     }
     fn enabled(&self, id: u16) -> bool {
+        if self.rich_edit_object.is_some() && id >= 10 && !matches!(id,42..=45|58..=62) {
+            return false;
+        }
         if self.pptx_source.is_some() && matches!(id, 24 | 28 | 29) {
             return false;
         }
@@ -950,10 +1428,10 @@ impl win42::App for Ppt {
         }
         if self.pptx_source.is_some()
             && matches!(id, 27 | 30 | 31)
-            && self.selected_object.is_some_and(|object| {
+            && self.selection().iter().any(|object| {
                 self.pptx_source.as_ref().unwrap().is_original_object(
                     self.deck.slides()[self.deck.current()].source_identity(),
-                    object,
+                    *object,
                 )
             })
         {
@@ -964,10 +1442,10 @@ impl win42::App for Ppt {
         }
         if self.odp_source.is_some()
             && matches!(id, 27 | 30 | 31)
-            && self.selected_object.is_some_and(|object| {
+            && self.selection().iter().any(|object| {
                 self.odp_source.as_ref().unwrap().is_original_object(
                     self.deck.slides()[self.deck.current()].source_identity(),
-                    object,
+                    *object,
                 )
             })
         {
@@ -985,7 +1463,67 @@ impl win42::App for Ppt {
         }
         let i = self.deck.current();
         let n = self.deck.slides().len();
+        if self.rich_edit_object.is_none()
+            && matches!(id, 25 | 42..=45)
+            && (self.pptx_source.is_some() || self.odp_source.is_some())
+            && self.selected_object.is_some_and(|id| {
+                self.deck.slides()[i]
+                    .objects
+                    .iter()
+                    .any(|o| o.id == id && !o.paragraphs.is_empty())
+            })
+        {
+            return false;
+        }
         match id {
+            58 => {
+                self.rich_edit_object.is_some()
+                    || self.selected_object.is_some_and(|id| {
+                        self.deck.slides()[i].objects.iter().any(|o| {
+                            o.id == id
+                                && !matches!(
+                                    o.kind,
+                                    ppt42_core::ObjectKind::Picture | ppt42_core::ObjectKind::Table
+                                )
+                                && rich::document(o).is_ok_and(|d| d.rich_edit_projection().is_ok())
+                        }) && self.pptx_source.as_ref().is_none_or(|s| {
+                            s.can_edit_rich(self.deck.slides()[i].source_identity(), id)
+                        }) && self.odp_source.as_ref().is_none_or(|s| {
+                            s.can_edit_rich(self.deck.slides()[i].source_identity(), id)
+                        })
+                    })
+            }
+            59..=62 => self.rich_edit_object.is_some(),
+            46 => !self.deck.slides()[i].objects.is_empty(),
+            47..=52 => self.selection().len() >= 2,
+            53 | 54 => self.selection().len() >= 3,
+            55 => {
+                !self.selection().is_empty()
+                    && ((self.pptx_source.is_none() && self.odp_source.is_none())
+                        || !self.deck.slides()[i]
+                            .objects
+                            .iter()
+                            .any(|o| self.selection().contains(&o.id) && o.group_id.is_some()))
+            }
+            63 => {
+                self.pptx_source.is_none()
+                    && self.odp_source.is_none()
+                    && self.selection().len() >= 2
+                    && self.deck.slides()[i]
+                        .objects
+                        .iter()
+                        .filter(|o| self.selection().contains(&o.id))
+                        .all(|o| o.group_id.is_none())
+            }
+            64 => {
+                self.pptx_source.is_none()
+                    && self.odp_source.is_none()
+                    && self.deck.slides()[i]
+                        .objects
+                        .iter()
+                        .any(|o| self.selection().contains(&o.id) && o.group_id.is_some())
+            }
+            56 => !self.selection().is_empty(),
             42..=45 => {
                 self.selected_object.is_some_and(|id| {
                     self.deck.slides()[i].objects.iter().any(|o| {
@@ -1057,10 +1595,16 @@ impl win42::App for Ppt {
         let i = self.deck.current();
         match id {
             4 => {
+                if self.rich_edit_object.is_some() {
+                    self.finish_rich(true)?;
+                }
                 self.deck.undo();
                 Ok(())
             }
             5 => {
+                if self.rich_edit_object.is_some() {
+                    self.finish_rich(true)?;
+                }
                 self.deck.redo();
                 Ok(())
             }
@@ -1069,13 +1613,57 @@ impl win42::App for Ppt {
             12 => self.deck.move_slide(i, i - 1),
             13 => self.deck.move_slide(i, i + 1),
             14 => self.deck.duplicate(),
+            46 => {
+                self.selected_objects =
+                    self.deck.slides()[i].objects.iter().map(|o| o.id).collect();
+                self.selected_object = self.selected_objects.last().copied();
+                Ok(())
+            }
+            47..=54 => {
+                let mode = match id {
+                    47 => ppt42_core::ObjectAlignment::Left,
+                    48 => ppt42_core::ObjectAlignment::Center,
+                    49 => ppt42_core::ObjectAlignment::Right,
+                    50 => ppt42_core::ObjectAlignment::Top,
+                    51 => ppt42_core::ObjectAlignment::Middle,
+                    52 => ppt42_core::ObjectAlignment::Bottom,
+                    53 => ppt42_core::ObjectAlignment::DistributeHorizontal,
+                    _ => ppt42_core::ObjectAlignment::DistributeVertical,
+                };
+                self.deck.align_objects(&self.selection(), mode)
+            }
+            55 => {
+                let ids = self.deck.duplicate_objects(&self.selection())?;
+                self.selected_object = ids.last().copied();
+                self.selected_objects = ids;
+                Ok(())
+            }
+            58 => {
+                if self.rich_edit_object.is_some() {
+                    self.finish_rich(true)?;
+                } else {
+                    self.rich_edit_object = self.selected_object;
+                    self.rich_draft = Some(self.rich_object()?);
+                    self.rich_selection = (0, 0);
+                }
+                Ok(())
+            }
+            59..=61 => self.format_rich_selection(id),
+            62 => self.format_rich_paragraph(id),
+            63 => self.deck.group_objects(&self.selection()),
+            64 => self.deck.ungroup_objects(&self.selection()),
             41 => {
                 self.presenting = true;
                 self.selected_object = None;
+                self.selected_objects.clear();
+                self.rubber_band = None;
                 self.drag = None;
                 Ok(())
             }
             43..=45 => {
+                if self.rich_edit_object.is_some() {
+                    return self.format_rich_paragraph(id);
+                }
                 let object_id = self.selected_object.ok_or("Select an object")?;
                 let mut object = self.deck.slides()[i]
                     .objects
@@ -1088,11 +1676,17 @@ impl win42::App for Ppt {
                     44 => ppt42_core::TextAlign::Center,
                     _ => ppt42_core::TextAlign::Right,
                 };
+                for paragraph in &mut object.paragraphs {
+                    paragraph.align = object.text_style.align;
+                }
                 self.deck.update_object(object)
             }
             27 => {
-                let id = self.selected_object.take().ok_or("Select an object")?;
-                self.deck.delete_object(id)
+                let ids = self.selection();
+                self.deck.delete_objects(&ids)?;
+                self.selected_object = None;
+                self.selected_objects.clear();
+                Ok(())
             }
             28 | 29 => self
                 .deck
@@ -1112,6 +1706,7 @@ impl win42::App for Ppt {
                         String::new()
                     },
                 )?);
+                self.selected_objects.clear();
                 Ok(())
             }
             _ => Ok(()),
@@ -1125,6 +1720,199 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+    #[test]
+    fn rich_draft_save_captures_revision_and_cancel_is_lossless() {
+        let mut app = Ppt::new(Presentation::new());
+        let id = app
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Text, "hello".into())
+            .unwrap();
+        let (_, baseline) = app.deck.save_snapshot().unwrap();
+        app.deck.mark_saved_snapshot(baseline);
+        app.selected_object = Some(id);
+        app.action(58).unwrap();
+        app.set_rich_selection((0, 5));
+        app.action(59).unwrap();
+        assert!(app.dirty());
+        assert!(app.can_undo());
+        let (revision, bytes) = app.save_snapshot("json").unwrap().unwrap();
+        assert!(app.rich_draft.is_none());
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("paragraphs"));
+        let mut later = app.deck.slides()[0].objects[0].clone();
+        later.x += 5.0;
+        app.deck.update_object(later).unwrap();
+        app.saved_snapshot(revision);
+        assert!(app.dirty());
+        app.selected_object = Some(id);
+        app.action(58).unwrap();
+        app.set_rich_selection((0, 5));
+        app.action(60).unwrap();
+        app.finish_inline_rich(false).unwrap();
+        assert!(
+            !app.deck.slides()[0].objects[0].paragraphs[0].runs[0]
+                .style
+                .italic
+        );
+    }
+    #[test]
+    fn rich_selection_edit_is_single_presentation_history_and_roundtrips_pptx() {
+        let mut a = Ppt::new(Presentation::new());
+        let id = a
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Text, "hello world".into())
+            .unwrap();
+        a.selected_object = Some(id);
+        a.action(58).unwrap();
+        a.set_rich_selection((0, 5));
+        a.action(59).unwrap();
+        let projection = a.rich_text().unwrap();
+        a.edit_rich_text(&projection, (0, 5)).unwrap();
+        a.action(62).unwrap();
+        assert!(a.deck.slides()[0].objects[0].paragraphs.is_empty());
+        a.action(58).unwrap();
+        let object = &a.deck.slides()[0].objects[0];
+        assert_eq!(object.paragraphs[0].runs.len(), 2);
+        assert!(object.paragraphs[0].runs[0].style.bold);
+        assert!(object.paragraphs[0].bullet);
+        assert!(!object.paragraphs[0].runs[1].style.bold);
+        let bytes = ppt42_core::pptx::export_new(&a.deck).unwrap();
+        let (opened, _) = ppt42_core::pptx::import(&bytes).unwrap();
+        let runs = &opened.slides()[0].objects[0].paragraphs[0].runs;
+        assert!(runs[0].style.bold);
+        assert!(!runs[1].style.bold);
+        assert!(opened.slides()[0].objects[0].paragraphs[0].bullet);
+        let (source_deck, source) = ppt42_core::pptx::import(&bytes).unwrap();
+        let mut source_app = Ppt::new(source_deck);
+        source_app.pptx_source = Some(source);
+        source_app.selected_object = Some(source_app.deck.slides()[0].objects[0].id);
+        assert!(source_app.enabled(58));
+        source_app.action(58).unwrap();
+        source_app.set_rich_selection((6, 11));
+        source_app.action(60).unwrap();
+        source_app.action(58).unwrap();
+        let bytes =
+            ppt42_core::pptx::export(&source_app.deck, source_app.pptx_source.as_ref().unwrap())
+                .unwrap();
+        let (reopened, _) = ppt42_core::pptx::import(&bytes).unwrap();
+        assert!(reopened.slides()[0].objects[0].paragraphs[0]
+            .runs
+            .iter()
+            .any(|r| r.text == "world" && r.style.italic));
+        let odp = ppt42_core::odp::export(&a.deck).unwrap();
+        let (deck, source) = ppt42_core::odp::import_with_source(&odp).unwrap();
+        let mut source_app = Ppt::new(deck);
+        source_app.odp_source = Some(source);
+        source_app.selected_object = Some(source_app.deck.slides()[0].objects[0].id);
+        assert!(source_app.enabled(58));
+        source_app.action(58).unwrap();
+        source_app.set_rich_selection((6, 11));
+        source_app.action(60).unwrap();
+        source_app.action(58).unwrap();
+        let odp = ppt42_core::odp::export_overlay(
+            &source_app.deck,
+            source_app.odp_source.as_ref().unwrap(),
+        )
+        .unwrap();
+        let (opened, _) = ppt42_core::odp::import_with_source(&odp).unwrap();
+        assert!(opened.slides()[0].objects[0].paragraphs[0]
+            .runs
+            .iter()
+            .any(|r| r.text == "world" && r.style.italic));
+        a.action(4).unwrap();
+        assert!(a.deck.slides()[0].objects[0].paragraphs.is_empty());
+        a.action(5).unwrap();
+        assert!(
+            a.deck.slides()[0].objects[0].paragraphs[0].runs[0]
+                .style
+                .bold
+        );
+        a.action(58).unwrap();
+        a.set_rich_selection((0, 5));
+        a.action(60).unwrap();
+        a.finish_inline_rich(false).unwrap();
+        assert!(
+            !a.deck.slides()[0].objects[0].paragraphs[0].runs[0]
+                .style
+                .italic
+        );
+    }
+    #[test]
+    fn multiselect_drag_resize_and_history() {
+        let mut a = Ppt::new(Presentation::new());
+        let one = a
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let two = a
+            .deck
+            .insert_object(ppt42_core::ObjectKind::Rectangle, String::new())
+            .unwrap();
+        let mut second = a.deck.slides()[0].objects[1].clone();
+        second.x = 350.0;
+        a.deck.update_object(second).unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerDown(win42::Point {
+            x: 120.0,
+            y: 140.0,
+        }))
+        .unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerUp(win42::Point {
+            x: 120.0,
+            y: 140.0,
+        }))
+        .unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerDownModified {
+            point: win42::Point { x: 370.0, y: 140.0 },
+            modifiers: 1,
+        })
+        .unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerUp(win42::Point {
+            x: 370.0,
+            y: 140.0,
+        }))
+        .unwrap();
+        assert_eq!(a.selection().len(), 2);
+        a.canvas_event(win42::CanvasEvent::PointerDown(win42::Point {
+            x: 120.0,
+            y: 140.0,
+        }))
+        .unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerUp(win42::Point {
+            x: 140.0,
+            y: 150.0,
+        }))
+        .unwrap();
+        assert_eq!(a.deck.slides()[0].objects[0].x, 120.0);
+        assert_eq!(a.deck.slides()[0].objects[1].x, 370.0);
+        a.action(4).unwrap();
+        assert_eq!(a.deck.slides()[0].objects[0].x, 100.0);
+        assert_eq!(a.deck.slides()[0].objects[1].x, 350.0);
+        a.action(5).unwrap();
+        a.action(47).unwrap();
+        assert_eq!(
+            a.deck.slides()[0].objects[0].x,
+            a.deck.slides()[0].objects[1].x
+        );
+        a.action(4).unwrap();
+        assert_eq!(a.deck.slides()[0].objects[1].x, 370.0);
+        a.selected_objects = vec![one];
+        a.selected_object = Some(one);
+        let before = a.deck.slides()[0].objects[0].width;
+        let o = a.deck.slides()[0].objects[0].clone();
+        a.canvas_event(win42::CanvasEvent::PointerDown(win42::Point {
+            x: o.x + o.width,
+            y: o.y + o.height,
+        }))
+        .unwrap();
+        a.canvas_event(win42::CanvasEvent::PointerUp(win42::Point {
+            x: o.x + o.width + 25.0,
+            y: o.y + o.height + 10.0,
+        }))
+        .unwrap();
+        assert_eq!(a.deck.slides()[0].objects[0].width, before + 25.0);
+        a.action(4).unwrap();
+        assert_eq!(a.deck.slides()[0].objects[0].width, before);
+        assert_ne!(one, two);
+    }
     #[test]
     fn duplicate_menu_dispatch_tracks_history() {
         let mut app = Ppt::new(Presentation::new());

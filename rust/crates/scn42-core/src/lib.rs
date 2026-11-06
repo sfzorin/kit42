@@ -649,6 +649,9 @@ impl ScanDocument {
         Ok(words)
     }
     pub fn export_pdf(&self, path: &Path) -> Result<(), String> {
+        self.export_pdf_compressed(path, false)
+    }
+    pub fn export_pdf_compressed(&self, path: &Path, compressed: bool) -> Result<(), String> {
         if self.pages().is_empty() {
             return Err("cannot export an empty scan".into());
         }
@@ -710,6 +713,9 @@ impl ScanDocument {
         );
         let catalog = doc.add_object(dictionary! {"Type"=>"Catalog","Pages"=>pages_id});
         doc.trailer.set("Root", catalog);
+        if compressed {
+            doc.compress();
+        }
         let mut bytes = Vec::new();
         doc.save_to(&mut bytes).map_err(|e| e.to_string())?;
         write_new(path, &bytes).map_err(|e| e.to_string())?;
@@ -720,6 +726,51 @@ impl ScanDocument {
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn compressed_pdf_keeps_page_and_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = ScanDocument::new();
+        d.add_rgba(20, 20, vec![255; 1600]).unwrap();
+        let source = d.pages()[0].clone();
+        d.apply_ocr(
+            0,
+            &source,
+            vec![OcrWord {
+                text: "Привет".into(),
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }],
+        )
+        .unwrap();
+        let path = dir.path().join("compressed.pdf");
+        d.export_pdf_compressed(&path, true).unwrap();
+        let doc = lopdf::Document::load(&path).unwrap();
+        assert_eq!(doc.get_pages().len(), 1);
+        if std::process::Command::new("pdftotext")
+            .arg("-v")
+            .output()
+            .is_ok()
+        {
+            let output = std::process::Command::new("pdftotext")
+                .args(["-enc", "UTF-8"])
+                .arg(&path)
+                .arg("-")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("Привет"),
+                "{:?}",
+                output.stdout
+            );
+        }
+    }
     #[test]
     fn dpi_and_perspective_roundtrip_undo() {
         let mut d = ScanDocument::new();

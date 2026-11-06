@@ -46,7 +46,9 @@ and scope; detailed build logs, executable identities and installation history a
 
 The separate Windows apps use `windows-rs` and shared `win42` native windows, command registry, menus, toolbars,
 dialogs and controls. App models own history and document state; shared save snapshots detect conflicts and use atomic
-replacement. The UI provides canvas drawing, rich text and scaled images, asynchronous jobs with generation-based
+replacement. Multi-file saves stage sidecars first with verified reuse and best-effort rollback, not OS-atomic
+replacement of the whole bundle. Async open retains the existing document/session through verification, cancellation
+and progress. The UI provides canvas drawing, rich text and scaled images, asynchronous jobs with generation-based
 cancellation, and printing using twips and DPI. DOC42 separates its editable RichEdit model from the read-only
 paginated preview. Common controls v6 and PerMonitorV2 are declared in the application manifest.
 

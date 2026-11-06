@@ -38,6 +38,32 @@ impl Doc {
             _ => Err("Unsupported format".into()),
         }
     }
+    fn table_anchor(
+        &self,
+        index: usize,
+        row: usize,
+        col: usize,
+    ) -> Result<(u64, usize, usize), String> {
+        let id = self
+            .doc
+            .state()
+            .blocks
+            .iter()
+            .filter_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t.id)
+                } else {
+                    None
+                }
+            })
+            .nth(index)
+            .ok_or("Table not found")?;
+        let (row, col) = self
+            .doc
+            .table_cell_anchor(id, row, col)
+            .map_err(|e| e.to_string())?;
+        Ok((id, row, col))
+    }
     fn selection_style(
         &self,
     ) -> Result<(u64, std::ops::Range<usize>, TextStyle, Selection), String> {
@@ -678,6 +704,36 @@ impl App for Doc {
         self.snapshots.insert(revision, snapshot);
         Ok(Some((revision, bytes)))
     }
+    fn save_bundle_to(
+        &mut self,
+        format: &str,
+        path: &Path,
+        is_current: bool,
+    ) -> Result<Option<(u64, suite42_core::session::SaveBundle)>, String> {
+        if Self::format(format)? != Format::Markdown {
+            return Ok(self
+                .save_snapshot_to(format, path, is_current)?
+                .map(|(revision, main)| {
+                    (
+                        revision,
+                        suite42_core::session::SaveBundle {
+                            main,
+                            sidecars: Vec::new(),
+                        },
+                    )
+                }));
+        }
+        let snapshot = self.doc.snapshot();
+        let bundle = self.doc.markdown_bundle(path).map_err(|e| e.to_string())?;
+        self.snapshots.clear();
+        let revision = self.next_revision;
+        self.next_revision = self
+            .next_revision
+            .checked_add(1)
+            .ok_or("Revision overflow")?;
+        self.snapshots.insert(revision, snapshot);
+        Ok(Some((revision, bundle)))
+    }
     fn saved_snapshot(&mut self, revision: u64) {
         if let Some(snapshot) = self.snapshots.remove(&revision) {
             let _ = self.doc.mark_saved_snapshot(snapshot);
@@ -709,6 +765,17 @@ impl App for Doc {
             (321, "Add table row…", None),
             (322, "Add table column…", None),
             (323, "Image size and description…", None),
+            (324, "Delete table row…", None),
+            (325, "Delete table column…", None),
+            (326, "Heading level…", None),
+            (327, "Table cell alignment…", None),
+            (328, "Delete table…", None),
+            (329, "Merge cells across row…", None),
+            (330, "Split merged cell…", None),
+            (331, "Table cell background…", None),
+            (332, "Table cell border…", None),
+            (333, "Table column width…", None),
+            (334, "Merge rectangular cells…", None),
         ]
         .into_iter()
         .map(|(id, title, accelerator)| CommandSpec {
@@ -742,7 +809,13 @@ impl App for Doc {
                 checked: false,
             };
         }
-        if id == 309 || id == 310 || id == 313 || (321..=323).contains(&id) {
+        if id == 309
+            || id == 310
+            || id == 313
+            || (321..=325).contains(&id)
+            || id == 327
+            || id == 328
+        {
             return CommandState {
                 enabled: true,
                 checked: false,
@@ -759,7 +832,7 @@ impl App for Doc {
                     _ => None,
                 })
             });
-        if id == 314 {
+        if id == 314 || id == 326 {
             return CommandState {
                 enabled: paragraph.is_some(),
                 checked: false,
@@ -807,16 +880,17 @@ impl App for Doc {
                 },
                 fields: vec![("Text", self.header_input(id == 320).ok()?)],
             })
-        } else if id == 321 || id == 322 {
+        } else if (321..=322).contains(&id) || (324..=325).contains(&id) {
             Some(win42::InputRequest {
-                title: if id == 321 {
-                    "Add table row"
-                } else {
-                    "Add table column"
+                title: match id {
+                    321 => "Add table row",
+                    322 => "Add table column",
+                    324 => "Delete table row",
+                    _ => "Delete table column",
                 },
                 fields: vec![
                     ("Table number", "1".into()),
-                    ("Insert before position", "1".into()),
+                    ("Position (starts at 1)", "1".into()),
                 ],
             })
         } else if id == 323 {
@@ -833,6 +907,99 @@ impl App for Doc {
             Some(win42::InputRequest {
                 title: "Insert table",
                 fields: vec![("Rows", "2".into()), ("Columns", "2".into())],
+            })
+        } else if id == 334 {
+            Some(win42::InputRequest {
+                title: "Merge cells (uses top-left cell style)",
+                fields: vec![
+                    ("Table number", "1".into()),
+                    ("First row", "1".into()),
+                    ("First column", "1".into()),
+                    ("Last row", "2".into()),
+                    ("Last column", "2".into()),
+                ],
+            })
+        } else if id == 333 {
+            Some(win42::InputRequest {
+                title: "Table column width (points)",
+                fields: vec![
+                    ("Table number", "1".into()),
+                    ("Column", "1".into()),
+                    ("Width", "72".into()),
+                ],
+            })
+        } else if id == 332 {
+            Some(win42::InputRequest {
+                title: "Cell border (0 removes; width in points)",
+                fields: vec![
+                    ("Table number", "1".into()),
+                    ("Row", "1".into()),
+                    ("Column", "1".into()),
+                    ("Width (0.25 pt steps)", "1".into()),
+                    ("Color (#RRGGBB)", "#000000".into()),
+                ],
+            })
+        } else if id == 331 {
+            Some(win42::InputRequest {
+                title: "Cell background (#RRGGBB or none)",
+                fields: vec![
+                    ("Table number", "1".into()),
+                    ("Row", "1".into()),
+                    ("Column", "1".into()),
+                    ("Color", "#ffffff".into()),
+                ],
+            })
+        } else if id == 329 || id == 330 {
+            let mut fields = vec![
+                ("Table number", "1".into()),
+                ("Row", "1".into()),
+                (
+                    if id == 329 {
+                        "First column"
+                    } else {
+                        "Merged cell column"
+                    },
+                    "1".into(),
+                ),
+            ];
+            if id == 329 {
+                fields.push(("Last column", "2".into()));
+            }
+            Some(win42::InputRequest {
+                title: if id == 329 {
+                    "Merge cells (uses first cell's background and border)"
+                } else {
+                    "Split merged cell"
+                },
+                fields,
+            })
+        } else if id == 328 {
+            Some(win42::InputRequest {
+                title: "Delete table",
+                fields: vec![("Table number", "1".into())],
+            })
+        } else if id == 327 {
+            Some(win42::InputRequest {
+                title: "Cell alignment (left, center, right, justify)",
+                fields: vec![
+                    ("Table number", "1".into()),
+                    ("Row", "1".into()),
+                    ("Column", "1".into()),
+                    ("Alignment", "left".into()),
+                ],
+            })
+        } else if id == 326 {
+            let pos = self.doc.position_from_utf16(self.selection.0).ok()?;
+            let p = self.doc.state().blocks.iter().find_map(|b| match b {
+                Block::Paragraph(p) if p.id == pos.paragraph => Some(p),
+                _ => None,
+            })?;
+            Some(win42::InputRequest {
+                title: "Heading level (0 = body, 1–9 = heading)",
+                fields: vec![(
+                    "Level",
+                    p.style.outline_level.map_or(0, |n| n + 1).to_string(),
+                )],
             })
         } else if id == 314 {
             let pos = self.doc.position_from_utf16(self.selection.0).ok()?;
@@ -899,16 +1066,262 @@ impl App for Doc {
                 .map_err(|e| e.to_string())?;
             return Ok(());
         }
-        if id == 321 || id == 322 {
+        if (321..=322).contains(&id) || (324..=325).contains(&id) {
             if values.len() != 2 {
                 return Err("Invalid table position".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (table, position) = (parse(&values[0])?, parse(&values[1])?);
+            let table_id = self
+                .doc
+                .state()
+                .blocks
+                .iter()
+                .filter_map(|b| {
+                    if let Block::Table(t) = b {
+                        Some(t.id)
+                    } else {
+                        None
+                    }
+                })
+                .nth(table)
+                .ok_or("Table not found")?;
+            self.doc
+                .edit_table_structure(
+                    table_id,
+                    id == 321 || id == 324,
+                    id == 321 || id == 322,
+                    position,
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 334 {
+            if values.len() != 5 {
+                return Err("Invalid merge selection".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let index = parse(&values[0])?;
+            let id = self
+                .doc
+                .state()
+                .blocks
+                .iter()
+                .filter_map(|b| {
+                    if let Block::Table(t) = b {
+                        Some(t.id)
+                    } else {
+                        None
+                    }
+                })
+                .nth(index)
+                .ok_or("Table not found")?;
+            self.doc
+                .merge_table_rectangle(
+                    id,
+                    parse(&values[1])?,
+                    parse(&values[2])?,
+                    parse(&values[3])?,
+                    parse(&values[4])?,
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 333 {
+            if values.len() != 3 {
+                return Err("Invalid column width".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (table, col) = (parse(&values[0])?, parse(&values[1])?);
+            let width = values[2]
+                .parse::<f64>()
+                .map_err(|_| "Invalid column width")?;
+            if !width.is_finite() || !(1.0..=10000.0).contains(&width) {
+                return Err("Width must be 1–10000 points".into());
+            }
+            self.doc
+                .transact(|s| {
+                    let t = s
+                        .blocks
+                        .iter_mut()
+                        .filter_map(|b| {
+                            if let Block::Table(t) = b {
+                                Some(t)
+                            } else {
+                                None
+                            }
+                        })
+                        .nth(table)
+                        .ok_or(doc42_core::rich::Error::Invalid("Table not found".into()))?;
+                    let count = t.rows.first().map_or(0, Vec::len);
+                    if col >= count {
+                        return Err(doc42_core::rich::Error::Invalid(
+                            "Table column not found".into(),
+                        ));
+                    }
+                    if t.column_widths_twips.is_empty() {
+                        t.column_widths_twips = vec![1440; count];
+                    }
+                    t.column_widths_twips[col] = (width * 20.0).round() as u32;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 332 {
+            if values.len() != 5 {
+                return Err("Invalid cell border".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (table, row, col) = (parse(&values[0])?, parse(&values[1])?, parse(&values[2])?);
+            let width = values[3]
+                .parse::<f64>()
+                .map_err(|_| "Invalid border width")?;
+            if !width.is_finite()
+                || !(0.0..=3276.75).contains(&width)
+                || (width * 4.0).fract().abs() > 0.000001
+            {
+                return Err("Use a width in 0.25 point steps".into());
+            }
+            let raw = values[4].trim().strip_prefix('#').ok_or("Use #RRGGBB")?;
+            if raw.len() != 6 {
+                return Err("Use #RRGGBB".into());
+            }
+            let color = u32::from_str_radix(raw, 16).map_err(|_| "Use #RRGGBB")?;
+            let border = if width == 0.0 {
+                None
+            } else {
+                Some(doc42_core::rich::Border {
+                    width_twips: (width * 20.0).round() as u16,
+                    color,
+                })
+            };
+            let (table_id, row, col) = self.table_anchor(table, row, col)?;
+            self.doc
+                .transact(|s| {
+                    let target = s
+                        .blocks
+                        .iter_mut()
+                        .find_map(|b| match b {
+                            Block::Table(t) if t.id == table_id => Some(&mut t.rows[row][col]),
+                            _ => None,
+                        })
+                        .ok_or(doc42_core::rich::Error::Invalid("Table not found".into()))?;
+                    target.border = border;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 331 {
+            if values.len() != 4 {
+                return Err("Invalid cell background".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (table, row, col) = (parse(&values[0])?, parse(&values[1])?, parse(&values[2])?);
+            let value = values[3].trim();
+            let fill = if value.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                let hex = value.strip_prefix('#').ok_or("Use #RRGGBB or none")?;
+                if hex.len() != 6 {
+                    return Err("Use #RRGGBB or none".into());
+                }
+                Some(u32::from_str_radix(hex, 16).map_err(|_| "Use #RRGGBB or none")?)
+            };
+            let (table_id, row, col) = self.table_anchor(table, row, col)?;
+            self.doc
+                .transact(|s| {
+                    let target = s
+                        .blocks
+                        .iter_mut()
+                        .find_map(|b| match b {
+                            Block::Table(t) if t.id == table_id => Some(&mut t.rows[row][col]),
+                            _ => None,
+                        })
+                        .ok_or(doc42_core::rich::Error::Invalid("Table not found".into()))?;
+                    target.fill = fill;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 329 || id == 330 {
+            if values.len() != if id == 329 { 4 } else { 3 } {
+                return Err("Invalid merge selection".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?
+                    .checked_sub(1)
+                    .ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (index, row, col) = (parse(&values[0])?, parse(&values[1])?, parse(&values[2])?);
+            let id_table = self
+                .doc
+                .state()
+                .blocks
+                .iter()
+                .filter_map(|b| {
+                    if let Block::Table(t) = b {
+                        Some(t.id)
+                    } else {
+                        None
+                    }
+                })
+                .nth(index)
+                .ok_or("Table not found")?;
+            if id == 329 {
+                self.doc
+                    .merge_table_cells(id_table, row, col, parse(&values[3])?)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                self.doc
+                    .split_table_cell(id_table, row, col)
+                    .map_err(|e| e.to_string())?;
+            }
+            return Ok(());
+        }
+        if id == 328 {
+            if values.len() != 1 {
+                return Err("Invalid table number".into());
             }
             let n = values[0]
                 .parse::<usize>()
                 .map_err(|_| "Invalid table number")?;
-            let at = values[1].parse::<usize>().map_err(|_| "Invalid position")?;
-            if n == 0 || at == 0 {
-                return Err("Numbers start at 1".into());
+            if n == 0 {
+                return Err("Table numbers start at 1".into());
             }
             self.doc
                 .transact(|s| {
@@ -920,64 +1333,104 @@ impl App for Doc {
                         .nth(n - 1)
                         .map(|(i, _)| i)
                         .ok_or(doc42_core::rich::Error::Invalid("Table not found".into()))?;
-                    let Block::Table(table) = &mut s.blocks[index] else {
-                        unreachable!()
-                    };
-                    if table
-                        .rows
-                        .iter()
-                        .flatten()
-                        .any(|c| c.row_span != 1 || c.col_span != 1)
+                    if s.blocks.len() == 1
+                        || s.sections.iter().any(|section| {
+                            section.start_block == index
+                                && index != 0
+                                && index + 1 == s.blocks.len()
+                        })
                     {
                         return Err(doc42_core::rich::Error::Unsupported(
-                            "Editing merged tables".into(),
+                            "Cannot delete the only block in a section".into(),
                         ));
                     }
-                    let rows = table.rows.len();
-                    let cols = table.rows.first().map_or(0, Vec::len);
-                    if cols == 0
-                        || (id == 321 && (rows >= 50 || at > rows + 1))
-                        || (id == 322 && (cols >= 20 || at > cols + 1))
-                    {
-                        return Err(doc42_core::rich::Error::Invalid(
-                            "Table position is outside the supported range".into(),
-                        ));
+                    s.blocks.remove(index);
+                    for section in &mut s.sections {
+                        if section.start_block > index {
+                            section.start_block -= 1;
+                        }
                     }
-                    let mut cell = || -> Result<Cell, doc42_core::rich::Error> {
-                        let id = s.next_id;
-                        s.next_id = s
-                            .next_id
-                            .checked_add(1)
-                            .ok_or(doc42_core::rich::Error::Limit)?;
-                        Ok(Cell {
-                            paragraphs: vec![Paragraph {
-                                id,
-                                style: ParagraphStyle::default(),
-                                runs: vec![Run {
-                                    text: String::new(),
-                                    style: TextStyle::default(),
-                                    link: None,
-                                }],
-                            }],
-                            row_span: 1,
-                            col_span: 1,
-                            border: None,
-                            fill: None,
+                    s.selection = Selection::default();
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 327 {
+            if values.len() != 4 {
+                return Err("Invalid cell alignment".into());
+            }
+            let parse = |value: &str| -> Result<usize, String> {
+                let n = value
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid table position")?;
+                n.checked_sub(1).ok_or_else(|| "Numbers start at 1".into())
+            };
+            let (table, row, col) = (parse(&values[0])?, parse(&values[1])?, parse(&values[2])?);
+            let alignment = match values[3].trim().to_ascii_lowercase().as_str() {
+                "left" => Alignment::Left,
+                "center" => Alignment::Center,
+                "right" => Alignment::Right,
+                "justify" => Alignment::Justify,
+                _ => return Err("Choose left, center, right or justify".into()),
+            };
+            let (table_id, row, col) = self.table_anchor(table, row, col)?;
+            self.doc
+                .transact(|s| {
+                    let cell = s
+                        .blocks
+                        .iter_mut()
+                        .find_map(|b| match b {
+                            Block::Table(t) if t.id == table_id => Some(&mut t.rows[row][col]),
+                            _ => None,
                         })
-                    };
-                    if id == 321 {
-                        let mut row = Vec::new();
-                        for _ in 0..cols {
-                            row.push(cell()?);
-                        }
-                        table.rows.insert(at - 1, row);
-                    } else {
-                        for row in &mut table.rows {
-                            row.insert(at - 1, cell()?);
-                        }
+                        .ok_or(doc42_core::rich::Error::Invalid("Table not found".into()))?;
+                    for p in &mut cell.paragraphs {
+                        p.style.alignment = alignment;
                     }
                     Ok(())
                 })
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if id == 326 {
+            if values.len() != 1 {
+                return Err("Invalid heading level".into());
+            }
+            let level = values[0]
+                .parse::<u8>()
+                .map_err(|_| "Invalid heading level")?;
+            if level > 9 {
+                return Err("Choose a level from 0 to 9".into());
+            }
+            let anchor = self
+                .doc
+                .position_from_utf16(self.selection.0)
+                .map_err(|e| e.to_string())?;
+            let focus = self
+                .doc
+                .position_from_utf16(self.selection.1)
+                .map_err(|e| e.to_string())?;
+            let mut style = self
+                .doc
+                .state()
+                .blocks
+                .iter()
+                .find_map(|b| match b {
+                    Block::Paragraph(p) if p.id == anchor.paragraph => Some(p.style.clone()),
+                    _ => None,
+                })
+                .ok_or("Paragraph not found")?;
+            style.outline_level = level.checked_sub(1);
+            self.doc
+                .set_paragraph_style(
+                    anchor.paragraph,
+                    style,
+                    Selection {
+                        anchor: Some(anchor),
+                        focus: Some(focus),
+                    },
+                )
                 .map_err(|e| e.to_string())?;
             return Ok(());
         }
@@ -1081,6 +1534,7 @@ impl App for Doc {
                 s.blocks.insert(
                     index,
                     Block::Table(Table {
+                        column_widths_twips: Vec::new(),
                         id: table_id,
                         rows: table_rows,
                     }),
@@ -1534,6 +1988,391 @@ mod tests {
             .any(|f| matches!(f.text, win42::PrintText::PageCount)));
     }
     #[test]
+    fn heading_level_survives_formats_and_undo() {
+        let mut app = Doc::new();
+        app.edit("Heading".into()).unwrap();
+        app.input_action(326, &["2".into()]).unwrap();
+        for format in [Format::Project, Format::Rtf, Format::Docx, Format::Odt] {
+            let bytes = app.doc.encode(format).unwrap();
+            let reopened = RichDocument::decode(&bytes, format).unwrap();
+            let Block::Paragraph(p) = &reopened.state().blocks[0] else {
+                panic!()
+            };
+            assert_eq!(p.style.outline_level, Some(1), "{format:?}");
+        }
+        app.action(4).unwrap();
+        let Block::Paragraph(p) = &app.doc.state().blocks[0] else {
+            panic!()
+        };
+        assert_eq!(p.style.outline_level, None);
+    }
+    #[test]
+    fn imported_odt_page_and_headers_can_be_edited() {
+        let mut original = Doc::new();
+        original.edit("body".into()).unwrap();
+        original.set_header_input(false, "Old {PAGE}").unwrap();
+        let bytes = original.doc.encode(Format::Odt).unwrap();
+        let mut imported = Doc::new();
+        imported.doc = RichDocument::decode(&bytes, Format::Odt).unwrap();
+        imported.set_header_input(false, "New {PAGES}").unwrap();
+        imported
+            .rich_ruler_action(win42::RichRulerAction::LeftMargin(1200))
+            .unwrap();
+        let updated = imported.doc.encode(Format::Odt).unwrap();
+        let mut reopened = Doc::new();
+        reopened.doc = RichDocument::decode(&updated, Format::Odt).unwrap();
+        assert_eq!(reopened.header_input(false).unwrap(), "New {PAGES}");
+        assert_eq!(reopened.doc.state().sections[0].page.margin_left, 1200);
+    }
+    #[test]
+    fn insert_delete_around_and_through_merged_cells_preserves_content_and_undo() {
+        let mut app = Doc::new();
+        app.input_action(313, &["3".into(), "3".into()]).unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Table(t) = &mut s.blocks[1] else {
+                    panic!()
+                };
+                for (cell, text) in t
+                    .rows
+                    .iter_mut()
+                    .flatten()
+                    .zip(["a", "b", "c", "d", "e", "f", "g", "h", "i"])
+                {
+                    cell.paragraphs[0].runs[0].text = text.into();
+                }
+                Ok(())
+            })
+            .unwrap();
+        app.input_action(
+            334,
+            &["1".into(), "1".into(), "1".into(), "2".into(), "2".into()],
+        )
+        .unwrap();
+        app.input_action(331, &["1".into(), "1".into(), "1".into(), "#12ABEF".into()])
+            .unwrap();
+        app.input_action(
+            332,
+            &[
+                "1".into(),
+                "1".into(),
+                "1".into(),
+                "1".into(),
+                "#334455".into(),
+            ],
+        )
+        .unwrap();
+        app.input_action(333, &["1".into(), "2".into(), "100.25".into()])
+            .unwrap();
+        let before = app.doc.snapshot();
+        app.input_action(321, &["1".into(), "3".into()]).unwrap(); // disjoint below merged header
+        app.input_action(321, &["1".into(), "2".into()]).unwrap(); // expand vertical span
+        app.input_action(322, &["1".into(), "2".into()]).unwrap(); // expand horizontal span
+        app.input_action(324, &["1".into(), "1".into()]).unwrap(); // promote deleted anchor row
+        app.input_action(325, &["1".into(), "1".into()]).unwrap(); // promote deleted anchor column
+        let view = app.rich_text().unwrap();
+        app.edit_rich_text(&view, (0, 0)).unwrap();
+        for format in [
+            Format::Project,
+            Format::Rtf,
+            Format::Docx,
+            Format::Odt,
+            Format::Html,
+            Format::Markdown,
+        ] {
+            let reopened = RichDocument::decode(&app.doc.encode(format).unwrap(), format).unwrap();
+            let Block::Table(t) = &reopened.state().blocks[1] else {
+                panic!()
+            };
+            assert_eq!(
+                (t.rows[0][0].row_span, t.rows[0][0].col_span),
+                (2, 2),
+                "{format:?}"
+            );
+            assert_eq!(t.rows[0][0].fill, Some(0x12abef), "{format:?}");
+            assert_eq!(
+                t.rows[0][0].border,
+                Some(doc42_core::rich::Border {
+                    width_twips: 20,
+                    color: 0x334455
+                }),
+                "{format:?}"
+            );
+            assert_eq!(
+                t.rows[0][0]
+                    .paragraphs
+                    .iter()
+                    .map(|p| p.runs[0].text.as_str())
+                    .collect::<Vec<_>>(),
+                ["a", "b", "d", "e"]
+            );
+            assert_eq!(t.column_widths_twips, [1440, 2005, 1440], "{format:?}");
+        }
+        for _ in 0..5 {
+            app.action(4).unwrap();
+        }
+        assert_eq!(app.doc.state(), &before);
+    }
+    #[test]
+    fn rectangular_merge_keeps_content_styles_widths_and_undo() {
+        let mut app = Doc::new();
+        app.input_action(313, &["2".into(), "2".into()]).unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Table(t) = &mut s.blocks[1] else {
+                    panic!()
+                };
+                for (cell, text) in t
+                    .rows
+                    .iter_mut()
+                    .flatten()
+                    .zip(["one", "two", "three", "four"])
+                {
+                    cell.paragraphs[0].runs[0].text = text.into();
+                }
+                Ok(())
+            })
+            .unwrap();
+        app.input_action(
+            334,
+            &["1".into(), "1".into(), "1".into(), "2".into(), "2".into()],
+        )
+        .unwrap();
+        app.input_action(331, &["1".into(), "2".into(), "2".into(), "#12ABEF".into()])
+            .unwrap();
+        app.input_action(
+            332,
+            &[
+                "1".into(),
+                "2".into(),
+                "2".into(),
+                "1".into(),
+                "#334455".into(),
+            ],
+        )
+        .unwrap();
+        app.input_action(333, &["1".into(), "2".into(), "100.25".into()])
+            .unwrap();
+        let view = app.rich_text().unwrap();
+        app.edit_rich_text(&view, (0, 0)).unwrap();
+        for format in [
+            Format::Project,
+            Format::Rtf,
+            Format::Docx,
+            Format::Odt,
+            Format::Html,
+            Format::Markdown,
+        ] {
+            let reopened = RichDocument::decode(&app.doc.encode(format).unwrap(), format).unwrap();
+            let Block::Table(t) = &reopened.state().blocks[1] else {
+                panic!()
+            };
+            assert_eq!(
+                (t.rows[0][0].row_span, t.rows[0][0].col_span),
+                (2, 2),
+                "{format:?}"
+            );
+            assert_eq!(t.column_widths_twips, vec![1440, 2005], "{format:?}");
+            assert_eq!(t.rows[0][0].fill, Some(0x12abef), "{format:?}");
+            assert_eq!(
+                t.rows[0][0].border,
+                Some(doc42_core::rich::Border {
+                    width_twips: 20,
+                    color: 0x334455
+                }),
+                "{format:?}"
+            );
+            assert_eq!(
+                t.rows[0][0]
+                    .paragraphs
+                    .iter()
+                    .map(|p| p.runs[0].text.as_str())
+                    .collect::<Vec<_>>(),
+                ["one", "two", "three", "four"]
+            );
+        }
+        app.input_action(330, &["1".into(), "2".into(), "2".into()])
+            .unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert!(t
+            .rows
+            .iter()
+            .flatten()
+            .all(|c| c.fill == Some(0x12abef) && c.border.is_some()));
+        app.action(4).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!(t.rows[0][0].row_span, 2);
+    }
+    #[test]
+    fn merge_and_split_table_cells_preserve_text_and_history() {
+        let mut app = Doc::new();
+        app.input_action(313, &["1".into(), "3".into()]).unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Table(t) = &mut s.blocks[1] else {
+                    panic!()
+                };
+                for (cell, text) in t.rows[0].iter_mut().zip(["one", "two", "three"]) {
+                    cell.paragraphs[0].runs[0].text = text.into();
+                }
+                Ok(())
+            })
+            .unwrap();
+        app.input_action(329, &["1".into(), "1".into(), "1".into(), "3".into()])
+            .unwrap();
+        app.input_action(331, &["1".into(), "1".into(), "2".into(), "#12ABEF".into()])
+            .unwrap();
+        app.input_action(
+            332,
+            &[
+                "1".into(),
+                "1".into(),
+                "3".into(),
+                "1".into(),
+                "#334455".into(),
+            ],
+        )
+        .unwrap();
+        app.input_action(333, &["1".into(), "2".into(), "100.25".into()])
+            .unwrap();
+        let projection = app.rich_text().unwrap();
+        app.edit_rich_text(&projection, (0, 0)).unwrap();
+        for format in [
+            Format::Project,
+            Format::Rtf,
+            Format::Docx,
+            Format::Odt,
+            Format::Html,
+            Format::Markdown,
+        ] {
+            let bytes = app.doc.encode(format).unwrap();
+            let reopened = RichDocument::decode(&bytes, format).unwrap();
+            let Block::Table(t) = &reopened.state().blocks[1] else {
+                panic!()
+            };
+            assert_eq!(t.rows[0][0].col_span, 3, "{format:?}");
+            assert_eq!(t.column_widths_twips, vec![1440, 2005, 1440], "{format:?}");
+            assert_eq!(t.rows[0][0].fill, Some(0x12abef), "{format:?}");
+            assert_eq!(
+                t.rows[0][0].border,
+                Some(doc42_core::rich::Border {
+                    width_twips: 20,
+                    color: 0x334455
+                }),
+                "{format:?}"
+            );
+            assert_eq!(
+                t.rows[0][0]
+                    .paragraphs
+                    .iter()
+                    .map(|p| p.runs[0].text.as_str())
+                    .collect::<Vec<_>>(),
+                ["one", "two", "three"]
+            );
+        }
+        app.input_action(330, &["1".into(), "1".into(), "1".into()])
+            .unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert!(t.rows[0].iter().all(|cell| cell.fill == Some(0x12abef)));
+        assert!(t.rows[0].iter().all(|cell| cell.border
+            == Some(doc42_core::rich::Border {
+                width_twips: 20,
+                color: 0x334455
+            })));
+        app.action(4).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!(t.rows[0][0].col_span, 3);
+    }
+    #[test]
+    fn deleting_annotated_table_cells_is_rejected_without_losing_data() {
+        let mut app = Doc::new();
+        app.input_action(313, &["2".into(), "2".into()]).unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Table(t) = &mut s.blocks[1] else {
+                    panic!()
+                };
+                t.rows[1][0].paragraphs[0].runs[0].text = "protected".into();
+                let paragraph = t.rows[1][0].paragraphs[0].id;
+                let id = s.next_id;
+                s.next_id += 1;
+                s.comments.push(doc42_core::rich::Annotation {
+                    id,
+                    start: doc42_core::rich::Position {
+                        paragraph,
+                        offset: 0,
+                    },
+                    end: doc42_core::rich::Position {
+                        paragraph,
+                        offset: 9,
+                    },
+                    author: "author".into(),
+                    text: "comment".into(),
+                    resolved: false,
+                });
+                Ok(())
+            })
+            .unwrap();
+        let before = app.doc.snapshot();
+        assert!(app.input_action(324, &["1".into(), "2".into()]).is_err());
+        assert!(app.input_action(328, &["1".into()]).is_err());
+        assert_eq!(app.doc.state(), &before);
+    }
+    #[test]
+    fn table_cell_background_is_undoable_and_roundtrips() {
+        let mut app = Doc::new();
+        app.input_action(313, &["2".into(), "2".into()]).unwrap();
+        app.input_action(331, &["1".into(), "2".into(), "1".into(), "#12ABEF".into()])
+            .unwrap();
+        let projection = app.rich_text().unwrap();
+        app.edit_rich_text(&projection, (0, 0)).unwrap();
+        for format in [Format::Project, Format::Rtf, Format::Docx, Format::Odt] {
+            let bytes = app.doc.encode(format).unwrap();
+            let reopened = RichDocument::decode(&bytes, format).unwrap();
+            let Block::Table(t) = &reopened.state().blocks[1] else {
+                panic!()
+            };
+            assert_eq!(t.rows[1][0].fill, Some(0x12abef), "{format:?}");
+        }
+        app.action(4).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!(t.rows[1][0].fill, None);
+    }
+    #[test]
+    fn table_cell_alignment_survives_formats_and_undo() {
+        let mut app = Doc::new();
+        app.input_action(313, &["2".into(), "2".into()]).unwrap();
+        app.input_action(327, &["1".into(), "2".into(), "1".into(), "center".into()])
+            .unwrap();
+        for format in [Format::Project, Format::Rtf, Format::Docx, Format::Odt] {
+            let bytes = app.doc.encode(format).unwrap();
+            let reopened = RichDocument::decode(&bytes, format).unwrap();
+            let Block::Table(t) = &reopened.state().blocks[1] else {
+                panic!()
+            };
+            assert_eq!(
+                t.rows[1][0].paragraphs[0].style.alignment,
+                Alignment::Center,
+                "{format:?}"
+            );
+        }
+        app.action(4).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!(t.rows[1][0].paragraphs[0].style.alignment, Alignment::Left);
+    }
+    #[test]
     fn table_growth_is_undoable() {
         let mut app = Doc::new();
         app.input_action(313, &["2".into(), "2".into()]).unwrap();
@@ -1549,12 +2388,42 @@ mod tests {
         };
         assert_eq!(t.rows[0].len(), 2);
         app.action(5).unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Table(t) = &mut s.blocks[1] else {
+                    panic!()
+                };
+                t.rows[1][1].paragraphs[0].runs[0].text = "restored cell".into();
+                Ok(())
+            })
+            .unwrap();
+        app.input_action(324, &["1".into(), "2".into()]).unwrap();
+        app.input_action(325, &["1".into(), "2".into()]).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!((t.rows.len(), t.rows[0].len()), (2, 2));
+        app.action(4).unwrap();
+        app.action(4).unwrap();
         let bytes = app.doc.encode(Format::Docx).unwrap();
         let reopened = RichDocument::decode(&bytes, Format::Docx).unwrap();
         let Block::Table(t) = &reopened.state().blocks[1] else {
             panic!()
         };
         assert_eq!((t.rows.len(), t.rows[0].len()), (3, 3));
+        assert_eq!(t.rows[1][1].paragraphs[0].runs[0].text, "restored cell");
+        app.input_action(328, &["1".into()]).unwrap();
+        assert!(!app
+            .doc
+            .state()
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Table(_))));
+        app.action(4).unwrap();
+        let Block::Table(t) = &app.doc.state().blocks[1] else {
+            panic!()
+        };
+        assert_eq!(t.rows[1][1].paragraphs[0].runs[0].text, "restored cell");
     }
     #[test]
     fn ruler_geometry_indents_and_tabs_survive_history_and_formats() {
@@ -1603,7 +2472,38 @@ mod tests {
         app.open(&md).unwrap();
         assert!(matches!(&app.doc.state().blocks[0],Block::Image(i) if i.alt=="alt"));
         assert!(app.rich_text().is_some());
-        assert!(app.save_snapshot("md").is_err());
+        assert!(app.save_snapshot("md").is_err()); // A path is required to name sidecars.
+        let destination = dir.join("result file.md");
+        let (revision, bundle) = app
+            .save_bundle_to("md", &destination, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bundle.sidecars.len(), 1);
+        let identity = suite42_core::session::publish_bundle(&destination, &bundle, None).unwrap();
+        app.saved_snapshot(revision);
+        assert!(!app.dirty());
+        let (older_revision, older_bundle) = app
+            .save_bundle_to("md", &destination, true)
+            .unwrap()
+            .unwrap();
+        app.doc
+            .transact(|s| {
+                let Block::Image(image) = &mut s.blocks[0] else {
+                    panic!()
+                };
+                image.alt = "newer".into();
+                Ok(())
+            })
+            .unwrap();
+        suite42_core::session::publish_bundle(&destination, &older_bundle, Some(&identity))
+            .unwrap();
+        app.saved_snapshot(older_revision);
+        assert!(app.dirty());
+        let mut reopened = Doc::new();
+        reopened.open(&destination).unwrap();
+        assert!(
+            matches!(&reopened.doc.state().blocks[0], Block::Image(i) if i.alt == "alt" && i.data == png)
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

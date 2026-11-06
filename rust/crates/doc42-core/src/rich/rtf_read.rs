@@ -23,6 +23,13 @@ struct Group {
 fn fail(s: &str) -> Error {
     Error::Invalid(s.into())
 }
+#[derive(Clone, Default)]
+struct CellBorderDef {
+    active: bool,
+    solid: bool,
+    width: Option<u16>,
+    color: Option<u32>,
+}
 struct Reader {
     groups: Vec<Group>,
     fonts: HashMap<i32, String>,
@@ -48,7 +55,21 @@ struct Reader {
     marker_text: bool,
     in_table: bool,
     table_rows: Vec<Vec<Cell>>,
+    table_widths: Vec<u32>,
+    row_widths: Vec<u32>,
+    cell_boundary: u32,
     table_cells: Vec<Cell>,
+    table_merge_flags: Vec<u8>,
+    row_vertical_flags: Vec<u8>,
+    table_vertical_flags: Vec<Vec<u8>>,
+    table_row_borders: Vec<Vec<[Option<Border>; 4]>>,
+    next_cell_vertical: u8,
+    table_fills: Vec<Option<u32>>,
+    table_borders: Vec<[Option<Border>; 4]>,
+    next_borders: [CellBorderDef; 4],
+    border_edge: Option<usize>,
+    next_cell_fill: Option<u32>,
+    next_cell_merge: u8,
     cell_paragraphs: Vec<Paragraph>,
     header: Vec<Paragraph>,
     footer: Vec<Paragraph>,
@@ -118,15 +139,117 @@ impl Reader {
         self.pending_fields.push((prefix + pending.len(), kind));
         Ok(())
     }
-    fn flush_table(&mut self) {
-        if !self.table_rows.is_empty() {
-            let id = self.next_id;
-            self.next_id += 1;
-            self.blocks.push(Block::Table(Table {
-                id,
-                rows: std::mem::take(&mut self.table_rows),
-            }));
+    fn flush_table(&mut self) -> Result<(), Error> {
+        if self.table_rows.is_empty() {
+            return Ok(());
         }
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).ok_or(Error::Limit)?;
+        let widths = std::mem::take(&mut self.table_widths);
+        let mut table = Table {
+            column_widths_twips: if widths.iter().all(|w| *w == 1440) {
+                Vec::new()
+            } else {
+                widths
+            },
+            id,
+            rows: std::mem::take(&mut self.table_rows),
+        };
+        let vertical = std::mem::take(&mut self.table_vertical_flags);
+        let borders = std::mem::take(&mut self.table_row_borders);
+        let height = table.rows.len();
+        let width = table.rows[0].len();
+        if vertical.len() != height
+            || borders.len() != height
+            || vertical.iter().any(|r| r.len() != width)
+            || borders.iter().any(|r| r.len() != width)
+        {
+            return Err(fail("RTF table descriptor count"));
+        }
+        let horizontal = table
+            .rows
+            .iter()
+            .map(|row| super::table_edit::horizontal_spans(row))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut consumed = vec![vec![false; width]; height];
+        for row in 0..height {
+            for col in 0..width {
+                let span = horizontal[row][col] as usize;
+                if span == 0 {
+                    continue;
+                }
+                let flag = vertical[row][col];
+                if vertical[row][col..col + span].iter().any(|f| *f != flag) {
+                    return Err(Error::Unsupported("inconsistent RTF vertical merge".into()));
+                }
+                if flag == 2 {
+                    if !consumed[row][col] {
+                        return Err(fail("vertical merge continuation without anchor"));
+                    }
+                    continue;
+                }
+                if flag == 1 {
+                    let mut bottom = row + 1;
+                    while bottom < height
+                        && horizontal[bottom][col] as usize == span
+                        && vertical[bottom][col..col + span].iter().all(|f| *f == 2)
+                    {
+                        let fill = table.rows[row][col].fill;
+                        let cell = &mut table.rows[bottom][col];
+                        if cell.fill.is_some() && cell.fill != fill
+                            || cell.paragraphs.len() != 1
+                            || cell.paragraphs[0].style != ParagraphStyle::default()
+                            || cell.paragraphs[0].runs.iter().any(|r| {
+                                !r.text.is_empty()
+                                    || r.link.is_some()
+                                    || r.style != TextStyle::default()
+                            })
+                        {
+                            return Err(Error::Unsupported(
+                                "nonempty or differently styled vertical merge continuation".into(),
+                            ));
+                        }
+                        cell.fill = None;
+                        cell.col_span = 1;
+                        consumed[bottom][col] = true;
+                        bottom += 1;
+                    }
+                    table.rows[row][col].row_span =
+                        u16::try_from(bottom - row).map_err(|_| Error::Limit)?;
+                }
+            }
+        }
+        let layout = super::table_edit::table_layout(&table)?;
+        for row in 0..height {
+            for col in 0..width {
+                if layout[row][col] != (row, col) {
+                    continue;
+                }
+                let h = table.rows[row][col].row_span as usize;
+                let w = table.rows[row][col].col_span as usize;
+                let all = borders[row..row + h]
+                    .iter()
+                    .flat_map(|r| r[col..col + w].iter())
+                    .flat_map(|edges| edges.iter())
+                    .filter_map(|b| b.as_ref())
+                    .collect::<Vec<_>>();
+                if let Some(first) = all.first() {
+                    if all.iter().any(|b| *b != *first)
+                        || (col..col + w).any(|c| {
+                            borders[row][c][0].is_none() || borders[row + h - 1][c][2].is_none()
+                        })
+                        || (row..row + h).any(|r| {
+                            borders[r][col][1].is_none() || borders[r][col + w - 1][3].is_none()
+                        })
+                    {
+                        return Err(Error::Unsupported("nonuniform RTF cell borders".into()));
+                    }
+                    table.rows[row][col].border = Some((*first).clone());
+                }
+            }
+        }
+        self.blocks.push(Block::Table(table));
+        Ok(())
     }
     fn paragraph(&mut self) -> Result<(), Error> {
         self.flush()?;
@@ -172,7 +295,7 @@ impl Reader {
                 if self.in_table {
                     self.cell_paragraphs.push(paragraph)
                 } else {
-                    self.flush_table();
+                    self.flush_table()?;
                     self.blocks.push(Block::Paragraph(paragraph))
                 }
             }
@@ -342,9 +465,103 @@ impl Reader {
                 }
                 self.in_table = true;
                 self.table_cells.clear();
+                self.row_widths.clear();
+                self.cell_boundary = 0;
+                self.table_merge_flags.clear();
+                self.row_vertical_flags.clear();
+                self.next_cell_vertical = 0;
+                self.table_fills.clear();
+                self.table_borders.clear();
+                self.next_borders = Default::default();
+                self.border_edge = None;
+                self.next_cell_fill = None;
+                self.next_cell_merge = 0;
                 self.cell_paragraphs.clear();
             }
-            "cellx" if self.in_table => {}
+            "clbrdrt" | "clbrdrl" | "clbrdrb" | "clbrdrr" if self.in_table => {
+                let index = match word {
+                    "clbrdrt" => 0,
+                    "clbrdrl" => 1,
+                    "clbrdrb" => 2,
+                    _ => 3,
+                };
+                if self.next_borders[index].active {
+                    return Err(fail("duplicate cell border"));
+                }
+                self.next_borders[index].active = true;
+                self.border_edge = Some(index);
+            }
+            "brdrs" if self.in_table && self.border_edge.is_some() => {
+                self.next_borders[self.border_edge.unwrap()].solid = true
+            }
+            "brdrw" if self.in_table && self.border_edge.is_some() => {
+                self.next_borders[self.border_edge.unwrap()].width = Some(
+                    u16::try_from(arg.ok_or_else(|| fail("border width"))?)
+                        .map_err(|_| fail("border width"))?,
+                );
+            }
+            "brdrcf" if self.in_table && self.border_edge.is_some() => {
+                let index = usize::try_from(arg.ok_or_else(|| fail("border color"))?)
+                    .map_err(|_| fail("border color"))?;
+                self.next_borders[self.border_edge.unwrap()].color = Some(
+                    self.colors
+                        .get(index)
+                        .and_then(|v| *v)
+                        .ok_or_else(|| fail("border color"))?,
+                );
+            }
+            "clcbpat" if self.in_table => {
+                let index = usize::try_from(arg.ok_or_else(|| fail("cell color index"))?)
+                    .map_err(|_| fail("cell color index"))?;
+                self.next_cell_fill = *self
+                    .colors
+                    .get(index)
+                    .ok_or_else(|| fail("unknown cell color"))?;
+            }
+            "clshdng" if self.in_table && arg.unwrap_or(0) == 0 => {}
+            "clvmgf" if self.in_table && self.next_cell_vertical == 0 => {
+                self.next_cell_vertical = 1
+            }
+            "clvmrg" if self.in_table && self.next_cell_vertical == 0 => {
+                self.next_cell_vertical = 2
+            }
+            "clmgf" if self.in_table && self.next_cell_merge == 0 => self.next_cell_merge = 1,
+            "clmrg" if self.in_table && self.next_cell_merge == 0 => self.next_cell_merge = 2,
+            "cellx" if self.in_table => {
+                let boundary = u32::try_from(arg.ok_or_else(|| fail("cell boundary"))?)
+                    .map_err(|_| fail("cell boundary"))?;
+                let width = boundary
+                    .checked_sub(self.cell_boundary)
+                    .filter(|w| *w > 0 && *w <= 2_000_000)
+                    .ok_or_else(|| fail("cell width"))?;
+                self.row_widths.push(width);
+                self.cell_boundary = boundary;
+                let mut border: [Option<Border>; 4] = Default::default();
+                for (i, b) in self.next_borders.iter().enumerate() {
+                    if !b.active {
+                        continue;
+                    }
+                    if !b.solid {
+                        return Err(Error::Unsupported("RTF cell border style".into()));
+                    }
+                    let width_twips = b
+                        .width
+                        .filter(|v| *v > 0)
+                        .ok_or_else(|| fail("border width"))?;
+                    border[i] = Some(Border {
+                        width_twips,
+                        color: b.color.ok_or_else(|| fail("border color"))?,
+                    });
+                }
+                self.table_borders.push(border);
+                self.next_borders = Default::default();
+                self.border_edge = None;
+                self.table_merge_flags.push(self.next_cell_merge);
+                self.row_vertical_flags.push(self.next_cell_vertical);
+                self.next_cell_vertical = 0;
+                self.table_fills.push(self.next_cell_fill.take());
+                self.next_cell_merge = 0;
+            }
             "intbl" if self.in_table => {}
             "cell" if self.in_table => {
                 self.flush()?;
@@ -366,6 +583,57 @@ impl Reader {
                 {
                     return Err(fail("incomplete table row"));
                 }
+                if self.table_widths.is_empty() {
+                    self.table_widths = self.row_widths.clone();
+                } else if self.table_widths != self.row_widths {
+                    return Err(Error::Unsupported(
+                        "RTF table rows with different column widths".into(),
+                    ));
+                }
+                if self.table_merge_flags.len() != self.table_cells.len() {
+                    return Err(fail("table cell definitions"));
+                }
+                if self.table_fills.len() != self.table_cells.len() {
+                    return Err(fail("table cell colors"));
+                }
+                if self.table_borders.len() != self.table_cells.len() {
+                    return Err(fail("table cell borders"));
+                }
+                for (cell, fill) in self.table_cells.iter_mut().zip(&self.table_fills) {
+                    cell.fill = *fill;
+                }
+                let mut anchor: Option<usize> = None;
+                for (i, flag) in self.table_merge_flags.iter().copied().enumerate() {
+                    match flag {
+                        0 => anchor = None,
+                        1 => anchor = Some(i),
+                        2 => {
+                            let start =
+                                anchor.ok_or_else(|| fail("merge continuation without anchor"))?;
+                            let anchor_fill = self.table_cells[start].fill;
+                            let covered = &mut self.table_cells[i];
+                            if covered.fill.is_some() && covered.fill != anchor_fill {
+                                return Err(Error::Unsupported(
+                                    "different backgrounds within RTF merged cell".into(),
+                                ));
+                            }
+                            covered.fill = None;
+                            self.table_cells[start].col_span = self.table_cells[start]
+                                .col_span
+                                .checked_add(1)
+                                .ok_or(Error::Limit)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                super::table_edit::horizontal_spans(&self.table_cells)?;
+                if self.row_vertical_flags.len() != self.table_cells.len() {
+                    return Err(fail("table vertical cell definitions"));
+                }
+                self.table_vertical_flags
+                    .push(std::mem::take(&mut self.row_vertical_flags));
+                self.table_row_borders
+                    .push(std::mem::take(&mut self.table_borders));
                 self.table_rows.push(std::mem::take(&mut self.table_cells));
                 self.in_table = false;
             }
@@ -473,7 +741,21 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
         marker_text: false,
         in_table: false,
         table_rows: vec![],
+        table_widths: vec![],
+        row_widths: vec![],
+        cell_boundary: 0,
         table_cells: vec![],
+        table_merge_flags: vec![],
+        row_vertical_flags: vec![],
+        table_vertical_flags: vec![],
+        table_row_borders: vec![],
+        next_cell_vertical: 0,
+        table_fills: vec![],
+        table_borders: vec![],
+        next_borders: Default::default(),
+        border_edge: None,
+        next_cell_fill: None,
+        next_cell_merge: 0,
         cell_paragraphs: vec![],
         header: vec![],
         footer: vec![],
@@ -672,7 +954,7 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
     if r.in_table {
         return Err(fail("unterminated table"));
     }
-    r.flush_table();
+    r.flush_table()?;
     if !r.groups.is_empty() {
         return Err(fail("unbalanced RTF"));
     }
@@ -699,6 +981,16 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
 mod tests {
     use super::*;
     #[test]
+    fn independently_authored_horizontal_merge_controls_are_read() {
+        let bytes = br"{\rtf1\ansi\trowd\clmgf\cellx1000\clmrg\cellx2000\pard\intbl First\par\cell\pard\intbl\par\cell\row}";
+        let state = decode(bytes).unwrap();
+        let Block::Table(t) = &state.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(t.rows[0][0].col_span, 2);
+        assert_eq!(t.rows[0][0].paragraphs[0].runs[0].text, "First");
+    }
+    #[test]
     fn table_rows_and_cells_round_trip() {
         let mut s = State::default();
         let p = Paragraph {
@@ -711,6 +1003,7 @@ mod tests {
             }],
         };
         s.blocks.push(Block::Table(Table {
+            column_widths_twips: Vec::new(),
             id: 2,
             rows: vec![vec![Cell {
                 paragraphs: vec![p],

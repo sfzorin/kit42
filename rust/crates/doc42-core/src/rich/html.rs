@@ -69,6 +69,9 @@ fn color(s: &str) -> Result<u32, Error> {
     u32::from_str_radix(&full, 16).map_err(|_| err("HTML color"))
 }
 fn points(s: &str) -> Result<f64, Error> {
+    points_with_limit(s, 10000.0)
+}
+fn points_with_limit(s: &str, limit: f64) -> Result<f64, Error> {
     let s = s.trim();
     let (v, scale) = if let Some(v) = s.strip_suffix("pt") {
         (v, 1.0)
@@ -84,7 +87,7 @@ fn points(s: &str) -> Result<f64, Error> {
         return Err(err("HTML length unit"));
     };
     let v = v.trim().parse::<f64>().map_err(|_| err("HTML length"))? * scale;
-    if !v.is_finite() || v.abs() > 10000.0 {
+    if !v.is_finite() || v.abs() > limit {
         return Err(err("HTML length"));
     }
     Ok(v)
@@ -284,38 +287,203 @@ impl Reader<'_> {
             _ => Ok(()),
         }
     }
+    fn blank_cell(&mut self) -> Cell {
+        Cell {
+            paragraphs: vec![Paragraph {
+                id: self.id(),
+                style: ParagraphStyle::default(),
+                runs: vec![Run {
+                    text: String::new(),
+                    style: TextStyle::default(),
+                    link: None,
+                }],
+            }],
+            row_span: 1,
+            col_span: 1,
+            border: None,
+            fill: None,
+        }
+    }
     fn table(&mut self, node: &Handle) -> Result<Table, Error> {
         check_attrs(node, &[])?;
         let mut rows = Vec::new();
-        fn gather(n: &Handle, out: &mut Vec<Handle>) {
+        let mut widths = Vec::new();
+        fn gather(
+            n: &Handle,
+            rows: &mut Vec<Handle>,
+            columns: &mut Vec<Handle>,
+        ) -> Result<(), Error> {
             for c in n.children.borrow().iter() {
                 match node_name(c).as_deref() {
-                    Some("tr") => out.push(c.clone()),
-                    Some("thead" | "tbody" | "tfoot") => gather(c, out),
-                    _ => {}
+                    Some("tr") => rows.push(c.clone()),
+                    Some("thead" | "tbody" | "tfoot") => {
+                        check_attrs(c, &[])?;
+                        gather(c, rows, columns)?;
+                    }
+                    Some("colgroup") => {
+                        check_attrs(c, &[])?;
+                        for col in c.children.borrow().iter() {
+                            match node_name(col).as_deref() {
+                                Some("col") => columns.push(col.clone()),
+                                None if matches!(&col.data, NodeData::Text { contents } if contents.borrow().trim().is_empty()) =>
+                                    {}
+                                _ => return Err(err("HTML column group")),
+                            }
+                        }
+                    }
+                    None if matches!(&c.data, NodeData::Text { contents } if contents.borrow().trim().is_empty()) =>
+                        {}
+                    _ => return Err(err("HTML table content")),
                 }
             }
+            Ok(())
         }
         let mut source = Vec::new();
-        gather(node, &mut source);
+        let mut columns = Vec::new();
+        gather(node, &mut source, &mut columns)?;
+        for column in columns {
+            check_attrs(&column, &["style"])?;
+            let style = attribute(&column, "style").ok_or_else(|| err("HTML column width"))?;
+            let (name, value) = style
+                .trim()
+                .trim_end_matches(';')
+                .split_once(':')
+                .ok_or_else(|| err("HTML column width"))?;
+            if !name.trim().eq_ignore_ascii_case("width") {
+                return Err(err("HTML column style"));
+            }
+            let width = (points_with_limit(value, 100_000.0)? * 20.0).round();
+            if !(1.0..=2_000_000.0).contains(&width) {
+                return Err(err("HTML column width"));
+            }
+            widths.push(width as u32);
+        }
+        let mut pending: Vec<u16> = Vec::new();
         for row in source {
             check_attrs(&row, &[])?;
             let mut cells = Vec::new();
-            for c in row
-                .children
-                .borrow()
-                .iter()
-                .filter(|n| matches!(node_name(n).as_deref(), Some("td" | "th")))
-            {
-                check_attrs(c, &["style"])?;
-                let p = self.paragraph(c, None, None)?;
+            for c in row.children.borrow().iter() {
+                if matches!(&c.data,NodeData::Text{contents} if contents.borrow().trim().is_empty())
+                {
+                    continue;
+                }
+                if !matches!(node_name(c).as_deref(), Some("td" | "th")) {
+                    return Err(err("HTML table row content"));
+                }
+                while pending.get(cells.len()).copied().unwrap_or(0) > 0 {
+                    pending[cells.len()] -= 1;
+                    cells.push(self.blank_cell());
+                }
+                check_attrs(c, &["style", "colspan", "rowspan"])?;
+                let row_span = attribute(c, "rowspan")
+                    .unwrap_or_else(|| "1".into())
+                    .parse::<u16>()
+                    .map_err(|_| err("HTML row span"))?;
+                if row_span == 0 || row_span > 256 {
+                    return Err(err("HTML row span"));
+                }
+                let span = attribute(c, "colspan")
+                    .unwrap_or_else(|| "1".into())
+                    .parse::<u16>()
+                    .map_err(|_| err("HTML cell span"))?;
+                if span == 0 || span > 256 {
+                    return Err(err("HTML cell span"));
+                }
+                let start = cells.len();
+                let end = start.checked_add(span as usize).ok_or(Error::Limit)?;
+                if end > 256 {
+                    return Err(Error::Limit);
+                }
+                if pending.len() < end {
+                    pending.resize(end, 0);
+                }
+                if pending[start..end].iter().any(|v| *v != 0) {
+                    return Err(err("overlapping HTML cell spans"));
+                }
+                for entry in &mut pending[start..end] {
+                    *entry = row_span - 1;
+                }
+                let mut fill = None;
+                let mut border = None;
+                let mut paragraph_css = String::new();
+                if let Some(style) = attribute(c, "style") {
+                    for item in style.split(';').filter(|x| !x.trim().is_empty()) {
+                        let (name, value) =
+                            item.split_once(':').ok_or_else(|| err("HTML cell style"))?;
+                        match name.trim().to_ascii_lowercase().as_str() {
+                            "background-color" => {
+                                fill = if value.trim().eq_ignore_ascii_case("transparent") {
+                                    None
+                                } else {
+                                    Some(color(value)?)
+                                }
+                            }
+                            "border" => {
+                                let parts = value.split_whitespace().collect::<Vec<_>>();
+                                if parts.len() != 3 || !parts[1].eq_ignore_ascii_case("solid") {
+                                    return Err(err("HTML cell border"));
+                                }
+                                let width = (points(parts[0])? * 20.0).round();
+                                if !(1.0..=u16::MAX as f64).contains(&width) {
+                                    return Err(err("HTML cell border"));
+                                }
+                                border = Some(Border {
+                                    width_twips: width as u16,
+                                    color: color(parts[2])?,
+                                });
+                            }
+                            _ => {
+                                paragraph_css.push_str(item);
+                                paragraph_css.push(';');
+                            }
+                        }
+                    }
+                }
+                let children = c.children.borrow();
+                let has_blocks = children
+                    .iter()
+                    .any(|n| node_name(n).as_deref() == Some("p"));
+                let mut paragraphs = Vec::new();
+                if has_blocks {
+                    if !paragraph_css.is_empty() {
+                        return Err(err("inherited HTML cell paragraph styles"));
+                    }
+                    for child in children.iter() {
+                        if node_name(child).as_deref() == Some("p") {
+                            paragraphs.push(self.paragraph(child, None, None)?);
+                        } else if !matches!(&child.data, NodeData::Text { contents } if contents.borrow().trim().is_empty())
+                        {
+                            return Err(err("mixed HTML cell content"));
+                        }
+                    }
+                } else {
+                    let mut text_style = TextStyle::default();
+                    let mut para_style = ParagraphStyle::default();
+                    css(&paragraph_css, &mut text_style, &mut para_style)?;
+                    let mut runs = Vec::new();
+                    for child in children.iter() {
+                        self.inline(child, &text_style, &para_style, None, &mut runs)?;
+                    }
+                    paragraphs.push(Paragraph {
+                        id: self.id(),
+                        style: para_style,
+                        runs,
+                    });
+                }
                 cells.push(Cell {
-                    paragraphs: vec![p],
-                    row_span: 1,
-                    col_span: 1,
-                    border: None,
-                    fill: None,
+                    paragraphs,
+                    row_span,
+                    col_span: span,
+                    border,
+                    fill,
                 });
+                for _ in 1..span {
+                    cells.push(self.blank_cell());
+                }
+            }
+            while pending.get(cells.len()).copied().unwrap_or(0) > 0 {
+                pending[cells.len()] -= 1;
+                cells.push(self.blank_cell());
             }
             if cells.is_empty()
                 || rows
@@ -326,12 +494,16 @@ impl Reader<'_> {
             }
             rows.push(cells);
         }
-        if rows.is_empty() {
-            return Err(err("empty HTML table"));
+        if pending.iter().any(|n| *n != 0) {
+            return Err(err("HTML row span exceeds table"));
+        }
+        if rows.is_empty() || (!widths.is_empty() && rows[0].len() != widths.len()) {
+            return Err(err("HTML table column count"));
         }
         Ok(Table {
             id: self.id(),
             rows,
+            column_widths_twips: widths,
         })
     }
     fn block(&mut self, node: &Handle) -> Result<(), Error> {
@@ -409,7 +581,7 @@ impl Reader<'_> {
                         Ok(())
                     }
                     "img" => {
-                        check_attrs(node, &["src", "alt", "width", "height"])?;
+                        check_attrs(node, &["src", "alt", "width", "height", "style"])?;
                         let src = attribute(node, "src").ok_or_else(|| err("HTML image source"))?;
                         let (mime, data) = if let Some((prefix, payload)) = src.split_once(',') {
                             let mime = match prefix {
@@ -459,27 +631,56 @@ impl Reader<'_> {
                         }
                         let dimension = |name: &str| -> Result<Option<u32>, Error> {
                             attribute(node, name)
-                                .map(|v| v.parse::<u32>().map_err(|_| err("HTML image dimension")))
+                                .map(|v| {
+                                    v.parse::<u32>()
+                                        .map_err(|_| err("HTML image dimension"))?
+                                        .checked_mul(15)
+                                        .ok_or(Error::Limit)
+                                })
                                 .transpose()
                         };
-                        let w = dimension("width")?;
-                        let h = dimension("height")?;
-                        let (w, h) = match (w, h) {
+                        let (mut w, mut h) = (dimension("width")?, dimension("height")?);
+                        if let Some(style) = attribute(node, "style") {
+                            for declaration in style.split(';').filter(|s| !s.trim().is_empty()) {
+                                let (name, value) = declaration
+                                    .split_once(':')
+                                    .ok_or_else(|| err("HTML image style"))?;
+                                let twips = (points_with_limit(value, u32::MAX as f64 / 20.0)?
+                                    * 20.0)
+                                    .round();
+                                if !(1.0..=u32::MAX as f64).contains(&twips) {
+                                    return Err(err("HTML image dimension"));
+                                }
+                                match name.trim().to_ascii_lowercase().as_str() {
+                                    "width" => w = Some(twips as u32),
+                                    "height" => h = Some(twips as u32),
+                                    _ => return Err(err("HTML image style")),
+                                }
+                            }
+                        }
+                        let (width, height) = match (w, h) {
                             (Some(w), Some(h)) => (w, h),
                             (Some(w), None) => (
                                 w,
-                                ((u64::from(w) * u64::from(source_h)) / u64::from(source_w)).max(1)
-                                    as u32,
+                                u32::try_from(
+                                    (u64::from(w) * u64::from(source_h) / u64::from(source_w))
+                                        .max(1),
+                                )
+                                .map_err(|_| Error::Limit)?,
                             ),
                             (None, Some(h)) => (
-                                ((u64::from(h) * u64::from(source_w)) / u64::from(source_h)).max(1)
-                                    as u32,
+                                u32::try_from(
+                                    (u64::from(h) * u64::from(source_w) / u64::from(source_h))
+                                        .max(1),
+                                )
+                                .map_err(|_| Error::Limit)?,
                                 h,
                             ),
-                            (None, None) => (source_w, source_h),
+                            (None, None) => (
+                                source_w.checked_mul(15).ok_or(Error::Limit)?,
+                                source_h.checked_mul(15).ok_or(Error::Limit)?,
+                            ),
                         };
-                        let width = w.checked_mul(15).ok_or(Error::Limit)?;
-                        let height = h.checked_mul(15).ok_or(Error::Limit)?;
                         let image = Image {
                             id: self.id(),
                             mime: mime.into(),
@@ -643,6 +844,63 @@ fn paragraph_markup(p: &Paragraph, tag: &str) -> Result<String, Error> {
     out.push_str(&format!("</{tag}>"));
     Ok(out)
 }
+pub(super) fn table_markup(table: &Table) -> Result<String, Error> {
+    let mut out = String::from("<table>");
+    if !table.column_widths_twips.is_empty() {
+        out.push_str("<colgroup>");
+        for width in &table.column_widths_twips {
+            out.push_str(&format!("<col style=\"width:{}pt\">", *width as f64 / 20.0));
+        }
+        out.push_str("</colgroup>");
+    }
+    let layout = super::table_edit::table_layout(table)?;
+    for (row_index, row) in table.rows.iter().enumerate() {
+        out.push_str("<tr>");
+        for (index, cell) in row.iter().enumerate() {
+            if layout[row_index][index] != (row_index, index) {
+                continue;
+            }
+            let mut attrs = String::new();
+            if cell.col_span > 1 {
+                attrs.push_str(&format!(" colspan=\"{}\"", cell.col_span));
+            }
+            if cell.row_span > 1 {
+                attrs.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
+            }
+            let mut styles = String::new();
+            if let Some(fill) = cell.fill {
+                if fill > 0xffffff {
+                    return Err(err("HTML cell color"));
+                }
+                styles.push_str(&format!("background-color:#{fill:06x};"));
+            }
+            if let Some(border) = &cell.border {
+                if border.width_twips == 0 || border.color > 0xffffff {
+                    return Err(err("HTML cell border"));
+                }
+                styles.push_str(&format!(
+                    "border:{}pt solid #{:06x};",
+                    border.width_twips as f64 / 20.0,
+                    border.color
+                ));
+            }
+            if !styles.is_empty() {
+                attrs.push_str(&format!(" style=\"{styles}\""));
+            }
+            out.push_str(&format!("<td{attrs}>"));
+            for paragraph in &cell.paragraphs {
+                if paragraph.style.list.is_some() || paragraph.style.outline_level.is_some() {
+                    return Err(err("HTML table paragraph"));
+                }
+                out.push_str(&paragraph_markup(paragraph, "p")?);
+            }
+            out.push_str("</td>");
+        }
+        out.push_str("</tr>");
+    }
+    out.push_str("</table>");
+    Ok(out)
+}
 pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     if s.sections.len() != 1
         || s.sections[0].page != PageSettings::default()
@@ -686,35 +944,19 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                 };
                 out.push_str(&paragraph_markup(p, &tag)?);
             }
-            Block::Table(t) => {
-                out.push_str("<table>");
-                for row in &t.rows {
-                    out.push_str("<tr>");
-                    for c in row {
-                        if c.row_span != 1
-                            || c.col_span != 1
-                            || c.border.is_some()
-                            || c.fill.is_some()
-                            || c.paragraphs.len() != 1
-                        {
-                            return Err(err("HTML complex table"));
-                        }
-                        out.push_str(&paragraph_markup(&c.paragraphs[0], "td")?);
-                    }
-                    out.push_str("</tr>");
-                }
-                out.push_str("</table>");
-            }
+            Block::Table(t) => out.push_str(&table_markup(t)?),
             Block::Image(i) => {
-                if i.width_twips % 15 != 0 || i.height_twips % 15 != 0 {
-                    return Err(err("HTML fractional image pixels"));
+                if !((i.mime == "image/png" && i.data.starts_with(b"\x89PNG\r\n\x1a\n"))
+                    || (i.mime == "image/jpeg" && i.data.starts_with(&[0xff, 0xd8, 0xff])))
+                {
+                    return Err(err("HTML image encoding"));
                 }
                 out.push_str(&format!(
-                    "<img src=\"data:{};base64,{}\" width=\"{}\" height=\"{}\" alt=\"{}\">",
+                    "<img src=\"data:{};base64,{}\" style=\"width:{}pt;height:{}pt\" alt=\"{}\">",
                     i.mime,
                     STANDARD.encode(&i.data),
-                    i.width_twips / 15,
-                    i.height_twips / 15,
+                    i.width_twips as f64 / 20.0,
+                    i.height_twips as f64 / 20.0,
                     escape(&i.alt)
                 ));
             }

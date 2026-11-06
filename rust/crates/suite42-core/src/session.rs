@@ -11,6 +11,25 @@ pub struct FileIdentity {
     pub content_hash: u64,
 }
 impl FileIdentity {
+    /// Build the same identity from the exact bytes decoded by a worker.
+    pub fn from_bytes(bytes: &[u8], modified: Option<SystemTime>) -> Self {
+        use std::hash::Hasher;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for chunk in bytes.chunks(65536) {
+            hash.write(chunk);
+        }
+        Self {
+            len: bytes.len() as u64,
+            modified,
+            content_hash: hash.finish(),
+        }
+    }
+    /// Cheap final guard after a full background identity check. Like publication,
+    /// this is not a filesystem compare-and-swap against concurrent writers.
+    pub fn metadata_matches(&self, path: &Path) -> io::Result<bool> {
+        let metadata = fs::metadata(path)?;
+        Ok(metadata.len() == self.len && metadata.modified().ok() == self.modified)
+    }
     pub fn read(path: &Path) -> io::Result<Self> {
         let m = fs::metadata(path)?;
         use std::{hash::Hasher, io::Read};
@@ -50,14 +69,22 @@ pub struct DocumentSession {
 impl DocumentSession {
     pub fn opened(path: PathBuf, format: String, revision: u64) -> io::Result<Self> {
         let identity = FileIdentity::read(&path)?;
-        Ok(Self {
+        Ok(Self::opened_with_identity(path, format, revision, identity))
+    }
+    pub fn opened_with_identity(
+        path: PathBuf,
+        format: String,
+        revision: u64,
+        identity: FileIdentity,
+    ) -> Self {
+        Self {
             location: Some(DocumentLocation {
                 path,
                 format,
                 identity,
             }),
             saved_revision: Some(revision),
-        })
+        }
     }
     pub fn location(&self) -> Option<&DocumentLocation> {
         self.location.as_ref()
@@ -99,6 +126,10 @@ pub fn publish(
     bytes: &[u8],
     expected: Option<&FileIdentity>,
 ) -> io::Result<FileIdentity> {
+    publish_bytes(path, bytes, expected)?;
+    FileIdentity::read(path)
+}
+fn publish_bytes(path: &Path, bytes: &[u8], expected: Option<&FileIdentity>) -> io::Result<()> {
     use std::io::Write;
     let parent = path
         .parent()
@@ -125,8 +156,144 @@ pub fn publish(
             replace_existing(&temporary_path, path)?;
         }
     }
-    FileIdentity::read(path)
+    Ok(())
 }
+/// A main document and immutable, sibling-relative resources. Publication is
+/// ordered, not a filesystem-wide transaction: resources appear before the
+/// main file, and rollback is best effort if publication fails.
+#[derive(Clone, Debug)]
+pub struct SaveBundle {
+    pub main: Vec<u8>,
+    pub sidecars: Vec<SaveSidecar>,
+}
+#[derive(Clone, Debug)]
+pub struct SaveSidecar {
+    /// Exactly `<document-stem>.assets/<name>`; absolute paths and traversal
+    /// are rejected by `publish_bundle`.
+    pub relative_path: PathBuf,
+    pub bytes: Vec<u8>,
+}
+
+/// Publish resources without replacing existing files, then publish the main
+/// snapshot using `publish`'s conflict check. Identical resources may be reused.
+/// If a later step fails, only resources created by this call and still matching
+/// their published identity are removed. Concurrent filesystem changes can make
+/// rollback incomplete; errors from cleanup are reported with the original error.
+pub fn publish_bundle(
+    path: &Path,
+    bundle: &SaveBundle,
+    expected: Option<&FileIdentity>,
+) -> io::Result<FileIdentity> {
+    use std::path::Component;
+    let stem = path
+        .file_stem()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Document name has no stem"))?;
+    let mut assets_name = stem.to_os_string();
+    assets_name.push(".assets");
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let assets = parent.join(&assets_name);
+    let mut seen = std::collections::HashSet::new();
+    for sidecar in &bundle.sidecars {
+        let mut components = sidecar.relative_path.components();
+        if !matches!(components.next(), Some(Component::Normal(n)) if n == assets_name)
+            || !matches!(components.next(), Some(Component::Normal(name)) if name.to_str().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) && !s.ends_with('.')))
+            || components.next().is_some()
+            || !seen.insert(sidecar.relative_path.clone())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid or duplicate sidecar path",
+            ));
+        }
+    }
+    let mut created_dir = false;
+    let mut created: Vec<(PathBuf, FileIdentity)> = Vec::new();
+    let mut main_published = false;
+    let result = (|| {
+        if !bundle.sidecars.is_empty() {
+            match fs::create_dir(&assets) {
+                Ok(()) => created_dir = true,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    let meta = fs::symlink_metadata(&assets)?;
+                    if !meta.is_dir() || meta.file_type().is_symlink() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Sidecar directory is not a real directory",
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        for sidecar in &bundle.sidecars {
+            let target = parent.join(&sidecar.relative_path);
+            match publish_bytes(&target, &sidecar.bytes, None) {
+                Ok(()) => {
+                    let identity = FileIdentity::read(&target).map_err(|e| io::Error::new(e.kind(), format!("Sidecar was published but its identity could not be read; it was retained: {e}")))?;
+                    created.push((target, identity));
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    let meta = fs::symlink_metadata(&target)?;
+                    if !meta.is_file()
+                        || meta.file_type().is_symlink()
+                        || meta.len() != sidecar.bytes.len() as u64
+                        || fs::read(&target)? != sidecar.bytes
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Existing sidecar differs from the snapshot",
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        publish_bytes(path, &bundle.main, expected)?;
+        main_published = true;
+        FileIdentity::read(path)
+    })();
+    match result {
+        Ok(identity) => Ok(identity),
+        Err(original) if main_published => Err(io::Error::new(original.kind(), format!("Main file was published but its identity could not be read; sidecars were retained: {original}"))),
+        Err(original) => {
+            let mut failures = Vec::new();
+            for (file, identity) in created.into_iter().rev() {
+                match FileIdentity::read(&file) {
+                    Ok(current) if current == identity => {
+                        if let Err(e) = fs::remove_file(&file) {
+                            failures.push(e.to_string());
+                        }
+                    }
+                    Ok(_) => failures.push(format!(
+                        "resource changed during rollback: {}",
+                        file.display()
+                    )),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => failures.push(e.to_string()),
+                }
+            }
+            if created_dir {
+                if let Err(e) = fs::remove_dir(&assets) {
+                    if e.kind() != io::ErrorKind::NotFound {
+                        failures.push(e.to_string());
+                    }
+                }
+            }
+            if failures.is_empty() {
+                Err(original)
+            } else {
+                Err(io::Error::new(
+                    original.kind(),
+                    format!("{original}; rollback incomplete: {}", failures.join("; ")),
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
@@ -159,6 +326,73 @@ fn replace_existing(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn loaded_bytes_identity_matches_file_and_attaches_without_reread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.pdf");
+        let bytes = vec![42u8; 70_000];
+        fs::write(&path, &bytes).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().ok();
+        let captured = FileIdentity::from_bytes(&bytes, modified);
+        assert_eq!(captured, FileIdentity::read(&path).unwrap());
+        assert!(captured.metadata_matches(&path).unwrap());
+        let session =
+            DocumentSession::opened_with_identity(path.clone(), "pdf".into(), 7, captured.clone());
+        assert_eq!(session.location().unwrap().identity, captured);
+        fs::write(&path, b"changed").unwrap();
+        assert!(!captured.metadata_matches(&path).unwrap());
+        assert!(session.externally_changed().unwrap());
+    }
+    #[test]
+    fn bundle_reuses_identical_assets_and_rolls_back_owned_files_on_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("example.md");
+        let asset = PathBuf::from("example.assets/abc.png");
+        let bundle = SaveBundle {
+            main: b"first".to_vec(),
+            sidecars: vec![SaveSidecar {
+                relative_path: asset.clone(),
+                bytes: b"image".to_vec(),
+            }],
+        };
+        let first = publish_bundle(&path, &bundle, None).unwrap();
+        let reused = SaveBundle {
+            main: b"second".to_vec(),
+            sidecars: bundle.sidecars.clone(),
+        };
+        let second = publish_bundle(&path, &reused, Some(&first)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert_eq!(fs::read(dir.path().join(&asset)).unwrap(), b"image");
+        let collision = SaveBundle {
+            main: b"third".to_vec(),
+            sidecars: vec![SaveSidecar {
+                relative_path: asset.clone(),
+                bytes: b"different".to_vec(),
+            }],
+        };
+        assert!(publish_bundle(&path, &collision, Some(&second)).is_err());
+        assert_eq!(fs::read(dir.path().join(&asset)).unwrap(), b"image");
+        let new_asset = PathBuf::from("example.assets/new.png");
+        let conflict = SaveBundle {
+            main: b"third".to_vec(),
+            sidecars: vec![SaveSidecar {
+                relative_path: new_asset.clone(),
+                bytes: b"new".to_vec(),
+            }],
+        };
+        assert!(publish_bundle(&path, &conflict, Some(&first)).is_err());
+        assert!(!dir.path().join(new_asset).exists());
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert_eq!(fs::read(dir.path().join(asset)).unwrap(), b"image");
+        let traversal = SaveBundle {
+            main: vec![],
+            sidecars: vec![SaveSidecar {
+                relative_path: "../other".into(),
+                bytes: vec![],
+            }],
+        };
+        assert!(publish_bundle(&path, &traversal, None).is_err());
+    }
     #[test]
     fn publication_rejects_conflicts_and_tracks_snapshot_revision() {
         let dir = tempfile::tempdir().unwrap();

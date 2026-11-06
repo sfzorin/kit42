@@ -99,6 +99,11 @@ struct ParaPatch {
 struct Styles {
     defs: HashMap<(String, String), Def>,
     list_types: HashMap<(String, u8), bool>,
+    cell_fills: HashMap<String, Option<u32>>,
+    cell_borders: HashMap<String, Option<Border>>,
+    column_widths: HashMap<String, u32>,
+    unsupported_column_styles: HashSet<String>,
+    unsupported_cell_styles: HashSet<String>,
     default_paragraph: Def,
     default_text: Def,
     named: HashSet<(String, String)>,
@@ -108,6 +113,11 @@ impl Styles {
         let mut out = Self {
             defs: HashMap::new(),
             list_types: HashMap::new(),
+            cell_fills: HashMap::new(),
+            cell_borders: HashMap::new(),
+            column_widths: HashMap::new(),
+            unsupported_column_styles: HashSet::new(),
+            unsupported_cell_styles: HashSet::new(),
             default_paragraph: Def::default(),
             default_text: Def::default(),
             named: HashSet::new(),
@@ -149,6 +159,87 @@ impl Styles {
                     continue;
                 };
                 let family = attr(n, S, "family").unwrap_or("");
+                if family == "table-column" {
+                    let mut width = None;
+                    let mut unsupported_style = attr(n, S, "parent-style-name").is_some();
+                    for property in n.children().filter(|p| p.is_element()) {
+                        if !property.has_tag_name((S, "table-column-properties"))
+                            || property.children().any(|c| c.is_element())
+                        {
+                            unsupported_style = true;
+                            continue;
+                        }
+                        for a in property.attributes() {
+                            if a.namespace() == Some(S) && a.name() == "column-width" {
+                                match nonnegative(a.value()) {
+                                    Ok(v) if v > 0 && v <= 2_000_000 => width = Some(v),
+                                    _ => unsupported_style = true,
+                                }
+                            } else {
+                                unsupported_style = true;
+                            }
+                        }
+                    }
+                    if let Some(width) = width {
+                        out.column_widths.insert(name.into(), width);
+                    } else {
+                        unsupported_style = true;
+                    }
+                    if unsupported_style {
+                        out.unsupported_column_styles.insert(name.into());
+                    }
+                    continue;
+                }
+                if family == "table-cell" {
+                    let mut fill = None;
+                    let mut border = None;
+                    let mut unsupported_style = attr(n, S, "parent-style-name").is_some();
+                    for property in n.children().filter(|p| p.is_element()) {
+                        if !property.has_tag_name((S, "table-cell-properties"))
+                            || property.children().any(|c| c.is_element())
+                        {
+                            unsupported_style = true;
+                            continue;
+                        }
+                        for a in property.attributes() {
+                            if a.namespace() == Some(F) && a.name() == "background-color" {
+                                if a.value() != "transparent" {
+                                    match color(a.value()) {
+                                        Ok(value) => fill = Some(value),
+                                        Err(_) => unsupported_style = true,
+                                    }
+                                }
+                            } else if a.namespace() == Some(F) && a.name() == "border" {
+                                if a.value() != "none" {
+                                    let parts = a.value().split_whitespace().collect::<Vec<_>>();
+                                    if parts.len() != 3 || parts[1] != "solid" {
+                                        unsupported_style = true;
+                                    } else {
+                                        match (nonnegative(parts[0]), color(parts[2])) {
+                                            (Ok(width), Ok(color))
+                                                if width > 0 && width <= u16::MAX as u32 =>
+                                            {
+                                                border = Some(Border {
+                                                    width_twips: width as u16,
+                                                    color,
+                                                })
+                                            }
+                                            _ => unsupported_style = true,
+                                        }
+                                    }
+                                }
+                            } else {
+                                unsupported_style = true;
+                            }
+                        }
+                    }
+                    out.cell_fills.insert(name.into(), fill);
+                    out.cell_borders.insert(name.into(), border);
+                    if unsupported_style {
+                        out.unsupported_cell_styles.insert(name.into());
+                    }
+                    continue;
+                }
                 if !matches!(family, "paragraph" | "text") {
                     continue;
                 }
@@ -699,7 +790,34 @@ impl Reader<'_> {
         })
     }
     fn table(&mut self, n: roxmltree::Node<'_, '_>) -> Result<Table, Error> {
+        let mut widths = Vec::new();
+        for column in n
+            .children()
+            .filter(|c| c.has_tag_name((TB, "table-column")))
+        {
+            let count = attr(column, TB, "number-columns-repeated")
+                .unwrap_or("1")
+                .parse::<usize>()
+                .map_err(bad)?;
+            if count == 0 || count > 256 || widths.len() + count > 256 {
+                return Err(Error::Limit);
+            }
+            let width = if let Some(name) = attr(column, TB, "style-name") {
+                if self.styles.unsupported_column_styles.contains(name) {
+                    return Err(unsupported("ODT table column style"));
+                }
+                *self
+                    .styles
+                    .column_widths
+                    .get(name)
+                    .ok_or_else(|| unsupported("unknown ODT table column style"))?
+            } else {
+                1440
+            };
+            widths.extend(std::iter::repeat_n(width, count));
+        }
         let mut rows = Vec::new();
+        let mut pending: Vec<u16> = Vec::new();
         for r in n.children().filter(|c| c.has_tag_name((TB, "table-row"))) {
             let repeat = attr(r, TB, "number-rows-repeated")
                 .unwrap_or("1")
@@ -709,14 +827,75 @@ impl Reader<'_> {
                 return Err(unsupported("repeated ODT table rows"));
             }
             let mut cells = Vec::new();
+            let mut covered = 0u16;
             for c in r.children().filter(|c| c.is_element()) {
-                if !c.has_tag_name((TB, "table-cell")) {
+                if c.has_tag_name((TB, "covered-table-cell")) {
+                    if c.attributes().len() != 0
+                        || c.children().any(|n| {
+                            n.is_element() || n.text().is_some_and(|t| !t.trim().is_empty())
+                        })
+                    {
+                        return Err(unsupported("ODT covered table cell content"));
+                    }
+                    if covered > 0 {
+                        covered -= 1;
+                    } else if pending.get(cells.len()).copied().unwrap_or(0) > 0 {
+                        pending[cells.len()] -= 1;
+                    } else {
+                        return Err(unsupported("unexpected ODT covered cell"));
+                    }
+                    let id = self.id();
+                    cells.push(Cell {
+                        paragraphs: vec![Paragraph {
+                            id,
+                            style: ParagraphStyle::default(),
+                            runs: vec![Run {
+                                text: String::new(),
+                                style: TextStyle::default(),
+                                link: None,
+                            }],
+                        }],
+                        row_span: 1,
+                        col_span: 1,
+                        border: None,
+                        fill: None,
+                    });
+                    continue;
+                }
+                if covered != 0
+                    || pending.get(cells.len()).copied().unwrap_or(0) > 0
+                    || !c.has_tag_name((TB, "table-cell"))
+                {
                     return Err(unsupported("ODT covered table cell"));
                 }
-                if attr(c, TB, "number-columns-spanned").is_some()
-                    || attr(c, TB, "number-rows-spanned").is_some()
-                {
-                    return Err(unsupported("ODT merged table cell"));
+                let row_span = attr(c, TB, "number-rows-spanned")
+                    .unwrap_or("1")
+                    .parse::<u16>()
+                    .map_err(bad)?;
+                if row_span == 0 || row_span > 256 {
+                    return Err(bad("ODT table row span"));
+                }
+                let span = attr(c, TB, "number-columns-spanned")
+                    .unwrap_or("1")
+                    .parse::<u16>()
+                    .map_err(bad)?;
+                if span == 0 || span > 256 {
+                    return Err(bad("ODT table span"));
+                }
+                covered = span - 1;
+                let start = cells.len();
+                let end = start.checked_add(span as usize).ok_or(Error::Limit)?;
+                if end > 256 {
+                    return Err(Error::Limit);
+                }
+                if pending.len() < end {
+                    pending.resize(end, 0);
+                }
+                if pending[start..end].iter().any(|n| *n != 0) {
+                    return Err(bad("overlapping ODT table spans"));
+                }
+                for entry in &mut pending[start..end] {
+                    *entry = row_span - 1;
                 }
                 let repeats = attr(c, TB, "number-columns-repeated")
                     .unwrap_or("1")
@@ -725,6 +904,27 @@ impl Reader<'_> {
                 if repeats != 1 {
                     return Err(unsupported("repeated ODT table cells"));
                 }
+                let fill = if let Some(name) = attr(c, TB, "style-name") {
+                    if self.styles.unsupported_cell_styles.contains(name) {
+                        return Err(unsupported("ODT table cell style"));
+                    }
+                    *self
+                        .styles
+                        .cell_fills
+                        .get(name)
+                        .ok_or_else(|| unsupported("unknown ODT table cell style"))?
+                } else {
+                    None
+                };
+                let border = if let Some(name) = attr(c, TB, "style-name") {
+                    self.styles
+                        .cell_borders
+                        .get(name)
+                        .ok_or_else(|| unsupported("unknown ODT table cell style"))?
+                        .clone()
+                } else {
+                    None
+                };
                 let mut paragraphs = Vec::new();
                 for p in c.children().filter(|n| n.is_element()) {
                     if !p.has_tag_name((T, "p")) {
@@ -734,11 +934,14 @@ impl Reader<'_> {
                 }
                 cells.push(Cell {
                     paragraphs,
-                    row_span: 1,
-                    col_span: 1,
-                    border: None,
-                    fill: None,
+                    row_span,
+                    col_span: span,
+                    border,
+                    fill,
                 });
+            }
+            if covered != 0 {
+                return Err(bad("missing ODT covered cells"));
             }
             if cells.is_empty()
                 || rows
@@ -749,12 +952,19 @@ impl Reader<'_> {
             }
             rows.push(cells);
         }
+        if pending.iter().any(|n| *n != 0) {
+            return Err(bad("ODT row span exceeds table"));
+        }
         if rows.is_empty() {
             return Err(unsupported("empty ODT table"));
+        }
+        if !widths.is_empty() && rows.iter().any(|row| row.len() != widths.len()) {
+            return Err(unsupported("ODT table columns do not match cells"));
         }
         Ok(Table {
             id: self.id(),
             rows,
+            column_widths_twips: widths,
         })
     }
 }
@@ -1026,18 +1236,58 @@ impl Writer {
     }
     fn table(&mut self, t: &Table) -> Result<String, Error> {
         let mut out = String::from("<table:table>");
-        for row in &t.rows {
+        for width in &t.column_widths_twips {
+            let name = self.name("W");
+            self.automatic.push_str(&format!("<style:style style:name=\"{name}\" style:family=\"table-column\"><style:table-column-properties style:column-width=\"{}pt\"/></style:style>", *width as f64 / 20.0));
+            out.push_str(&format!(
+                "<table:table-column table:style-name=\"{name}\"/>"
+            ));
+        }
+        let layout = super::table_edit::table_layout(t)?;
+        for (row_index, row) in t.rows.iter().enumerate() {
             out.push_str("<table:table-row>");
-            for cell in row {
-                if cell.row_span != 1
-                    || cell.col_span != 1
-                    || cell.border.is_some()
-                    || cell.fill.is_some()
-                    || cell.paragraphs.is_empty()
-                {
+            for (index, cell) in row.iter().enumerate() {
+                if layout[row_index][index] != (row_index, index) {
+                    out.push_str("<table:covered-table-cell/>");
+                    continue;
+                }
+                if cell.paragraphs.is_empty() {
                     return Err(unsupported("ODT merged or styled table cells"));
                 }
-                out.push_str("<table:table-cell>");
+                let mut attributes = String::new();
+                if cell.col_span > 1 {
+                    attributes.push_str(&format!(
+                        " table:number-columns-spanned=\"{}\"",
+                        cell.col_span
+                    ));
+                }
+                if cell.row_span > 1 {
+                    attributes
+                        .push_str(&format!(" table:number-rows-spanned=\"{}\"", cell.row_span));
+                }
+                if cell.fill.is_some() || cell.border.is_some() {
+                    let name = self.name("C");
+                    let mut properties = String::new();
+                    if let Some(fill) = cell.fill {
+                        if fill > 0xffffff {
+                            return Err(bad("invalid table cell background"));
+                        }
+                        properties.push_str(&format!(" fo:background-color=\"#{fill:06x}\""));
+                    }
+                    if let Some(border) = &cell.border {
+                        if border.width_twips == 0 || border.color > 0xffffff {
+                            return Err(bad("invalid cell border"));
+                        }
+                        properties.push_str(&format!(
+                            " fo:border=\"{}pt solid #{:06x}\"",
+                            border.width_twips as f64 / 20.0,
+                            border.color
+                        ));
+                    }
+                    self.automatic.push_str(&format!("<style:style style:name=\"{name}\" style:family=\"table-cell\"><style:table-cell-properties{properties}/></style:style>"));
+                    attributes.push_str(&format!(" table:style-name=\"{name}\""));
+                }
+                out.push_str(&format!("<table:table-cell{attributes}>"));
                 for p in &cell.paragraphs {
                     if p.style.list.is_some() {
                         return Err(unsupported("ODT list inside table"));
@@ -1082,6 +1332,162 @@ fn xml_insert(xml: &mut String, addition: &str) -> Result<(), Error> {
     xml.insert_str(i, addition);
     Ok(())
 }
+fn opening_tag_end(xml: &str, start: usize) -> Result<usize, Error> {
+    let mut quote = None;
+    for (offset, byte) in xml.as_bytes()[start..].iter().copied().enumerate() {
+        match (quote, byte) {
+            (Some(q), c) if q == c => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => return Ok(start + offset),
+            _ => {}
+        }
+    }
+    Err(bad("invalid ODT element"))
+}
+// Apply narrowly scoped XML edits so unrelated ODT package styles survive.
+fn overlay_styles(
+    xml: &str,
+    state: &State,
+    writer: &mut Writer,
+    page_changed: bool,
+    headers_changed: bool,
+) -> Result<String, Error> {
+    let doc = roxmltree::Document::parse(xml).map_err(bad)?;
+    let master = doc
+        .descendants()
+        .find(|n| n.has_tag_name((S, "master-page")) && attr(*n, S, "name") == Some("Standard"))
+        .or_else(|| {
+            doc.descendants()
+                .find(|n| n.has_tag_name((S, "master-page")))
+        })
+        .ok_or_else(|| unsupported("ODT master page missing"))?;
+    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    if page_changed {
+        let layout_name = attr(master, S, "page-layout-name");
+        let layout = doc
+            .descendants()
+            .find(|n| {
+                n.has_tag_name((S, "page-layout"))
+                    && (layout_name.is_none() || attr(*n, S, "name") == layout_name)
+            })
+            .and_then(|n| {
+                n.children()
+                    .find(|c| c.has_tag_name((S, "page-layout-properties")))
+            })
+            .ok_or_else(|| unsupported("ODT page layout missing"))?;
+        let p = &state.sections[0].page;
+        let values = [
+            ("page-width", p.width_twips),
+            ("page-height", p.height_twips),
+            ("margin-left", p.margin_left),
+            ("margin-right", p.margin_right),
+            ("margin-top", p.margin_top),
+            ("margin-bottom", p.margin_bottom),
+        ];
+        let mut prefix = String::from("doc42fo");
+        while xml.contains(&format!("xmlns:{prefix}")) {
+            prefix.push('_');
+        }
+        let mut missing = String::new();
+        for (name, value) in values {
+            let value = format!("{}pt", value as f64 / 20.0);
+            if let Some(a) = layout
+                .attributes()
+                .find(|a| a.namespace() == Some(F) && a.name() == name)
+            {
+                edits.push((a.range_value(), value));
+            } else {
+                missing.push_str(&format!(" {prefix}:{name}=\"{value}\""));
+            }
+        }
+        if !missing.is_empty() {
+            let start = layout.range().start;
+            let end = opening_tag_end(xml, start)?;
+            let at = if xml.as_bytes().get(end.wrapping_sub(1)) == Some(&b'/') {
+                end - 1
+            } else {
+                end
+            };
+            edits.push((at..at, format!(" xmlns:{prefix}=\"{F}\"{missing}")));
+        }
+    }
+    if headers_changed {
+        let auto_start = writer.automatic.len();
+        let mut fragments = Vec::new();
+        for (tag, paragraphs) in [
+            ("header", &state.sections[0].header),
+            ("footer", &state.sections[0].footer),
+        ] {
+            let mut text = String::new();
+            if !paragraphs.is_empty() {
+                text.push_str(&format!("<style:{tag} {NS}>"));
+                for p in paragraphs {
+                    text.push_str(&writer.paragraph(p)?);
+                }
+                text.push_str(&format!("</style:{tag}>"));
+            }
+            fragments.push((tag, text));
+        }
+        let styles = &writer.automatic[auto_start..];
+        let styles = styles.replace("<style:style ", &format!("<style:style {NS} "));
+        let automatic = doc
+            .descendants()
+            .find(|n| n.has_tag_name((O, "automatic-styles")))
+            .ok_or_else(|| unsupported("ODT automatic styles missing"))?;
+        insert_child(xml, automatic, &styles, &mut edits)?;
+        let mut additions = String::new();
+        for (tag, text) in fragments {
+            if let Some(existing) = master.children().find(|n| n.has_tag_name((S, tag))) {
+                if existing.attributes().len() != 0 {
+                    return Err(unsupported(
+                        "editing ODT header/footer with container attributes",
+                    ));
+                }
+                edits.push((existing.range(), text));
+            } else {
+                additions.push_str(&text);
+            }
+        }
+        if !additions.is_empty() {
+            insert_child(xml, master, &additions, &mut edits)?;
+        }
+    }
+    edits.sort_by(|a, b| b.0.start.cmp(&a.0.start));
+    let mut out = xml.to_owned();
+    for (range, value) in edits {
+        out.replace_range(range, &value);
+    }
+    Ok(out)
+}
+fn insert_child(
+    xml: &str,
+    node: roxmltree::Node<'_, '_>,
+    text: &str,
+    edits: &mut Vec<(std::ops::Range<usize>, String)>,
+) -> Result<(), Error> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let range = node.range();
+    let source = &xml[range.clone()];
+    if source.ends_with("/>") {
+        let tag_end = source
+            .find(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
+            .ok_or_else(|| bad("invalid ODT element"))?;
+        let tag = &source[1..tag_end];
+        edits.push((
+            range,
+            format!("{}>{text}</{tag}>", &source[..source.len() - 2]),
+        ));
+    } else {
+        let at = range.start
+            + source
+                .rfind("</")
+                .ok_or_else(|| bad("invalid ODT element"))?;
+        edits.push((at..at, text.into()));
+    }
+    Ok(())
+}
 pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     if s.sections.len() != 1
         || s.sections[0].page.columns != 1
@@ -1103,25 +1509,20 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     }) {
         return Err(unsupported("ODT body or custom fields"));
     }
-    if let Some(source) = &s.odt_source_header_fields {
-        let current: Vec<_> = s
-            .fields
-            .iter()
-            .filter(|f| header_ids.contains(&f.at.paragraph))
-            .cloned()
-            .collect();
-        if *source != current {
-            return Err(unsupported("editing fields in imported ODT header"));
-        }
+    if s.odt_source_page.is_none()
+        && (s.sections[0].page.header_distance_twips
+            != PageSettings::default().header_distance_twips
+            || s.sections[0].page.footer_distance_twips
+                != PageSettings::default().footer_distance_twips)
+    {
+        return Err(unsupported("ODT header/footer distance"));
     }
     if let Some(original) = &s.odt_source_page {
-        if original != &s.sections[0].page {
-            return Err(unsupported("editing page setup in an imported ODT"));
-        }
-    }
-    if let Some((header, footer)) = &s.odt_source_headers {
-        if header != &s.sections[0].header || footer != &s.sections[0].footer {
-            return Err(unsupported("editing headers in an imported ODT"));
+        let current = &s.sections[0].page;
+        if original.header_distance_twips != current.header_distance_twips
+            || original.footer_distance_twips != current.footer_distance_twips
+        {
+            return Err(unsupported("editing ODT header/footer distance"));
         }
     }
     let mut parts = s.odt_parts.clone();
@@ -1140,6 +1541,26 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
         used: parts.keys().cloned().collect(),
         fields: s.fields.clone(),
     };
+    if let Some(styles) = parts.get("styles.xml") {
+        let xml = std::str::from_utf8(styles).map_err(bad)?;
+        let doc = roxmltree::Document::parse(xml).map_err(bad)?;
+        for node in doc.descendants().filter(|n| n.is_element()) {
+            if let Some(number) = attr(node, S, "name")
+                .and_then(|name| {
+                    name.strip_prefix("DOC42P")
+                        .or_else(|| name.strip_prefix("DOC42T"))
+                        .or_else(|| name.strip_prefix("DOC42C"))
+                        .or_else(|| name.strip_prefix("DOC42W"))
+                })
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                if number.checked_add(MAX_BYTES).is_none() {
+                    return Err(Error::Limit);
+                }
+                w.next = w.next.max(number);
+            }
+        }
+    }
     let mut lists = String::new();
     let mut seen = HashSet::new();
     for p in s.blocks.iter().filter_map(|b| {
@@ -1219,6 +1640,48 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
     close_lists(&mut body, &mut stack);
     let content=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-content {NS} office:version=\"1.3\"><office:automatic-styles>{lists}{}</office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>",w.automatic);
     parts.insert("content.xml".into(), content.into_bytes());
+    if let Some(existing) = parts.get("styles.xml").cloned() {
+        let text = String::from_utf8(existing).map_err(bad)?;
+        let changed_page = s
+            .odt_source_page
+            .as_ref()
+            .is_some_and(|p| p != &s.sections[0].page);
+        let changed_headers = s
+            .odt_source_headers
+            .as_ref()
+            .is_some_and(|(h, f)| h != &s.sections[0].header || f != &s.sections[0].footer)
+            || s.odt_source_header_fields.as_ref().is_some_and(|original| {
+                let current: Vec<_> = s
+                    .fields
+                    .iter()
+                    .filter(|f| header_ids.contains(&f.at.paragraph))
+                    .cloned()
+                    .collect();
+                *original != current
+            });
+        if changed_page || changed_headers {
+            // Start beyond every generated name present in the original style package.
+            let source = roxmltree::Document::parse(&text).map_err(bad)?;
+            for node in source.descendants().filter(|n| n.is_element()) {
+                if let Some(name) = attr(node, S, "name") {
+                    if let Some(number) = name
+                        .strip_prefix("DOC42P")
+                        .or_else(|| name.strip_prefix("DOC42T"))
+                        .or_else(|| name.strip_prefix("DOC42C"))
+                        .or_else(|| name.strip_prefix("DOC42W"))
+                        .and_then(|n| n.parse::<usize>().ok())
+                    {
+                        if number.checked_add(MAX_BYTES).is_none() {
+                            return Err(Error::Limit);
+                        }
+                        w.next = w.next.max(number);
+                    }
+                }
+            }
+            let updated = overlay_styles(&text, s, &mut w, changed_page, changed_headers)?;
+            parts.insert("styles.xml".into(), updated.into_bytes());
+        }
+    }
     if !parts.contains_key("styles.xml") {
         let p = &s.sections[0].page;
         let header = if s.sections[0].header.is_empty() {
@@ -1301,6 +1764,47 @@ mod tests {
         }
     }
     #[test]
+    fn external_style_overlay_preserves_package_and_uses_namespace_aliases() {
+        let content = format!("<o:document-content xmlns:o=\"{O}\" xmlns:t=\"{T}\"><o:body><o:text><t:p>External</t:p></o:text></o:body></o:document-content>");
+        let styles = format!("<o:document-styles xmlns:o=\"{O}\" xmlns:s=\"{S}\" xmlns:f=\"{F}\"><o:automatic-styles><s:page-layout s:name=\"P\"><s:page-layout-properties f:margin=\"2cm\"/></s:page-layout></o:automatic-styles><o:master-styles><s:master-page s:name=\"Standard\" s:page-layout-name=\"P\"/></o:master-styles></o:document-styles>");
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in [
+            ("mimetype", MIME.as_bytes()),
+            ("content.xml", content.as_bytes()),
+            ("styles.xml", styles.as_bytes()),
+            ("custom/data.bin", b"keep me".as_slice()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        let input = zip.finish().unwrap().into_inner();
+        let mut d = RichDocument::decode(&input, Format::Odt).unwrap();
+        d.transact(|s| {
+            s.sections[0].page.margin_left = 1200;
+            let p = paragraph(s.next_id, "Page ");
+            s.next_id += 1;
+            let id = p.id;
+            s.sections[0].header.push(p);
+            let field_id = s.next_id;
+            s.next_id += 1;
+            s.fields.push(Field {
+                id: field_id,
+                at: Position {
+                    paragraph: id,
+                    offset: 5,
+                },
+                kind: FieldKind::PageNumber,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let bytes = d.encode(Format::Odt).unwrap();
+        let reopened = RichDocument::decode(&bytes, Format::Odt).unwrap();
+        assert_eq!(reopened.state().sections[0].page.margin_left, 1200);
+        assert_eq!(reopened.state().fields.len(), 1);
+        assert_eq!(reopened.state().odt_parts["custom/data.bin"], b"keep me");
+    }
+    #[test]
     fn retained_style_attributes_survive_rich_projection_and_save() {
         let mut s = State::default();
         let Block::Paragraph(p) = &mut s.blocks[0] else {
@@ -1362,6 +1866,7 @@ mod tests {
         });
         s.blocks.push(Block::Paragraph(child));
         s.blocks.push(Block::Table(Table {
+            column_widths_twips: Vec::new(),
             id: 6,
             rows: vec![vec![Cell {
                 paragraphs: vec![paragraph(7, "cell")],

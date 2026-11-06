@@ -167,6 +167,9 @@ impl win42::App for Xls {
             (62, "Print workbook sheet..."),
             (63, "Filter selected range..."),
             (64, "Clear filter"),
+            (65, "Set row height..."),
+            (66, "Set column width..."),
+            (67, "Move current sheet..."),
         ]
         .into_iter()
         .map(|(id, title)| win42::CommandSpec {
@@ -314,6 +317,21 @@ impl win42::App for Xls {
                 vec![
                     ("Allowed values separated by semicolons", String::new()),
                     ("Allow blank (yes/no)", "yes".into()),
+                ],
+            ),
+            67 => ("Move sheet", vec![("New position (1-based)", "1".into())]),
+            65 => (
+                "Row height",
+                vec![
+                    ("Row (1-based)", (self.row + 1).to_string()),
+                    ("Height in pixels", "20".into()),
+                ],
+            ),
+            66 => (
+                "Column width",
+                vec![
+                    ("Column (1-based)", (self.col + 1).to_string()),
+                    ("Width in pixels", "80".into()),
                 ],
             ),
             59 => (
@@ -484,6 +502,23 @@ impl win42::App for Xls {
             28 => {
                 self.book
                     .sort_range(self.active_range(), n(0)?, v[1].eq_ignore_ascii_case("yes"))
+                    .map_err(|e| e.to_string())?;
+            }
+            67 => {
+                self.book
+                    .reorder_sheet(self.book.active_sheet(), n(0)?)
+                    .map_err(|e| e.to_string())?;
+            }
+            65 => {
+                let size = v[1].parse::<u16>().map_err(|_| "Invalid height")?;
+                self.book
+                    .set_row_height(n(0)?, size)
+                    .map_err(|e| e.to_string())?;
+            }
+            66 => {
+                let size = v[1].parse::<u16>().map_err(|_| "Invalid width")?;
+                self.book
+                    .set_column_width(n(0)?, size)
                     .map_err(|e| e.to_string())?;
             }
             59 => {
@@ -713,6 +748,38 @@ impl win42::App for Xls {
     fn items(&self) -> Vec<String> {
         vec![]
     }
+    fn uses_custom_grid(&self) -> bool {
+        true
+    }
+    fn grid_column_width(&self, column: usize) -> u16 {
+        self.book.column_width(column).unwrap_or(80)
+    }
+    fn grid_row_height(&self, row: usize) -> u16 {
+        self.visible_at(row)
+            .and_then(|r| self.book.row_height(r))
+            .unwrap_or(20)
+    }
+    fn resize_grid_column(&mut self, column: usize, pixels: u16) -> Result<(), String> {
+        self.book
+            .set_column_width(column, pixels)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn resize_grid_row(&mut self, row: usize, pixels: u16) -> Result<(), String> {
+        let actual = self.visible_at(row).ok_or("Invalid row")?;
+        self.book
+            .set_row_height(actual, pixels)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn grid_row_label(&self, row: usize) -> String {
+        self.visible_at(row)
+            .map(|r| (r + 1).to_string())
+            .unwrap_or_default()
+    }
+    fn grid_clipboard_commands(&self) -> Option<(u16, u16)> {
+        Some((39, 40))
+    }
     fn grid_sheets(&self) -> Option<(Vec<String>, usize)> {
         let sheets = self.book.sheets();
         let selected = sheets
@@ -764,6 +831,36 @@ impl win42::App for Xls {
         if self.book.set_selection(range).is_ok() {
             self.row = range.top;
             self.col = range.left
+        }
+    }
+    fn select_grid_range_with_focus(&mut self, r: win42::GridRange, focus: (usize, usize)) {
+        let Some(top) = self.visible_at(r.top) else {
+            return;
+        };
+        let Some(bottom) = self.visible_at(r.bottom) else {
+            return;
+        };
+        let Some(active) = self.visible_at(focus.0) else {
+            return;
+        };
+        let range = if self.book.sheet_filter().is_some() {
+            Range {
+                top: active,
+                left: focus.1,
+                bottom: active,
+                right: focus.1,
+            }
+        } else {
+            Range {
+                top,
+                left: r.left,
+                bottom,
+                right: r.right,
+            }
+        };
+        if self.book.set_selection(range).is_ok() {
+            self.row = active;
+            self.col = focus.1;
         }
     }
     fn grid_cell_style(&self, row: usize, column: usize) -> Option<win42::GridCellStyle> {
@@ -903,7 +1000,7 @@ impl win42::App for Xls {
         self.row * self.book.cols() + self.col
     }
     fn text_readonly(&self) -> bool {
-        self.preview.is_some() || self.book.is_read_only()
+        self.preview.is_some() || self.book.is_read_only() || self.book.is_protected()
     }
     fn can_save(&self) -> bool {
         !self.book.is_read_only()
@@ -1297,5 +1394,61 @@ mod filter_ui_regression {
         app.edit("apex".into()).unwrap();
         assert_eq!(app.book.cell(3, 0), Some("apex"));
         assert_eq!(app.book.cell(2, 0), Some("pear"));
+    }
+}
+#[cfg(test)]
+mod custom_grid_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn visible_row_resize_selection_and_history_use_real_destination() {
+        let mut b = Workbook::new(5, 3).unwrap();
+        for (r, v) in ["Header", "apple", "pear", "apricot", "plum"]
+            .iter()
+            .enumerate()
+        {
+            b.set_cell(r, 0, (*v).into()).unwrap();
+        }
+        b.set_filter(Some(SheetFilter {
+            range: Range {
+                top: 0,
+                left: 0,
+                bottom: 4,
+                right: 0,
+            },
+            column: 0,
+            contains: "ap".into(),
+        }))
+        .unwrap();
+        let mut app = Xls {
+            book: b,
+            row: 0,
+            col: 0,
+            preview: None,
+            visible_cache: std::cell::RefCell::new(Vec::new()),
+        };
+        assert!(app.uses_custom_grid());
+        assert_eq!(app.table().unwrap().len(), 3);
+        assert_eq!(app.grid_row_label(2), "4");
+        app.resize_grid_row(2, 45).unwrap();
+        assert_eq!(app.book.row_height(3), Some(45));
+        assert_eq!(app.book.row_height(2), None);
+        app.book.undo();
+        assert_eq!(app.book.row_height(3), None);
+        app.book.redo();
+        assert_eq!(app.book.row_height(3), Some(45));
+        app.select_grid_range_with_focus(
+            win42::GridRange {
+                top: 1,
+                left: 1,
+                bottom: 2,
+                right: 2,
+            },
+            (2, 2),
+        );
+        assert_eq!((app.row, app.col), (3, 2));
+        app.edit("target".into()).unwrap();
+        assert_eq!(app.book.cell(3, 2), Some("target"));
+        assert_eq!(app.book.cell(2, 2), Some(""));
     }
 }

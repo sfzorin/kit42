@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+suite42-core = { path = "../../crates/suite42-core" }
+suite42-pdf-raster = { path = "../../crates/suite42-pdf-raster" }
 win42 = { path = "../../crates/win42" }
 img42-core = { path = "../../crates/img42-core" }
 image = { version = "0.25", default-features = false }

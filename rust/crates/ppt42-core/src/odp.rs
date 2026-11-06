@@ -13,6 +13,7 @@ struct ObjectSource {
     original: SlideObject,
     writable_cells: Vec<Vec<bool>>,
     text_editable: bool,
+    rich_safe: bool,
 }
 struct PageSource {
     slide_id: u64,
@@ -24,6 +25,14 @@ pub struct Source {
     size_points: Option<(f64, f64)>,
 }
 impl Source {
+    pub fn can_edit_rich(&self, slide: u64, object: u64) -> bool {
+        self.pages
+            .iter()
+            .find(|p| p.slide_id == slide)
+            .and_then(|p| p.objects.iter().find(|o| o.object_id == object))
+            .map(|o| o.rich_safe)
+            .unwrap_or(true)
+    }
     pub fn size_points(&self) -> Option<(f64, f64)> {
         self.size_points
     }
@@ -136,6 +145,33 @@ fn styled_text(s: &str, name: &str, style: &TextStyle, styles: &mut String) -> S
     styles.push_str(&format!("<style:style xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" style:name=\"{name}_text\" style:family=\"text\"><style:text-properties fo:font-family=\"{}\" fo:font-size=\"{}\" fo:font-weight=\"{weight}\" fo:font-style=\"{italic}\" fo:color=\"#{:02x}{:02x}{:02x}\" style:text-underline-style=\"{underline}\"/></style:style><style:style xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" style:name=\"{name}_para\" style:family=\"paragraph\"><style:paragraph-properties fo:text-align=\"{align}\"/></style:style>",esc(&style.family),pt(style.points),style.color[0],style.color[1],style.color[2]));
     s.split('\n').map(|p|format!("<text:p text:style-name=\"{name}_para\"><text:span text:style-name=\"{name}_text\">{}</text:span></text:p>",esc(p))).collect()
 }
+fn rich_text(paragraphs: &[RichParagraph], name: &str, styles: &mut String) -> String {
+    let mut output = String::new();
+    for (pi, p) in paragraphs.iter().enumerate() {
+        let para_name = format!("{name}_p{pi}");
+        let mut para_style = TextStyle::default();
+        para_style.align = p.align;
+        styled_text("", &para_name, &para_style, styles);
+        let mut spans = String::new();
+        for (ri, r) in p.runs.iter().enumerate() {
+            let run_name = format!("{name}_p{pi}r{ri}");
+            styled_text("", &run_name, &r.style, styles);
+            spans.push_str(&format!(
+                "<text:span text:style-name=\"{run_name}_text\">{}</text:span>",
+                esc(&r.text)
+            ));
+        }
+        let para = format!("<text:p text:style-name=\"{para_name}_para\">{spans}</text:p>");
+        if p.bullet {
+            let list_name = format!("{name}_list{pi}");
+            styles.push_str(&format!("<text:list-style xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" style:name=\"{list_name}\"><text:list-level-style-bullet text:level=\"1\" text:bullet-char=\"•\"/></text:list-style>"));
+            output.push_str(&format!("<text:list text:style-name=\"{list_name}\"><text:list-item>{para}</text:list-item></text:list>"));
+        } else {
+            output.push_str(&para)
+        }
+    }
+    output
+}
 fn zip_read(z: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Vec<u8>, String> {
     let mut f = z.by_name(name).map_err(|e| e.to_string())?;
     if f.size() > 32 * 1024 * 1024 {
@@ -186,6 +222,162 @@ fn color(value: &str) -> Option<[u8; 3]> {
         u8::from_str_radix(&s[4..6], 16).ok()?,
     ])
 }
+fn rich_paragraphs(
+    node: roxmltree::Node<'_, '_>,
+    tree: &roxmltree::Document<'_>,
+    base: &TextStyle,
+) -> Vec<RichParagraph> {
+    let mut paragraphs = Vec::new();
+    for p in node
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "p")
+    {
+        let mut align = base.align;
+        if let Some(name) = attr(p, "style-name") {
+            if let Some(style) = tree.descendants().find(|n| {
+                n.is_element() && n.tag_name().name() == "style" && attr(*n, "name") == Some(name)
+            }) {
+                if let Some(props) = style
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == "paragraph-properties")
+                {
+                    align = match attr(props, "text-align") {
+                        Some("center") => TextAlign::Center,
+                        Some("right") => TextAlign::Right,
+                        _ => TextAlign::Left,
+                    };
+                }
+            }
+        }
+        let bullet = p
+            .ancestors()
+            .any(|n| n.is_element() && n.tag_name().name() == "list-item");
+        let mut runs = Vec::new();
+        for child in p.children() {
+            if child.is_text() {
+                runs.push(RichRun {
+                    text: child.text().unwrap_or("").into(),
+                    style: base.clone(),
+                });
+            } else if child.is_element() && child.tag_name().name() == "span" {
+                let mut style = base.clone();
+                if let Some(name) = attr(child, "style-name") {
+                    if let Some(s) = tree.descendants().find(|n| {
+                        n.is_element()
+                            && n.tag_name().name() == "style"
+                            && attr(*n, "name") == Some(name)
+                    }) {
+                        if let Some(props) = s
+                            .children()
+                            .find(|n| n.is_element() && n.tag_name().name() == "text-properties")
+                        {
+                            if let Some(f) = attr(props, "font-family") {
+                                if !f.is_empty() && f.len() <= 256 {
+                                    style.family = f.trim_matches('\'').trim_matches('"').into();
+                                }
+                            }
+                            if let Ok(v) = number(attr(props, "font-size")) {
+                                if (1.0..=512.0).contains(&v) {
+                                    style.points = v;
+                                }
+                            }
+                            if let Some(v) = attr(props, "font-weight") {
+                                style.bold = v == "bold";
+                            }
+                            if let Some(v) = attr(props, "font-style") {
+                                style.italic = v == "italic";
+                            }
+                            if let Some(v) = attr(props, "text-underline-style") {
+                                style.underline = v != "none";
+                            }
+                            if let Some(c) = attr(props, "color").and_then(color) {
+                                style.color = c;
+                            }
+                        }
+                    }
+                }
+                style.align = align;
+                runs.push(RichRun {
+                    text: child
+                        .descendants()
+                        .filter(|n| n.is_text())
+                        .filter_map(|n| n.text())
+                        .collect::<String>(),
+                    style,
+                });
+            } else if child.is_element() {
+                return Vec::new();
+            }
+        }
+        if runs.is_empty() {
+            runs.push(RichRun {
+                text: String::new(),
+                style: base.clone(),
+            });
+        }
+        paragraphs.push(RichParagraph {
+            runs,
+            align,
+            bullet,
+        });
+    }
+    if paragraphs.len() == 1 && paragraphs[0].runs.len() == 1 && !paragraphs[0].bullet {
+        Vec::new()
+    } else {
+        paragraphs
+    }
+}
+fn rich_edit_safe(node: roxmltree::Node<'_, '_>, tree: &roxmltree::Document<'_>) -> bool {
+    let paras = node
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "p")
+        .collect::<Vec<_>>();
+    if paras.is_empty() {
+        return false;
+    }
+    for p in paras {
+        for n in p.descendants().filter(|n| n.is_element()) {
+            if !matches!(n.tag_name().name(), "p" | "span") {
+                return false;
+            }
+            if let Some(name) = attr(n, "style-name") {
+                let Some(style) = tree.descendants().find(|s| {
+                    s.is_element()
+                        && s.tag_name().name() == "style"
+                        && attr(*s, "name") == Some(name)
+                }) else {
+                    return false;
+                };
+                if style
+                    .attributes()
+                    .any(|a| !matches!(a.name(), "name" | "family"))
+                {
+                    return false;
+                }
+                for props in style.children().filter(|c| c.is_element()) {
+                    if !matches!(
+                        props.tag_name().name(),
+                        "text-properties" | "paragraph-properties"
+                    ) || props.attributes().any(|a| {
+                        !matches!(
+                            a.name(),
+                            "font-family"
+                                | "font-size"
+                                | "font-weight"
+                                | "font-style"
+                                | "color"
+                                | "text-underline-style"
+                                | "text-align"
+                        )
+                    }) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
 /// Reads a subset of presentation frames, shapes, pictures and tables.
 /// This is not yet a lossless adapter for arbitrary external ODP files.
 pub fn import(bytes: &[u8]) -> Result<Presentation, String> {
@@ -218,7 +410,19 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
             deck.add()?;
         }
         let mut source_objects = Vec::new();
-        for node in page.children().filter(|n| n.is_element()) {
+        let mut group_ids = HashMap::new();
+        for node in page.descendants().filter(|n| {
+            n.is_element()
+                && n.parent()
+                    .is_some_and(|p| p == *page || p.tag_name().name() == "g")
+        }) {
+            if node
+                .ancestors()
+                .filter(|n| n.is_element() && n.tag_name().name() == "g")
+                .any(|g| attr(g, "transform").is_some())
+            {
+                continue;
+            }
             let ns = node.tag_name().namespace().unwrap_or("");
             if ns != "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" {
                 continue;
@@ -318,6 +522,14 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 .find(|o| o.id == id)
                 .unwrap()
                 .clone();
+            if let Some(group) = node
+                .ancestors()
+                .filter(|n| n.is_element() && n.tag_name().name() == "g")
+                .last()
+            {
+                let id = *group_ids.entry(group.range().start).or_insert(object.id);
+                object.group_id = Some(id);
+            }
             object.x = x;
             object.y = y;
             object.width = width;
@@ -381,6 +593,20 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                     }
                 }
             }
+            if !matches!(object.kind, ObjectKind::Picture | ObjectKind::Table) {
+                object.paragraphs = rich_paragraphs(node, &tree, &object.text_style);
+                if !object.paragraphs.is_empty()
+                    && object
+                        .paragraphs
+                        .iter()
+                        .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        != object.text
+                {
+                    object.paragraphs.clear();
+                }
+            }
             if let Some(style_name) = attr(node, "style-name") {
                 if let Some(style) = tree.descendants().find(|n| {
                     n.is_element()
@@ -433,9 +659,11 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
             source_objects.push(ObjectSource {
                 object_id: id,
                 start: node.range().start,
-                original: object,
+                original: object.clone(),
                 writable_cells,
                 text_editable,
+                rich_safe: !matches!(object.kind, ObjectKind::Picture | ObjectKind::Table)
+                    && rich_edit_safe(node, &tree),
             });
         }
         source_pages.push(PageSource {
@@ -497,10 +725,28 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
             "<draw:page draw:name=\"Slide {}\" draw:master-page-name=\"Default\">",
             si + 1
         ));
+        let mut group_shapes: HashMap<u64, String> = HashMap::new();
+        let mut group_order = Vec::new();
         for (oi, o) in slide.objects.iter().enumerate() {
+            if let Some(group) = o.group_id {
+                if !group_shapes.contains_key(&group) {
+                    pages.push_str(&format!("<!--suite42-odp-group-{si}-{group}-->"));
+                    group_shapes.insert(group, String::new());
+                    group_order.push(group);
+                }
+            }
+            let target = if let Some(group) = o.group_id {
+                group_shapes.get_mut(&group).unwrap()
+            } else {
+                &mut pages
+            };
             let name = format!("g{si}_{oi}");
             styles.push_str(&format!("<style:style style:name=\"{name}\" style:family=\"graphic\"><style:graphic-properties draw:fill=\"{}\" draw:fill-color=\"#{:02x}{:02x}{:02x}\" draw:stroke=\"{}\" svg:stroke-color=\"#{:02x}{:02x}{:02x}\"/></style:style>",if o.fill_visible{"solid"}else{"none"},o.fill[0],o.fill[1],o.fill[2],if o.stroke_visible{"solid"}else{"none"},o.stroke[0],o.stroke[1],o.stroke[2]));
-            let object_text = styled_text(&o.text, &name, &o.text_style, &mut styles);
+            let object_text = if o.paragraphs.is_empty() {
+                styled_text(&o.text, &name, &o.text_style, &mut styles)
+            } else {
+                rich_text(&o.paragraphs, &name, &mut styles)
+            };
             let geo=format!("draw:style-name=\"{name}\" svg:x=\"{}\" svg:y=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",pt(o.x),pt(o.y),pt(o.width),pt(o.height));
             match o.kind {
                 ObjectKind::Rectangle | ObjectKind::Ellipse => {
@@ -509,9 +755,9 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
                     } else {
                         "ellipse"
                     };
-                    pages.push_str(&format!("<draw:{tag} {geo}>{object_text}</draw:{tag}>"));
+                    target.push_str(&format!("<draw:{tag} {geo}>{object_text}</draw:{tag}>"));
                 }
-                ObjectKind::Text => pages.push_str(&format!(
+                ObjectKind::Text => target.push_str(&format!(
                     "<draw:frame {geo}><draw:text-box>{}</draw:text-box></draw:frame>",
                     object_text
                 )),
@@ -524,24 +770,31 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
                         return Err("Unsupported image encoding".into());
                     };
                     let path = format!("Pictures/{si}_{oi}.{ext}");
-                    pages.push_str(&format!("<draw:frame {geo}><draw:image xlink:href=\"{path}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>"));
+                    target.push_str(&format!("<draw:frame {geo}><draw:image xlink:href=\"{path}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>"));
                     media.push((path, o.media.clone(), mime));
                 }
                 ObjectKind::Table => {
-                    pages.push_str(&format!(
+                    target.push_str(&format!(
                         "<draw:frame {geo}><table:table table:name=\"Table{si}_{oi}\">"
                     ));
                     for row in &o.cells {
-                        pages.push_str("<table:table-row>");
+                        target.push_str("<table:table-row>");
                         for cell in row {
-                            pages.push_str(&format!("<table:table-cell office:value-type=\"string\">{}</table:table-cell>",text(cell)));
+                            target.push_str(&format!("<table:table-cell office:value-type=\"string\">{}</table:table-cell>",text(cell)));
                         }
-                        pages.push_str("</table:table-row>");
+                        target.push_str("</table:table-row>");
                     }
-                    pages.push_str("</table:table></draw:frame>");
+                    target.push_str("</table:table></draw:frame>");
                 }
-                ObjectKind::Line => pages.push_str(&format!("<draw:line draw:style-name=\"{name}\" svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(o.x),pt(o.y),pt(o.x+o.width),pt(o.y+o.height))),
+                ObjectKind::Line => target.push_str(&format!("<draw:line draw:style-name=\"{name}\" svg:x1=\"{}\" svg:y1=\"{}\" svg:x2=\"{}\" svg:y2=\"{}\"/>",pt(o.x),pt(o.y),pt(o.x+o.width),pt(o.y+o.height))),
             }
+        }
+        for group in group_order {
+            let children = group_shapes.remove(&group).unwrap();
+            pages = pages.replace(
+                &format!("<!--suite42-odp-group-{si}-{group}-->"),
+                &format!("<draw:g draw:name=\"Group {group}\">{children}</draw:g>"),
+            );
         }
         // Legacy title/body are represented as ordinary editable text frames.
         for (j, value) in [&slide.title, &slide.body].iter().enumerate() {
@@ -1008,6 +1261,7 @@ pub fn export_overlay(deck: &Presentation, source: &Source) -> Result<Vec<u8>, S
                 continue;
             };
             if object.kind != item.original.kind
+                || object.group_id != item.original.group_id
                 || object.fill != item.original.fill
                 || object.stroke != item.original.stroke
                 || object.fill_visible != item.original.fill_visible
@@ -1055,16 +1309,50 @@ pub fn export_overlay(deck: &Presentation, source: &Source) -> Result<Vec<u8>, S
                     patch_attr(node, "height", pt(object.height), original, &mut patches)?;
                 }
             }
+            let rich_changed = object.paragraphs != item.original.paragraphs;
+            if rich_changed {
+                if !item.rich_safe || object.paragraphs.is_empty() {
+                    return Err(
+                        "This ODP text structure cannot be safely edited as rich text".into(),
+                    );
+                }
+                let container = node
+                    .descendants()
+                    .find(|n| n.is_element() && n.tag_name().name() == "text-box")
+                    .unwrap_or(node);
+                let blocks = container
+                    .children()
+                    .filter(|n| n.is_element() && matches!(n.tag_name().name(), "p" | "list"))
+                    .collect::<Vec<_>>();
+                if blocks.is_empty() {
+                    return Err("ODP text body missing".into());
+                }
+                let name = format!("suite42_rich_{}_{}", slide.id, object.id);
+                if original.contains(&name) {
+                    return Err("ODP style collision".into());
+                }
+                let replacement = rich_text(&object.paragraphs, &name, &mut extra_styles);
+                for (index, block) in blocks.iter().enumerate() {
+                    patches.push((
+                        block.range(),
+                        if index == 0 {
+                            replacement.clone()
+                        } else {
+                            String::new()
+                        },
+                    ));
+                }
+            }
             let font_changed = object.text_style.family != item.original.text_style.family
                 || object.text_style.points != item.original.text_style.points
                 || object.text_style.bold != item.original.text_style.bold
                 || object.text_style.italic != item.original.text_style.italic
                 || object.text_style.underline != item.original.text_style.underline
                 || object.text_style.color != item.original.text_style.color;
-            if object.text != item.original.text && !font_changed {
+            if !rich_changed && object.text != item.original.text && !font_changed {
                 patch_text(node, &object.text, &mut patches)?;
             }
-            if object.text_style != item.original.text_style {
+            if !rich_changed && object.text_style != item.original.text_style {
                 patch_source_style(
                     node,
                     slide.id,
@@ -1332,7 +1620,11 @@ fn appended_object(
     let name = format!("suite42_{slide}_{}", o.id);
     let ns="xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\" xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
     styles.push_str(&format!("<style:style xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" {ns} style:name=\"{name}\" style:family=\"graphic\"><style:graphic-properties draw:fill=\"{}\" draw:fill-color=\"#{:02x}{:02x}{:02x}\" draw:stroke=\"{}\" svg:stroke-color=\"#{:02x}{:02x}{:02x}\"/></style:style>",if o.fill_visible{"solid"}else{"none"},o.fill[0],o.fill[1],o.fill[2],if o.stroke_visible{"solid"}else{"none"},o.stroke[0],o.stroke[1],o.stroke[2]));
-    let object_text = styled_text(&o.text, &name, &o.text_style, styles);
+    let object_text = if o.paragraphs.is_empty() {
+        styled_text(&o.text, &name, &o.text_style, styles)
+    } else {
+        rich_text(&o.paragraphs, &name, styles)
+    };
     let geo=format!("{ns} draw:style-name=\"{name}\" svg:x=\"{}\" svg:y=\"{}\" svg:width=\"{}\" svg:height=\"{}\"",pt(o.x),pt(o.y),pt(o.width),pt(o.height));
     Ok(match o.kind {
  ObjectKind::Rectangle|ObjectKind::Ellipse => {let tag=if o.kind==ObjectKind::Rectangle{"rect"}else{"ellipse"};format!("<draw:{tag} {geo}>{object_text}</draw:{tag}>")},

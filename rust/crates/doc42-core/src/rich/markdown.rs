@@ -99,6 +99,15 @@ fn paragraph(p: &Paragraph) -> Result<String, Error> {
     Ok(out)
 }
 pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
+    let (main, _) = encode_resources(s, None)?;
+    Ok(main)
+}
+pub(super) fn encode_resources(
+    s: &State,
+    assets_name: Option<&str>,
+) -> Result<(Vec<u8>, Vec<suite42_core::session::SaveSidecar>), Error> {
+    use sha2::{Digest, Sha256};
+    let mut sidecars = Vec::new();
     if s.sections.len() != 1
         || s.sections[0].page != PageSettings::default()
         || !s.sections[0].header.is_empty()
@@ -134,6 +143,10 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                     if previous_list.take().is_some() {
                         out.push('\n')
                     }
+                    if text.is_empty() && p.style.outline_level.is_none() {
+                        out.push_str("<p></p>\n\n");
+                        continue;
+                    }
                     if let Some(level) = p.style.outline_level {
                         if level > 5 {
                             return Err(unsupported("heading level"));
@@ -146,6 +159,27 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                 }
             }
             Block::Table(table) => {
+                let html = table.column_widths_twips.iter().any(|width| *width != 1440)
+                    || table.rows.iter().flatten().any(|cell| {
+                        cell.row_span != 1
+                            || cell.col_span != 1
+                            || cell.border.is_some()
+                            || cell.fill.is_some()
+                            || cell.paragraphs.len() != 1
+                            || cell.paragraphs.first().is_some_and(|p| {
+                                p.style.list.is_some()
+                                    || p.style.outline_level.is_some()
+                                    || paragraph(p).is_err()
+                            })
+                    });
+                if html {
+                    if previous_list.take().is_some() {
+                        out.push('\n');
+                    }
+                    out.push_str(&super::html::table_markup(table)?);
+                    out.push_str("\n\n");
+                    continue;
+                }
                 if previous_list.take().is_some() {
                     out.push('\n')
                 }
@@ -185,17 +219,120 @@ pub(super) fn encode(s: &State) -> Result<Vec<u8>, Error> {
                 }
                 out.push('\n');
             }
-            Block::Image(_) => {
-                return Err(unsupported("embedded image; use an image-capable format"))
+            Block::Image(image) => {
+                let dir = assets_name
+                    .ok_or_else(|| unsupported("embedded image requires a sidecar save"))?;
+                let ext = match image.mime.as_str() {
+                    "image/png" if image.data.starts_with(b"\x89PNG\r\n\x1a\n") => "png",
+                    "image/jpeg" if image.data.starts_with(&[0xff, 0xd8, 0xff]) => "jpeg",
+                    _ => return Err(unsupported("image encoding")),
+                };
+                let digest = Sha256::digest(&image.data);
+                let filename = format!("{digest:x}.{ext}");
+                let relative_path = std::path::Path::new(dir).join(&filename);
+                if let Some(existing) =
+                    sidecars
+                        .iter()
+                        .find(|entry: &&suite42_core::session::SaveSidecar| {
+                            entry.relative_path == relative_path
+                        })
+                {
+                    if existing.bytes != image.data {
+                        return Err(unsupported("image hash collision"));
+                    }
+                } else {
+                    sidecars.push(suite42_core::session::SaveSidecar {
+                        relative_path,
+                        bytes: image.data.clone(),
+                    });
+                }
+                let url = dir
+                    .bytes()
+                    .map(|b| {
+                        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                            (b as char).to_string()
+                        } else {
+                            format!("%{b:02X}")
+                        }
+                    })
+                    .collect::<String>();
+                let alt = image
+                    .alt
+                    .replace('&', "&amp;")
+                    .replace('"', "&quot;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                if previous_list.take().is_some() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("<img src=\"{url}/{filename}\" style=\"width:{}pt;height:{}pt\" alt=\"{alt}\">\n\n", image.width_twips as f64 / 20.0, image.height_twips as f64 / 20.0));
             }
             _ => return Err(unsupported("section break")),
         }
     }
-    Ok(out.into_bytes())
+    Ok((out.into_bytes(), sidecars))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_bundle_retains_bytes_and_fractional_point_geometry() {
+        let png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let mut s = State::default();
+        s.blocks.push(Block::Image(Image {
+            id: 2,
+            mime: "image/png".into(),
+            data: png.clone(),
+            width_twips: 1441,
+            height_twips: 722,
+            alt: "sample & image".into(),
+        }));
+        s.next_id = 3;
+        let (main, sidecars) = encode_resources(&s, Some("my file.assets")).unwrap();
+        assert_eq!(sidecars.len(), 1);
+        assert_eq!(sidecars[0].bytes, png);
+        let doc = decode_with(
+            &main,
+            Some(&|path| {
+                assert!(path.starts_with("my%20file.assets/"));
+                Ok(png.clone())
+            }),
+        )
+        .unwrap();
+        let image = doc
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Block::Image(i) = b {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!((image.width_twips, image.height_twips), (1441, 722));
+        assert_eq!(image.alt, "sample & image");
+        assert_eq!(image.data, png);
+        let html = super::super::html::encode(&s).unwrap();
+        let html_doc = super::super::html::decode(&html).unwrap();
+        let image = html_doc
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Block::Image(i) = b {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!((image.width_twips, image.height_twips), (1441, 722));
+    }
     #[test]
     fn commonmark_gfm_paragraph_lists_table_round_trip() {
         let input=b"Hello **world** and *friend*.\n\n- first\n- second\n\n| A | B |\n|---|---|\n| x | y |\n";

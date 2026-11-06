@@ -433,6 +433,64 @@ impl Workbook {
         Self::from_external_office(bytes, kind)
     }
 }
+fn ods_formula_to_a1(input: &str) -> Option<String> {
+    let input = input
+        .strip_prefix("=of:=")
+        .or_else(|| input.strip_prefix("of:="))
+        .or_else(|| input.strip_prefix('='))?;
+    let mut out = String::from("=");
+    let mut i = 0;
+    let b = input.as_bytes();
+    let mut in_string = false;
+    while i < b.len() {
+        if b[i] == b'"' {
+            out.push('"');
+            i += 1;
+            if in_string && b.get(i) == Some(&b'"') {
+                out.push('"');
+                i += 1;
+            } else {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if !in_string && b[i] == b'[' {
+            let end = input[i + 1..].find(']')? + i + 1;
+            let range = &input[i + 1..end];
+            let mut parts = range.split(':');
+            for (index, part) in parts.by_ref().enumerate() {
+                if index > 1 {
+                    return None;
+                }
+                if index == 1 {
+                    out.push(':');
+                }
+                let dot = part.rfind('.')?;
+                let sheet = &part[..dot];
+                let cell = &part[dot + 1..];
+                if parse_a1_endpoint(cell, 0).is_none_or(|v| v.0 != cell.len()) {
+                    return None;
+                }
+                if !sheet.is_empty() && sheet != "$" {
+                    out.push_str(sheet.trim_start_matches('$'));
+                    out.push('!');
+                }
+                out.push_str(cell);
+            }
+            i = end + 1;
+            continue;
+        }
+        if !in_string && b[i] == b';' {
+            out.push(',');
+            i += 1;
+            continue;
+        }
+        let ch = input[i..].chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Some(out)
+}
 fn ods_formula(input: &str) -> Result<String, Error> {
     let b = input.as_bytes();
     let mut out = String::from("of:");
@@ -450,6 +508,53 @@ fn ods_formula(input: &str) -> Result<String, Error> {
             out.push(c);
             i += c.len_utf8();
             continue;
+        }
+        if b[i] == b'\'' || b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            let start = i;
+            let mut j = i;
+            let mut name = String::new();
+            if b[j] == b'\'' {
+                j += 1;
+                while j < b.len() {
+                    let ch = input[j..].chars().next().unwrap();
+                    j += ch.len_utf8();
+                    if ch == '\'' {
+                        if b.get(j) == Some(&b'\'') {
+                            name.push('\'');
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        name.push(ch);
+                    }
+                }
+            } else {
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || matches!(b[j], b'_' | b'.')) {
+                    j += 1;
+                }
+                name.push_str(&input[start..j]);
+            }
+            if b.get(j) == Some(&b'!') {
+                let ref_start = j + 1;
+                let (mut end, _, _, _, _) = parse_a1_endpoint(input, ref_start)
+                    .ok_or(Error::Invalid("Unsupported ODS sheet reference"))?;
+                out.push_str("['");
+                out.push_str(&name.replace('\'', "''"));
+                out.push_str("'.");
+                out.push_str(&input[ref_start..end]);
+                if b.get(end) == Some(&b':') {
+                    let next = end + 1;
+                    let (finish, _, _, _, _) = parse_a1_endpoint(input, next)
+                        .ok_or(Error::Invalid("Unsupported ODS sheet range"))?;
+                    out.push_str(":.");
+                    out.push_str(&input[next..finish]);
+                    end = finish;
+                }
+                out.push(']');
+                i = end;
+                continue;
+            }
         }
         if b[i] == b'!' || b[i] == b'[' || b[i] == b']' {
             return Err(Error::Invalid(
@@ -798,7 +903,15 @@ impl Workbook {
                 if let Some(cached) = sheet.cells.get(&(r, c)) {
                     cache.insert((id, r, c), cached.text.raw().to_owned());
                 }
-                let text = if formula.starts_with('=') {
+                let text = if kind == "ods" {
+                    ods_formula_to_a1(formula).unwrap_or_else(|| {
+                        if formula.starts_with('=') {
+                            formula.clone()
+                        } else {
+                            format!("={formula}")
+                        }
+                    })
+                } else if formula.starts_with('=') {
                     formula.clone()
                 } else {
                     format!("={formula}")
@@ -850,6 +963,28 @@ fn import_ods_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
     use spreadsheet_ods::Length;
     let book = spreadsheet_ods::read_ods_buf(bytes)
         .map_err(|_| Error::Invalid("cannot parse ODS layout"))?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("invalid ODS"))?;
+    let xml_content =
+        zip_text(&mut archive, "content.xml")?.ok_or(Error::Invalid("missing ODS content"))?;
+    let document = xml(&xml_content)?;
+    for node in document.descendants().filter(|n| n.has_tag_name("table")) {
+        let name = node
+            .attributes()
+            .find(|a| a.name() == "name")
+            .map(|a| a.value());
+        let protected = node
+            .attributes()
+            .find(|a| a.name() == "protected")
+            .is_some_and(|a| matches!(a.value(), "true" | "1"));
+        if let Some(sheet) = state
+            .sheets
+            .iter_mut()
+            .find(|s| Some(s.name.as_str()) == name)
+        {
+            sheet.protected = protected;
+        }
+    }
     if book.num_sheets() != state.sheets.len() {
         return Err(Error::Invalid("inconsistent ODS sheets"));
     }
@@ -1021,6 +1156,10 @@ mod external_regression {
         assert_eq!(b.display_grid()[1][2], "84");
         b.set_cell(0, 0, "new & <text>".into()).unwrap();
         b.set_cell(1, 1, "99".into()).unwrap();
+        b.set_row_height(1, 48).unwrap();
+        b.set_row_height(8, 40).unwrap();
+        b.set_column_width(1, 140).unwrap();
+        b.set_column_width(3, 105).unwrap();
         let mut style = b.style(1, 1).unwrap().clone();
         style.italic = true;
         style.background = Some(0x2277aa);
@@ -1066,6 +1205,10 @@ mod external_regression {
         let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
         assert_eq!(reopened.cell(0, 0), Some("new & <text>"));
         assert_eq!(reopened.cell(1, 1), Some("99"));
+        assert_eq!(reopened.row_height(1), Some(48));
+        assert_eq!(reopened.row_height(8), Some(40));
+        assert_eq!(reopened.column_width(1), Some(140));
+        assert_eq!(reopened.column_width(3), Some(105));
         assert!(reopened.style(1, 1).unwrap().bold);
         assert!(reopened.style(1, 1).unwrap().italic);
         assert_eq!(reopened.style(1, 1).unwrap().background, Some(0x2277aa));
@@ -1079,7 +1222,35 @@ mod external_regression {
             bottom: 4,
             right: 1
         }));
-        assert!(b.add_sheet("no").is_err());
+        let original_sheet = b.active_sheet();
+        let added = b.add_sheet("Added").unwrap();
+        assert_ne!(added, original_sheet);
+        assert!(b.add_sheet("Added").is_err());
+        assert_eq!(b.active_sheet(), added);
+        b.set_cell(0, 0, "new sheet value".into()).unwrap();
+        assert!(b.undo());
+        assert_eq!(b.cell(0, 0), Some(""));
+        assert!(b.redo());
+        assert_eq!(b.cell(0, 0), Some("new sheet value"));
+        let saved_with_sheet = b.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved_with_sheet.as_slice())).unwrap();
+        let mut retained = String::new();
+        archive
+            .by_name("customXml/opaque.txt")
+            .unwrap()
+            .read_to_string(&mut retained)
+            .unwrap();
+        assert_eq!(retained, "retain me");
+        let mut reopened = Workbook::from_office_bytes(&saved_with_sheet, "xlsx").unwrap();
+        assert_eq!(reopened.sheets().len(), 2);
+        let new_id = reopened.sheets().iter().find(|s| s.1 == "Added").unwrap().0;
+        reopened.select_sheet(new_id).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("new sheet value"));
+        reopened.select_sheet(reopened.sheets()[0].0).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("new & <text>"));
+        assert_eq!(reopened.cell(1, 1), Some("99"));
+        assert!(reopened.style(1, 1).unwrap().italic);
+        assert_eq!(reopened.cell(1, 2), Some("=B2*2"));
         assert!(b.project_bytes().is_err());
         assert!(b.is_dirty());
     }
@@ -1352,6 +1523,11 @@ fn import_xlsx_layout(bytes: &[u8], state: &mut State) -> Result<(), Error> {
             continue;
         };
         let d = xml(&text)?;
+        sheet.protected = d
+            .root_element()
+            .children()
+            .find(|n| n.has_tag_name("sheetProtection"))
+            .is_some_and(|n| !matches!(n.attribute("sheet"), Some("0" | "false")));
         for row in d.descendants().filter(|n| n.has_tag_name("row")) {
             if let (Some(r), Some(h)) = (
                 row.attribute("r")
@@ -1431,20 +1607,31 @@ fn changed_cells(
     old: &State,
     new: &State,
     allow_styles: bool,
+    allow_geometry: bool,
+    renames: &[SheetRename],
 ) -> Result<Vec<Vec<((usize, usize), Option<Cell>)>>, Error> {
-    if old.sheets.len() != new.sheets.len() || !new.styles.starts_with(&old.styles) {
+    if (!allow_geometry && old.sheets.len() != new.sheets.len())
+        || !new.styles.starts_with(&old.styles)
+    {
         return Err(Error::Invalid(
             "This Office edit cannot preserve unsupported workbook content",
         ));
     }
     let mut all = Vec::new();
-    for (a, b) in old.sheets.iter().zip(&new.sheets) {
-        if a.id != b.id
-            || a.name != b.name
-            || a.rows != b.rows
-            || a.cols != b.cols
-            || a.row_heights != b.row_heights
-            || a.col_widths != b.col_widths
+    for a in &old.sheets {
+        let Some(b) = new.sheets.iter().find(|s| s.id == a.id) else {
+            if allow_geometry {
+                all.push(Vec::new());
+                continue;
+            } else {
+                return Err(Error::Invalid(
+                    "External sheet insertion or removal is not yet supported",
+                ));
+            }
+        };
+        if (!allow_geometry && a.name != b.name)
+            || (!allow_geometry && (a.rows != b.rows || a.cols != b.cols))
+            || (!allow_geometry && (a.row_heights != b.row_heights || a.col_widths != b.col_widths))
             || a.protected != b.protected
             || a.filter != b.filter
             || a.print != b.print
@@ -1460,7 +1647,11 @@ fn changed_cells(
         for key in keys {
             let before = a.cells.get(&key);
             let after = b.cells.get(&key);
-            if before == after {
+            if before == after
+                || before.zip(after).is_some_and(|(a, b)| {
+                    a.style == b.style && equivalent_content(&a.text, &b.text, renames)
+                })
+            {
                 continue;
             }
             if !allow_styles && before.map_or(0, |c| c.style) != after.map_or(0, |c| c.style) {
@@ -1475,6 +1666,22 @@ fn changed_cells(
     Ok(all)
 }
 impl Workbook {
+    pub(super) fn validate_external_rename(&self, state: &State) -> Result<(), Error> {
+        let bytes = self
+            .external_source
+            .as_ref()
+            .ok_or(Error::Invalid("missing source"))?;
+        let old = self
+            .external_baseline
+            .as_ref()
+            .ok_or(Error::Invalid("missing source state"))?;
+        if self.external_format.as_deref() == Some("ods") {
+            return patch_ods_structure(bytes, old, state).map(|_| ());
+        }
+        let renames = sheet_renames(old, state)?;
+        let changes = changed_cells(old, state, true, true, &renames)?;
+        patch_xlsx(bytes, old, state, &changes, &renames).map(|_| ())
+    }
     fn patch_external(&self, kind: &str) -> Result<Vec<u8>, Error> {
         if self.external_format.as_deref() != Some(kind) {
             return Err(Error::Invalid(
@@ -1489,22 +1696,432 @@ impl Workbook {
             .external_baseline
             .as_ref()
             .ok_or(Error::Invalid("missing source state"))?;
-        let changes = changed_cells(old, self.history.current(), kind == "ods" || kind == "xlsx")?;
-        if changes.iter().all(Vec::is_empty)
-            && old
+        if kind == "ods"
+            && (self
+                .history
+                .current()
                 .sheets
                 .iter()
-                .zip(&self.history.current().sheets)
-                .all(|(a, b)| a.merges == b.merges)
+                .any(|sheet| sheet.source_structure)
+                || old.sheets.len() != self.history.current().sheets.len()
+                || old
+                    .sheets
+                    .iter()
+                    .zip(&self.history.current().sheets)
+                    .any(|(a, b)| a.id != b.id || a.name != b.name))
+        {
+            return patch_ods_structure(bytes, old, self.history.current());
+        }
+        let renames = sheet_renames(old, self.history.current())?;
+        let changes = changed_cells(
+            old,
+            self.history.current(),
+            kind == "ods" || kind == "xlsx",
+            kind == "xlsx",
+            &renames,
+        )?;
+        if changes.iter().all(Vec::is_empty)
+            && renames.is_empty()
+            && old.sheets.len() == self.history.current().sheets.len()
+            && old.sheets.iter().enumerate().all(|(i, a)| {
+                self.history.current().sheets.get(i).is_some_and(|b| {
+                    a.id == b.id
+                        && a.rows == b.rows
+                        && a.cols == b.cols
+                        && !b.source_structure
+                        && a.merges == b.merges
+                        && a.row_heights == b.row_heights
+                        && a.col_widths == b.col_widths
+                })
+            })
         {
             return Ok(bytes.clone());
         }
         match kind {
-            "xlsx" => patch_xlsx(bytes, old, self.history.current(), &changes),
+            "xlsx" => patch_xlsx(bytes, old, self.history.current(), &changes, &renames),
             "ods" => patch_ods(bytes, old, self.history.current(), &changes),
             _ => Err(Error::Invalid("This Office format cannot yet be edited")),
         }
     }
+}
+fn patch_ods_structure(bytes: &[u8], old: &State, current: &State) -> Result<Vec<u8>, Error> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("Invalid ODS"))?;
+    let content =
+        zip_text(&mut archive, "content.xml")?.ok_or(Error::Invalid("Missing ODS content"))?;
+    let d = xml(&content)?;
+    let spreadsheet = d
+        .descendants()
+        .find(|n| n.has_tag_name("spreadsheet"))
+        .ok_or(Error::Invalid("Missing ODS spreadsheet"))?;
+    if current.sheets.iter().any(|sheet| sheet.source_structure) {
+        if d.descendants().any(|n| {
+            n.is_element()
+                && (matches!(
+                    n.tag_name().name(),
+                    "named-expressions"
+                        | "database-ranges"
+                        | "data-validations"
+                        | "conditional-formats"
+                        | "annotation"
+                        | "table-source"
+                ) || n.tag_name().namespace().is_some_and(|ns| {
+                    ns.contains(":drawing:") || ns.contains(":chart:") || ns.contains(":form:")
+                }))
+        }) {
+            return Err(Error::Invalid(
+                "ODS contains references or objects that cannot yet be shifted safely",
+            ));
+        }
+        if old.sheets.iter().any(|sheet| {
+            !sheet.merges.is_empty()
+                || !sheet.row_heights.is_empty()
+                || !sheet.col_widths.is_empty()
+                || sheet.cells.values().any(|cell| cell.style != 0)
+        }) {
+            return Err(Error::Invalid(
+                "ODS structural editing of styles, merges, or geometry is not yet supported",
+            ));
+        }
+        if d.descendants()
+            .filter(|n| {
+                n.is_element()
+                    && matches!(
+                        n.tag_name().name(),
+                        "table-row" | "table-column" | "table-cell"
+                    )
+            })
+            .any(|n| {
+                n.attributes().any(|a| {
+                    matches!(
+                        a.name(),
+                        "visibility" | "number-rows-spanned" | "number-columns-spanned"
+                    ) || a.name() == "style-name"
+                        && !matches!(a.value(), "default-num" | "default-bool")
+                })
+            })
+        {
+            return Err(Error::Invalid(
+                "ODS structural editing of styled or hidden cells is not yet supported",
+            ));
+        }
+    }
+    let tables: Vec<_> = spreadsheet
+        .children()
+        .filter(|n| n.has_tag_name("table"))
+        .collect();
+    if tables.len() != old.sheets.len() {
+        return Err(Error::Invalid("Unsupported ODS sheet structure"));
+    }
+    let removed_or_renamed: Vec<_> = old
+        .sheets
+        .iter()
+        .filter(|source| current.sheets.iter().all(|s| s.id != source.id))
+        .collect();
+    let renames = sheet_renames(old, current)?;
+    if current
+        .sheets
+        .iter()
+        .filter(|s| !old.sheets.iter().any(|o| o.id == s.id))
+        .any(|s| renames.iter().any(|r| r.old.eq_ignore_ascii_case(&s.name)))
+    {
+        return Err(Error::Invalid(
+            "Save and reopen before reusing a renamed ODS sheet name",
+        ));
+    }
+    if !renames.is_empty() || !removed_or_renamed.is_empty() {
+        let paths: Vec<_> = archive
+            .file_names()
+            .filter(|name| name.ends_with(".xml") && *name != "content.xml")
+            .map(str::to_owned)
+            .collect();
+        for path in paths {
+            if let Some(text) = zip_text(&mut archive, &path)? {
+                if renames.iter().any(|r| ods_has_sheet_ref(&text, &r.old))
+                    || removed_or_renamed
+                        .iter()
+                        .any(|s| ods_has_sheet_ref(&text, &s.name))
+                {
+                    return Err(Error::Invalid(
+                        "ODS package metadata refers to a renamed or removed sheet",
+                    ));
+                }
+            }
+        }
+    }
+    for node in d.descendants().filter(|n| n.is_element()) {
+        let owner = node
+            .ancestors()
+            .find(|n| n.parent() == Some(spreadsheet) && n.has_tag_name("table"));
+        let owner_index = owner.and_then(|n| tables.iter().position(|t| *t == n));
+        for attr in node.attributes() {
+            if !matches!(
+                attr.name(),
+                "formula"
+                    | "cell-range-address"
+                    | "base-cell-address"
+                    | "target-range-address"
+                    | "print-ranges"
+            ) {
+                continue;
+            }
+            for source in &removed_or_renamed {
+                let source_index = old.sheets.iter().position(|s| s.id == source.id).unwrap();
+                if current.sheets.iter().all(|s| s.id != source.id)
+                    && owner_index == Some(source_index)
+                {
+                    continue;
+                }
+                if ods_has_sheet_ref(attr.value(), &source.name) {
+                    return Err(Error::Invalid(
+                        "Referenced ODS sheets cannot yet be renamed or deleted safely",
+                    ));
+                }
+            }
+        }
+    }
+    let mut replacements = Vec::new();
+    let table_prefix = tables
+        .first()
+        .map(|node| prefix(&content[node.range()]))
+        .unwrap_or("table:");
+    for sheet in &current.sheets {
+        let source_id = if old.sheets.iter().any(|s| s.id == sheet.id) {
+            Some(sheet.id)
+        } else {
+            sheet.copied_from
+        };
+        let value = if let Some(id) = source_id {
+            let index = old
+                .sheets
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or(Error::Invalid("Missing ODS copy source"))?;
+            let node = tables[index];
+            if sheet.copied_from.is_some()
+                && node.descendants().any(|n| {
+                    n.is_element()
+                        && (n.tag_name().namespace().is_some_and(|ns| {
+                            ns.contains(":drawing:")
+                                || ns.contains(":chart:")
+                                || ns.contains(":form:")
+                        }) || matches!(n.tag_name().name(), "annotation" | "table-source"))
+                })
+            {
+                return Err(Error::Invalid(
+                    "Duplicating ODS sheets with linked objects is not yet supported",
+                ));
+            }
+            let attr = node
+                .attributes()
+                .find(|a| a.name() == "name")
+                .ok_or(Error::Invalid("Missing ODS sheet name"))?;
+            let mut text = content[node.range()].to_owned();
+            let start = attr.range_value().start - node.range().start;
+            let end = attr.range_value().end - node.range().start;
+            text.replace_range(start..end, &escape_xml(&sheet.name));
+            text
+        } else {
+            format!(
+                "<{table_prefix}table {table_prefix}name=\"{}\"><{table_prefix}table-row><{table_prefix}table-cell/></{table_prefix}table-row></{table_prefix}table>",
+                escape_xml(&sheet.name)
+            )
+        };
+        replacements.push(value);
+    }
+    if tables.is_empty() {
+        return Err(Error::Invalid("ODS has no sheets"));
+    }
+    for pair in tables.windows(2) {
+        if spreadsheet.children().any(|n| {
+            n.is_element()
+                && !n.has_tag_name("table")
+                && n.range().start > pair[0].range().end
+                && n.range().end < pair[1].range().start
+        }) {
+            return Err(Error::Invalid(
+                "Interleaved ODS sheet metadata cannot yet be reordered safely",
+            ));
+        }
+    }
+    let mut xml_edits = Vec::new();
+    for (index, node) in tables.iter().enumerate() {
+        xml_edits.push((
+            node.range().start,
+            node.range().end,
+            if index == 0 {
+                replacements.join("")
+            } else {
+                String::new()
+            },
+        ));
+    }
+    let transformed = apply_edits(content, xml_edits);
+    let transformed = rewrite_ods_structure_refs(&transformed, old, current, &renames)?;
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|_| Error::Invalid("Invalid ODS entry"))?;
+        let name = file.name().to_owned();
+        if name == EXTRA {
+            continue;
+        }
+        if name == "content.xml" {
+            writer
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default().compression_method(file.compression()),
+                )
+                .map_err(|_| Error::Invalid("Cannot write ODS"))?;
+            writer.write_all(transformed.as_bytes())?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|_| Error::Invalid("Cannot preserve ODS part"))?;
+        }
+    }
+    let temporary = writer
+        .finish()
+        .map_err(|_| Error::Invalid("Cannot write ODS"))?
+        .into_inner();
+    let imported = Workbook::from_office_bytes(&temporary, "ods")?;
+    let mut baseline = imported.history.current().clone();
+    let mut desired = current.clone();
+    if baseline.sheets.len() != desired.sheets.len() {
+        return Err(Error::Invalid("Cannot reconstruct ODS sheets"));
+    }
+    let mut styles = baseline.styles.clone();
+    let mut mapping = Vec::new();
+    for style in &desired.styles {
+        let index = if let Some(index) = styles.iter().position(|s| s == style) {
+            index
+        } else {
+            styles.push(style.clone());
+            styles.len() - 1
+        };
+        mapping.push(index);
+    }
+    for (before, after) in baseline.sheets.iter_mut().zip(&mut desired.sheets) {
+        before.id = after.id;
+        before.rows = after.rows;
+        before.cols = after.cols;
+        for cell in after.cells.values_mut() {
+            cell.style = *mapping.get(cell.style).ok_or(Error::Bounds)?;
+        }
+    }
+    desired.styles = styles;
+    let changes = changed_cells(&baseline, &desired, true, false, &[])?;
+    patch_ods(&temporary, &baseline, &desired, &changes)
+}
+fn rewrite_ods_structure_refs(
+    text: &str,
+    old: &State,
+    current: &State,
+    renames: &[SheetRename],
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let spreadsheet = d
+        .descendants()
+        .find(|n| n.has_tag_name("spreadsheet"))
+        .ok_or(Error::Invalid("Missing spreadsheet"))?;
+    let tables: Vec<_> = spreadsheet
+        .children()
+        .filter(|n| n.has_tag_name("table"))
+        .collect();
+    let mut edits = Vec::new();
+    for node in d.descendants().filter(|n| n.is_element()) {
+        let owner = node
+            .ancestors()
+            .find(|n| n.parent() == Some(spreadsheet) && n.has_tag_name("table"));
+        let sheet = owner
+            .and_then(|n| tables.iter().position(|t| *t == n))
+            .and_then(|i| current.sheets.get(i));
+        for attr in node.attributes().filter(|a| {
+            matches!(
+                a.name(),
+                "formula"
+                    | "cell-range-address"
+                    | "base-cell-address"
+                    | "target-range-address"
+                    | "print-ranges"
+            )
+        }) {
+            let mut value = attr.value().to_owned();
+            if let Some(copy) = sheet.and_then(|s| {
+                s.copied_from.and_then(|id| {
+                    old.sheets
+                        .iter()
+                        .find(|o| o.id == id)
+                        .map(|source| (s, source))
+                })
+            }) {
+                value = rewrite_ods_ref(&value, &copy.1.name, &copy.0.name);
+            }
+            for rename in renames {
+                value = rewrite_ods_ref(&value, &rename.old, &rename.temporary);
+            }
+            for rename in renames {
+                value = rewrite_ods_ref(&value, &rename.temporary, &rename.new);
+            }
+            if value != attr.value() {
+                edits.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&value),
+                ));
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
+fn rewrite_ods_ref(input: &str, old: &str, new: &str) -> String {
+    let quoted = format!("'{}'.", old.replace('\'', "''"));
+    let plain = format!("{}.", old);
+    let replacement = format!("'{}'.", new.replace('\'', "''"));
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut out = String::new();
+    let mut in_string = false;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            out.push('"');
+            i += 1;
+            if in_string && bytes.get(i) == Some(&b'"') {
+                out.push('"');
+                i += 1;
+            } else {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if !in_string
+            && (i == 0
+                || !bytes[i - 1].is_ascii_alphanumeric()
+                    && !matches!(bytes[i - 1], b'_' | b'.' | b'\''))
+        {
+            let token = [&quoted, &plain].into_iter().find(|token| {
+                input
+                    .get(i..i + token.len())
+                    .is_some_and(|part| part.eq_ignore_ascii_case(token))
+            });
+            if let Some(token) = token {
+                out.push_str(&replacement);
+                i += token.len();
+                continue;
+            }
+        }
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+fn ods_has_sheet_ref(value: &str, name: &str) -> bool {
+    let plain = format!("{}.", name).to_lowercase();
+    let quoted = format!("'{}'.", name.replace('\'', "''")).to_lowercase();
+    let value = value.to_lowercase();
+    value.contains(&plain) || value.contains(&quoted)
 }
 fn patch_ods(
     bytes: &[u8],
@@ -1578,7 +2195,12 @@ fn patch_ods(
             }
             sheet.clear_formula(r, c);
             match after.map(|v| &v.text) {
-                None => sheet.set_value(r, c, Value::Empty),
+                None => {
+                    if current.sheets[i].source_structure {
+                        sheet.clear_cellstyle(r, c);
+                    }
+                    sheet.set_value(r, c, Value::Empty)
+                }
                 Some(CellContent::Text(v)) => sheet.set_value(r, c, v.raw()),
                 Some(CellContent::Number(v)) => sheet.set_value(
                     r,
@@ -1746,6 +2368,7 @@ fn patch_row(
     changes: &[((usize, usize), Option<Cell>)],
     old: &Sheet,
     styles: &BTreeMap<(usize, usize), usize>,
+    renames: &[SheetRename],
 ) -> Result<String, Error> {
     let rr = row.range();
     let original = &text[rr.clone()];
@@ -1762,8 +2385,11 @@ fn patch_row(
             .find(|n| n.attribute("r").and_then(a1) == Some((*r, *c)))
         {
             let desired_style = styles.get(&(*r, *c)).map(usize::to_string);
-            let value_changed =
-                old.cells.get(&(*r, *c)).map(|v| &v.text) != value.as_ref().map(|v| &v.text);
+            let value_changed = match (old.cells.get(&(*r, *c)), value.as_ref()) {
+                (Some(a), Some(b)) => !equivalent_content(&a.text, &b.text, renames),
+                (None, None) => false,
+                _ => true,
+            };
             if !value_changed {
                 if let Some(style) = desired_style {
                     let range = node.range();
@@ -1840,6 +2466,7 @@ fn patch_sheet(
     changes: &[((usize, usize), Option<Cell>)],
     old: &Sheet,
     styles: &BTreeMap<(usize, usize), usize>,
+    renames: &[SheetRename],
 ) -> Result<String, Error> {
     if changes.is_empty() {
         return Ok(text.to_owned());
@@ -1869,7 +2496,7 @@ fn patch_sheet(
             edits.push((
                 rr.start - dr.start,
                 rr.end - dr.start,
-                patch_row(text, node, &items, old, styles)?,
+                patch_row(text, node, &items, old, styles, renames)?,
             ));
         } else {
             let mut cells = String::new();
@@ -2002,12 +2629,800 @@ fn update_dimension(
     out.replace_range(attr.range(), &replacement);
     Ok(out)
 }
+fn patch_xlsx_defined_names(text: &str, old: &State, current: &State) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut edits = Vec::new();
+    for node in d.descendants().filter(|n| n.has_tag_name("definedName")) {
+        let scope = node
+            .attribute("localSheetId")
+            .and_then(|v| v.parse::<usize>().ok())
+            .and_then(|index| current.sheets.get(index))
+            .map(|sheet| sheet.id);
+        for child in node.children().filter(|n| n.is_text()) {
+            let original = child.text().unwrap_or("");
+            if current.sheets.iter().any(|s| !s.source_edits.is_empty())
+                && has_3d_sheet_reference(original)
+            {
+                return Err(Error::Invalid(
+                    "Three-dimensional named references cannot yet be shifted safely",
+                ));
+            }
+            let mut value = original.to_owned();
+            for sheet in &current.sheets {
+                let Some(source) = old.sheets.iter().find(|s| s.id == sheet.id) else {
+                    continue;
+                };
+                for edit in &sheet.source_edits {
+                    if scope == Some(sheet.id)
+                        && parse_axis_range(&value, 0).is_some_and(|v| v.0 == value.len())
+                    {
+                        value =
+                            adjust_axis_range(&value, edit.rows, edit.at, edit.count, edit.delete)
+                                .unwrap_or(value);
+                        continue;
+                    }
+                    value = adjust_formula_refs(
+                        &value,
+                        &source.name,
+                        scope == Some(sheet.id),
+                        edit.rows,
+                        edit.at,
+                        edit.count,
+                        edit.delete,
+                    );
+                }
+            }
+            if let Some(copy) = scope.and_then(|id| {
+                current.sheets.iter().find(|s| {
+                    s.id == id
+                        && s.copied_from.is_some()
+                        && !old.sheets.iter().any(|old| old.id == id)
+                })
+            }) {
+                for edit in &copy.source_edits {
+                    value = adjust_formula_refs(
+                        &value,
+                        "\u{1}no-sheet",
+                        true,
+                        edit.rows,
+                        edit.at,
+                        edit.count,
+                        edit.delete,
+                    );
+                }
+            }
+            if value != original {
+                edits.push((child.range().start, child.range().end, escape_xml(&value)));
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
+fn guard_simple_xlsx_structure(
+    text: &str,
+    _old: &Sheet,
+    _current: &Sheet,
+    _workbook: &roxmltree::Document<'_>,
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+) -> Result<(), Error> {
+    if archive.file_names().any(|name| {
+        name.starts_with("xl/")
+            && !(matches!(
+                name,
+                "xl/workbook.xml"
+                    | "xl/_rels/workbook.xml.rels"
+                    | "xl/styles.xml"
+                    | "xl/sharedStrings.xml"
+            ) || name.starts_with("xl/theme/")
+                || name.starts_with("xl/tables/") && name.ends_with(".xml")
+                || name.starts_with("xl/worksheets/")
+                    && !name.contains("/_rels/")
+                    && name.ends_with(".xml")
+                || name.starts_with("xl/worksheets/_rels/") && name.ends_with(".rels"))
+    }) {
+        return Err(Error::Invalid(
+            "This workbook has geometry or references that cannot yet be shifted safely",
+        ));
+    }
+    let relationships: Vec<_> = archive
+        .file_names()
+        .filter(|name| name.starts_with("xl/worksheets/_rels/") && name.ends_with(".rels"))
+        .map(str::to_owned)
+        .collect();
+    for path in relationships {
+        let content =
+            zip_text(archive, &path)?.ok_or(Error::Invalid("missing worksheet relationships"))?;
+        let d = xml(&content)?;
+        if d.descendants()
+            .filter(|n| n.has_tag_name("Relationship"))
+            .any(|n| {
+                let kind = n.attribute("Type").unwrap_or("");
+                !(kind.ends_with("/hyperlink") && n.attribute("TargetMode") == Some("External")
+                    || kind.ends_with("/table") && n.attribute("TargetMode").is_none())
+            })
+        {
+            return Err(Error::Invalid(
+                "Linked worksheet objects cannot yet be shifted safely",
+            ));
+        }
+    }
+    let other_sheets: Vec<_> = archive
+        .file_names()
+        .filter(|name| {
+            name.starts_with("xl/worksheets/")
+                && !name.contains("/_rels/")
+                && name.ends_with(".xml")
+        })
+        .map(str::to_owned)
+        .collect();
+    for path in other_sheets {
+        let other = zip_text(archive, &path)?.ok_or(Error::Invalid("missing worksheet"))?;
+        let other_doc = xml(&other)?;
+        if other_doc
+            .root_element()
+            .children()
+            .filter(|node| node.is_element())
+            .any(|node| {
+                !matches!(
+                    node.tag_name().name(),
+                    "dimension"
+                        | "sheetViews"
+                        | "sheetFormatPr"
+                        | "cols"
+                        | "sheetData"
+                        | "mergeCells"
+                        | "hyperlinks"
+                        | "autoFilter"
+                        | "conditionalFormatting"
+                        | "dataValidations"
+                        | "tableParts"
+                        | "pageMargins"
+                )
+            })
+        {
+            return Err(Error::Invalid(
+                "Worksheet metadata may contain references that cannot yet be shifted safely",
+            ));
+        }
+    }
+    let d = xml(text)?;
+    let root = d.root_element();
+    if d.descendants().any(|n| {
+        n.has_tag_name("pane") && !matches!(n.attribute("state"), Some("frozen" | "frozenSplit"))
+    }) || root.children().filter(|n| n.is_element()).any(|n| {
+        !matches!(
+            n.tag_name().name(),
+            "dimension"
+                | "sheetViews"
+                | "sheetFormatPr"
+                | "cols"
+                | "sheetData"
+                | "mergeCells"
+                | "hyperlinks"
+                | "autoFilter"
+                | "conditionalFormatting"
+                | "dataValidations"
+                | "tableParts"
+                | "pageMargins"
+        )
+    }) || d.descendants().filter(|n| n.has_tag_name("row")).any(|n| {
+        n.attributes()
+            .any(|a| !matches!(a.name(), "r" | "spans" | "ht" | "customHeight"))
+    }) || d.descendants().filter(|n| n.has_tag_name("col")).any(|n| {
+        n.attributes()
+            .any(|a| !matches!(a.name(), "min" | "max" | "width" | "customWidth"))
+    }) {
+        return Err(Error::Invalid(
+            "This worksheet contains metadata that cannot yet be shifted safely",
+        ));
+    }
+    Ok(())
+}
+fn patch_xlsx_tables(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    parts: &BTreeMap<SheetId, String>,
+    old: &State,
+    current: &State,
+    replacements: &mut BTreeMap<String, String>,
+) -> Result<(), Error> {
+    let mut mapped = std::collections::BTreeSet::new();
+    for source in &old.sheets {
+        let Some(sheet) = current.sheets.iter().find(|s| s.id == source.id) else {
+            continue;
+        };
+        let path = parts.get(&source.id).ok_or(Error::Bounds)?;
+        let (directory, filename) = path
+            .rsplit_once('/')
+            .ok_or(Error::Invalid("Invalid worksheet path"))?;
+        let relpath = format!("{directory}/_rels/{filename}.rels");
+        let Some(reltext) = zip_text(archive, &relpath)? else {
+            continue;
+        };
+        let relations = xml(&reltext)?;
+        for relationship in relations.descendants().filter(|n| {
+            n.has_tag_name("Relationship")
+                && n.attribute("Type").is_some_and(|t| t.ends_with("/table"))
+        }) {
+            if sheet.source_edits.iter().any(|edit| !edit.rows) {
+                return Err(Error::Invalid("Column changes in workbooks containing structured tables are not yet supported"));
+            }
+            let target = relationship
+                .attribute("Target")
+                .ok_or(Error::Invalid("Invalid table relationship"))?;
+            let mut components = Vec::new();
+            let joined = if target.starts_with('/') {
+                target.trim_start_matches('/').to_owned()
+            } else {
+                format!("{directory}/{target}")
+            };
+            for component in joined.split('/') {
+                match component {
+                    "" | "." => {}
+                    ".." => {
+                        components
+                            .pop()
+                            .ok_or(Error::Invalid("Invalid table target"))?;
+                    }
+                    value => components.push(value),
+                }
+            }
+            let table_path = components.join("/");
+            if !table_path.starts_with("xl/tables/") || !mapped.insert(table_path.clone()) {
+                return Err(Error::Invalid("Invalid or shared table target"));
+            }
+            let table = zip_text(archive, &table_path)?.ok_or(Error::Invalid("Missing table"))?;
+            let d = xml(&table)?;
+            let root = d.root_element();
+            let table_ref = root
+                .attribute("ref")
+                .ok_or(Error::Invalid("Invalid table range"))?;
+            let (start, end) = table_ref
+                .split_once(':')
+                .and_then(|(a, b)| Some((a1(a)?, a1(b)?)))
+                .ok_or(Error::Invalid("Invalid table range"))?;
+            let mut bounds = Range {
+                top: start.0,
+                left: start.1,
+                bottom: end.0,
+                right: end.1,
+            };
+            let headers = root
+                .attribute("headerRowCount")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1);
+            let totals = root
+                .attribute("totalsRowCount")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            for edit in &sheet.source_edits {
+                if edit.delete {
+                    let last = edit.at + edit.count - 1;
+                    let header_last = bounds.top.saturating_add(headers.saturating_sub(1));
+                    let total_start = bounds.bottom.saturating_add(1).saturating_sub(totals);
+                    if headers > 0 && edit.at <= header_last && last >= bounds.top
+                        || totals > 0 && edit.at <= bounds.bottom && last >= total_start
+                    {
+                        return Err(Error::Invalid(
+                            "Deleting table headers or totals is not yet supported",
+                        ));
+                    }
+                }
+                bounds = shift_range(bounds, edit.rows, edit.at, edit.count, edit.delete).ok_or(
+                    Error::Invalid("Deleting an entire structured table is not yet supported"),
+                )?;
+            }
+            if d.descendants().any(|n| n.has_tag_name("extLst")) {
+                return Err(Error::Invalid(
+                    "Extended tables cannot yet be shifted safely",
+                ));
+            }
+            let mut changes = Vec::new();
+            for node in d.descendants().filter(|n| {
+                n.has_tag_name("table")
+                    || n.has_tag_name("autoFilter")
+                    || n.has_tag_name("sortState")
+                    || n.has_tag_name("sortCondition")
+            }) {
+                if let Some(attr) = node.attributes().find(|a| a.name() == "ref") {
+                    let mut value = attr.value().to_owned();
+                    for edit in &sheet.source_edits {
+                        value = adjust_refs(&value, edit.rows, edit.at, edit.count, edit.delete);
+                    }
+                    if value.contains("#REF!") {
+                        return Err(Error::Invalid(
+                            "Deleting an entire structured table is not yet supported",
+                        ));
+                    }
+                    if value != attr.value() {
+                        changes.push((
+                            attr.range_value().start,
+                            attr.range_value().end,
+                            escape_xml(&value),
+                        ));
+                    }
+                }
+            }
+            for node in d.descendants().filter(|n| {
+                n.has_tag_name("calculatedColumnFormula") || n.has_tag_name("totalsRowFormula")
+            }) {
+                for child in node.children().filter(|n| n.is_text()) {
+                    let original = child.text().unwrap_or("");
+                    let mut value = original.to_owned();
+                    for changed in &current.sheets {
+                        let Some(target) = old.sheets.iter().find(|s| s.id == changed.id) else {
+                            continue;
+                        };
+                        for edit in &changed.source_edits {
+                            value = adjust_formula_refs(
+                                &value,
+                                &target.name,
+                                sheet.id == changed.id,
+                                edit.rows,
+                                edit.at,
+                                edit.count,
+                                edit.delete,
+                            );
+                        }
+                    }
+                    if value != original {
+                        changes.push((child.range().start, child.range().end, escape_xml(&value)));
+                    }
+                }
+            }
+            let modified = apply_edits(table.clone(), changes);
+            if modified != table {
+                replacements.insert(table_path, modified);
+            }
+        }
+    }
+    let unmapped = archive.file_names().any(|name| {
+        name.starts_with("xl/tables/") && name.ends_with(".xml") && !mapped.contains(name)
+    });
+    if unmapped {
+        return Err(Error::Invalid(
+            "Unlinked table parts cannot yet be shifted safely",
+        ));
+    }
+    Ok(())
+}
+fn patch_xlsx_filter_refs(text: &str, edits: &[StructuralEdit]) -> Result<String, Error> {
+    if edits.is_empty() {
+        return Ok(text.to_owned());
+    }
+    let d = xml(text)?;
+    let mut updates = Vec::new();
+    for filter in d.descendants().filter(|n| n.has_tag_name("autoFilter")) {
+        if filter.descendants().any(|n| n.has_tag_name("extLst")) {
+            return Err(Error::Invalid(
+                "Extended filters cannot yet be shifted safely",
+            ));
+        }
+        let reference = filter
+            .attribute("ref")
+            .ok_or(Error::Invalid("Invalid filter range"))?;
+        let left = reference
+            .split(':')
+            .next()
+            .and_then(a1)
+            .map(|v| v.1)
+            .ok_or(Error::Invalid("Invalid filter range"))?;
+        let mut new_left = left;
+        let mut value = reference.to_owned();
+        for edit in edits {
+            value = adjust_refs(&value, edit.rows, edit.at, edit.count, edit.delete);
+        }
+        if value.contains("#REF!") {
+            updates.push((filter.range().start, filter.range().end, String::new()));
+            continue;
+        }
+        new_left = value
+            .split(':')
+            .next()
+            .and_then(a1)
+            .map(|v| v.1)
+            .unwrap_or(new_left);
+        if let Some(attr) = filter.attributes().find(|a| a.name() == "ref") {
+            if value != reference {
+                updates.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&value),
+                ));
+            }
+        }
+        for column in filter.children().filter(|n| n.has_tag_name("filterColumn")) {
+            let attr = column
+                .attributes()
+                .find(|a| a.name() == "colId")
+                .ok_or(Error::Invalid("Invalid filter column"))?;
+            let mut coordinate = left
+                .checked_add(
+                    attr.value()
+                        .parse::<usize>()
+                        .map_err(|_| Error::Invalid("Invalid filter column"))?,
+                )
+                .ok_or(Error::Limit)?;
+            let mut removed = false;
+            for edit in edits.iter().filter(|edit| !edit.rows) {
+                if edit.delete && coordinate >= edit.at && coordinate < edit.at + edit.count {
+                    removed = true;
+                    break;
+                }
+                if edit.delete && coordinate >= edit.at + edit.count {
+                    coordinate -= edit.count;
+                } else if !edit.delete && coordinate >= edit.at {
+                    coordinate += edit.count;
+                }
+            }
+            if removed {
+                updates.push((column.range().start, column.range().end, String::new()));
+            } else {
+                let id = coordinate
+                    .checked_sub(new_left)
+                    .ok_or(Error::Invalid("Invalid shifted filter column"))?
+                    .to_string();
+                if id != attr.value() {
+                    updates.push((attr.range_value().start, attr.range_value().end, id));
+                }
+            }
+        }
+        for node in filter
+            .descendants()
+            .filter(|n| n.has_tag_name("sortState") || n.has_tag_name("sortCondition"))
+        {
+            if let Some(attr) = node.attributes().find(|a| a.name() == "ref") {
+                let mut value = attr.value().to_owned();
+                for edit in edits {
+                    value = adjust_refs(&value, edit.rows, edit.at, edit.count, edit.delete);
+                }
+                if value.contains("#REF!") {
+                    return Err(Error::Invalid(
+                        "Removing a sorted filter range is not yet supported",
+                    ));
+                }
+                if value != attr.value() {
+                    updates.push((
+                        attr.range_value().start,
+                        attr.range_value().end,
+                        escape_xml(&value),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), updates))
+}
+fn patch_xlsx_rules(
+    text: &str,
+    sheet: &Sheet,
+    old: &State,
+    current: &State,
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut updates = Vec::new();
+    let mut removed = Vec::new();
+    for node in d
+        .descendants()
+        .filter(|n| n.has_tag_name("dataValidation") || n.has_tag_name("conditionalFormatting"))
+    {
+        if node
+            .descendants()
+            .any(|n| n.has_tag_name("cfvo") && n.attribute("type") == Some("formula"))
+        {
+            return Err(Error::Invalid(
+                "Formula-based conditional thresholds cannot yet be shifted safely",
+            ));
+        }
+        if node.descendants().any(|n| n.has_tag_name("extLst")) {
+            return Err(Error::Invalid(
+                "Extended validation rules cannot yet be shifted safely",
+            ));
+        }
+        if let Some(attr) = node.attributes().find(|a| a.name() == "sqref") {
+            let mut parts = Vec::new();
+            for reference in attr.value().split_whitespace() {
+                let mut value = reference.to_owned();
+                for edit in &sheet.source_edits {
+                    value = adjust_refs(&value, edit.rows, edit.at, edit.count, edit.delete);
+                }
+                if !value.contains("#REF!") {
+                    parts.push(value);
+                }
+            }
+            if parts.is_empty() {
+                removed.push(node.range());
+                updates.push((node.range().start, node.range().end, String::new()));
+                continue;
+            }
+            let value = parts.join(" ");
+            if value != attr.value() {
+                updates.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&value),
+                ));
+            }
+        }
+    }
+    for node in d.descendants().filter(|n| {
+        n.has_tag_name("formula") || n.has_tag_name("formula1") || n.has_tag_name("formula2")
+    }) {
+        if !node
+            .ancestors()
+            .any(|n| n.has_tag_name("dataValidation") || n.has_tag_name("conditionalFormatting"))
+            || removed.iter().any(|r| r.contains(&node.range().start))
+        {
+            continue;
+        }
+        for child in node.children().filter(|n| n.is_text()) {
+            let original = child.text().unwrap_or("");
+            let mut value = original.to_owned();
+            for changed in &current.sheets {
+                let Some(source) = old.sheets.iter().find(|s| s.id == changed.id) else {
+                    continue;
+                };
+                for edit in &changed.source_edits {
+                    value = adjust_formula_refs(
+                        &value,
+                        &source.name,
+                        sheet.id == changed.id,
+                        edit.rows,
+                        edit.at,
+                        edit.count,
+                        edit.delete,
+                    );
+                }
+            }
+            if value != original {
+                updates.push((child.range().start, child.range().end, escape_xml(&value)));
+            }
+        }
+    }
+    let mut result = apply_edits(text.to_owned(), updates);
+    let parsed = xml(&result)?;
+    let containers: Vec<_> = parsed
+        .descendants()
+        .filter(|n| n.has_tag_name("dataValidations"))
+        .map(|n| {
+            (
+                n.range(),
+                n.children()
+                    .filter(|c| c.has_tag_name("dataValidation"))
+                    .count(),
+            )
+        })
+        .collect();
+    for (range, count) in containers.into_iter().rev() {
+        let value = if count == 0 {
+            String::new()
+        } else {
+            crate::xlsx_styles::attrs(&result[range.clone()], &[("count", count.to_string())])?
+        };
+        result.replace_range(range, &value);
+    }
+    Ok(result)
+}
+fn patch_xlsx_hyperlinks(
+    text: &str,
+    sheet: &Sheet,
+    old: &State,
+    current: &State,
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut updates = Vec::new();
+    for node in d.descendants().filter(|n| n.has_tag_name("hyperlink")) {
+        if node
+            .attributes()
+            .any(|a| !matches!(a.name(), "ref" | "location" | "display" | "tooltip" | "id"))
+        {
+            return Err(Error::Invalid(
+                "Extended hyperlink metadata cannot yet be shifted safely",
+            ));
+        }
+        let Some(reference) = node.attribute("ref") else {
+            return Err(Error::Invalid("Invalid hyperlink"));
+        };
+        let mut shifted = reference.to_owned();
+        for edit in &sheet.source_edits {
+            shifted = adjust_refs(&shifted, edit.rows, edit.at, edit.count, edit.delete);
+        }
+        if shifted.contains("#REF!") {
+            updates.push((node.range().start, node.range().end, String::new()));
+            continue;
+        }
+        if let Some(attr) = node.attributes().find(|a| a.name() == "ref") {
+            if shifted != reference {
+                updates.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&shifted),
+                ));
+            }
+        }
+        if let Some(attr) = node.attributes().find(|a| a.name() == "location") {
+            let mut value = attr.value().to_owned();
+            for changed in &current.sheets {
+                let Some(source) = old.sheets.iter().find(|s| s.id == changed.id) else {
+                    continue;
+                };
+                for edit in &changed.source_edits {
+                    value = adjust_formula_refs(
+                        &value,
+                        &source.name,
+                        sheet.id == changed.id,
+                        edit.rows,
+                        edit.at,
+                        edit.count,
+                        edit.delete,
+                    );
+                }
+            }
+            if value != attr.value() {
+                updates.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&value),
+                ));
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), updates))
+}
+fn patch_xlsx_view_refs(text: &str, edits: &[StructuralEdit]) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut updates = Vec::new();
+    for node in d
+        .descendants()
+        .filter(|n| n.has_tag_name("selection") || n.has_tag_name("pane"))
+    {
+        for attr in node.attributes() {
+            let name = attr.name();
+            let mut value = attr.value().to_owned();
+            if matches!(name, "activeCell" | "sqref" | "topLeftCell") {
+                for edit in edits {
+                    value = adjust_refs(&value, edit.rows, edit.at, edit.count, edit.delete);
+                }
+                if value.contains("#REF!") {
+                    value = "A1".into();
+                }
+            } else if node.has_tag_name("pane") && matches!(name, "xSplit" | "ySplit") {
+                let mut split = value
+                    .parse::<usize>()
+                    .map_err(|_| Error::Invalid("Unsupported frozen pane"))?;
+                for edit in edits.iter().filter(|edit| edit.rows == (name == "ySplit")) {
+                    if edit.delete {
+                        split = split.saturating_sub(edit.count.min(split.saturating_sub(edit.at)));
+                    } else if edit.at < split {
+                        split = split.checked_add(edit.count).ok_or(Error::Limit)?;
+                    }
+                }
+                if split == 0 && attr.value() != "0" {
+                    return Err(Error::Invalid(
+                        "Removing an entire frozen pane is not yet supported",
+                    ));
+                }
+                value = split.to_string();
+            } else {
+                continue;
+            }
+            if value != attr.value() {
+                updates.push((
+                    attr.range_value().start,
+                    attr.range_value().end,
+                    escape_xml(&value),
+                ));
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), updates))
+}
+fn patch_xlsx_sheet_contents(
+    text: &str,
+    sheet: &Sheet,
+    current_sheet: &Sheet,
+    old: &State,
+    current: &State,
+    changes: &[((usize, usize), Option<Cell>)],
+    renames: &[SheetRename],
+    style_doc: &mut Option<String>,
+    style_cache: &mut BTreeMap<(usize, usize, usize), usize>,
+) -> Result<String, Error> {
+    let mut stylemap = BTreeMap::new();
+    let sheet_doc = xml(&text)?;
+    for (coord, after) in changes {
+        let previous = sheet.cells.get(coord).map_or(0, |c| c.style);
+        let next = after.as_ref().map_or(0, |c| c.style);
+        if previous == next {
+            continue;
+        }
+        if sheet_doc.descendants().any(|n| {
+            n.has_tag_name("col") && n.attribute("style").is_some()
+                || n.has_tag_name("row") && n.attribute("s").is_some()
+        }) {
+            return Err(Error::Invalid(
+                "XLSX row or column styles cannot yet be safely edited",
+            ));
+        }
+        let old_xf = sheet_doc
+            .descendants()
+            .find(|n| n.has_tag_name("c") && n.attribute("r").and_then(a1) == Some(*coord))
+            .and_then(|n| n.attribute("s"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let key = (old_xf, previous, next);
+        let id = if let Some(id) = style_cache.get(&key) {
+            *id
+        } else {
+            if style_cache.len() >= 1024 {
+                return Err(Error::Limit);
+            }
+            let doc = style_doc
+                .as_ref()
+                .ok_or(Error::Invalid("XLSX has no style definitions"))?;
+            let (new_doc, id) = crate::xlsx_styles::clone_style(
+                doc,
+                old_xf,
+                &old.styles[previous],
+                &current.styles[next],
+            )?;
+            *style_doc = Some(new_doc);
+            style_cache.insert(key, id);
+            id
+        };
+        stylemap.insert(*coord, id);
+    }
+    let patched = patch_sheet(text, changes, sheet, &stylemap, renames)?;
+    let patched = patch_xlsx_merges(&patched, &sheet.merges, &current_sheet.merges)?;
+    let patched = if current_sheet.source_structure {
+        patch_xlsx_view_refs(&patched, &current_sheet.source_edits)?
+    } else {
+        patched
+    };
+    let patched = if current_sheet.source_structure {
+        let d = xml(&patched)?;
+        let mut edits = Vec::new();
+        if let Some(cols) = d.root_element().children().find(|n| n.has_tag_name("cols")) {
+            edits.push((cols.range().start, cols.range().end, String::new()));
+        }
+        for row in d.descendants().filter(|n| n.has_tag_name("row")) {
+            for attr in row
+                .attributes()
+                .filter(|a| matches!(a.name(), "ht" | "customHeight"))
+            {
+                edits.push((attr.range().start, attr.range().end, String::new()));
+            }
+        }
+        let stripped = apply_edits(patched.clone(), edits);
+        let mut empty_geometry = sheet.clone();
+        empty_geometry.row_heights.clear();
+        empty_geometry.col_widths.clear();
+        patch_xlsx_geometry(&stripped, &empty_geometry, current_sheet)?
+    } else {
+        patch_xlsx_geometry(&patched, sheet, current_sheet)?
+    };
+    update_dimension(&patched, changes)
+}
 fn patch_xlsx(
     bytes: &[u8],
     old: &State,
     current: &State,
     changes: &[Vec<((usize, usize), Option<Cell>)>],
+    renames: &[SheetRename],
 ) -> Result<Vec<u8>, Error> {
+    if current
+        .sheets
+        .iter()
+        .filter(|sheet| !old.sheets.iter().any(|source| source.id == sheet.id))
+        .any(|sheet| {
+            renames
+                .iter()
+                .any(|rename| rename.old.eq_ignore_ascii_case(&sheet.name))
+        })
+    {
+        return Err(Error::Invalid(
+            "Save and reopen before reusing a renamed source sheet name",
+        ));
+    }
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| Error::Invalid("invalid XLSX"))?;
     let workbook = zip_text(&mut archive, "xl/workbook.xml")?
@@ -2015,6 +3430,38 @@ fn patch_xlsx(
     let relationships = zip_text(&mut archive, "xl/_rels/workbook.xml.rels")?
         .ok_or(Error::Invalid("missing workbook relationships"))?;
     let doc = xml(&workbook)?;
+    let reordered = old
+        .sheets
+        .iter()
+        .map(|s| s.id)
+        .ne(current.sheets.iter().map(|s| s.id));
+    if !renames.is_empty() || reordered {
+        if doc.descendants().any(|n| {
+            n.has_tag_name("workbookProtection")
+                && !matches!(n.attribute("lockStructure"), Some("0" | "false"))
+        }) {
+            return Err(Error::Protected);
+        }
+        for name in archive.file_names() {
+            if [
+                "xl/pivotCache/",
+                "xl/pivotTables/",
+                "xl/externalLinks/",
+                "xl/queryTables/",
+                "xl/slicerCaches/",
+                "xl/model/",
+                "xl/vbaProject.bin",
+                "xl/connections.xml",
+            ]
+            .iter()
+            .any(|p| name.starts_with(p))
+            {
+                return Err(Error::Invalid(
+                    "Workbook has linked or pivot structures that cannot yet be safely renamed",
+                ));
+            }
+        }
+    }
     let rel = xml(&relationships)?;
     let mut targets = BTreeMap::new();
     for n in rel.descendants().filter(|n| n.has_tag_name("Relationship")) {
@@ -2029,11 +3476,70 @@ fn patch_xlsx(
             }
         }
     }
+    let mut source_parts = BTreeMap::new();
+    let mut sheet_relations = BTreeMap::new();
+    for sheet in &old.sheets {
+        let node = doc
+            .descendants()
+            .find(|n| n.has_tag_name("sheet") && n.attribute("name") == Some(sheet.name.as_str()))
+            .ok_or(Error::Invalid("missing XLSX sheet"))?;
+        let rid = node
+            .attributes()
+            .find(|a| a.name() == "id" && a.namespace().is_some())
+            .map(|a| a.value())
+            .ok_or(Error::Invalid("missing sheet relationship"))?;
+        source_parts.insert(
+            sheet.id,
+            targets
+                .get(rid)
+                .ok_or(Error::Invalid("missing sheet part"))?
+                .clone(),
+        );
+        sheet_relations.insert(sheet.id, rid.to_owned());
+    }
+    let removed: Vec<_> = old
+        .sheets
+        .iter()
+        .filter(|s| !current.sheets.iter().any(|v| v.id == s.id))
+        .collect();
+    let deleted_paths: std::collections::BTreeSet<_> = removed
+        .iter()
+        .filter_map(|s| source_parts.get(&s.id).cloned())
+        .collect();
+    if !removed.is_empty() {
+        if archive.by_name("xl/calcChain.xml").is_ok() {
+            return Err(Error::Invalid(
+                "Deleting sheets with an existing calculation chain is not yet supported",
+            ));
+        }
+        let paths: Vec<String> = archive
+            .file_names()
+            .filter(|n| n.starts_with("xl/") && n.ends_with(".xml"))
+            .map(str::to_owned)
+            .collect();
+        for path in paths {
+            if deleted_paths.contains(&path) {
+                continue;
+            }
+            let text = zip_text(&mut archive, &path)?.ok_or(Error::Invalid("missing XML part"))?;
+            guard_deleted_sheet_refs(&text, &path, old, current, &deleted_paths)?;
+        }
+    }
     let mut replacements = BTreeMap::new();
     let mut style_doc = zip_text(&mut archive, "xl/styles.xml")?;
     let mut style_cache: BTreeMap<(usize, usize, usize), usize> = BTreeMap::new();
     for (i, sheet) in old.sheets.iter().enumerate() {
-        if changes[i].is_empty() && sheet.merges == current.sheets[i].merges {
+        let Some(current_sheet) = current.sheets.iter().find(|s| s.id == sheet.id) else {
+            continue;
+        };
+        if changes[i].is_empty()
+            && sheet.rows == current_sheet.rows
+            && sheet.cols == current_sheet.cols
+            && !current_sheet.source_structure
+            && sheet.merges == current_sheet.merges
+            && sheet.row_heights == current_sheet.row_heights
+            && sheet.col_widths == current_sheet.col_widths
+        {
             continue;
         }
         let node = doc
@@ -2050,53 +3556,139 @@ fn patch_xlsx(
             .ok_or(Error::Invalid("unknown XLSX sheet relationship"))?;
         let text =
             zip_text(&mut archive, path)?.ok_or(Error::Invalid("missing XLSX sheet data"))?;
-        let mut stylemap = BTreeMap::new();
-        let sheet_doc = xml(&text)?;
-        for (coord, after) in &changes[i] {
-            let previous = sheet.cells.get(coord).map_or(0, |c| c.style);
-            let next = after.as_ref().map_or(0, |c| c.style);
-            if previous == next {
-                continue;
-            }
-            if sheet_doc.descendants().any(|n| {
-                n.has_tag_name("col") && n.attribute("style").is_some()
-                    || n.has_tag_name("row") && n.attribute("s").is_some()
-            }) {
-                return Err(Error::Invalid(
-                    "XLSX row or column styles cannot yet be safely edited",
-                ));
-            }
-            let old_xf = sheet_doc
-                .descendants()
-                .find(|n| n.has_tag_name("c") && n.attribute("r").and_then(a1) == Some(*coord))
-                .and_then(|n| n.attribute("s"))
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-            let key = (old_xf, previous, next);
-            let id = if let Some(id) = style_cache.get(&key) {
-                *id
-            } else {
-                if style_cache.len() >= 1024 {
-                    return Err(Error::Limit);
-                }
-                let doc = style_doc
-                    .as_ref()
-                    .ok_or(Error::Invalid("XLSX has no style definitions"))?;
-                let (new_doc, id) = crate::xlsx_styles::clone_style(
-                    doc,
-                    old_xf,
-                    &old.styles[previous],
-                    &current.styles[next],
-                )?;
-                style_doc = Some(new_doc);
-                style_cache.insert(key, id);
-                id
-            };
-            stylemap.insert(*coord, id);
+        if current_sheet.source_structure {
+            guard_simple_xlsx_structure(&text, sheet, current_sheet, &doc, &mut archive)?;
         }
-        let patched = patch_sheet(&text, &changes[i], sheet, &stylemap)?;
-        let patched = patch_xlsx_merges(&patched, &sheet.merges, &current.sheets[i].merges)?;
-        replacements.insert(path.to_owned(), update_dimension(&patched, &changes[i])?);
+        let patched = patch_xlsx_sheet_contents(
+            &text,
+            sheet,
+            current_sheet,
+            old,
+            current,
+            &changes[i],
+            renames,
+            &mut style_doc,
+            &mut style_cache,
+        )?;
+        replacements.insert(path.to_owned(), patched);
+    }
+    if current.sheets.iter().any(|sheet| sheet.source_structure) {
+        patch_xlsx_tables(&mut archive, &source_parts, old, current, &mut replacements)?;
+        for source in &old.sheets {
+            let Some(sheet) = current.sheets.iter().find(|sheet| sheet.id == source.id) else {
+                continue;
+            };
+            let path = source_parts.get(&sheet.id).ok_or(Error::Bounds)?;
+            let prior = replacements.remove(path);
+            let text = match &prior {
+                Some(value) => value.clone(),
+                None => zip_text(&mut archive, path)?.ok_or(Error::Invalid("missing worksheet"))?,
+            };
+            let patched = patch_xlsx_hyperlinks(&text, sheet, old, current)?;
+            let patched = patch_xlsx_rules(&patched, sheet, old, current)?;
+            let patched = patch_xlsx_filter_refs(&patched, &sheet.source_edits)?;
+            if prior.is_some() || patched != text {
+                replacements.insert(path.clone(), patched);
+            }
+        }
+    }
+    let mut new_entries: BTreeMap<SheetId, (String, u32)> = BTreeMap::new();
+    let mut additions: Vec<(SheetId, String, Vec<u8>)> = Vec::new();
+    let mut used_paths: std::collections::BTreeSet<String> =
+        archive.file_names().map(str::to_owned).collect();
+    let mut used_rels: std::collections::BTreeSet<String> = rel
+        .descendants()
+        .filter(|n| n.has_tag_name("Relationship"))
+        .filter_map(|n| n.attribute("Id").map(str::to_owned))
+        .collect();
+    let mut next_sheet_id = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("sheet"))
+        .filter_map(|n| n.attribute("sheetId").and_then(|v| v.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0);
+    for sheet in current
+        .sheets
+        .iter()
+        .filter(|s| !old.sheets.iter().any(|v| v.id == s.id))
+    {
+        let mut serial = sheet.id;
+        let path = loop {
+            let name = format!("xl/worksheets/off42_sheet_{serial}.xml");
+            if used_paths.insert(name.clone()) {
+                break name;
+            }
+            serial = serial.checked_add(1).ok_or(Error::Limit)?
+        };
+        let mut serial = sheet.id;
+        let rid = loop {
+            let id = format!("rIdOff42{serial}");
+            if used_rels.insert(id.clone()) {
+                break id;
+            }
+            serial = serial.checked_add(1).ok_or(Error::Limit)?
+        };
+        next_sheet_id = next_sheet_id.checked_add(1).ok_or(Error::Limit)?;
+        let content = if let Some(source_id) = sheet.copied_from {
+            let baseline = old
+                .sheets
+                .iter()
+                .find(|v| v.id == source_id)
+                .ok_or(Error::Invalid("Duplicate source is unavailable"))?;
+            let src = source_parts.get(&source_id).ok_or(Error::Bounds)?;
+            let (directory, filename) = src
+                .rsplit_once('/')
+                .ok_or(Error::Invalid("invalid worksheet path"))?;
+            let relpath = format!("{directory}/_rels/{filename}.rels");
+            if let Some(xml) = zip_text(&mut archive, &relpath)? {
+                if self::xml(&xml)?
+                    .descendants()
+                    .any(|n| n.has_tag_name("Relationship"))
+                {
+                    return Err(Error::Invalid("Duplicating external sheets with linked drawings or objects is not yet supported"));
+                }
+            }
+            let text =
+                zip_text(&mut archive, src)?.ok_or(Error::Invalid("missing duplicate source"))?;
+            let text = rewrite_xlsx_rename_xml(
+                &text,
+                src,
+                &[SheetRename {
+                    old: baseline.name.clone(),
+                    new: sheet.name.clone(),
+                    temporary: format!("\u{1}{}", sheet.id),
+                }],
+            )?;
+            if sheet.source_structure {
+                guard_simple_xlsx_structure(&text, baseline, sheet, &doc, &mut archive)?;
+            }
+            let mut keys = std::collections::BTreeSet::new();
+            keys.extend(baseline.cells.keys().copied());
+            keys.extend(sheet.cells.keys().copied());
+            let changes: Vec<_> = keys
+                .into_iter()
+                .filter_map(|key| {
+                    let before = baseline.cells.get(&key);
+                    let after = sheet.cells.get(&key);
+                    (before != after).then(|| (key, after.cloned()))
+                })
+                .collect();
+            patch_xlsx_sheet_contents(
+                &text,
+                baseline,
+                sheet,
+                old,
+                current,
+                &changes,
+                renames,
+                &mut style_doc,
+                &mut style_cache,
+            )?
+        } else {
+            xlsx_new_sheet_xml(sheet, old, current, &mut style_doc, &mut style_cache)?
+        };
+        new_entries.insert(sheet.id, (rid, next_sheet_id));
+        additions.push((sheet.id, path, content.into_bytes()));
     }
     if !style_cache.is_empty() {
         replacements.insert(
@@ -2114,8 +3706,11 @@ fn patch_xlsx(
                 let new_formula = new
                     .as_ref()
                     .is_some_and(|c| matches!(c.text, CellContent::Formula(_)));
-                let value_changed = old.sheets[i].cells.get(coord).map(|v| &v.text)
-                    != new.as_ref().map(|v| &v.text);
+                let value_changed = match (old.sheets[i].cells.get(coord), new.as_ref()) {
+                    (Some(a), Some(b)) => !equivalent_content(&a.text, &b.text, renames),
+                    (None, None) => false,
+                    _ => true,
+                };
                 if value_changed && (old_formula || new_formula) {
                     return Err(Error::Invalid(
                         "Editing formulas with an existing calculation chain is not yet supported",
@@ -2124,7 +3719,56 @@ fn patch_xlsx(
             }
         }
     }
-    replacements.insert("xl/workbook.xml".into(), patch_calc(&workbook)?);
+    let workbook_order = if reordered {
+        rebuild_xlsx_workbook(&workbook, old, current, &new_entries)?
+    } else {
+        workbook.clone()
+    };
+    if reordered {
+        let reltext = rebuild_xlsx_relationships(
+            &relationships,
+            &sheet_relations,
+            &removed,
+            &new_entries,
+            &additions,
+        )?;
+        replacements.insert("xl/_rels/workbook.xml.rels".into(), reltext);
+        if !additions.is_empty() {
+            let types = zip_text(&mut archive, "[Content_Types].xml")?
+                .ok_or(Error::Invalid("missing content types"))?;
+            replacements.insert(
+                "[Content_Types].xml".into(),
+                append_sheet_content_types(&types, &additions)?,
+            );
+        }
+    }
+    let workbook_order = patch_xlsx_defined_names(&workbook_order, old, current)?;
+    replacements.insert("xl/workbook.xml".into(), patch_calc(&workbook_order)?);
+    if !renames.is_empty() {
+        let paths: Vec<String> = archive
+            .file_names()
+            .filter(|n| n.starts_with("xl/") && n.ends_with(".xml"))
+            .map(str::to_owned)
+            .collect();
+        for path in paths {
+            let prior = replacements.remove(&path);
+            let base = match &prior {
+                Some(v) => v.clone(),
+                None => zip_text(&mut archive, &path)?.ok_or(Error::Invalid("missing XML part"))?,
+            };
+            let modified = rewrite_xlsx_rename_xml(&base, &path, renames)?;
+            if prior.is_some() || modified != base {
+                replacements.insert(path, modified);
+            }
+        }
+    }
+    if !renames.is_empty() {
+        for (_, _, bytes) in &mut additions {
+            let text =
+                std::str::from_utf8(bytes).map_err(|_| Error::Invalid("invalid sheet XML"))?;
+            *bytes = rewrite_xlsx_rename_xml(text, "xl/worksheets/new.xml", renames)?.into_bytes();
+        }
+    }
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..archive.len() {
         let entry = archive
@@ -2149,6 +3793,16 @@ fn patch_xlsx(
     }
     if !replacements.is_empty() {
         return Err(Error::Invalid("missing XLSX part"));
+    }
+    for (_, path, bytes) in additions {
+        writer
+            .start_file(
+                path,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .map_err(|_| Error::Invalid("cannot add worksheet part"))?;
+        writer.write_all(&bytes)?;
     }
     let out = writer
         .finish()
@@ -2467,7 +4121,10 @@ fn verify_ods_untouched_styles(
                 {
                     return Err(Error::Invalid("ODS rewriting changed an unedited merge"));
                 }
-                if changed.contains(&(r, c)) {
+                if changed.contains(&(r, c))
+                    || current.sheets[i].source_structure
+                        && changes[i].iter().any(|(coord, _)| *coord == (r, c))
+                {
                     continue;
                 }
                 let before = a.sheet(i).cellstyle(r as u32, c as u32).map(|v| v.as_ref());
@@ -2606,4 +4263,1272 @@ fn patch_xlsx_merges(text: &str, old: &[Range], new: &[Range]) -> Result<String,
         out.insert_str(insert, &replacement)
     }
     Ok(out)
+}
+fn patch_xlsx_geometry(text: &str, old: &Sheet, new: &Sheet) -> Result<String, Error> {
+    let mut output = text.to_owned();
+    for (&row, &height) in &new.row_heights {
+        if old.row_heights.get(&row) == Some(&height) {
+            continue;
+        }
+        let d = xml(&output)?;
+        let root = d.root_element();
+        let data = root
+            .children()
+            .find(|n| n.has_tag_name("sheetData"))
+            .ok_or(Error::Invalid("missing sheet data"))?;
+        let p = prefix(&output[data.range()]);
+        let existing = data.children().find(|n| {
+            n.has_tag_name("row")
+                && n.attribute("r").and_then(|v| v.parse::<usize>().ok()) == Some(row + 1)
+        });
+        let ht = (height as f64 * 0.75).to_string();
+        if let Some(node) = existing {
+            let range = node.range();
+            let modified = crate::xlsx_styles::attrs(
+                &output[range.clone()],
+                &[("ht", ht), ("customHeight", "1".into())],
+            )?;
+            output.replace_range(range, &modified)
+        } else {
+            let part = format!(
+                "<{p}row r=\"{}\" ht=\"{}\" customHeight=\"1\"/>",
+                row + 1,
+                ht
+            );
+            let raw = &output[data.range()];
+            if raw.trim_end().ends_with("/>") {
+                let range = data.range();
+                let i = raw.rfind("/>").unwrap();
+                let merged = format!("{}>{part}</{p}sheetData>", &raw[..i]);
+                output.replace_range(range, &merged)
+            } else {
+                let index = data
+                    .children()
+                    .filter(|n| n.has_tag_name("row"))
+                    .find(|n| {
+                        n.attribute("r")
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .is_some_and(|r| r > row + 1)
+                    })
+                    .map(|n| n.range().start)
+                    .unwrap_or_else(|| data.range().start + raw.rfind("</").unwrap());
+                output.insert_str(index, &part)
+            }
+        }
+    }
+    let changed: Vec<_> = new
+        .col_widths
+        .iter()
+        .filter(|(c, w)| old.col_widths.get(c) != Some(w))
+        .map(|(c, w)| (*c, *w))
+        .collect();
+    if changed.is_empty() {
+        return Ok(output);
+    }
+    let d = xml(&output)?;
+    let root = d.root_element();
+    let existing = root.children().find(|n| n.has_tag_name("cols"));
+    let p = prefix(&output[root.range()]);
+    let mut segments: Vec<(usize, usize, String)> = Vec::new();
+    let mut prior_end = 0usize;
+    if let Some(cols) = existing {
+        if cols
+            .children()
+            .any(|n| n.is_element() && !n.has_tag_name("col"))
+        {
+            return Err(Error::Invalid(
+                "extended column metadata cannot be resized safely",
+            ));
+        }
+        for col in cols.children().filter(|n| n.has_tag_name("col")) {
+            let first = col
+                .attribute("min")
+                .and_then(|v| v.parse::<usize>().ok())
+                .ok_or(Error::Invalid("invalid XLSX column"))?;
+            let last = col
+                .attribute("max")
+                .and_then(|v| v.parse::<usize>().ok())
+                .ok_or(Error::Invalid("invalid XLSX column"))?;
+            if first == 0 || last < first || first <= prior_end || last > 16384 {
+                return Err(Error::Invalid("overlapping XLSX column definitions"));
+            }
+            prior_end = last;
+            let raw = &output[col.range()];
+            let mut cursor = first;
+            for &(idx, width) in &changed {
+                let n = idx + 1;
+                if n < first || n > last {
+                    continue;
+                }
+                if cursor < n {
+                    let cloned = crate::xlsx_styles::attrs(
+                        raw,
+                        &[("min", cursor.to_string()), ("max", (n - 1).to_string())],
+                    )?;
+                    segments.push((cursor, n - 1, cloned));
+                }
+                let char_width = ((width as u32 * 256) / 7) as f64 / 256.0;
+                let cloned = crate::xlsx_styles::attrs(
+                    raw,
+                    &[
+                        ("min", n.to_string()),
+                        ("max", n.to_string()),
+                        ("width", char_width.to_string()),
+                        ("customWidth", "1".into()),
+                    ],
+                )?;
+                segments.push((n, n, cloned));
+                cursor = n + 1;
+            }
+            if cursor <= last {
+                let cloned = crate::xlsx_styles::attrs(
+                    raw,
+                    &[("min", cursor.to_string()), ("max", last.to_string())],
+                )?;
+                segments.push((cursor, last, cloned));
+            }
+        }
+    }
+    for &(idx, width) in &changed {
+        let n = idx + 1;
+        if !segments.iter().any(|(a, b, _)| n >= *a && n <= *b) {
+            let char_width = ((width as u32 * 256) / 7) as f64 / 256.0;
+            segments.push((
+                n,
+                n,
+                format!(
+                    "<{p}col min=\"{n}\" max=\"{n}\" width=\"{char_width}\" customWidth=\"1\"/>"
+                ),
+            ));
+        }
+    }
+    segments.sort_by_key(|v| v.0);
+    let content = segments.into_iter().map(|v| v.2).collect::<String>();
+    if let Some(cols) = existing {
+        let range = cols.range();
+        let raw = &output[range.clone()];
+        let node = if raw.trim_end().ends_with("/>") {
+            let at = raw.rfind("/>").unwrap();
+            format!("{}>{content}</{p}cols>", &raw[..at])
+        } else {
+            let first = raw
+                .find('>')
+                .ok_or(Error::Invalid("invalid XLSX columns"))?;
+            let last = raw
+                .rfind("</")
+                .ok_or(Error::Invalid("invalid XLSX columns"))?;
+            format!("{}{}{}", &raw[..first + 1], content, &raw[last..])
+        };
+        output.replace_range(range, &node)
+    } else {
+        let index = root
+            .children()
+            .find(|n| n.has_tag_name("sheetData"))
+            .ok_or(Error::Invalid("missing sheet data"))?
+            .range()
+            .start;
+        output.insert_str(index, &format!("<{p}cols>{content}</{p}cols>"))
+    }
+    Ok(output)
+}
+#[cfg(test)]
+mod external_protection_regression {
+    use super::*;
+    #[test]
+    fn protected_external_sheet_blocks_editing() {
+        let mut x = rust_xlsxwriter::Workbook::new();
+        let sheet = x.add_worksheet();
+        sheet.write_string(0, 0, "locked").unwrap();
+        sheet.protect();
+        let bytes = x.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        assert!(book.is_protected());
+        assert!(matches!(
+            book.set_cell(0, 0, "changed".into()),
+            Err(Error::Protected)
+        ));
+        assert!(matches!(book.set_row_height(0, 32), Err(Error::Protected)));
+        assert_eq!(book.cell(0, 0), Some("locked"));
+    }
+}
+#[derive(Clone)]
+struct SheetRename {
+    old: String,
+    new: String,
+    temporary: String,
+}
+fn sheet_renames(old: &State, new: &State) -> Result<Vec<SheetRename>, Error> {
+    let mut out = Vec::new();
+    for a in &old.sheets {
+        let Some(b) = new.sheets.iter().find(|s| s.id == a.id) else {
+            continue;
+        };
+        if a.name != b.name {
+            out.push(SheetRename {
+                old: a.name.clone(),
+                new: b.name.clone(),
+                temporary: format!("\u{1}{}", a.id),
+            })
+        }
+    }
+    Ok(out)
+}
+
+fn rewrite_renames(s: &str, renames: &[SheetRename]) -> String {
+    let mut value = s.to_owned();
+    for r in renames {
+        value = rewrite_sheet_refs(&value, &r.old, &r.temporary)
+    }
+    for r in renames {
+        value = rewrite_sheet_refs(&value, &r.temporary, &r.new)
+    }
+    value
+}
+fn equivalent_content(a: &CellContent, b: &CellContent, renames: &[SheetRename]) -> bool {
+    if a == b {
+        return true;
+    }
+    matches!((a,b),(CellContent::Formula(x),CellContent::Formula(y)) if rewrite_renames(x.raw(),renames)==y.raw())
+}
+fn rewrite_xlsx_rename_xml(
+    text: &str,
+    path: &str,
+    renames: &[SheetRename],
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let mut edits = Vec::new();
+    for node in d.descendants().filter(|n| n.is_element()) {
+        let name = node.tag_name().name();
+        if path == "xl/workbook.xml" && name == "sheet" {
+            if let Some(attr) = node.attributes().find(|a| a.name() == "name") {
+                if let Some(change) = renames.iter().find(|r| r.old == attr.value()) {
+                    edits.push((
+                        attr.range_value().start,
+                        attr.range_value().end,
+                        escape_xml(&change.new),
+                    ))
+                }
+            }
+        }
+        for attr in node.attributes() {
+            let value = rewrite_renames(attr.value(), renames);
+            if value != attr.value() {
+                if matches!(
+                    attr.name(),
+                    "formula" | "formula1" | "formula2" | "location" | "refersTo" | "sqref"
+                ) {
+                    let r = attr.range_value();
+                    edits.push((r.start, r.end, escape_xml(&value)))
+                } else {
+                    return Err(Error::Invalid(
+                        "Workbook has an unsupported sheet reference in XML metadata",
+                    ));
+                }
+            }
+        }
+        for child in node.children().filter(|n| n.is_text()) {
+            let value = child.text().unwrap_or("");
+            let changed = rewrite_renames(value, renames);
+            if changed == value {
+                continue;
+            }
+            if matches!(
+                name,
+                "f" | "formula"
+                    | "formula1"
+                    | "formula2"
+                    | "definedName"
+                    | "calculatedColumnFormula"
+                    | "totalsRowFormula"
+                    | "formulaExpression"
+            ) {
+                let range = child.range();
+                let raw = &text[range.clone()];
+                if raw.starts_with('<') {
+                    return Err(Error::Invalid(
+                        "Sheet reference uses unsupported XML text encoding",
+                    ));
+                }
+                edits.push((range.start, range.end, escape_xml(&changed)));
+            } else if !matches!(name, "t" | "v" | "text") {
+                return Err(Error::Invalid(
+                    "Workbook has an unsupported sheet reference in an XML part",
+                ));
+            }
+        }
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
+#[cfg(test)]
+mod external_rename_regression {
+    use super::*;
+    #[test]
+    fn external_sheet_rename_updates_formulas_names_and_chart_references() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("Main")
+            .unwrap()
+            .write_formula(0, 0, "='Data Sheet'!$A$1+1")
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Data Sheet")
+            .unwrap()
+            .write_number(0, 0, 5)
+            .unwrap();
+        source
+            .define_name("SourceValue", "='Data Sheet'!$A$1")
+            .unwrap();
+        let mut chart = rust_xlsxwriter::Chart::new(rust_xlsxwriter::ChartType::Column);
+        chart.add_series().set_values(("Data Sheet", 0, 0, 0, 0));
+        source
+            .worksheet_from_name("Main")
+            .unwrap()
+            .insert_chart(3, 0, &chart)
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let sheet = book
+            .sheets()
+            .into_iter()
+            .find(|(_, name)| name == "Data Sheet")
+            .unwrap()
+            .0;
+        book.rename_sheet(sheet, "O'Brien").unwrap();
+        assert_eq!(book.cell(0, 0), Some("='O''Brien'!$A$1+1"));
+        let saved = book.xlsx_bytes().unwrap();
+        let mut z = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        for path in [
+            "xl/workbook.xml",
+            "xl/charts/chart1.xml",
+            "xl/worksheets/sheet1.xml",
+        ] {
+            let mut xml = String::new();
+            z.by_name(path).unwrap().read_to_string(&mut xml).unwrap();
+            assert!(
+                xml.contains("O''Brien")
+                    || xml.contains("O&apos;&apos;Brien")
+                    || xml.contains("O&amp;apos;"),
+                "{path}: {xml}"
+            );
+            assert!(!xml.contains("Data Sheet!"));
+        }
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert!(reopened.sheets().iter().any(|(_, n)| n == "O'Brien"));
+        assert_eq!(reopened.cell(0, 0), Some("='O''Brien'!$A$1+1"));
+    }
+}
+fn rebuild_xlsx_workbook(
+    text: &str,
+    old: &State,
+    current: &State,
+    new_entries: &BTreeMap<SheetId, (String, u32)>,
+) -> Result<String, Error> {
+    let doc = xml(text)?;
+    let root = doc.root_element();
+    let sheets = root
+        .children()
+        .find(|n| n.has_tag_name("sheets"))
+        .ok_or(Error::Invalid("missing workbook sheets"))?;
+    if sheets.children().any(|n| {
+        n.is_comment()
+            || n.is_element() && !n.has_tag_name("sheet")
+            || n.is_text() && !n.text().unwrap_or("").trim().is_empty()
+    }) {
+        return Err(Error::Invalid(
+            "extended workbook sheet metadata cannot yet be edited",
+        ));
+    }
+    let nodes: Vec<_> = sheets
+        .children()
+        .filter(|n| n.has_tag_name("sheet"))
+        .collect();
+    if nodes.len() != old.sheets.len() {
+        return Err(Error::Invalid("unsupported workbook sheet definitions"));
+    }
+    let mut source = BTreeMap::new();
+    for sheet in &old.sheets {
+        let node = nodes
+            .iter()
+            .copied()
+            .find(|n| n.attribute("name") == Some(sheet.name.as_str()))
+            .ok_or(Error::Invalid("missing workbook sheet"))?;
+        source.insert(sheet.id, &text[node.range()]);
+    }
+    let firstnode = *nodes.first().ok_or(Error::Bounds)?;
+    let rattr = firstnode
+        .attributes()
+        .find(|a| a.name() == "id" && a.namespace().is_some())
+        .ok_or(Error::Invalid("missing sheet relationship namespace"))?;
+    let rq = &text[rattr.range_qname()];
+    let p = prefix(&text[firstnode.range()]);
+    let mut parts = String::new();
+    for sheet in &current.sheets {
+        if let Some(raw) = source.get(&sheet.id) {
+            parts.push_str(raw)
+        } else {
+            let (rel, id) = new_entries.get(&sheet.id).ok_or(Error::Bounds)?;
+            parts.push_str(&format!(
+                "<{p}sheet name=\"{}\" sheetId=\"{id}\" {rq}=\"{}\"/>",
+                escape_xml(&sheet.name),
+                escape_xml(rel)
+            ));
+        }
+    }
+    let first = nodes.first().unwrap().range().start;
+    let last = nodes.last().unwrap().range().end;
+    let mut edits = vec![(first, last, parts)];
+    let mut duplicate_names = String::new();
+    for n in doc.descendants().filter(|n| n.is_element()) {
+        if n.has_tag_name("definedName") {
+            if let Some(attr) = n.attributes().find(|a| a.name() == "localSheetId") {
+                let index = attr
+                    .value()
+                    .parse::<usize>()
+                    .map_err(|_| Error::Invalid("invalid sheet index"))?;
+                let old_sheet = old
+                    .sheets
+                    .get(index)
+                    .ok_or(Error::Invalid("invalid sheet index"))?;
+                for copy in current
+                    .sheets
+                    .iter()
+                    .filter(|s| s.copied_from == Some(old_sheet.id))
+                {
+                    let new_index = current
+                        .sheets
+                        .iter()
+                        .position(|s| s.id == copy.id)
+                        .ok_or(Error::Bounds)?;
+                    let raw = crate::xlsx_styles::attrs(
+                        &text[n.range()],
+                        &[("localSheetId", new_index.to_string())],
+                    )?;
+                    let renames = [SheetRename {
+                        old: old_sheet.name.clone(),
+                        new: copy.name.clone(),
+                        temporary: format!("\u{1}{}", copy.id),
+                    }];
+                    duplicate_names.push_str(&rewrite_xlsx_rename_xml(
+                        &raw,
+                        "xl/workbook.xml",
+                        &renames,
+                    )?);
+                }
+                if let Some(next) = current.sheets.iter().position(|s| s.id == old_sheet.id) {
+                    let range = attr.range_value();
+                    edits.push((range.start, range.end, next.to_string()))
+                } else {
+                    let range = n.range();
+                    edits.push((range.start, range.end, String::new()))
+                }
+            }
+        } else if n.has_tag_name("workbookView") {
+            for attr in n
+                .attributes()
+                .filter(|a| matches!(a.name(), "activeTab" | "firstSheet"))
+            {
+                let index = attr
+                    .value()
+                    .parse::<usize>()
+                    .map_err(|_| Error::Invalid("invalid sheet index"))?;
+                let id = old
+                    .sheets
+                    .get(index)
+                    .ok_or(Error::Invalid("invalid sheet index"))?
+                    .id;
+                let next = current
+                    .sheets
+                    .iter()
+                    .position(|s| s.id == id)
+                    .unwrap_or_else(|| {
+                        current
+                            .sheets
+                            .iter()
+                            .position(|s| s.id == current.active)
+                            .unwrap_or(0)
+                    });
+                let range = attr.range_value();
+                edits.push((range.start, range.end, next.to_string()));
+            }
+        }
+    }
+    if !duplicate_names.is_empty() {
+        let defs = root
+            .children()
+            .find(|n| n.has_tag_name("definedNames"))
+            .ok_or(Error::Invalid("missing defined-name container"))?;
+        let at = defs.range().start
+            + text[defs.range()]
+                .rfind("</")
+                .ok_or(Error::Invalid("invalid defined names"))?;
+        edits.push((at, at, duplicate_names));
+    }
+    Ok(apply_edits(text.to_owned(), edits))
+}
+
+#[cfg(test)]
+mod external_reorder_regression {
+    use super::*;
+    #[test]
+    fn external_reorder_preserves_sheet_identity_local_names_and_undo() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("First")
+            .unwrap()
+            .write_string(0, 0, "alpha")
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Second")
+            .unwrap()
+            .write_string(0, 0, "beta")
+            .unwrap();
+        source
+            .define_name("Second!LocalValue", "=Second!$A$1")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let second = book.sheets()[1].0;
+        book.reorder_sheet(second, 0).unwrap();
+        assert_eq!(book.sheets()[0].1, "Second");
+        let saved = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let mut xml = String::new();
+        archive
+            .by_name("xl/workbook.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        let doc = super::xml(&xml).unwrap();
+        let names: Vec<_> = doc
+            .descendants()
+            .filter(|n| n.has_tag_name("sheet"))
+            .filter_map(|n| n.attribute("name"))
+            .collect();
+        assert_eq!(names, ["Second", "First"]);
+        let local = doc
+            .descendants()
+            .find(|n| n.has_tag_name("definedName") && n.attribute("name") == Some("LocalValue"))
+            .unwrap();
+        assert_eq!(local.attribute("localSheetId"), Some("0"));
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.sheets()[0].1, "Second");
+        assert_eq!(reopened.cell(0, 0), Some("beta"));
+        book.undo();
+        assert_eq!(book.sheets()[0].1, "First");
+        book.redo();
+        assert_eq!(book.sheets()[0].1, "Second");
+    }
+}
+fn append_xml_children(
+    text: &str,
+    node: roxmltree::Node<'_, '_>,
+    children: &str,
+) -> Result<String, Error> {
+    if children.is_empty() {
+        return Ok(text.to_owned());
+    }
+    let range = node.range();
+    let raw = &text[range.clone()];
+    let p = prefix(raw);
+    let local = node.tag_name().name();
+    let changed = if raw.trim_end().ends_with("/>") {
+        let i = raw.rfind("/>").unwrap();
+        format!("{}>{children}</{p}{local}>", &raw[..i])
+    } else {
+        let i = raw
+            .rfind("</")
+            .ok_or(Error::Invalid("invalid XML container"))?;
+        let mut v = raw.to_owned();
+        v.insert_str(i, children);
+        v
+    };
+    let mut output = text.to_owned();
+    output.replace_range(range, &changed);
+    Ok(output)
+}
+fn xlsx_new_sheet_xml(
+    sheet: &Sheet,
+    old: &State,
+    current: &State,
+    styles: &mut Option<String>,
+    style_cache: &mut BTreeMap<(usize, usize, usize), usize>,
+) -> Result<String, Error> {
+    if sheet.protected
+        || !sheet.validations.is_empty()
+        || !sheet.conditional_formats.is_empty()
+        || !sheet.charts.is_empty()
+        || !sheet.pivots.is_empty()
+        || sheet.filter.is_some()
+        || sheet.print != PrintSettings::default()
+    {
+        return Err(Error::Invalid(
+            "New external sheet contains unsupported metadata",
+        ));
+    }
+    let mut styleids = BTreeMap::new();
+    for (&key, cell) in &sheet.cells {
+        if cell.style == 0 {
+            continue;
+        }
+        let cache_key = (0, 0, cell.style);
+        let id = if let Some(id) = style_cache.get(&cache_key) {
+            *id
+        } else {
+            if style_cache.len() >= 1024 {
+                return Err(Error::Limit);
+            }
+            let doc = styles
+                .as_ref()
+                .ok_or(Error::Invalid("XLSX has no style definitions"))?;
+            let (next, id) = crate::xlsx_styles::clone_style(
+                doc,
+                0,
+                &old.styles[0],
+                current.styles.get(cell.style).ok_or(Error::Bounds)?,
+            )?;
+            *styles = Some(next);
+            style_cache.insert(cache_key, id);
+            id
+        };
+        styleids.insert(key, id);
+    }
+    let mut out=String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetFormatPr defaultRowHeight=\"15\"/>");
+    if !sheet.col_widths.is_empty() {
+        out.push_str("<cols>");
+        for (&col, &width) in &sheet.col_widths {
+            let n = col + 1;
+            let width = ((width as u32 * 256) / 7) as f64 / 256.0;
+            out.push_str(&format!(
+                "<col min=\"{n}\" max=\"{n}\" width=\"{width}\" customWidth=\"1\"/>"
+            ));
+        }
+        out.push_str("</cols>")
+    }
+    out.push_str("<sheetData>");
+    let mut rows = std::collections::BTreeSet::new();
+    rows.extend(sheet.cells.keys().map(|(r, _)| *r));
+    rows.extend(sheet.row_heights.keys().copied());
+    for row in rows {
+        out.push_str(&format!("<row r=\"{}\"", row + 1));
+        if let Some(h) = sheet.row_heights.get(&row) {
+            out.push_str(&format!(" ht=\"{}\" customHeight=\"1\"", *h as f64 * 0.75))
+        }
+        out.push('>');
+        for (&(r, c), cell) in sheet.cells.range((row, 0)..=(row, usize::MAX)) {
+            let style = styleids.get(&(r, c)).map(usize::to_string);
+            out.push_str(&cell_xml("", r, c, Some(cell), style.as_deref())?);
+        }
+        out.push_str("</row>")
+    }
+    out.push_str("</sheetData>");
+    if !sheet.merges.is_empty() {
+        out.push_str(&format!("<mergeCells count=\"{}\">", sheet.merges.len()));
+        for m in &sheet.merges {
+            out.push_str(&format!(
+                "<mergeCell ref=\"{}{}:{}{}\"/>",
+                col_name(m.left),
+                m.top + 1,
+                col_name(m.right),
+                m.bottom + 1
+            ));
+        }
+        out.push_str("</mergeCells>")
+    }
+    out.push_str("</worksheet>");
+    Ok(out)
+}
+fn guard_deleted_sheet_refs(
+    text: &str,
+    path: &str,
+    old: &State,
+    current: &State,
+    deleted_paths: &std::collections::BTreeSet<String>,
+) -> Result<(), Error> {
+    if deleted_paths.contains(path) {
+        return Ok(());
+    }
+    let removed: Vec<_> = old
+        .sheets
+        .iter()
+        .filter(|s| !current.sheets.iter().any(|n| n.id == s.id))
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let doc = xml(text)?;
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        let scoped_removed = node
+            .ancestors()
+            .find(|n| n.has_tag_name("definedName"))
+            .and_then(|n| n.attribute("localSheetId"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .and_then(|i| old.sheets.get(i))
+            .is_some_and(|s| removed.iter().any(|r| r.id == s.id));
+        if scoped_removed {
+            continue;
+        }
+        let name = node.tag_name().name();
+        for attr in node.attributes() {
+            if removed.iter().any(|s| {
+                rewrite_sheet_refs(attr.value(), &s.name, "XLS42RemovedGuard") != attr.value()
+            }) {
+                return Err(Error::Invalid(
+                    "A workbook object references the sheet being deleted",
+                ));
+            }
+        }
+        for child in node.children().filter(|n| n.is_text()) {
+            let value = child.text().unwrap_or("");
+            if !matches!(name, "t" | "v" | "text")
+                && removed
+                    .iter()
+                    .any(|s| rewrite_sheet_refs(value, &s.name, "XLS42RemovedGuard") != value)
+            {
+                return Err(Error::Invalid(
+                    "A workbook formula or object references the sheet being deleted",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+fn rebuild_xlsx_relationships(
+    text: &str,
+    sheet_relations: &BTreeMap<SheetId, String>,
+    removed: &[&Sheet],
+    new_entries: &BTreeMap<SheetId, (String, u32)>,
+    additions: &[(SheetId, String, Vec<u8>)],
+) -> Result<String, Error> {
+    let doc = xml(text)?;
+    let root = doc.root_element();
+    let removed_ids: std::collections::BTreeSet<_> = removed
+        .iter()
+        .filter_map(|s| sheet_relations.get(&s.id))
+        .collect();
+    let mut edits = Vec::new();
+    for node in root.children().filter(|n| n.has_tag_name("Relationship")) {
+        if node
+            .attribute("Id")
+            .is_some_and(|id| removed_ids.iter().any(|r| r.as_str() == id))
+        {
+            let r = node.range();
+            edits.push((r.start, r.end, String::new()));
+        }
+    }
+    let mut out = apply_edits(text.to_owned(), edits);
+    let d = xml(&out)?;
+    let root = d.root_element();
+    let p = prefix(&out[root.range()]);
+    let mut added = String::new();
+    for (sheet_id, path, _) in additions {
+        let (id, _) = new_entries
+            .get(sheet_id)
+            .ok_or_else(|| Error::Invalid("Missing worksheet relationship"))?;
+        let target = path
+            .strip_prefix("xl/")
+            .ok_or(Error::Invalid("invalid worksheet path"))?;
+        added.push_str(&format!("<{p}Relationship Id=\"{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"{}\"/>",escape_xml(id),escape_xml(target)));
+    }
+    out = append_xml_children(&out, root, &added)?;
+    Ok(out)
+}
+fn append_sheet_content_types(
+    text: &str,
+    additions: &[(SheetId, String, Vec<u8>)],
+) -> Result<String, Error> {
+    let d = xml(text)?;
+    let root = d.root_element();
+    let p = prefix(&text[root.range()]);
+    let mut added = String::new();
+    for (_, path, _) in additions {
+        added.push_str(&format!("<{p}Override PartName=\"/{}\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>",escape_xml(path)));
+    }
+    append_xml_children(text, root, &added)
+}
+
+#[cfg(test)]
+mod external_sheet_structure_regression {
+    use super::*;
+    #[test]
+    fn ods_sheet_rename_rewrites_cross_sheet_formula() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut first = spreadsheet_ods::Sheet::new("First");
+        first.set_value(0, 0, 5);
+        source.push_sheet(first);
+        let mut second = spreadsheet_ods::Sheet::new("Second");
+        second.set_formula(0, 0, "of:=[First.A1]*2");
+        source.push_sheet(second);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        let first = book.sheets()[0].0;
+        book.rename_sheet(first, "New Name").unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let content = zip_text(&mut archive, "content.xml").unwrap().unwrap();
+        assert!(content.contains("New Name"));
+        let mut reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(reopened.sheets()[0].1, "New Name");
+        reopened.select_sheet(reopened.sheets()[1].0).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("='New Name'!A1*2"));
+    }
+    #[test]
+    fn ods_named_ranges_follow_sheet_rename() {
+        let mut book = Workbook::new(20, 8).unwrap();
+        let old = book.history.current().clone();
+        let id = book.active_sheet();
+        book.rename_sheet(id, "Renamed").unwrap();
+        let current = book.history.current();
+        let renames = sheet_renames(&old, current).unwrap();
+        let input = "<office:spreadsheet xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\"><table:table table:name=\"Renamed\"/><table:named-expressions><table:named-range table:name=\"R\" table:cell-range-address=\"Sheet1.$A$1:Sheet1.$B$2\"/></table:named-expressions></office:spreadsheet>";
+        let output = rewrite_ods_structure_refs(input, &old, current, &renames).unwrap();
+        let d = xml(&output).unwrap();
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("named-range"))
+                .unwrap()
+                .attributes()
+                .find(|a| a.name() == "cell-range-address")
+                .unwrap()
+                .value(),
+            "'Renamed'.$A$1:'Renamed'.$B$2"
+        );
+    }
+    #[test]
+    fn ods_plain_structure_updates_values_and_cross_sheet_references() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut first = spreadsheet_ods::Sheet::new("First");
+        first.set_value(1, 0, 7);
+        source.push_sheet(first);
+        let mut second = spreadsheet_ods::Sheet::new("Other");
+        second.set_formula(0, 0, "of:=[First.A2]*2");
+        source.push_sheet(second);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        book.insert_rows(0, 1).unwrap();
+        book.insert_columns(0, 1).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(reopened.cell(2, 1), Some("7"));
+        reopened.select_sheet(reopened.sheets()[1].0).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("='First'!B3*2"));
+    }
+    #[test]
+    fn ods_duplicate_retargets_own_qualified_formula() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut first = spreadsheet_ods::Sheet::new("First");
+        first.set_formula(0, 0, "of:=[First.B1]+[Other.B1]");
+        source.push_sheet(first);
+        source.push_sheet(spreadsheet_ods::Sheet::new("Other"));
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        let first = book.sheets()[0].0;
+        book.duplicate_sheet(first, "Copy").unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        let copy = reopened.sheets().iter().find(|s| s.1 == "Copy").unwrap().0;
+        reopened.select_sheet(copy).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("='Copy'!B1+Other!B1"));
+    }
+    #[test]
+    fn ods_sheet_add_duplicate_reorder_and_edit_before_save() {
+        let mut source = spreadsheet_ods::WorkBook::default();
+        let mut first = spreadsheet_ods::Sheet::new("First");
+        first.set_value(0, 0, "alpha");
+        source.push_sheet(first);
+        let mut second = spreadsheet_ods::Sheet::new("Second");
+        second.set_value(0, 0, "beta");
+        source.push_sheet(second);
+        let bytes = spreadsheet_ods::write_ods_buf(&mut source, Vec::new()).unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "ods").unwrap();
+        let first = book.sheets()[0].0;
+        let second = book.sheets()[1].0;
+        let copy = book.duplicate_sheet(first, "Copy").unwrap();
+        book.set_cell(0, 0, "edited".into()).unwrap();
+        let added = book.add_sheet("New").unwrap();
+        book.set_cell(0, 0, "new".into()).unwrap();
+        book.reorder_sheet(added, 0).unwrap();
+        book.delete_sheet(second).unwrap();
+        let saved = book.ods_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "ods").unwrap();
+        assert_eq!(
+            reopened
+                .sheets()
+                .iter()
+                .map(|s| s.1.as_str())
+                .collect::<Vec<_>>(),
+            ["New", "First", "Copy"]
+        );
+        for (name, value) in [("New", "new"), ("First", "alpha"), ("Copy", "edited")] {
+            let id = reopened.sheets().iter().find(|s| s.1 == name).unwrap().0;
+            reopened.select_sheet(id).unwrap();
+            assert_eq!(reopened.cell(0, 0), Some(value));
+        }
+        assert_ne!(copy, added);
+    }
+    #[test]
+    fn structured_table_rows_resize_table_and_preserve_relationships() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_number(1, 0, 4).unwrap();
+        sheet.write_number(2, 0, 5).unwrap();
+        sheet
+            .add_table(0, 0, 2, 1, &rust_xlsxwriter::Table::new())
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.insert_rows(2, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let table = zip_text(&mut archive, "xl/tables/table1.xml")
+            .unwrap()
+            .unwrap();
+        let d = xml(&table).unwrap();
+        assert_eq!(d.root_element().attribute("ref"), Some("A1:B4"));
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("autoFilter"))
+                .unwrap()
+                .attribute("ref"),
+            Some("A1:B4")
+        );
+        assert!(book.delete_rows(0, 1).is_err());
+        assert!(book.insert_columns(0, 1).is_err());
+    }
+    #[test]
+    fn structural_edits_shift_filter_columns_and_sort_ranges() {
+        let input = "<worksheet><autoFilter ref=\"B1:D9\"><filterColumn colId=\"1\"/><sortState ref=\"B1:D9\"><sortCondition ref=\"C2:C9\"/></sortState></autoFilter></worksheet>";
+        let edits = [StructuralEdit {
+            rows: false,
+            at: 2,
+            count: 1,
+            delete: false,
+        }];
+        let output = patch_xlsx_filter_refs(input, &edits).unwrap();
+        let d = xml(&output).unwrap();
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("autoFilter"))
+                .unwrap()
+                .attribute("ref"),
+            Some("B1:E9")
+        );
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("filterColumn"))
+                .unwrap()
+                .attribute("colId"),
+            Some("2")
+        );
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("sortCondition"))
+                .unwrap()
+                .attribute("ref"),
+            Some("D2:D9")
+        );
+    }
+    #[test]
+    fn structural_edits_shift_validation_and_conditional_ranges() {
+        let mut book = Workbook::new(20, 8).unwrap();
+        let old = book.history.current().clone();
+        book.insert_rows(0, 1).unwrap();
+        let mut current = book.history.current().clone();
+        current.sheets[0].source_edits.push(StructuralEdit {
+            rows: true,
+            at: 0,
+            count: 1,
+            delete: false,
+        });
+        let sheet = &current.sheets[0];
+        let input = "<worksheet><conditionalFormatting sqref=\"A1:A3\"><cfRule><formula>A1&gt;1</formula></cfRule></conditionalFormatting><dataValidations count=\"1\"><dataValidation sqref=\"B1:B3\"><formula1>A1</formula1></dataValidation></dataValidations></worksheet>";
+        let output = patch_xlsx_rules(input, sheet, &old, &current).unwrap();
+        let d = xml(&output).unwrap();
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("conditionalFormatting"))
+                .unwrap()
+                .attribute("sqref"),
+            Some("A2:A4")
+        );
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("dataValidation"))
+                .unwrap()
+                .attribute("sqref"),
+            Some("B2:B4")
+        );
+        assert_eq!(
+            d.descendants()
+                .find(|n| n.has_tag_name("formula"))
+                .unwrap()
+                .text(),
+            Some("A2>1")
+        );
+    }
+    #[test]
+    fn structural_edits_move_hyperlinks_and_frozen_panes() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.set_freeze_panes(2, 1).unwrap();
+        sheet.write_url(2, 1, "https://example.com").unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.insert_rows(0, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let sheet = zip_text(&mut archive, "xl/worksheets/sheet1.xml")
+            .unwrap()
+            .unwrap();
+        let doc = xml(&sheet).unwrap();
+        let link = doc
+            .descendants()
+            .find(|n| n.has_tag_name("hyperlink"))
+            .unwrap();
+        assert_eq!(link.attribute("ref"), Some("B4"));
+        let pane = doc.descendants().find(|n| n.has_tag_name("pane")).unwrap();
+        assert_eq!(pane.attribute("ySplit"), Some("3"));
+        assert_eq!(pane.attribute("topLeftCell"), Some("B4"));
+    }
+    #[test]
+    fn structural_edits_update_scoped_and_global_defined_names() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("Data")
+            .unwrap()
+            .write_number(2, 0, 7)
+            .unwrap();
+        source.define_name("GlobalData", "=Data!$A$1:$A$4").unwrap();
+        source
+            .define_name("Data!LocalData", "=Data!$A$2:$A$4")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.delete_rows(0, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved.as_slice())).unwrap();
+        let workbook = zip_text(&mut archive, "xl/workbook.xml").unwrap().unwrap();
+        let doc = xml(&workbook).unwrap();
+        let names: Vec<_> = doc
+            .descendants()
+            .filter(|n| n.has_tag_name("definedName"))
+            .filter_map(|n| n.text())
+            .collect();
+        assert_eq!(names, ["Data!$A$1:$A$3", "Data!$A$1:$A$3"]);
+    }
+    #[test]
+    fn structural_edits_shift_and_shrink_merges() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let format = rust_xlsxwriter::Format::new();
+        source
+            .add_worksheet()
+            .merge_range(1, 1, 3, 2, "label", &format)
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.insert_rows(0, 1).unwrap();
+        book.delete_rows(3, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.cell(2, 1), Some("label"));
+        assert_eq!(
+            reopened.merges(),
+            &[Range {
+                top: 2,
+                left: 1,
+                bottom: 3,
+                right: 2
+            }]
+        );
+    }
+    #[test]
+    fn structural_edits_shift_explicit_row_and_column_geometry() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_number(1, 1, 42).unwrap();
+        sheet.set_row_height(1, 30).unwrap();
+        sheet.set_column_width(1, 25).unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let row_height = book.row_height(1);
+        let col_width = book.column_width(1);
+        assert!(row_height.is_some() && col_width.is_some());
+        book.insert_rows(0, 1).unwrap();
+        book.insert_columns(0, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.cell(2, 2), Some("42"));
+        assert_eq!(reopened.row_height(2), row_height);
+        assert_eq!(reopened.column_width(2), col_width);
+        assert!(reopened.row_height(1).is_none());
+        assert!(reopened.column_width(1).is_none());
+    }
+    #[test]
+    fn structural_edits_update_qualified_references_on_other_sheets() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("My Data")
+            .unwrap()
+            .write_number(1, 0, 7)
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Other")
+            .unwrap()
+            .write_formula(0, 0, "=SUM('My Data'!$A$1:A3)")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.delete_rows(0, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("7"));
+        let other = reopened.sheets()[1].0;
+        reopened.select_sheet(other).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("=SUM('My Data'!$A$1:A2)"));
+    }
+    #[test]
+    fn duplicate_retargets_own_qualified_formulas_only() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("First")
+            .unwrap()
+            .write_formula(0, 0, "=First!B1+Other!B1")
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Other")
+            .unwrap()
+            .write_number(0, 1, 3)
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let first = book.sheets()[0].0;
+        let copy = book.duplicate_sheet(first, "Copy").unwrap();
+        book.select_sheet(copy).unwrap();
+        assert_eq!(book.cell(0, 0), Some("='Copy'!B1+Other!B1"));
+        let saved = book.xlsx_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        let copy = reopened.sheets().iter().find(|s| s.1 == "Copy").unwrap().0;
+        reopened.select_sheet(copy).unwrap();
+        assert_eq!(reopened.cell(0, 0), Some("='Copy'!B1+Other!B1"));
+    }
+    #[test]
+    fn empty_added_external_sheet_is_written() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source.add_worksheet().set_name("First").unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.add_sheet("Empty").unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.sheets().len(), 2);
+        assert_eq!(reopened.sheets()[1].1, "Empty");
+    }
+    #[test]
+    fn simple_external_structure_preserves_values_and_adjusts_formulas() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        let sheet = source.add_worksheet();
+        sheet.write_number(0, 0, 5).unwrap();
+        sheet.write_formula(1, 0, "=A1*2").unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        book.insert_rows(0, 1).unwrap();
+        book.insert_columns(0, 1).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(reopened.cell(1, 1), Some("5"));
+        assert_eq!(reopened.cell(2, 1), Some("=B2*2"));
+        book.undo();
+        assert_eq!(book.cell(1, 0), Some("5"));
+        book.redo();
+        assert_eq!(book.cell(1, 1), Some("5"));
+    }
+    #[test]
+    fn deleting_a_referenced_sheet_is_rejected_without_mutation() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("Referenced")
+            .unwrap()
+            .write_number(0, 0, 5)
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Other")
+            .unwrap()
+            .write_formula(0, 0, "=Referenced!A1")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let referenced = book.sheets()[0].0;
+        assert!(book.delete_sheet(referenced).is_err());
+        assert_eq!(book.sheets().len(), 2);
+        assert!(!book.is_dirty());
+    }
+    #[test]
+    fn add_duplicate_delete_and_reorder_external_sheets() {
+        let mut source = rust_xlsxwriter::Workbook::new();
+        source
+            .add_worksheet()
+            .set_name("First")
+            .unwrap()
+            .write_string(0, 0, "alpha")
+            .unwrap();
+        source
+            .add_worksheet()
+            .set_name("Second")
+            .unwrap()
+            .write_string(0, 0, "beta")
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut book = Workbook::from_office_bytes(&bytes, "xlsx").unwrap();
+        let first = book.sheets()[0].0;
+        let second = book.sheets()[1].0;
+        let duplicate = book.duplicate_sheet(first, "Copy").unwrap();
+        book.select_sheet(duplicate).unwrap();
+        book.set_cell(0, 0, "edited copy".into()).unwrap();
+        let second_copy = book.duplicate_sheet(duplicate, "Copy 2").unwrap();
+        book.select_sheet(second_copy).unwrap();
+        book.set_cell(0, 0, "second copy".into()).unwrap();
+        let a = book.add_sheet("Added A").unwrap();
+        book.select_sheet(a).unwrap();
+        book.set_cell(0, 0, "new a".into()).unwrap();
+        let b = book.add_sheet("Added B").unwrap();
+        book.select_sheet(b).unwrap();
+        book.set_cell(0, 0, "new b".into()).unwrap();
+        book.reorder_sheet(b, 0).unwrap();
+        book.delete_sheet(second).unwrap();
+        let saved = book.xlsx_bytes().unwrap();
+        let mut reopened = Workbook::from_office_bytes(&saved, "xlsx").unwrap();
+        assert_eq!(
+            reopened
+                .sheets()
+                .iter()
+                .map(|s| s.1.as_str())
+                .collect::<Vec<_>>(),
+            ["Added B", "First", "Copy", "Copy 2", "Added A"]
+        );
+        for (name, value) in [
+            ("Added B", "new b"),
+            ("First", "alpha"),
+            ("Copy", "edited copy"),
+            ("Copy 2", "second copy"),
+            ("Added A", "new a"),
+        ] {
+            let id = reopened.sheets().iter().find(|s| s.1 == name).unwrap().0;
+            reopened.select_sheet(id).unwrap();
+            assert_eq!(reopened.cell(0, 0), Some(value));
+        }
+        book.undo();
+        assert!(book.sheets().iter().any(|s| s.0 == second));
+        book.redo();
+        assert!(!book.sheets().iter().any(|s| s.0 == second));
+    }
 }

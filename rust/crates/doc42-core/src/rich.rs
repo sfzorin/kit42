@@ -8,6 +8,7 @@ mod rtf_field;
 mod rtf_lists;
 mod rtf_picture;
 mod rtf_read;
+mod table_edit;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use suite42_core::{SnapshotHistory, TextValue};
@@ -155,6 +156,9 @@ pub struct Cell {
 pub struct Table {
     pub id: u64,
     pub rows: Vec<Vec<Cell>>,
+    /// Empty means the default 72-point width for every column.
+    #[serde(default)]
+    pub column_widths_twips: Vec<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -395,6 +399,31 @@ impl RichDocument {
         .encode(format)
     }
 
+    /// Serialize Markdown and its immutable image sidecars for a destination.
+    /// The host must publish the bundle using the same snapshot revision.
+    pub fn markdown_bundle(
+        &self,
+        destination: &std::path::Path,
+    ) -> Result<suite42_core::session::SaveBundle, Error> {
+        validate(self.state())?;
+        if !self.state().odt_parts.is_empty() || !self.state().docx_parts.is_empty() {
+            return Err(Error::Unsupported(
+                "conversion would discard retained Office package parts".into(),
+            ));
+        }
+        let stem = destination
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| Error::Invalid("invalid destination name".into()))?;
+        let assets = format!("{stem}.assets");
+        let (main, sidecars) = markdown::encode_resources(self.state(), Some(&assets))?;
+        if main.len() > MAX_BYTES {
+            return Err(Error::Limit);
+        }
+        Ok(suite42_core::session::SaveBundle { main, sidecars })
+    }
+
     pub fn decode(bytes: &[u8], format: Format) -> Result<Self, Error> {
         if bytes.len() > MAX_BYTES {
             return Err(Error::Limit);
@@ -595,6 +624,19 @@ fn validate(s: &State) -> Result<(), Error> {
                 let width = t.rows[0].len();
                 if width == 0 || t.rows.iter().any(|r| r.len() != width) {
                     return Err(Error::Invalid("non-rectangular table".into()));
+                }
+                if !t.column_widths_twips.is_empty()
+                    && (t.column_widths_twips.len() != width
+                        || t.column_widths_twips
+                            .iter()
+                            .any(|w| *w == 0 || *w > 2_000_000)
+                        || t.column_widths_twips
+                            .iter()
+                            .map(|w| u64::from(*w))
+                            .sum::<u64>()
+                            > i32::MAX as u64)
+                {
+                    return Err(Error::Invalid("invalid table column widths".into()));
                 }
                 for row in &t.rows {
                     for cell in row {
@@ -1207,9 +1249,7 @@ impl RichDocument {
             || old.blocks.iter().any(|b| match b {
                 Block::Paragraph(_) => false,
                 Block::Image(_) => false,
-                Block::Table(t) => t.rows.iter().flatten().any(|c| {
-                    c.row_span != 1 || c.col_span != 1 || c.border.is_some() || c.fill.is_some()
-                }),
+                Block::Table(t) => table_edit::table_layout(t).is_err(),
                 _ => true,
             })
         {
@@ -1267,9 +1307,23 @@ impl RichDocument {
                     {
                         return Err(Error::Unsupported("RichEdit changed table shape".into()));
                     }
+                    if table_edit::table_layout(table)? != table_edit::table_layout(previous)? {
+                        return Err(Error::Unsupported("RichEdit changed merged cells".into()));
+                    }
+                    if table_edit::column_widths(table) != table_edit::column_widths(previous) {
+                        return Err(Error::Unsupported(
+                            "RichEdit changed table column widths".into(),
+                        ));
+                    }
+                    table.column_widths_twips = previous.column_widths_twips.clone();
                     table.id = previous.id;
                     for (row, oldrow) in table.rows.iter_mut().zip(&previous.rows) {
                         for (cell, oldcell) in row.iter_mut().zip(oldrow) {
+                            if cell.fill != oldcell.fill || cell.border != oldcell.border {
+                                return Err(Error::Unsupported(
+                                    "RichEdit changed table cell formatting".into(),
+                                ));
+                            }
                             for (j, p) in cell.paragraphs.iter_mut().enumerate() {
                                 if let Some(oldp) = oldcell.paragraphs.get(j) {
                                     p.id = oldp.id;
