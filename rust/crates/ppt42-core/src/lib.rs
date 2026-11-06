@@ -169,6 +169,30 @@ impl Presentation {
         self.history.apply(state);
         Ok(())
     }
+    fn deck_with_duplicate(&self) -> Result<State, String> {
+        if self.slides().len() >= MAX_SLIDES {
+            return Err("slide limit exceeded".into());
+        }
+        let mut state = self.history.current().clone();
+        let id = state.deck.next_id;
+        state.deck.next_id = id.checked_add(1).ok_or("slide identity exhausted")?;
+        let mut slide = state.deck.slides[self.current()].clone();
+        slide.id = id;
+        state.deck.slides.insert(self.current() + 1, slide);
+        state.selected = id;
+        if !state.deck.valid() {
+            return Err("deck exceeds size limit".into());
+        }
+        Ok(state)
+    }
+    pub fn can_duplicate(&self) -> bool {
+        self.deck_with_duplicate().is_ok()
+    }
+    pub fn duplicate(&mut self) -> Result<(), String> {
+        let state = self.deck_with_duplicate()?;
+        self.history.apply(state);
+        Ok(())
+    }
     pub fn delete(&mut self) -> Result<(), String> {
         if self.slides().len() == 1 {
             return Err("cannot delete last slide".into());
@@ -246,6 +270,49 @@ impl Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn duplicate_preserves_identity_policy_history_and_reopen() {
+        let mut p = Presentation::new();
+        p.edit_raw("same".into(), "a\r\nb".into()).unwrap();
+        let original = p.slides()[0].id;
+        p.duplicate().unwrap();
+        let copied = p.slides()[1].id;
+        assert_ne!(original, copied);
+        assert_eq!(p.current(), 1);
+        assert_eq!(p.slides()[1].body, "a\r\nb");
+        assert!(p.undo());
+        assert_eq!(p.current(), 0);
+        assert!(p.redo());
+        assert_eq!(p.current(), 1);
+        let path =
+            std::env::temp_dir().join(format!("ppt42-duplicate-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+        p.save_as(&path).unwrap();
+        let mut q = Presentation::open(&path).unwrap();
+        q.select(1).unwrap();
+        q.edit("same".into(), "a\nb\nc".into()).unwrap();
+        assert_eq!(q.slides()[1].body, "a\r\nb\r\nc");
+        assert_eq!(q.slides()[1].id, copied);
+        assert!(p.undo());
+        p.edit("branch".into(), "".into()).unwrap();
+        assert!(!p.can_redo());
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn duplicate_refuses_size_budget_without_mutation() {
+        let mut p = Presentation::new();
+        p.edit_raw("".into(), "\u{1}".repeat(MAX_TEXT)).unwrap();
+        while p.can_duplicate() {
+            p.duplicate().unwrap();
+        }
+        let n = p.slides().len();
+        let selected = p.current();
+        let undo = p.can_undo();
+        assert!(p.duplicate().is_err());
+        assert_eq!(p.slides().len(), n);
+        assert_eq!(p.current(), selected);
+        assert_eq!(p.can_undo(), undo);
+    }
     #[test]
     fn escaped_budget_rejection_preserves_state_and_history() {
         let mut p = Presentation::new();

@@ -20,7 +20,39 @@ impl win42::App for Img {
         "*.png;*.jpg;*.jpeg".into()
     }
     fn actions(&self) -> &'static [(u16, &'static str)] {
-        &[(10, "Rotate &Left"), (11, "Rotate &Right")]
+        &[
+            (10, "Rotate &Left"),
+            (11, "Rotate &Right"),
+            (15, "Flip &Horizontal"),
+            (16, "Flip &Vertical"),
+            (17, "&Resize..."),
+        ]
+    }
+    fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        let d = self.doc.as_ref()?;
+        (id == 17).then(|| win42::InputRequest {
+            title: "Resize image (nearest neighbour)",
+            fields: vec![
+                ("Width (pixels)", d.width().to_string()),
+                ("Height (pixels)", d.height().to_string()),
+            ],
+        })
+    }
+    fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id != 17 || values.len() != 2 {
+            return Err("Invalid resize request".into());
+        }
+        let width = values[0]
+            .parse::<u32>()
+            .map_err(|_| "Width must be a positive integer")?;
+        let height = values[1]
+            .parse::<u32>()
+            .map_err(|_| "Height must be a positive integer")?;
+        self.doc
+            .as_mut()
+            .ok_or("Open an image first")?
+            .resize(width, height)
+            .map_err(|e| e.to_string())
     }
     fn view_actions(&self) -> &'static [(u16, &'static str)] {
         &[(12, "Zoom &In"), (13, "Zoom &Out"), (14, "&Fit to Window")]
@@ -102,6 +134,8 @@ impl win42::App for Img {
             }
             10 => d.rotate_ccw().map_err(|e| e.to_string())?,
             11 => d.rotate_cw().map_err(|e| e.to_string())?,
+            15 => d.flip_horizontal().map_err(|e| e.to_string())?,
+            16 => d.flip_vertical().map_err(|e| e.to_string())?,
             12 => self.zoom = Some((self.zoom.unwrap_or(1.0) * 1.25).min(16.0)),
             13 => self.zoom = Some((self.zoom.unwrap_or(1.0) * 0.8).max(0.05)),
             14 => self.zoom = None,

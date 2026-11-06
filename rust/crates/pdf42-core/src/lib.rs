@@ -1,16 +1,31 @@
 //! Structural PDF operations. No renderer or signature preservation.
 use lopdf::{Document, LoadOptions, Object, ObjectId};
-use std::{collections::HashSet, fs, io::Read, path::Path};
-use suite42_core::write_new;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io::Read,
+    path::Path,
+};
+use suite42_core::{write_new, SnapshotHistory};
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_PAGES: usize = 1000;
+#[derive(Clone)]
+struct State {
+    pages: Vec<ObjectId>,
+    rotations: HashMap<ObjectId, i64>,
+    selected: ObjectId,
+}
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool {
+        self.pages == other.pages && self.rotations == other.rotations
+    }
+}
 pub struct PdfDocument {
     doc: Document,
     root: ObjectId,
-    pages: Vec<ObjectId>,
+    original_pages: Vec<ObjectId>,
     flat: bool,
-    structure_changed: bool,
-    deleted: Vec<ObjectId>,
+    history: SnapshotHistory<State>,
 }
 
 fn collect_pages(
@@ -142,12 +157,18 @@ impl PdfDocument {
         let result = Self {
             doc,
             root,
-            pages,
+            original_pages: pages.clone(),
             flat,
-            structure_changed: false,
-            deleted: Vec::new(),
+            history: SnapshotHistory::new(
+                State {
+                    selected: pages[0],
+                    pages,
+                    rotations: HashMap::new(),
+                },
+                20,
+            ),
         };
-        for i in 0..result.pages.len() {
+        for i in 0..result.page_count() {
             result.rotation(i)?;
         }
         Ok(result)
@@ -181,10 +202,50 @@ impl PdfDocument {
             .map_err(|e| e.to_string())
     }
     pub fn page_count(&self) -> usize {
-        self.pages.len()
+        self.history.current().pages.len()
+    }
+    pub fn current(&self) -> usize {
+        self.history
+            .current()
+            .pages
+            .iter()
+            .position(|id| *id == self.history.current().selected)
+            .expect("valid selection")
+    }
+    pub fn select(&mut self, index: usize) -> Result<(), String> {
+        let mut state = self.history.current().clone();
+        state.selected = *state.pages.get(index).ok_or("page index out of range")?;
+        self.history.replace_current(state);
+        Ok(())
+    }
+    pub fn undo(&mut self) -> bool {
+        self.history.undo()
+    }
+    pub fn redo(&mut self) -> bool {
+        self.history.redo()
+    }
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.history.is_dirty()
     }
     pub fn rotation(&self, index: usize) -> Result<i64, String> {
-        let id = *self.pages.get(index).ok_or("page index out of range")?;
+        let id = *self
+            .history
+            .current()
+            .pages
+            .get(index)
+            .ok_or("page index out of range")?;
+        if let Some(value) = self.history.current().rotations.get(&id) {
+            return Ok(*value);
+        }
+        self.base_rotation(id)
+    }
+    fn base_rotation(&self, id: ObjectId) -> Result<i64, String> {
         let mut node_id = id;
         let mut v = 0;
         loop {
@@ -221,13 +282,18 @@ impl PdfDocument {
             return Err("rotation must be a multiple of 90".into());
         }
         let angle = (self.rotation(index)? + degrees.rem_euclid(360)).rem_euclid(360);
-        let id = self.pages[index];
-        self.doc
-            .get_dictionary_mut(id)
-            .map_err(|e| e.to_string())?
-            .set("Rotate", angle);
+        let mut state = self.history.current().clone();
+        let id = state.pages[index];
+        state.selected = id;
+        if angle == self.base_rotation(id)? {
+            state.rotations.remove(&id);
+        } else {
+            state.rotations.insert(id, angle);
+        }
+        self.history.apply(state);
         Ok(())
     }
+
     fn ensure_reorder_safe(&self) -> Result<(), String> {
         if !self.flat {
             return Err("deleting or reordering nested page trees unsupported".into());
@@ -247,7 +313,7 @@ impl PdfDocument {
                 return Err("page reordering with document navigation or forms unsupported".into());
             }
         }
-        for id in &self.pages {
+        for id in &self.original_pages {
             if self
                 .doc
                 .get_dictionary(*id)
@@ -266,57 +332,70 @@ impl PdfDocument {
     }
     pub fn delete(&mut self, index: usize) -> Result<(), String> {
         self.ensure_reorder_safe()?;
-        if self.pages.len() == 1 {
+        let mut state = self.history.current().clone();
+        if state.pages.len() == 1 {
             return Err("cannot delete last page".into());
         }
-        if index >= self.pages.len() {
+        if index >= state.pages.len() {
             return Err("page index out of range".into());
         }
-        self.deleted.push(self.pages.remove(index));
-        self.structure_changed = true;
+        state.pages.remove(index);
+        state.selected = state.pages[index.min(state.pages.len() - 1)];
+        self.history.apply(state);
         Ok(())
     }
     pub fn move_page(&mut self, from: usize, to: usize) -> Result<(), String> {
         self.ensure_reorder_safe()?;
-        if from >= self.pages.len() || to >= self.pages.len() {
+        let mut state = self.history.current().clone();
+        if from >= state.pages.len() || to >= state.pages.len() {
             return Err("page index out of range".into());
         }
-        let page = self.pages.remove(from);
-        self.pages.insert(to, page);
-        self.structure_changed = true;
+        let page = state.pages.remove(from);
+        state.selected = page;
+        state.pages.insert(to, page);
+        self.history.apply(state);
         Ok(())
     }
     pub fn save_as(&mut self, path: &Path) -> Result<(), String> {
-        if self.structure_changed {
-            let root = self
-                .doc
+        // Export from a disposable copy: pruning must not destroy undo state.
+        let mut doc = self.doc.clone();
+        let state = self.history.current();
+        for (&id, &rotation) in &state.rotations {
+            doc.get_dictionary_mut(id)
+                .map_err(|e| e.to_string())?
+                .set("Rotate", rotation);
+        }
+        if state.pages != self.original_pages {
+            let root = doc
                 .get_dictionary_mut(self.root)
                 .map_err(|e| e.to_string())?;
             root.set(
                 "Kids",
-                self.pages
+                state
+                    .pages
                     .iter()
                     .map(|id| Object::Reference(*id))
                     .collect::<Vec<_>>(),
             );
-            root.set("Count", self.pages.len() as i64);
-        }
-        if !self.deleted.is_empty() {
-            self.doc.prune_objects();
+            root.set("Count", state.pages.len() as i64);
+            doc.prune_objects();
             if self
-                .deleted
+                .original_pages
                 .iter()
-                .any(|id| self.doc.objects.contains_key(id))
+                .filter(|id| !state.pages.contains(id))
+                .any(|id| doc.objects.contains_key(id))
             {
                 return Err("deleted pages remain referenced; cannot safely save".into());
             }
         }
         let mut out = Vec::new();
-        self.doc.save_to(&mut out).map_err(|e| e.to_string())?;
+        doc.save_to(&mut out).map_err(|e| e.to_string())?;
         if out.len() as u64 > MAX_FILE * 2 {
             return Err("output exceeds limit".into());
         }
-        write_new(path, &out).map_err(|e| e.to_string())
+        write_new(path, &out).map_err(|e| e.to_string())?;
+        self.history.mark_saved();
+        Ok(())
     }
 }
 #[cfg(test)]
@@ -341,6 +420,63 @@ mod tests {
             d.add_object(dictionary! {"FT"=>"Sig"});
         }
         d.save(path).unwrap();
+    }
+    #[test]
+    fn history_survives_save_failure_pruning_and_branching() {
+        let dir = std::env::temp_dir().join(format!("pdf42-history-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        let out = dir.join("out.pdf");
+        let restored = dir.join("restored.pdf");
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&restored);
+        sample(&input, false);
+        let original = fs::read(&input).unwrap();
+        let mut p = PdfDocument::open(&input).unwrap();
+        p.select(1).unwrap();
+        p.rotate(1, 90).unwrap();
+        p.move_page(1, 0).unwrap();
+        p.delete(0).unwrap();
+        assert_eq!(p.page_count(), 2);
+        assert!(p.save_as(&input).is_err());
+        assert!(p.is_dirty());
+        p.save_as(&out).unwrap();
+        assert!(!p.is_dirty());
+        assert_eq!(PdfDocument::open(&out).unwrap().page_count(), 2);
+        assert!(p.undo());
+        assert!(p.is_dirty());
+        assert_eq!(p.current(), 0);
+        assert_eq!(p.rotation(0).unwrap(), 180);
+        p.save_as(&restored).unwrap();
+        assert_eq!(PdfDocument::open(&restored).unwrap().page_count(), 3);
+        assert!(p.redo());
+        assert!(p.is_dirty());
+        assert_eq!(p.page_count(), 2);
+        assert!(p.undo());
+        p.rotate(0, 90).unwrap();
+        assert!(!p.can_redo());
+        assert_eq!(fs::read(&input).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn rotation_baseline_and_bounded_history() {
+        let dir = std::env::temp_dir().join(format!("pdf42-history-limit-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.pdf");
+        sample(&input, false);
+        let mut p = PdfDocument::open(&input).unwrap();
+        for _ in 0..4 {
+            p.rotate(0, 90).unwrap();
+        }
+        assert!(!p.is_dirty());
+        for _ in 0..25 {
+            p.rotate(0, 90).unwrap();
+        }
+        for _ in 0..20 {
+            assert!(p.undo());
+        }
+        assert!(!p.undo());
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn deletion_prunes_unique_content_but_preserves_shared_resources() {

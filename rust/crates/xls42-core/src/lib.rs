@@ -1,4 +1,5 @@
-//! Rectangular UTF-8 CSV data; cells contain raw strings and formulas are not calculated.
+//! Rectangular UTF-8 CSV data with raw cells and bounded formula evaluation.
+mod formula;
 use std::{
     fmt,
     fs::File,
@@ -113,6 +114,10 @@ impl Workbook {
                 8,
             ),
         })
+    }
+    /// Compute the visible grid once, retaining raw values for editing and CSV.
+    pub fn display_grid(&self) -> Vec<Vec<String>> {
+        formula::display_grid(self)
     }
     pub fn rows(&self) -> usize {
         self.history.current().rows
@@ -329,5 +334,91 @@ mod tests {
         w.set_cell_editor_text(0, 0, "x\ny".into()).unwrap();
         assert_eq!(w.cell(0, 0), Some("x\r\ny"));
         assert!(!w.can_redo());
+    }
+}
+
+#[cfg(test)]
+mod formula_regression {
+    use super::*;
+    #[test]
+    fn formulas_recalculate_history_and_csv_preserves_raw() {
+        let mut b = Workbook::new(2, 3).unwrap();
+        b.set_cell(0, 0, "2".into()).unwrap();
+        b.set_cell(1, 0, "3".into()).unwrap();
+        b.set_cell(0, 1, "=SUM(A1:A2)*2".into()).unwrap();
+        b.set_cell(1, 1, "=AVERAGE(A1:A2)+MIN(A1:A2)+MAX(A1:A2)".into())
+            .unwrap();
+        b.set_cell(0, 2, "=-(B1+1)/2".into()).unwrap();
+        assert_eq!(b.display_grid()[0], ["2", "10", "-5.5"]);
+        assert_eq!(b.display_grid()[1][1], "7.5");
+        b.set_cell(0, 0, "4".into()).unwrap();
+        assert_eq!(b.display_grid()[0][1], "14");
+        b.undo();
+        assert_eq!(b.display_grid()[0][1], "10");
+        b.redo();
+        assert_eq!(b.display_grid()[0][1], "14");
+        let path = std::env::temp_dir().join(format!("xls42-formula-{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        b.save_as_csv(&path).unwrap();
+        let reopened = Workbook::open_csv(&path).unwrap();
+        assert_eq!(reopened.cell(0, 1), Some("=SUM(A1:A2)*2"));
+        assert_eq!(reopened.display_grid()[0][1], "14");
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn errors_cycles_recover_and_limits_are_bounded() {
+        let mut b = Workbook::new(2, 4).unwrap();
+        for (c, value) in ["=B1", "=A1", "=1/0", "=Z99"].iter().enumerate() {
+            b.set_cell(0, c, (*value).into()).unwrap();
+        }
+        assert_eq!(
+            b.display_grid()[0],
+            ["#CYCLE!", "#CYCLE!", "#DIV/0!", "#REF!"]
+        );
+        b.set_cell(0, 1, "5".into()).unwrap();
+        assert_eq!(b.display_grid()[0][0], "5");
+        b.set_cell(1, 0, "=1+".into()).unwrap();
+        b.set_cell(1, 1, format!("={}1", "-".repeat(200))).unwrap();
+        b.set_cell(1, 2, "text".into()).unwrap();
+        b.set_cell(1, 3, "=C2+1".into()).unwrap();
+        assert_eq!(
+            b.display_grid()[1],
+            ["#ERROR!", "#LIMIT!", "text", "#VALUE!"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod aggregate_range_regression {
+    use super::*;
+    #[test]
+    fn mixed_empty_and_formula_error_ranges() {
+        let mut b = Workbook::new(5, 5).unwrap();
+        // A1:A5 contains a real zero, two numbers, plain text and a blank.
+        for (r, value) in ["0", "6", "text", "", "-2"].iter().enumerate() {
+            b.set_cell(r, 0, (*value).into()).unwrap();
+        }
+        for (r, f) in ["SUM", "AVERAGE", "MIN", "MAX"].iter().enumerate() {
+            b.set_cell(r, 1, format!("={f}(A1:A5)")).unwrap();
+            b.set_cell(r, 2, format!("={f}(D1:D2)")).unwrap();
+            b.set_cell(r, 4, format!("={f}(D3:D4)")).unwrap();
+        }
+        b.set_cell(0, 3, "text".into()).unwrap();
+        b.set_cell(2, 3, "=1/0".into()).unwrap();
+        let grid = b.display_grid();
+        assert_eq!(
+            (0..4).map(|r| grid[r][1].as_str()).collect::<Vec<_>>(),
+            ["4", "1.3333333333333333", "-2", "6"]
+        );
+        assert_eq!(
+            (0..4).map(|r| grid[r][2].as_str()).collect::<Vec<_>>(),
+            ["0", "#DIV/0!", "0", "0"]
+        );
+        assert_eq!(
+            (0..4).map(|r| grid[r][4].as_str()).collect::<Vec<_>>(),
+            ["#DIV/0!"; 4]
+        );
+        b.set_cell(2, 3, "=2-2".into()).unwrap();
+        assert_eq!(b.display_grid()[1][4], "0");
     }
 }

@@ -74,6 +74,49 @@ impl Document {
         }
         Ok(self.history.apply(next))
     }
+    /// Find a literal string at or after a UTF-8 byte boundary, wrapping once.
+    pub fn find_next(&self, needle: &str, start: usize) -> Option<std::ops::Range<usize>> {
+        if needle.is_empty() {
+            return None;
+        }
+        let text = self.text();
+        let mut start = start.min(text.len());
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let offset = text[start..]
+            .find(needle)
+            .map(|i| start + i)
+            .or_else(|| text.find(needle))?;
+        Some(offset..offset + needle.len())
+    }
+    /// Replace all literal occurrences as one atomic history transaction.
+    pub fn replace_all(&mut self, needle: &str, replacement: &str) -> Result<usize, Error> {
+        if needle.is_empty() {
+            return Ok(0);
+        }
+        let canonical = self.text().replace("\r\n", "\n");
+        let needle = needle.replace("\r\n", "\n");
+        let replacement = replacement.replace("\r\n", "\n");
+        let count = canonical.matches(&needle).count();
+        if count == 0 {
+            return Ok(0);
+        }
+        let size = canonical
+            .len()
+            .checked_sub(count * needle.len())
+            .and_then(|n| n.checked_add(count.checked_mul(replacement.len())?))
+            .ok_or(Error::TooLarge)?;
+        if size > MAX_BYTES {
+            return Err(Error::TooLarge);
+        }
+        let edited = canonical.replace(&needle, &replacement);
+        self.set_editor_text(edited)?;
+        Ok(count)
+    }
+    pub fn word_count(&self) -> usize {
+        self.text().split_whitespace().count()
+    }
     pub fn undo(&mut self) -> bool {
         self.history.undo()
     }
@@ -164,5 +207,41 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+}
+
+#[cfg(test)]
+mod find_regression {
+    use super::*;
+    #[test]
+    fn wrap_finds_match_crossing_caret_and_utf8_boundary() {
+        let mut d = Document::new();
+        d.set_text("abcdef".into()).unwrap();
+        assert_eq!(d.find_next("cde", 3), Some(2..5));
+        d.set_text("x😀z\r\nend".into()).unwrap();
+        assert_eq!(d.find_next("😀z\r\n", 3), Some(1..8));
+        assert_eq!(d.find_next("😀z\r\n", 6), Some(1..8));
+    }
+    #[test]
+    fn literal_find_replace_history_policy_and_reopen() {
+        let mut d = Document::new();
+        d.set_text("😀 cat\r\ncat".into()).unwrap();
+        assert_eq!(&d.text()[d.find_next("cat", 0).unwrap()], "cat");
+        assert_eq!(d.find_next("cat", d.text().len()).unwrap().start, 5);
+        assert!(d.find_next("", 0).is_none());
+        assert_eq!(d.word_count(), 3);
+        assert_eq!(d.replace_all("cat", "dog").unwrap(), 2);
+        assert_eq!(d.text(), "😀 dog\r\ndog");
+        d.undo();
+        assert_eq!(d.text(), "😀 cat\r\ncat");
+        d.redo();
+        assert_eq!(d.text(), "😀 dog\r\ndog");
+        let path = std::env::temp_dir().join(format!("doc42-find-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        d.save_as(&path).unwrap();
+        assert_eq!(Document::open(&path).unwrap().text(), d.text());
+        std::fs::remove_file(path).unwrap();
+        assert!(d.replace_all("dog", &"x".repeat(MAX_BYTES)).is_err());
+        assert_eq!(d.text(), "😀 dog\r\ndog");
     }
 }

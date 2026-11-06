@@ -23,15 +23,7 @@ impl win42::App for Xls {
         vec![]
     }
     fn table(&self) -> Option<Vec<Vec<String>>> {
-        Some(
-            (0..self.book.rows())
-                .map(|r| {
-                    (0..self.book.cols())
-                        .map(|c| self.book.cell(r, c).unwrap_or("").to_owned())
-                        .collect()
-                })
-                .collect(),
-        )
+        Some(self.book.display_grid())
     }
     fn select_cell(&mut self, row: usize, col: usize) {
         self.row = row.min(self.book.rows() - 1);
@@ -48,7 +40,7 @@ impl win42::App for Xls {
     }
     fn status(&self) -> String {
         format!(
-            "CSV | {} rows × {} columns | selected R{} C{} | formulas are plain text",
+            "CSV | {} rows × {} columns | selected R{} C{} | formulas calculated",
             self.book.rows(),
             self.book.cols(),
             self.row + 1,
@@ -153,6 +145,47 @@ mod tests {
 mod regression {
     use super::*;
     use win42::App;
+    #[test]
+    fn same_shape_open_and_keyboard_selection_edit_the_visible_destination() {
+        let root =
+            std::env::temp_dir().join(format!("xls42-grid-selection-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let input = root.join("input.csv");
+        std::fs::write(&input, "a,b\nc,d\n").unwrap();
+        let mut app = Xls {
+            book: Workbook::new(2, 2).unwrap(),
+            row: 0,
+            col: 0,
+        };
+        app.select_cell(1, 1);
+        let prior = app.table().unwrap();
+        app.open(&input).unwrap();
+        let after = app.table().unwrap();
+        assert!(matches!(
+            win42::grid_transition(Some(&prior), &after, app.selected_cell()),
+            win42::GridTransition::Update { .. }
+        ));
+        assert_eq!(app.selected_cell(), Some((0, 0)));
+        app.edit("opened".into()).unwrap();
+        let selected =
+            win42::grid_selection_event(app.selected_cell(), Some(1), None, false).unwrap();
+        app.select_cell(selected.0, selected.1);
+        app.edit("keyboard".into()).unwrap();
+        assert!(win42::grid_selection_event(app.selected_cell(), Some(1), None, true).is_none());
+        let output = root.join("out.csv");
+        app.save(&output).unwrap();
+        let saved = Workbook::open_csv(&output).unwrap();
+        for (r, c, value) in [
+            (0, 0, "opened"),
+            (0, 1, "b"),
+            (1, 0, "keyboard"),
+            (1, 1, "d"),
+        ] {
+            assert_eq!(saved.cell(r, c), Some(value));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn selection_survives_structure_and_history_and_saves_exact_destination() {
         let mut a = Xls {

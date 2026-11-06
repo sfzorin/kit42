@@ -5,3 +5,6 @@ edition = "2021"
 [dependencies]
 suite42-core = { path = "../suite42-core" }
 lopdf = "0.47"
+
+[dev-dependencies]
+tempfile = "3"

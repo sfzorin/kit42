@@ -25,8 +25,9 @@ impl win42::App for Doc {
     }
     fn status(&self) -> String {
         format!(
-            "UTF-8 plain text | {} characters",
-            self.doc.text().chars().count()
+            "UTF-8 plain text | {} characters | {} words",
+            self.doc.text().chars().count(),
+            self.doc.word_count()
         )
     }
     fn dirty(&self) -> bool {
@@ -65,6 +66,47 @@ impl win42::App for Doc {
             _ => {}
         }
         Ok(())
+    }
+    fn supports_find_replace(&self) -> bool {
+        true
+    }
+    fn find_next(&self, query: &str, start_utf16: usize) -> Result<Option<(usize, usize)>, String> {
+        let text = self.doc.text();
+        let native = win42::to_native_text(text);
+        let mut native_byte = native.len();
+        let mut units = 0;
+        for (i, ch) in native.char_indices() {
+            if units >= start_utf16 {
+                native_byte = i;
+                break;
+            }
+            units += ch.len_utf16();
+        }
+        let prefix = &native[..native_byte];
+        let canonical_prefix = win42::from_native_text(prefix);
+        let raw_prefix = if text.contains("\r\n") {
+            canonical_prefix.replace('\n', "\r\n")
+        } else {
+            canonical_prefix
+        };
+        let query = win42::from_native_text(query);
+        let query = if text.contains("\r\n") {
+            query.replace('\n', "\r\n")
+        } else {
+            query
+        };
+        Ok(self.doc.find_next(&query, raw_prefix.len()).map(|range| {
+            let start = win42::to_native_text(&text[..range.start])
+                .encode_utf16()
+                .count();
+            let end = start + win42::to_native_text(&text[range]).encode_utf16().count();
+            (start, end)
+        }))
+    }
+    fn replace_all(&mut self, query: &str, replacement: &str) -> Result<usize, String> {
+        self.doc
+            .replace_all(query, replacement)
+            .map_err(|e| e.to_string())
     }
     fn list_visible(&self) -> bool {
         false
@@ -112,5 +154,29 @@ mod policy_regression {
         assert!(!a.can_redo());
         a.edit("branch\r\nend".into()).unwrap();
         assert_eq!(a.doc.text(), "branch\r\nend");
+    }
+}
+
+#[cfg(test)]
+mod find_adapter_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn native_caret_inside_match_wraps_across_emoji_and_crlf() {
+        let mut d = Document::new();
+        d.set_text("x😀z\r\nend".into()).unwrap();
+        let a = Doc { doc: d };
+        assert_eq!(a.find_next("😀z\r\n", 3).unwrap(), Some((1, 6)));
+        assert_eq!(a.find_next("😀z\r\n", 4).unwrap(), Some((1, 6)));
+    }
+    #[test]
+    fn native_offsets_wrap_across_unicode_and_crlf() {
+        let mut d = Document::new();
+        d.set_text("😀 a\n😀 a".into()).unwrap();
+        let a = Doc { doc: d };
+        assert_eq!(a.find_next("😀", 0).unwrap(), Some((0, 2)));
+        assert_eq!(a.find_next("😀", 2).unwrap(), Some((6, 8)));
+        assert_eq!(a.find_next("😀", 8).unwrap(), Some((0, 2)));
+        assert_eq!(a.find_next("missing", 0).unwrap(), None);
     }
 }

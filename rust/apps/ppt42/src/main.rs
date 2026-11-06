@@ -25,6 +25,7 @@ impl win42::App for Ppt {
             (11, "&Delete Slide"),
             (12, "Move Slide &Up"),
             (13, "Move Slide D&own"),
+            (14, "D&uplicate Slide"),
         ]
     }
     fn items(&self) -> Vec<String> {
@@ -89,6 +90,7 @@ impl win42::App for Ppt {
             11 => n > 1,
             12 => i > 0,
             13 => i + 1 < n,
+            14 => self.deck.can_duplicate(),
             _ => true,
         }
     }
@@ -110,6 +112,7 @@ impl win42::App for Ppt {
             11 => self.deck.delete(),
             12 => self.deck.move_slide(i, i - 1),
             13 => self.deck.move_slide(i, i + 1),
+            14 => self.deck.duplicate(),
             _ => Ok(()),
         }
     }
@@ -121,6 +124,20 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+    #[test]
+    fn duplicate_menu_dispatch_tracks_history() {
+        let mut app = Ppt::new(Presentation::new());
+        app.edit("Title\r\nBody".into()).unwrap();
+        assert!(app.enabled(14));
+        app.action(14).unwrap();
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.text(), "Title\r\nBody");
+        assert_ne!(app.deck.slides()[0].id, app.deck.slides()[1].id);
+        app.action(4).unwrap();
+        assert_eq!(app.selected(), 0);
+        app.action(5).unwrap();
+        assert_eq!(app.selected(), 1);
+    }
     #[test]
     fn slide_editor_preserves_crlf() {
         let mut p = Presentation::new();

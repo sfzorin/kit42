@@ -4,12 +4,58 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+#[derive(Clone)]
+pub struct InputRequest {
+    pub title: &'static str,
+    pub fields: Vec<(&'static str, String)>,
+}
+#[derive(Clone, Copy)]
+pub struct FileAction {
+    pub id: u16,
+    pub title: &'static str,
+    pub save: bool,
+    pub extension: &'static str,
+    pub format: &'static str,
+    pub pattern: &'static str,
+}
+
 /// Portable contract between a document model and the native Windows host.
 pub trait App {
     fn name(&self) -> &'static str;
     fn extension(&self) -> &'static str;
     fn format_name(&self) -> &'static str;
     fn actions(&self) -> &'static [(u16, &'static str)];
+    fn supports_new(&self) -> bool {
+        false
+    }
+    fn new_document(&mut self) -> Result<(), String> {
+        Err("New document unavailable".into())
+    }
+    fn file_actions(&self) -> &'static [FileAction] {
+        &[]
+    }
+    fn file_action(&mut self, _id: u16, _path: &Path) -> Result<(), String> {
+        Err("Unsupported file action".into())
+    }
+    fn input_request(&self, _id: u16) -> Option<InputRequest> {
+        None
+    }
+    fn input_action(&mut self, _id: u16, _values: &[String]) -> Result<(), String> {
+        Err("Unsupported input action".into())
+    }
+    fn supports_find_replace(&self) -> bool {
+        false
+    }
+    fn find_next(
+        &self,
+        _query: &str,
+        _start_utf16: usize,
+    ) -> Result<Option<(usize, usize)>, String> {
+        Err("Find unavailable".into())
+    }
+    fn replace_all(&mut self, _query: &str, _replacement: &str) -> Result<usize, String> {
+        Err("Replace unavailable".into())
+    }
     fn view_actions(&self) -> &'static [(u16, &'static str)] {
         &[]
     }
@@ -62,6 +108,8 @@ pub trait App {
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+mod prompt;
+#[cfg(windows)]
 pub use native::run;
 #[cfg(not(windows))]
 pub fn run(app: Box<dyn App>) {
@@ -105,4 +153,111 @@ mod tests {
         assert!(super::validate_editable("a\r\nb\nc").is_err());
         assert!(super::validate_editable(&"x".repeat(16_777_217)).is_err());
     }
+}
+
+/// Native table operations needed to move between two rectangular presentations.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GridTransition {
+    Rebuild { selection: Option<(usize, usize)> },
+    Update { cells: Vec<(usize, usize)> },
+}
+/// Compare presentations once, leaving unchanged native controls and view state intact.
+pub fn grid_transition(
+    old: Option<&[Vec<String>]>,
+    new: &[Vec<String>],
+    selection: Option<(usize, usize)>,
+) -> GridTransition {
+    let cols = new.first().map_or(0, Vec::len);
+    let shape_matches = old.is_some_and(|rows| {
+        rows.len() == new.len() && rows.iter().zip(new).all(|(a, b)| a.len() == b.len())
+    });
+    if !shape_matches {
+        let selection = selection.and_then(|(row, col)| {
+            if new.is_empty() || cols == 0 {
+                None
+            } else {
+                Some((row.min(new.len() - 1), col.min(cols - 1)))
+            }
+        });
+        return GridTransition::Rebuild { selection };
+    }
+    let old = old.unwrap();
+    let cells = old
+        .iter()
+        .zip(new)
+        .enumerate()
+        .flat_map(|(r, (a, b))| {
+            a.iter()
+                .zip(b)
+                .enumerate()
+                .filter_map(move |(c, (x, y))| (x != y).then_some((r, c)))
+        })
+        .collect();
+    GridTransition::Update { cells }
+}
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+    #[test]
+    fn selection_events_keep_the_model_authoritative() {
+        assert_eq!(
+            grid_selection_event(Some((4, 3)), Some(5), None, false),
+            Some((5, 3))
+        );
+        assert_eq!(
+            grid_selection_event(Some((4, 3)), Some(4), Some(1), false),
+            Some((4, 1))
+        );
+        assert_eq!(grid_selection_event(Some((4, 3)), None, None, false), None);
+        assert_eq!(
+            grid_selection_event(Some((4, 3)), Some(4), None, false),
+            None
+        );
+        assert_eq!(
+            grid_selection_event(Some((4, 3)), Some(1), None, true),
+            None
+        );
+    }
+    #[test]
+    fn sparse_changes_and_structure_selection() {
+        let old = vec![vec![String::new(); 100]; 1000];
+        let mut next = old.clone();
+        next[0][0] = "1".into();
+        next[999][99] = "2".into();
+        assert_eq!(
+            grid_transition(Some(&old), &next, Some((999, 99))),
+            GridTransition::Update {
+                cells: vec![(0, 0), (999, 99)]
+            }
+        );
+        next.truncate(3);
+        next.iter_mut().for_each(|r| r.truncate(2));
+        assert_eq!(
+            grid_transition(Some(&old), &next, Some((999, 99))),
+            GridTransition::Rebuild {
+                selection: Some((2, 1))
+            }
+        );
+        assert_eq!(
+            grid_transition(Some(&old), &[], Some((0, 0))),
+            GridTransition::Rebuild { selection: None }
+        );
+    }
+}
+
+/// Resolve a selected native row or clicked cell against the current model selection.
+/// Deselect-only and programmatic notifications are ignored.
+pub fn grid_selection_event(
+    current: Option<(usize, usize)>,
+    row: Option<usize>,
+    clicked_col: Option<usize>,
+    programmatic: bool,
+) -> Option<(usize, usize)> {
+    if programmatic {
+        return None;
+    }
+    let row = row?;
+    let col = clicked_col.or_else(|| current.map(|(_, col)| col))?;
+    let next = (row, col);
+    (Some(next) != current).then_some(next)
 }

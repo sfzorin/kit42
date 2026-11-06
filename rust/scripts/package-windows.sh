@@ -25,12 +25,12 @@ cp "$ROOT/LICENSE" "$STAGE/Suite42/licenses/Suite42-LICENSE"
 cat > "$STAGE/Suite42/README.txt" <<'TEXT'
 Suite42 for Windows x64 — preliminary build
 
-IMG42: PNG/JPEG image rotation and new PNG output.
-DOC42: UTF-8 plain text editing.
-XLS42: CSV cells as text; no formula calculation.
-PPT42: basic slide title/body in Suite42 JSON, not PPTX.
-PDF42: selected PDF page structure operations, no page renderer.
-SCN42: import image pages and export PDF; no scanner acquisition or OCR.
+IMG42: PNG/JPEG image rotation, flips, nearest-neighbour resize and new PNG output.
+DOC42: UTF-8 plain text editing, find and replace all.
+XLS42: CSV editing with bounded formula calculation; formulas are saved as raw CSV text.
+PPT42: basic slide title/body and slide duplication in Suite42 JSON, not PPTX.
+PDF42: selected PDF page structure operations with Undo/Redo; no page renderer.
+SCN42: import image pages, save/reopen editable projects and export PDF; no scanner acquisition or OCR.
 Save As requires a NEW file. Existing files cannot be overwritten.
 Image metadata, profiles and animation are not retained in saved output.
 This cross-built executable has not been run or validated on Windows.

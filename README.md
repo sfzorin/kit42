@@ -65,8 +65,8 @@ Local packages are ad-hoc signed; this source publication does not install apps 
 
 ## Windows Rust foundation
 
-A separate, preliminary Rust foundation covers all six apps. It is cross-built on macOS; native Windows runtime,
-menus, input, rendering, dialogs and DPI have not yet been tested. It does not have feature parity with the macOS
+A separate, preliminary Rust foundation covers all six apps. Its base passed headless Windows MSVC tests and builds;
+interactive Windows menus, input, rendering, dialogs and DPI have not yet been tested. It does not have feature parity with the macOS
 apps described below. See [rust/README.md](rust/README.md) for build commands, per-app scope and the Windows handoff.
 The cross-build does not install apps or establish a notarized Windows release.
 

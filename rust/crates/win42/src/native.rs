@@ -14,6 +14,7 @@ use windows_sys::Win32::{
     UI::{
         Controls::{Dialogs::*, *},
         HiDpi::*,
+        Input::KeyboardAndMouse::SetFocus,
         WindowsAndMessaging::*,
     },
 };
@@ -23,6 +24,9 @@ const EXIT: u16 = 3;
 const UNDO: u16 = 4;
 const REDO: u16 = 5;
 const ABOUT: u16 = 6;
+const FIND: u16 = 7;
+const REPLACE: u16 = 8;
+const NEW: u16 = 9;
 const LIST: usize = 100;
 const EDIT: usize = 101;
 const TABLE: usize = 102;
@@ -36,6 +40,7 @@ struct State {
     canvas: HWND,
     status: HWND,
     menu: HMENU,
+    grid_cache: Option<Vec<Vec<String>>>,
 }
 thread_local! { static STATE:RefCell<Option<State>>=const { RefCell::new(None) }; static REFRESHING:Cell<bool>=const {Cell::new(false)}; }
 
@@ -208,6 +213,21 @@ unsafe fn refresh() {
             a.can_save(),
         )
     });
+    let file_enabled = STATE.with(|s| {
+        let s = s.borrow();
+        let a = &s.as_ref().unwrap().app;
+        a.file_actions()
+            .iter()
+            .map(|f| (f.id, a.enabled(f.id)))
+            .collect::<Vec<_>>()
+    });
+    for (id, enabled) in file_enabled {
+        EnableMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+        );
+    }
     EnableMenuItem(
         menu,
         SAVE as u32,
@@ -221,9 +241,7 @@ unsafe fn refresh() {
             MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
         );
     }
-    if let Some(rows) = &grid {
-        populate_table(table, rows);
-    }
+    update_table(table, grid.as_deref());
     ShowWindow(table, if grid.is_some() { SW_SHOW } else { SW_HIDE });
     ShowWindow(
         list,
@@ -261,7 +279,7 @@ unsafe fn layout(hwnd: HWND) {
             s.canvas,
             s.status,
             s.app.list_visible(),
-            s.app.table().is_some(),
+            s.grid_cache.is_some(),
         )
     });
     let mut r: RECT = zeroed();
@@ -317,29 +335,20 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             msg(hwnd, &e, MB_OK | MB_ICONERROR);
             refresh()
         } else {
-            let (table, cell, text, list, items, selected) = STATE.with(|s| {
+            let (table, grid, cell, list, items, selected) = STATE.with(|s| {
                 let s = s.borrow();
                 let s = s.as_ref().unwrap();
                 (
                     s.table,
+                    s.app.table(),
                     s.app.selected_cell(),
-                    s.app.text(),
                     s.list,
                     s.app.items(),
                     s.app.selected(),
                 )
             });
-            if let Some((row, col)) = cell {
-                let mut text = wide(&text);
-                let item = LVITEMW {
-                    mask: LVIF_TEXT,
-                    iItem: row as i32,
-                    iSubItem: col as i32,
-                    pszText: text.as_mut_ptr(),
-                    ..zeroed()
-                };
-                SendMessageW(table, LVM_SETITEMTEXTW, row, &item as *const _ as isize);
-            }
+            let _ = cell;
+            update_table(table, grid.as_deref());
             if !items.is_empty() {
                 REFRESHING.with(|x| x.set(true));
                 SendMessageW(list, LB_RESETCONTENT, 0, 0);
@@ -364,6 +373,23 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         return;
     }
     match id {
+        NEW => {
+            if !STATE.with(|s| s.borrow().as_ref().unwrap().app.supports_new()) || !confirm(hwnd) {
+                return;
+            }
+            let r = STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                let s = s.as_mut().unwrap();
+                let result = s.app.new_document();
+                if result.is_ok() {
+                    s.path = None;
+                }
+                result
+            });
+            if let Err(e) = r {
+                msg(hwnd, &e, MB_OK | MB_ICONERROR);
+            }
+        }
         OPEN => {
             if !STATE.with(|s| s.borrow().as_ref().unwrap().app.open_is_add()) && !confirm(hwnd) {
                 return;
@@ -395,6 +421,67 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             SendMessageW(hwnd, WM_CLOSE, 0, 0);
             return;
         }
+        FIND | REPLACE => {
+            if !STATE.with(|s| s.borrow().as_ref().unwrap().app.supports_find_replace()) {
+                return;
+            }
+            let req = if id == FIND {
+                crate::InputRequest {
+                    title: "Find next",
+                    fields: vec![("Find", String::new())],
+                }
+            } else {
+                crate::InputRequest {
+                    title: "Replace all",
+                    fields: vec![("Find", String::new()), ("Replace with", String::new())],
+                }
+            };
+            if let Some(values) = crate::prompt::show(hwnd, &req) {
+                if id == FIND {
+                    let edit = STATE.with(|s| s.borrow().as_ref().unwrap().edit);
+                    let mut end: u32 = 0;
+                    SendMessageW(edit, EM_GETSEL, 0, &mut end as *mut _ as isize);
+                    let result = STATE.with(|s| {
+                        s.borrow()
+                            .as_ref()
+                            .unwrap()
+                            .app
+                            .find_next(&values[0], end as usize)
+                    });
+                    match result {
+                        Ok(Some((start, end))) => {
+                            SetFocus(edit);
+                            SendMessageW(edit, EM_SETSEL, start, end as isize);
+                            SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+                        }
+                        Ok(None) => {
+                            msg(hwnd, "Text not found.", MB_OK);
+                        }
+                        Err(e) => {
+                            msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                        }
+                    }
+                    return;
+                }
+                let result = STATE.with(|s| {
+                    s.borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .app
+                        .replace_all(&values[0], &values[1])
+                });
+                match result {
+                    Ok(n) => {
+                        refresh();
+                        msg(hwnd, &format!("Replaced {n} occurrence(s)."), MB_OK);
+                    }
+                    Err(e) => {
+                        msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                    }
+                }
+            }
+            return;
+        }
         ABOUT => {
             let text = STATE.with(|s| {
                 format!(
@@ -406,6 +493,58 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             msg(hwnd, &text, MB_OK | MB_ICONINFORMATION);
         }
         _ => {
+            let (file_action, request, enabled) = STATE.with(|s| {
+                let s = s.borrow();
+                let a = &s.as_ref().unwrap().app;
+                (
+                    a.file_actions().iter().find(|a| a.id == id).copied(),
+                    a.input_request(id),
+                    a.enabled(id),
+                )
+            });
+            if !enabled {
+                return;
+            }
+            if let Some(a) = file_action {
+                if let Some(p) = dialog(hwnd, a.save, a.extension, a.format, a.pattern) {
+                    if a.save
+                        && (p.exists()
+                            || p.extension()
+                                .and_then(|x| x.to_str())
+                                .is_none_or(|x| !x.eq_ignore_ascii_case(a.extension)))
+                    {
+                        msg(
+                            hwnd,
+                            "Choose a new file name with the required extension.",
+                            MB_OK | MB_ICONWARNING,
+                        );
+                        return;
+                    }
+                    let r =
+                        STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.file_action(id, &p));
+                    if let Err(e) = r {
+                        msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                    }
+                }
+                refresh();
+                return;
+            }
+            if let Some(req) = request {
+                if let Some(values) = crate::prompt::show(hwnd, &req) {
+                    let r = STATE.with(|s| {
+                        s.borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .app
+                            .input_action(id, &values)
+                    });
+                    if let Err(e) = r {
+                        msg(hwnd, &e, MB_OK | MB_ICONERROR);
+                    }
+                }
+                refresh();
+                return;
+            }
             let r = STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.action(id));
             if let Err(e) = r {
                 msg(hwnd, &e, MB_OK | MB_ICONERROR);
@@ -464,6 +603,28 @@ unsafe fn update_caption() {
     );
     DrawMenuBar(h);
 }
+unsafe fn select_grid_cell(row: usize, col: Option<usize>) {
+    let next = STATE.with(|s| {
+        crate::grid_selection_event(
+            s.borrow().as_ref().unwrap().app.selected_cell(),
+            Some(row),
+            col,
+            REFRESHING.with(|x| x.get()),
+        )
+    });
+    if let Some((row, col)) = next {
+        STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.select_cell(row, col));
+        let (edit, text) = STATE.with(|s| {
+            let s = s.borrow();
+            let s = s.as_ref().unwrap();
+            (s.edit, s.app.text())
+        });
+        let previous = REFRESHING.with(|x| x.replace(true));
+        SetWindowTextW(edit, wide(&text).as_ptr());
+        REFRESHING.with(|x| x.set(previous));
+        update_caption();
+    }
+}
 unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match m {
         WM_COMMAND => {
@@ -473,27 +634,22 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
         WM_NOTIFY => {
             if !REFRESHING.with(|x| x.get()) && !l.eq(&0) {
                 let header = &*(l as *const NMHDR);
-                if header.idFrom == TABLE && header.code == NM_CLICK {
-                    let n = &*(l as *const NMITEMACTIVATE);
-                    if n.iItem < 0 || n.iSubItem < 0 {
-                        return 0;
+                if header.idFrom == TABLE {
+                    if header.code == NM_CLICK {
+                        let n = &*(l as *const NMITEMACTIVATE);
+                        if n.iItem >= 0 && n.iSubItem >= 0 {
+                            select_grid_cell(n.iItem as usize, Some(n.iSubItem as usize));
+                        }
+                    } else if header.code == LVN_ITEMCHANGED {
+                        let n = &*(l as *const NMLISTVIEW);
+                        if n.iItem >= 0
+                            && n.uChanged & LVIF_STATE != 0
+                            && n.uNewState & LVIS_SELECTED != 0
+                            && n.uOldState & LVIS_SELECTED == 0
+                        {
+                            select_grid_cell(n.iItem as usize, None);
+                        }
                     }
-                    STATE.with(|s| {
-                        s.borrow_mut()
-                            .as_mut()
-                            .unwrap()
-                            .app
-                            .select_cell(n.iItem as usize, n.iSubItem as usize)
-                    });
-                    let (edit, text) = STATE.with(|s| {
-                        let s = s.borrow();
-                        let s = s.as_ref().unwrap();
-                        (s.edit, s.app.text())
-                    });
-                    REFRESHING.with(|x| x.set(true));
-                    SetWindowTextW(edit, wide(&text).as_ptr());
-                    REFRESHING.with(|x| x.set(false));
-                    update_caption();
                 }
             }
             0
@@ -561,13 +717,23 @@ pub fn run(app: Box<dyn App>) {
         RegisterClassW(&cc);
         let bar = CreateMenu();
         let file = CreatePopupMenu();
+        if app.supports_new() {
+            item(file, NEW, "&New\tCtrl+N");
+        }
         item(file, OPEN, "&Open...\tCtrl+O");
         item(file, SAVE, "Save &As...\tCtrl+Shift+S");
+        for a in app.file_actions() {
+            item(file, a.id, a.title);
+        }
         item(file, EXIT, "E&xit");
         AppendMenuW(bar, MF_POPUP, file as usize, wide("&File").as_ptr());
         let editmenu = CreatePopupMenu();
         item(editmenu, UNDO, "&Undo\tCtrl+Z");
         item(editmenu, REDO, "&Redo\tCtrl+Y");
+        if app.supports_find_replace() {
+            item(editmenu, FIND, "&Find...\tCtrl+F");
+            item(editmenu, REPLACE, "&Replace All...\tCtrl+H");
+        }
         for &(id, t) in app.actions() {
             item(editmenu, id, t)
         }
@@ -593,6 +759,7 @@ pub fn run(app: Box<dyn App>) {
                 canvas: null_mut(),
                 status: null_mut(),
                 menu: bar,
+                grid_cache: None,
             })
         });
         let h = CreateWindowExW(
@@ -621,7 +788,7 @@ pub fn run(app: Box<dyn App>) {
             WS_EX_CLIENTEDGE,
             wide("SysListView32").as_ptr(),
             null(),
-            WS_CHILD | WS_TABSTOP | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+            WS_CHILD | WS_TABSTOP | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
             0,
             0,
             0,
@@ -709,6 +876,21 @@ pub fn run(app: Box<dyn App>) {
             s.status = status
         });
         let acc = [
+            ACCEL {
+                fVirt: FVIRTKEY | FCONTROL,
+                key: b'N' as u16,
+                cmd: NEW,
+            },
+            ACCEL {
+                fVirt: FVIRTKEY | FCONTROL,
+                key: b'F' as u16,
+                cmd: FIND,
+            },
+            ACCEL {
+                fVirt: FVIRTKEY | FCONTROL,
+                key: b'H' as u16,
+                cmd: REPLACE,
+            },
             ACCEL {
                 fVirt: FVIRTKEY | FCONTROL,
                 key: b'O' as u16,
@@ -811,6 +993,70 @@ unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> 
     }
     EndPaint(h, &ps);
     0
+}
+
+unsafe fn update_table(table: HWND, rows: Option<&[Vec<String>]>) {
+    let Some(rows) = rows else {
+        STATE.with(|s| s.borrow_mut().as_mut().unwrap().grid_cache = None);
+        return;
+    };
+    let (transition, selected) = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut().unwrap();
+        let selected = s.app.selected_cell();
+        let transition = crate::grid_transition(s.grid_cache.as_deref(), rows, selected);
+        s.grid_cache = Some(rows.to_vec());
+        (transition, selected)
+    });
+    let was_refreshing = REFRESHING.with(|x| x.replace(true));
+    match transition {
+        crate::GridTransition::Rebuild { selection } => {
+            populate_table(table, rows);
+            if let Some((row, col)) = selection {
+                if Some((row, col)) != selected {
+                    STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.select_cell(row, col));
+                }
+            }
+        }
+        crate::GridTransition::Update { cells } => {
+            for (row, col) in cells {
+                let mut text = wide(&rows[row][col]);
+                let item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: row as i32,
+                    iSubItem: col as i32,
+                    pszText: text.as_mut_ptr(),
+                    ..zeroed()
+                };
+                SendMessageW(table, LVM_SETITEMTEXTW, row, &item as *const _ as isize);
+            }
+        }
+    }
+    let selected = STATE.with(|s| s.borrow().as_ref().unwrap().app.selected_cell());
+    let actual = SendMessageW(table, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    if let Some((row, _)) = selected {
+        if actual != row as isize {
+            let clear = LVITEMW {
+                stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+                state: 0,
+                ..zeroed()
+            };
+            SendMessageW(
+                table,
+                LVM_SETITEMSTATE,
+                usize::MAX,
+                &clear as *const _ as isize,
+            );
+            let item = LVITEMW {
+                stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+                state: LVIS_SELECTED | LVIS_FOCUSED,
+                ..zeroed()
+            };
+            SendMessageW(table, LVM_SETITEMSTATE, row, &item as *const _ as isize);
+            SendMessageW(table, LVM_ENSUREVISIBLE, row, 0);
+        }
+    }
+    REFRESHING.with(|x| x.set(was_refreshing));
 }
 
 unsafe fn populate_table(table: HWND, rows: &[Vec<String>]) {

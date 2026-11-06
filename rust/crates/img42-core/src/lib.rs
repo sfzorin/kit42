@@ -192,6 +192,37 @@ impl ImageDocument {
         }
         Ok(())
     }
+    pub fn flip_horizontal(&mut self) -> Result<(), Error> {
+        self.rotate(2)
+    }
+    pub fn flip_vertical(&mut self) -> Result<(), Error> {
+        self.rotate(4)
+    }
+    /// Resize using nearest-neighbour sampling, preserving straight RGBA samples.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Error> {
+        if width == 0 || height == 0 {
+            return Err(Error::InvalidImage);
+        }
+        if width > MAX_DIMENSION
+            || height > MAX_DIMENSION
+            || u64::from(width) * u64::from(height) > MAX_PIXELS
+        {
+            return Err(Error::TooLarge);
+        }
+        if (width, height) == (self.width(), self.height()) {
+            return Ok(());
+        }
+        let image = image::RgbaImage::from_raw(self.width(), self.height(), self.pixels().to_vec())
+            .ok_or(Error::InvalidImage)?;
+        let pixels =
+            image::imageops::resize(&image, width, height, image::imageops::FilterType::Nearest)
+                .into_raw();
+        let next = Raster::new(width, height, pixels)?;
+        Self::push(&mut self.undo, self.current.clone());
+        self.current = next;
+        self.redo.clear();
+        Ok(())
+    }
     pub fn rotate_cw(&mut self) -> Result<(), Error> {
         self.rotate(6)
     }
@@ -355,6 +386,36 @@ mod tests {
             .save_as_png(&dir.path().join("missing").join("out.png"))
             .is_err());
         assert!(d.is_dirty());
+    }
+    #[test]
+    fn flips_resize_history_and_saved_pixels() {
+        let mut d = document();
+        d.flip_horizontal().unwrap();
+        assert_eq!(values(&d.current), vec![3, 2, 1, 6, 5, 4]);
+        d.flip_vertical().unwrap();
+        assert_eq!(values(&d.current), vec![6, 5, 4, 3, 2, 1]);
+        assert!(d.undo());
+        assert_eq!(values(&d.current), vec![3, 2, 1, 6, 5, 4]);
+        assert!(d.redo());
+        d.resize(2, 1).unwrap();
+        assert_eq!((d.width(), d.height()), (2, 1));
+        let pixels = d.pixels().to_vec();
+        assert!(d.resize(0, 1).is_err());
+        assert!(d.resize(16385, 1).is_err());
+        assert_eq!(d.pixels(), pixels);
+        let path = tempfile::tempdir().unwrap();
+        let output = path.path().join("out.png");
+        d.save_as_png(&output).unwrap();
+        let opened = ImageDocument::open(&output).unwrap();
+        assert_eq!(opened.pixels(), pixels);
+        assert!(!d.is_dirty());
+        assert!(d.undo());
+        assert!(d.is_dirty());
+        assert!(d.redo());
+        assert!(!d.is_dirty());
+        d.undo();
+        d.flip_vertical().unwrap();
+        assert!(!d.can_redo());
     }
     #[test]
     fn jpeg_exif_orientation_is_applied_at_open() {
