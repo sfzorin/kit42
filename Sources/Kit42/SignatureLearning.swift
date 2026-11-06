@@ -4,7 +4,9 @@ import AppKit
 /// as for a scan or a sketch).
 public struct SignatureSample: Codable {
     public var strokes: [[[Double]]]
-    public init(strokes: [[[Double]]]) { self.strokes = strokes }
+    /// Line width as a share of the signature's height, measured on a picture (nil when drawn on the pad).
+    public var penWidth: Double?
+    public init(strokes: [[[Double]]], penWidth: Double? = nil) { self.strokes = strokes; self.penWidth = penWidth }
     public var isTimed: Bool { strokes.first?.first.map { $0.count > 2 && $0[2] >= 0 } ?? false }
 }
 
@@ -122,8 +124,11 @@ enum SignatureLearning {
         hand.cornerOverlap = 0.3
         hand.sizeScaled = false
         hand.curvatureGain = 0.4
+        // The line width of the user's own pen when it was measured on a picture.
+        let widths = learned.samples.compactMap(\.penWidth)
+        let penRatio = widths.isEmpty ? 0.024 : CGFloat(min(0.06, max(0.012, widths.reduce(0, +) / Double(widths.count))))
         // A learned hand varies less than an invented one: the samples already carry its natural spread.
-        return SignatureGenerator.draw(strokes: viaStrokes, hand: hand, slant: 0, penRatio: 0.024, pen: pen, ink: ink,
+        return SignatureGenerator.draw(strokes: viaStrokes, hand: hand, slant: 0, penRatio: penRatio, pen: pen, ink: ink,
                                        pixelHeight: pixelHeight, copy: &copy, variation: samples.count > 1 ? 0.6 : 0.85,
                                        durations: anyTimed ? durations : nil, capture: capture)
     }
@@ -141,8 +146,8 @@ enum SignatureLearning {
 
     /// Traces a picture of a signature into strokes (no timing). Dark or opaque pixels are ink.
     static func trace(_ image: CGImage) -> SignatureSample? {
-        // Work at about 260 px height.
-        let k = min(1, 260 / CGFloat(max(1, image.height)), 1200 / CGFloat(max(1, image.width)))
+        // Work at about 360 px height: small letters inside a large signature keep a few pixels of their own.
+        let k = min(1, 360 / CGFloat(max(1, image.height)), 1600 / CGFloat(max(1, image.width)))
         let w = max(8, Int(CGFloat(image.width) * k)), h = max(8, Int(CGFloat(image.height) * k))
         guard let ctx = InkDraw.context(w, h), let data = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         ctx.setFillColor(.white)
@@ -154,14 +159,19 @@ enum SignatureLearning {
         for i in 0..<(w * h) { lum[i] = (Int(data[i * 4]) * 3 + Int(data[i * 4 + 1]) * 6 + Int(data[i * 4 + 2])) / 10 }
         let paper = lum.sorted()[Int(Double(lum.count) * 0.6)]
         for i in 0..<(w * h) where lum[i] < paper - 60 { m[i] = 1 }
+        let inkArea = m.reduce(0) { $0 + Int($1) }
         thin(&m, w, h)
-        // Short pieces are spurs where lines cross, not strokes.
-        let paths = tracePaths(m, w, h).filter { $0.count >= 14 }
+        let centreLine = max(1, m.reduce(0) { $0 + Int($1) })
+        // Short pieces are spurs where lines cross, not strokes (about a line width and a half).
+        let width = Double(inkArea) / Double(centreLine)
+        let paths = tracePaths(m, w, h).filter { Double($0.count) >= max(8, width * 1.6) }
         guard !paths.isEmpty else { return nil }
+        let ys = paths.flatMap { $0.map(\.1) }
+        let height = max(1, (ys.max() ?? 1) - (ys.min() ?? 0))
         // Rows in memory run top-down: flip to y up. Order strokes left to right by their start.
         let strokes = paths.map { $0.map { [$0.0, Double(h - 1) - $0.1, -1, -1] } }
             .sorted { ($0.first?[0] ?? 0) < ($1.first?[0] ?? 0) }
-        return SignatureSample(strokes: strokes)
+        return SignatureSample(strokes: strokes, penWidth: width / height)
     }
 
     /// Zhang–Suen thinning to one-pixel centre lines.

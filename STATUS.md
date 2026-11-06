@@ -44,3 +44,27 @@ is noise; it reads Latin full names best and Cyrillic signatures poorly. Not don
   Undo, so the shared check asserts restored pixels only.
 - Not run: `audit-scans-cli.py` (no import/export code changed). Not checked: clicking an item inside the library
   popover (the audit calls the same placement entry its callback uses) and visual review of the placement bar.
+
+## Signatures: ink, diacritics, legibility decay, rise, learned pen width, blind test — 2026-11-06
+
+- Ink: ballpoint line about 30 % wider (0.026–0.034 of cap height), denser (smaller speed fade, shorter lift fade,
+  full-width touch-down, rarer and shorter skips, weaker pressure/paper texture), wider and darker downstrokes for
+  ballpoint and gel; per-copy ink shade no longer lightens by more than 2 %.
+- Letters: breve of й/ğ and two dots (or a dash) of ё/ö/ü as delayed strokes (styles with `dots == 0` omit them);
+  later letters of a word get smaller, flatter and lose interior turns; baselines climb 2–8° in about 7 of 8 styles
+  (one random draw, so saved design seeds keep their other parameters — the styles on the sample page look as before);
+  copy variation moved from letter shapes (narrower ranges) to layout (rise ±0.025 per copy, run-out 0.6–1.4);
+  strike-through flourish limited to the foot of the capital (through its middle З read as Б).
+- Learning from pictures: tracing at 360 px instead of 260, spur filter relative to line width (min 8 px instead of
+  14), measured line width (ink area ÷ centre line) stored in the sample and used as the copies' pen width.
+- New `--signature-blindtest` / `--signature-blindtest-score` (sheet with equalised grey ink and darkness, key, d′).
+- Checked on the commit tree (`.build/debug/PDF42`, SHA-256 `8979378e1c80600007a924a4b1cc16bf85e30b8d2f6247b84ddc594810e0fa4c`):
+  `--selftest` 57/57; `--signature-bench 6 4 --check` passed — hesitation 7.1 % (before 7.9 %), wobble 0.34 px (0.35),
+  intra 0.065 (0.066), inter 0.390 (0.381), Vision 32 % (39 %; ±10 points is noise at this sample size);
+  `audit-ui.py --mode tests --app PDF42 --binary …` mark-samples, mark-signature, mark-seal, mark-learn 4/4.
+  Blind test mechanics: sheet, key and scoring (all correct → 100 %, d′ 2.80; inverted → 0 %).
+- Not established: realism for people. The blind test was run only with generated stand-ins for "real" pictures;
+  a real test needs the owner's own signatures and several testers. Its first run showed that copies learned from a
+  picture lose small letters inside a large loop (Yılmaz → Y, i, l and a line) — improved by the finer tracing, not
+  solved. Visual review of the sample page only; other apps (DOC42, IMG42, PPT42, XLS42, SCN42) use the same Kit42
+  renderer but their own UI audits were not re-run.

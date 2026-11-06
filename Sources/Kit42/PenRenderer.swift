@@ -50,17 +50,18 @@ enum PenRenderer {
                 let v = min(1, max(0, (s.speed - lo) / (hi - lo)))
                 let t = lengths[i] / max(1, length)
                 // Pen lands and lifts while moving: thin, faint ends (about one pen width per 1 % of the stroke).
-                let land = min(1, t / 0.05), lift = min(1, (1 - t) / 0.12)
+                let land = min(1, t / 0.04), lift = min(1, (1 - t) / 0.08)
                 let touch = min(land, lift)
                 let down = max(0, -sin(s.direction))            // moving down the page: more pressure
                 var wd: CGFloat, a: CGFloat
                 switch type {
+                // Downstrokes are pressed harder (wider, darker); fast upstrokes and joins are lighter.
                 case .ballpoint:
-                    wd = pen * (1.06 - 0.22 * v + 0.08 * down)
-                    a = 1.0 - 0.18 * v + 0.1 * down
+                    wd = pen * (1.0 - 0.16 * v + 0.2 * down)
+                    a = 1.0 - 0.1 * v + 0.1 * down
                 case .gel:
-                    wd = pen * 1.25 * (1.03 - 0.08 * v)
-                    a = 1.0 - 0.08 * v
+                    wd = pen * 1.25 * (1.0 - 0.08 * v + 0.1 * down)
+                    a = 1.0 - 0.06 * v
                 case .fountain:
                     let across = abs(sin(s.direction - nib))
                     wd = pen * (0.25 + 2.6 * across)
@@ -69,8 +70,11 @@ enum PenRenderer {
                     wd = pen * 3.0
                     a = 0.82 - 0.35 * v
                 }
-                width.append(wd * (0.28 + 0.72 * touch))
-                alpha.append(min(1, max(0.1, a - 0.45 * (1 - touch))))
+                // Touch-down: the pen lands pressing, so the first few pixels are full width (with the landing blob);
+                // the lift tapers.
+                let taper = t < 0.5 ? 0.75 + 0.25 * land : 0.3 + 0.7 * lift
+                width.append(wd * taper)
+                alpha.append(min(1, max(0.15, a - 0.3 * (1 - touch))))
             }
             let ribbon = InkDraw.taperedStroke(pts) { t in width[min(n - 1, Int((t * CGFloat(n - 1)).rounded()))] }
             guard let layer = InkDraw.context(w, h) else { continue }
@@ -87,7 +91,7 @@ enum PenRenderer {
                 if type == .ballpoint || type == .felt {
                     let v = min(1, max(0, (path[i].speed - lo) / (hi - lo)))
                     // Skips: short dropouts on the fastest parts.
-                    if skipLeft <= 0, v > 0.8, skip.chance(type == .ballpoint ? 0.004 : 0.003) { skipLeft = skip.range(1.5...4) }
+                    if skipLeft <= 0, v > 0.85, skip.chance(type == .ballpoint ? 0.002 : 0.003) { skipLeft = skip.range(1...2.5) }
                     if skipLeft > 0 { a *= type == .ballpoint ? 0.4 : 0.6; skipLeft -= lengths[i] - lengths[i - 1] }
                 }
                 layer.setStrokeColor(ink.withAlphaComponent(a).cgColor)
@@ -127,12 +131,13 @@ enum PenRenderer {
         guard let image = out.makeImage() else { return nil }
         var texture: InkTexture.Strength
         switch type {
-        case .ballpoint: texture = .init(pressure: rng.range(0.06...0.14), gaps: rng.range(0.01...0.03), bleed: 0.3, alongX: rng.range(0.04...0.1))
+        // Ballpoint ink is dense: grain and fibres show only at the edges of the line, not as faded stretches.
+        case .ballpoint: texture = .init(pressure: rng.range(0.03...0.07), gaps: rng.range(0.004...0.012), bleed: 0.3, alongX: rng.range(0.02...0.05))
         case .gel: texture = .init(pressure: 0.04, gaps: 0.004, bleed: 0.35, alongX: 0.03)
         case .fountain: texture = .init(pressure: 0.08, gaps: 0.006, bleed: 0.55, alongX: 0.05)
         case .felt: texture = .init(pressure: 0.12, gaps: 0.02, bleed: 0.9, alongX: 0.08)
         }
-        texture.paper = rng.range(0.12...0.22)
+        texture.paper = type == .ballpoint || type == .gel ? rng.range(0.04...0.08) : rng.range(0.1...0.18)
         return InkDraw.trim(InkTexture.apply(image, seed: rng.next(), strength: texture))
     }
 

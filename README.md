@@ -760,18 +760,29 @@ right. Every scan adds pages to the document; save them as one searchable PDF wh
   initials and a scribble, capital and a scribble, or any — and three styles out of 1320 (plan × flourish × capital variant × how
   the initial joins), New Variants (⌘R) for three more, and a pen: ballpoint, gel, fountain or felt-tip.
   Signatures are written by a model of a fast hand: hand-drawn centre lines for Latin, Cyrillic and Turkish letters
-  with alternative forms of many lowercase letters, i-dots and t-bars added after the word, a smooth line through the
-  letters, and the pen's speed along it from the sigma-lognormal model of rapid movements. Speed and direction set
-  the ink: for a ballpoint, more ink on downstrokes, blobs where the pen is slow, skips where it is fast and fine
-  striations; for a fountain pen, width follows the stroke angle; paper fibres under every pen.
+  with alternative forms of many lowercase letters, a smooth line through the letters, and the pen's speed along it
+  from the sigma-lognormal model of rapid movements. Delayed strokes come after the word as real writers add them:
+  i-dots, t-bars, the breve of й and ğ, the two dots (or one dash) of ё, ö, ü — some styles leave them out. Letters
+  get smaller, flatter and simpler towards the end of a word; most styles climb 2–8°, about one in eight runs level.
+  Between copies the letter shapes stay close while the layout varies (how far the line climbs, run-out and flourish
+  length). A strike-through flourish crosses only the foot of the capital. Speed and direction set the ink: a dense
+  ballpoint line, wider and darker on downstrokes, a full-width touch-down and a tapering lift, rare short skips at
+  the fastest parts, blobs where the pen is slow and fine striations; for a fountain pen, width follows the stroke
+  angle; paper fibres under every pen.
   **My Signature…** learns your own signature: sign in the box a few times (trackpad or mouse, recorded with time and
   pressure), open a scan or photo, or take a sketch or photo from an iPhone or iPad (Continuity). New copies combine
   compatible samples with small variations in movement and ink. Pad input supplies stroke timing; pictures supply
-  traced shapes with modelled timing. Samples and the chosen pen are stored locally in the library recipe.
+  traced shapes with modelled timing, and their measured line width (ink area ÷ centre-line length) becomes the
+  pen width of the copies. Samples and the chosen pen are stored locally in the library recipe.
   `PDF42 --signature-bench DIR [designs copies] [--check]` measures the generator with metrics from handwriting
   research — normalized jerk, velocity peaks, hesitation (near-stops), line wobble, DTW distance between copies and
   between styles, and whether Vision reads legible forms — against fluent, laboured and shaky reference trajectories;
   `--check` exits 1 when timing, wobble or variability leave the recorded thresholds.
+  `PDF42 --signature-blindtest REAL_DIR OUT_DIR [copies]` prepares a blind test for people: each real signature
+  picture in REAL_DIR (your own, or with the owner's consent) is learned and generated `copies` times, and real and
+  generated are shuffled into numbered cells of `sheet.pdf` with the same grey ink, size and darkness; `key.json`
+  keeps the answers. `PDF42 --signature-blindtest-score key.json answers.txt` scores the numbers a tester marked as
+  generated: accuracy, hits, false alarms and d′ (0 = indistinguishable).
   **Create Stamp…**: 132 stamp and seal styles in 15 categories (Russia and CIS, Europe, UK and Ireland, Turkey,
   USA and Canada, Hong Kong and Taiwan — including the company chop with a signature line and the small round
   chop —, mainland China, Japan, Korea, India, Middle East, Latin America, office stamps, date and registration

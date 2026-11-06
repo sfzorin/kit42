@@ -198,10 +198,16 @@ enum PenAlphabet {
         return forms[abs(variant) % forms.count]
     }
 
-    /// Letters with a dot or crossbar added after the word (delayed strokes): i, j, ё, ї, t, f.
-    static func mark(_ c: Character) -> (dot: Bool, bar: Bool) {
+    /// Marks added after the word (delayed strokes, written once the pen has left the line).
+    enum Mark { case none, dot, twoDots, breve, bar }
+
+    static func mark(_ c: Character) -> Mark {
         let low = Character(String(c).lowercased())
-        return ("ijёїi̇".contains(low), "tf".contains(low))
+        if "ij".contains(low) { return .dot }
+        if "ёїöü".contains(low) { return .twoDots }
+        if "йğ".contains(low) { return .breve }
+        if "tf".contains(low) { return .bar }
+        return .none
     }
 
     static func isTall(_ c: Character) -> Bool { "bdfhklt".contains(c) || "бвф".contains(c) }

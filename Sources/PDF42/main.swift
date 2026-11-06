@@ -23,6 +23,17 @@ if args.count >= 3, args[1] == "--mark-overlay" {
     try MarkOverlayDemo.write(to: URL(fileURLWithPath: args[2]))
     exit(0)
 }
+// PDF42 --signature-blindtest REAL_DIR OUT_DIR [copies]: real and generated signatures shuffled on a sheet, with a key.
+// PDF42 --signature-blindtest-score key.json answers.txt: how well testers told them apart.
+if args.count >= 4, args[1] == "--signature-blindtest" {
+    print(try SignatureBlindTest.make(real: URL(fileURLWithPath: args[2]), to: URL(fileURLWithPath: args[3]),
+                                      copies: args.count > 4 ? Int(args[4]) ?? 2 : 2))
+    exit(0)
+}
+if args.count >= 4, args[1] == "--signature-blindtest-score" {
+    print(try SignatureBlindTest.score(key: URL(fileURLWithPath: args[2]), answers: URL(fileURLWithPath: args[3])))
+    exit(0)
+}
 // PDF42 --signature-bench DIR [designs copies]: fluency, tremor, variability and legibility of generated signatures.
 if args.count >= 3, args[1] == "--signature-bench" {
     let numbers = args.dropFirst(3).compactMap { Int($0) }

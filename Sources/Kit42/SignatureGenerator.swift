@@ -97,9 +97,9 @@ public enum SignatureGenerator {
                       capital: (index / joins) % capitalVariants,
                       slant: r.range(0.12...0.6), xh: r.range(0.26...0.46), initialScale: r.range(0.7...1.0),
                       capW: r.range(0.6...1.0), letterW: r.range(0.95...1.4), decay: r.range(0.62...0.9),
-                      legibleDecay: r.range(0.9...1.0), garland: r.chance(0.5), loops: r.chance(0.6),
-                      rise: r.range(-0.03...0.09), entry: r.chance(0.35), exitLength: r.range(0.15...0.6),
-                      exitLift: r.range(-0.2...0.9), pen: r.range(0.018...0.026), keep: Int(r.range(3...7.9)),
+                      legibleDecay: r.range(0.88...0.98), garland: r.chance(0.5), loops: r.chance(0.6),
+                      rise: rising(r.range(0...1)), entry: r.chance(0.35), exitLength: r.range(0.15...0.6),
+                      exitLift: r.range(-0.2...0.9), pen: r.range(0.026...0.034), keep: Int(r.range(3...7.9)),
                       legible: Int(r.range(1...3.9)),
                       waveH: (0..<12).map { _ in r.range(0.75...1.25) }, waveW: (0..<12).map { _ in r.range(0.8...1.25) })
         s.allographs = r.next()
@@ -108,6 +108,12 @@ public enum SignatureGenerator {
         if arche == .monogram, s.flourish == 0 { s.flourish = 4 }
         if arche == .enclosed { s.flourish = 99 }   // loop around the whole signature
         return s
+    }
+
+    /// Most signatures climb 2–8°; about one in eight runs level. One random draw, so the design seeds of saved
+    /// styles keep all their other parameters.
+    private static func rising(_ u: CGFloat) -> CGFloat {
+        u < 0.12 ? -0.02 + u / 0.12 * 0.05 : 0.035 + (u - 0.12) / 0.88 * 0.105
     }
 
     /// The pen paths (cap-height units) for a name in a style.
@@ -119,7 +125,10 @@ public enum SignatureGenerator {
         var current: [CGPoint] = []
         var x: CGFloat = 0
         var capitalBox = CGRect.null
-        func baseline(_ x: CGFloat) -> CGFloat { s.rise * x }
+        // What varies between one person's signatures is mostly the layout — how far the line climbs, how long the
+        // run-out and flourish are — while letter shapes stay put.
+        let rise = s.rise + copy.range(-0.025...0.025)
+        func baseline(_ x: CGFloat) -> CGFloat { rise * x }
 
         func capital(_ c: Character, scale baseScale: CGFloat) {
             var parts = PenAlphabet.capital(c)
@@ -130,9 +139,9 @@ public enum SignatureGenerator {
                 parts = parts.map { $0.map { CGPoint(x: $0.x * 1.08, y: $0.y > 0.55 ? 0.55 + ($0.y - 0.55) * 1.35 : $0.y) } }
             default: break
             }
-            let scale = baseScale * copy.range(0.93...1.07)
-            let width = s.capW * scale * copy.range(0.94...1.06)
-            let dx = copy.range(-0.04...0.04), dy = copy.range(-0.04...0.04)
+            let scale = baseScale * copy.range(0.96...1.04)
+            let width = s.capW * scale * copy.range(0.96...1.04)
+            let dx = copy.range(-0.03...0.03), dy = copy.range(-0.03...0.03)
             for (i, part) in parts.enumerated() {
                 var pts = part.map { CGPoint(x: x + dx + $0.x * width, y: baseline(x) + dy + $0.y * scale) }
                 if i == 0, s.capital == 1, let first = pts.first, current.isEmpty {
@@ -149,37 +158,64 @@ public enum SignatureGenerator {
         }
         func flush() { if current.count > 1 { strokes.append(current) }; current = [] }
         // Delayed strokes (i dots, t bars), written after the word as real writers do.
-        var marks: [(x: CGFloat, y: CGFloat, dot: Bool)] = []
+        var marks: [(x: CGFloat, y: CGFloat, kind: PenAlphabet.Mark)] = []
         var delayed: [[CGPoint]] = []   // added after everything else, so the flourish still follows the main stroke
-        func lower(_ c: Character, amp: CGFloat) {
+        /// `fade` (0…1): how far into the word — later letters are written faster, smaller and simpler.
+        func lower(_ c: Character, amp: CGFloat, fade: CGFloat = 0) {
             var h = s.allographs ^ UInt64(c.unicodeScalars.first?.value ?? 0) &* 0x9E37_79B9_7F4A_7C15
             h ^= h >> 29
-            guard let (w, pts) = PenAlphabet.lower(c, variant: Int(h % 7)) else { wave(0, amp: amp); return }
-            let width = w * s.xh * s.letterW * copy.range(0.88...1.12)
-            let a = amp * copy.range(0.9...1.1), dy = copy.range(-0.025...0.025)
-            current += pts.map { CGPoint(x: x + $0.x * width, y: baseline(x) + dy + $0.y * s.xh * a) }
+            guard let (w, raw) = PenAlphabet.lower(c, variant: Int(h % 7)) else { wave(0, amp: amp); return }
+            var pts = raw
+            if fade > 0.45, pts.count > 4 {
+                // Interior turns dropped: the letter becomes a quicker arc between its ends.
+                pts = pts.enumerated().filter { $0.offset == 0 || $0.offset == pts.count - 1 || $0.offset % 2 == 0 }.map(\.element)
+            }
+            let flatten = 1 - 0.3 * fade
+            let width = w * s.xh * s.letterW * (1 - 0.12 * fade) * copy.range(0.95...1.05)
+            let a = amp * copy.range(0.95...1.05), dy = copy.range(-0.015...0.015)
+            current += pts.map { CGPoint(x: x + $0.x * width, y: baseline(x) + dy + (0.5 + ($0.y - 0.5) * flatten) * s.xh * a) }
             let m = PenAlphabet.mark(c)
-            if m.dot { marks.append((x + width * 0.45, baseline(x) + s.xh * a * 1.55, true)) }
-            if m.bar { marks.append((x + width * 0.45, baseline(x) + s.xh * a * 1.25, false)) }
+            switch m {
+            case .none: break
+            case .bar: marks.append((x + width * 0.45, baseline(x) + s.xh * a * 1.25, m))
+            default: marks.append((x + width * 0.45, baseline(x) + s.xh * a * 1.5, m))
+            }
             x += width
         }
         func addMarks() {
             for m in marks {
-                if m.dot, s.dots > 0 {
+                // Dots, breves and diaeresis are placed carelessly (a little right of the letter, drifting with the
+                // copy); some writers drop them altogether (dots == 0).
+                let jx = copy.range(-0.03...0.06), jy = copy.range(-0.03...0.03)
+                switch m.kind {
+                case .dot where s.dots > 0:
                     let len: CGFloat = s.dots == 1 ? 0.03 : 0.1
-                    delayed.append([CGPoint(x: m.x + copy.range(-0.03...0.05), y: m.y + copy.range(-0.03...0.03)),
-                                    CGPoint(x: m.x + len + copy.range(0...0.03), y: m.y + 0.015 + copy.range(-0.01...0.02))])
-                } else if !m.dot, s.bars > 0 {
+                    delayed.append([CGPoint(x: m.x + jx, y: m.y + jy),
+                                    CGPoint(x: m.x + jx + len + copy.range(0...0.03), y: m.y + jy + 0.015 + copy.range(-0.01...0.02))])
+                case .twoDots where s.dots > 0:
+                    if s.dots == 2 {   // written as one short dash
+                        delayed.append([CGPoint(x: m.x - 0.05 + jx, y: m.y + jy), CGPoint(x: m.x + 0.1 + jx, y: m.y + jy + 0.02)])
+                    } else {
+                        for dx in [-0.045, 0.055] as [CGFloat] {
+                            delayed.append([CGPoint(x: m.x + dx + jx, y: m.y + jy), CGPoint(x: m.x + dx + jx + 0.03, y: m.y + jy + 0.012)])
+                        }
+                    }
+                case .breve where s.dots > 0:
+                    let w = copy.range(0.11...0.15), d = copy.range(0.04...0.07)
+                    delayed.append([CGPoint(x: m.x - w / 2 + jx, y: m.y + 0.05 + jy), CGPoint(x: m.x - w * 0.15 + jx, y: m.y - d + jy),
+                                    CGPoint(x: m.x + w * 0.2 + jx, y: m.y - d * 0.8 + jy), CGPoint(x: m.x + w / 2 + jx, y: m.y + 0.06 + jy)])
+                case .bar where s.bars > 0:
                     let len: CGFloat = s.bars == 1 ? 0.25 : 0.6
                     delayed.append([CGPoint(x: m.x - 0.12 + copy.range(-0.04...0.04), y: m.y + copy.range(-0.04...0.02)),
                                     CGPoint(x: m.x - 0.12 + len * copy.range(0.85...1.15), y: m.y + copy.range(0.0...0.08))])
+                default: break
                 }
             }
             marks = []
         }
         func wave(_ i: Int, amp: CGFloat, tall: Bool = false) {
-            let width = s.xh * s.letterW * 0.9 * s.waveW[i % 12] * copy.range(0.86...1.14)
-            let h = s.xh * amp * s.waveH[i % 12] * (tall && s.loops ? 2.0 : 1) * copy.range(0.82...1.18)
+            let width = s.xh * s.letterW * 0.9 * s.waveW[i % 12] * copy.range(0.92...1.08)
+            let h = s.xh * amp * s.waveH[i % 12] * (tall && s.loops ? 2.0 : 1) * copy.range(0.9...1.1)
             let b = baseline(x)
             if s.garland {
                 current += [CGPoint(x: x + width * 0.3, y: b), CGPoint(x: x + width * 0.75, y: b + h)]
@@ -198,7 +234,12 @@ public enum SignatureGenerator {
             let rest = Array(w.dropFirst())
             var amp: CGFloat = 1
             let n = legible ?? rest.count
-            for c in rest.prefix(n) { lower(c, amp: amp); amp *= s.legibleDecay }
+            // Legibility falls along the word: the first letters are written out, the last ones run together.
+            for (i, c) in rest.prefix(n).enumerated() {
+                let fade = rest.count > 2 ? CGFloat(i) / CGFloat(rest.count - 1) : 0
+                lower(c, amp: amp, fade: fade * fade)
+                amp *= s.legibleDecay
+            }
             let remaining = Array(rest.dropFirst(n))
             let garland = garlandCount ?? min(remaining.count, s.keep)
             for i in 0..<garland {
@@ -216,7 +257,7 @@ public enum SignatureGenerator {
             }
         }
         func exit() {
-            let length = s.exitLength * copy.range(0.7...1.3)
+            let length = s.exitLength * copy.range(0.6...1.4)
             current.append(CGPoint(x: x + length, y: baseline(x) + s.xh * (s.exitLift + copy.range(-0.3...0.3))))
             x += length
         }
@@ -270,8 +311,12 @@ public enum SignatureGenerator {
                 return CGPoint(x: c.x + rx * cos(a) + CGFloat(i) * 0.02, y: c.y + ry * sin(a))
             })
         case 5 where !capitalBox.isNull:
-            strokes.append([CGPoint(x: capitalBox.minX - 0.25, y: capitalBox.midY - 0.05), CGPoint(x: (capitalBox.maxX + right) / 2, y: capitalBox.midY + 0.25),
-                            CGPoint(x: right + 0.1, y: capitalBox.midY + 0.2)])
+            // A slash across the foot of the capital only: through its middle it turns З into Б or F into E,
+            // and across the whole name it reads as crossing the name out.
+            let reach = min(right, capitalBox.maxX + 0.25 + capitalBox.width * 0.3)
+            let y = capitalBox.minY + capitalBox.height * 0.22
+            strokes.append([CGPoint(x: capitalBox.minX - 0.2, y: y - 0.06), CGPoint(x: capitalBox.midX, y: y),
+                            CGPoint(x: reach, y: y + 0.1)])
         case 6:
             for k in 0..<2 {
                 let y = low - 0.12 - CGFloat(k) * 0.12, x0 = mid + CGFloat(k) * 0.1
@@ -499,6 +544,6 @@ public enum SignatureGenerator {
         c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
         return NSColor(hue: (h + copy.range(-0.01...0.01) + 1).truncatingRemainder(dividingBy: 1),
                        saturation: min(1, max(0, s * copy.range(0.92...1.08))),
-                       brightness: min(1, max(0, b + copy.range(-0.05...0.05))), alpha: a)
+                       brightness: min(1, max(0, b + copy.range(-0.05...0.02))), alpha: a)
     }
 }
