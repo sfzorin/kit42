@@ -10,9 +10,9 @@
     "home": "Home"
   },
   "home": {
-    "eyebrow": "YOUR FILES. YOUR TOOLS. YOUR RULES.",
-    "title": "Make room for your best work.",
-    "intro": "Meet OFF42. Six focused apps for documents, spreadsheets, presentations, PDFs, images and scans. One open-source office, right on your Mac.",
+    "eyebrow": "FREE · OPEN SOURCE · MADE FOR MAC",
+    "title": "Your whole office. No subscription.",
+    "intro": "OFF42 is six native Mac apps for PDFs, documents, spreadsheets, presentations, images and scans. Free and open source. Your files stay on your Mac, not in someone else's cloud.",
     "primary": "Get OFF42",
     "secondary": "Explore the tools",
     "note": "Free · Open source · macOS 14+ · 20 languages",
@@ -29,8 +29,8 @@
     "openTitle": "An open office, in every sense.",
     "openText": "OFF42 is released under the MIT license. Read the code, build it yourself, report a bug or help make the next version better.",
     "openLink": "Explore on GitHub",
-    "endTitle": "Good work starts with the right tools.",
-    "endText": "Discover your next everyday office.",
+    "endTitle": "Switch the subscriptions off. Keep the office.",
+    "endText": "Free, open source and made for your Mac.",
     "formatsLabel": "OFFICE AND OPEN FORMATS",
     "formatsTitle": "Works with the files you already have.",
     "formatsText": "Open what colleagues send you and save in the format they expect. Complex layouts can look different, so check important files after import.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "WHAT'S IN A NAME",
+    "title": "OFF is for office. And for everything you can switch off.",
+    "officeTitle": "A complete office",
+    "officeText": "Six apps for every file on your desk: PDFs, Word and Excel files, slides, photos and scans.",
+    "offlineTitle": "Works offline",
+    "offlineText": "Core editing runs on your Mac. No account, no uploads, no waiting for a server.",
+    "offTitle": "Subscriptions: off",
+    "offText": "No subscription, no trial period, no ads. MIT-licensed and free, today and tomorrow.",
+    "answerTitle": "And 42?",
+    "answerText": "The answer to the ultimate question of life, the universe and everything. We simply applied it to the office.",
+    "stats": [
+      "apps in one suite",
+      "file formats",
+      "interface languages",
+      "subscriptions",
+      "uploads of your files"
+    ]
+  },
+  "marks": {
+    "label": "SIGNATURES AND STAMPS",
+    "title": "Sign and stamp like on paper. No printer, no scanner.",
+    "text": "OFF42 writes a handwritten signature from a name and presses a company stamp, then puts both right into the document. Each insertion comes out slightly different, like real ink on paper.",
+    "points": [
+      "Signatures in ballpoint, gel, fountain or felt-tip ink",
+      "132 stamp styles: round seals, company stamps, “Paid” and “Received”",
+      "Learns your own signature from a few samples",
+      "Works in PDFs, documents, slides, spreadsheets, images and scans"
+    ],
+    "note": "A drawn signature is not a certificate-based digital signature. When you need one, PDF42 signs with your certificate.",
+    "signedCaption": "A contract signed and stamped in PDF42. Names and companies are fictional."
+  },
+  "show": {
+    "label": "SEE IT AT WORK",
+    "title": "Real apps. Real documents.",
+    "text": "Every picture here is a screenshot of OFF42 on a Mac, with sample documents of fictional companies opened in the apps. No mock-ups."
+  },
   "labels": {
     "learn": "Explore",
     "allFeatures": "All features",
@@ -88,7 +125,8 @@
     "notFound": "This page has moved off the desk.",
     "notFoundText": "Try the homepage or choose a language to keep exploring.",
     "copy": "Copy",
-    "copied": "Copied"
+    "copied": "Copied",
+    "screenshot": "Screenshot on macOS. Sample documents, fictional companies."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub and other linked services have their own privacy policies. Your files are not uploaded by visiting this website."
   },
   "seo": {
-    "homeTitle": "OFF42 — Free Open-Source Office Suite for Mac",
+    "homeTitle": "OFF42 — Free Office Suite for Mac, No Subscription",
     "homeDescription": "Free, open-source office for macOS: PDF editor, DOCX documents, XLSX spreadsheets, PPTX slides, image editor and scanner with OCR. Works offline.",
     "featuresTitle": "Features: PDF, Documents, Spreadsheets, Scans | OFF42",
     "featuresDescription": "Edit and sign PDFs, shrink large files, scan with OCR, write DOCX and work with XLSX and PPTX. See everything the free OFF42 office does on your Mac.",

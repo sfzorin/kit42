@@ -10,9 +10,9 @@
     "home": "Laman utama"
   },
   "home": {
-    "eyebrow": "FAIL ANDA. ALAT ANDA. CARA ANDA.",
-    "title": "Ruang untuk hasil kerja terbaik anda.",
-    "intro": "Kenali OFF42. Enam aplikasi khusus untuk dokumen, hamparan, pembentangan, PDF, imej dan imbasan. Satu pakej pejabat sumber terbuka, terus pada Mac anda.",
+    "eyebrow": "PERCUMA · SUMBER TERBUKA · DIBINA UNTUK MAC",
+    "title": "Seluruh pejabat anda. Tanpa langganan.",
+    "intro": "OFF42 ialah enam aplikasi Mac asli untuk PDF, dokumen, hamparan, pembentangan, imej dan imbasan. Percuma dan sumber terbuka. Fail anda kekal pada Mac anda, bukan dalam awan orang lain.",
     "primary": "Dapatkan OFF42",
     "secondary": "Terokai alatnya",
     "note": "Percuma · Sumber terbuka · macOS 14+ · 20 bahasa",
@@ -29,8 +29,8 @@
     "openTitle": "Pejabat terbuka dalam setiap makna.",
     "openText": "OFF42 dikeluarkan di bawah lesen MIT. Baca kodnya, bina sendiri, laporkan pepijat atau bantu menambah baik versi seterusnya.",
     "openLink": "Terokai di GitHub",
-    "endTitle": "Kerja yang baik bermula dengan alat yang betul.",
-    "endText": "Temui pakej pejabat baharu untuk kerja harian anda.",
+    "endTitle": "Langganan: off. Pejabat kekal milik anda.",
+    "endText": "Percuma, sumber terbuka dan dibina untuk Mac anda.",
     "formatsLabel": "FORMAT OFFICE DAN TERBUKA",
     "formatsTitle": "Serasi dengan fail yang sudah anda miliki.",
     "formatsText": "Buka fail yang dihantar rakan sekerja dan simpan dalam format yang mereka jangkakan. Susun atur yang rumit mungkin kelihatan berbeza, jadi semak fail penting selepas import.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "APA ADA PADA NAMA",
+    "title": "OFF untuk office. Dan untuk semua yang boleh dimatikan.",
+    "officeTitle": "Pejabat yang lengkap",
+    "officeText": "Enam aplikasi untuk setiap fail di meja anda: PDF, fail Word dan Excel, slaid, foto dan imbasan.",
+    "offlineTitle": "Berfungsi luar talian",
+    "offlineText": "Penyuntingan asas berjalan pada Mac anda. Tanpa akaun, tanpa muat naik, tanpa menunggu pelayan.",
+    "offTitle": "Langganan: off",
+    "offText": "Tiada langganan, tiada tempoh percubaan, tiada iklan. Berlesen MIT dan percuma, hari ini dan esok.",
+    "answerTitle": "Dan 42?",
+    "answerText": "Jawapan kepada Soalan Muktamad tentang Kehidupan, Alam Semesta dan Segala-galanya. Kami cuma menerapkannya pada urusan pejabat.",
+    "stats": [
+      "aplikasi dalam satu pakej",
+      "format fail",
+      "bahasa antara muka",
+      "langganan",
+      "muat naik fail anda"
+    ]
+  },
+  "marks": {
+    "label": "TANDATANGAN DAN COP",
+    "title": "Tandatangan dan cop seperti di atas kertas. Tanpa pencetak, tanpa pengimbas.",
+    "text": "OFF42 menulis tandatangan tulisan tangan daripada nama dan mengecap cop syarikat, kemudian meletakkan kedua-duanya terus ke dalam dokumen. Setiap sisipan sedikit berbeza, seperti dakwat sebenar di atas kertas.",
+    "points": [
+      "Tandatangan dengan pen mata bulat, pen gel, pen dakwat atau pen felt",
+      "132 gaya cop: cop bulat, cop syarikat, “Telah Dibayar” dan “Diterima”",
+      "Mempelajari tandatangan anda sendiri daripada beberapa sampel",
+      "Berfungsi dalam PDF, dokumen, slaid, hamparan, imej dan imbasan"
+    ],
+    "note": "Tandatangan yang dilukis bukan tandatangan digital berasaskan sijil. Apabila anda memerlukannya, PDF42 menandatangani dengan sijil anda.",
+    "signedCaption": "Kontrak yang ditandatangani dan dicop dalam PDF42. Nama dan syarikat adalah rekaan."
+  },
+  "show": {
+    "label": "LIHAT CARA IA BERFUNGSI",
+    "title": "Aplikasi sebenar. Dokumen sebenar.",
+    "text": "Setiap gambar di sini ialah tangkapan skrin OFF42 pada Mac, dengan dokumen contoh syarikat rekaan dibuka dalam aplikasi. Bukan reka bentuk olok-olok."
+  },
   "labels": {
     "learn": "Terokai",
     "allFeatures": "Semua ciri",
@@ -88,7 +125,8 @@
     "notFound": "Halaman ini tiada di atas meja.",
     "notFoundText": "Cuba laman utama atau pilih bahasa untuk terus meneroka.",
     "copy": "Salin",
-    "copied": "Disalin"
+    "copied": "Disalin",
+    "screenshot": "Tangkapan skrin pada macOS. Dokumen contoh, syarikat rekaan."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub dan perkhidmatan terpaut lain mempunyai dasar privasi tersendiri. Fail anda tidak dimuat naik apabila melawat laman web ini."
   },
   "seo": {
-    "homeTitle": "OFF42 — Pakej Pejabat Percuma Sumber Terbuka untuk Mac",
+    "homeTitle": "OFF42 — Perisian Pejabat Percuma untuk Mac, Tanpa Langganan",
     "homeDescription": "Pakej pejabat percuma sumber terbuka untuk macOS: editor PDF, dokumen DOCX, hamparan XLSX, slaid PPTX, editor imej dan pengimbas OCR. Berfungsi luar talian.",
     "featuresTitle": "Ciri: PDF, Dokumen, Hamparan, Imbasan | OFF42",
     "featuresDescription": "Edit dan tandatangani PDF, kecilkan fail besar, imbas dengan OCR, tulis DOCX serta guna XLSX dan PPTX. Lihat semua keupayaan pejabat percuma OFF42 pada Mac.",

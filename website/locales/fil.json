@@ -10,9 +10,9 @@
     "home": "Home"
   },
   "home": {
-    "eyebrow": "IYONG MGA FILE. IYONG MGA TOOL. IYONG MGA PATAKARAN.",
-    "title": "Bigyang-puwang ang pinakamagaling mong gawa.",
-    "intro": "Kilalanin ang OFF42. Anim na app para sa mga dokumento, spreadsheet, presentasyon, PDF, larawan, at scan. Isang open-source office suite, mismo sa iyong Mac.",
+    "eyebrow": "LIBRE · OPEN SOURCE · GAWA PARA SA MAC",
+    "title": "Buong opisina mo. Walang subscription.",
+    "intro": "Ang OFF42 ay anim na native na Mac app para sa PDF, dokumento, spreadsheet, presentasyon, larawan, at scan. Libre at open source. Nananatili ang iyong mga file sa iyong Mac, hindi sa cloud ng iba.",
     "primary": "Kunin ang OFF42",
     "secondary": "Tuklasin ang mga tool",
     "note": "Libre · Open source · macOS 14+ · 20 wika",
@@ -29,8 +29,8 @@
     "openTitle": "Bukas na opisina, sa lahat ng kahulugan.",
     "openText": "Inilalabas ang OFF42 sa ilalim ng lisensyang MIT. Basahin ang code, buuin ito, mag-ulat ng bug, o tumulong sa pagpapahusay ng susunod na bersyon.",
     "openLink": "Tuklasin sa GitHub",
-    "endTitle": "Nagsisimula ang mahusay na trabaho sa tamang mga tool.",
-    "endText": "Tuklasin ang susunod mong office suite para sa araw-araw.",
+    "endTitle": "I-off ang mga subscription. Panatilihin ang opisina.",
+    "endText": "Libre, open source, at gawa para sa iyong Mac.",
     "formatsLabel": "OFFICE AT MGA OPEN FORMAT",
     "formatsTitle": "Gumagana sa mga file na mayroon ka na.",
     "formatsText": "Buksan ang ipinapadala ng mga kasamahan at i-save sa format na inaasahan nila. Maaaring mag-iba ang hitsura ng mga kumplikadong layout, kaya suriin ang mahahalagang file pagkatapos mag-import.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "ANO ANG NASA PANGALAN",
+    "title": "OFF, mula sa office. At sa lahat ng puwede mong i-off.",
+    "officeTitle": "Kumpletong opisina",
+    "officeText": "Anim na app para sa bawat file sa iyong mesa: PDF, mga Word at Excel file, slide, larawan, at scan.",
+    "offlineTitle": "Gumagana offline",
+    "offlineText": "Sa iyong Mac tumatakbo ang pangunahing pag-edit. Walang account, walang upload, walang hinihintay na server.",
+    "offTitle": "Subscription: off",
+    "offText": "Walang subscription, walang trial period, walang ads. May lisensyang MIT at libre, ngayon at bukas.",
+    "answerTitle": "At ang 42?",
+    "answerText": "Ang sagot sa pinakadakilang tanong tungkol sa buhay, sa sansinukob, at sa lahat ng bagay. Inilapat lang namin ito sa opisina.",
+    "stats": [
+      "app sa iisang suite",
+      "format ng file",
+      "wika ng interface",
+      "subscription",
+      "upload ng iyong mga file"
+    ]
+  },
+  "marks": {
+    "label": "MGA LAGDA AT STAMP",
+    "title": "Pumirma at mag-stamp na parang sa papel. Walang printer, walang scanner.",
+    "text": "Gumagawa ang OFF42 ng lagdang sulat-kamay mula sa isang pangalan at nagtatatak ng stamp ng kompanya, saka inilalagay ang dalawa mismo sa dokumento. Bahagyang naiiba ang bawat paglalagay, gaya ng totoong tinta sa papel.",
+    "points": [
+      "Lagda gamit ang ballpen, gel pen, fountain pen o felt-tip pen",
+      "132 estilo ng stamp: bilog na seal, stamp ng kompanya, “Bayad na” at “Natanggap”",
+      "Natututuhan ang sarili mong lagda mula sa ilang sample",
+      "Gumagana sa PDF, dokumento, slide, spreadsheet, larawan at scan"
+    ],
+    "note": "Ang iginuhit na lagda ay hindi digital signature na nakabatay sa certificate. Kapag kailangan mo iyon, pumipirma ang PDF42 gamit ang iyong certificate.",
+    "signedCaption": "Kontratang nilagdaan at tinatakan sa PDF42. Kathang-isip ang mga pangalan at kompanya."
+  },
+  "show": {
+    "label": "TINGNAN SA AKTWAL",
+    "title": "Totoong app. Totoong dokumento.",
+    "text": "Bawat larawan dito ay screenshot ng OFF42 sa Mac, na may mga sample na dokumento ng kathang-isip na kompanya na nakabukas sa mga app. Walang mock-up."
+  },
   "labels": {
     "learn": "Tuklasin",
     "allFeatures": "Lahat ng tampok",
@@ -88,7 +125,8 @@
     "notFound": "Wala sa mesa ang pahinang ito.",
     "notFoundText": "Subukan ang homepage o pumili ng wika para magpatuloy.",
     "copy": "Kopyahin",
-    "copied": "Nakopya na"
+    "copied": "Nakopya na",
+    "screenshot": "Screenshot sa macOS. Mga sample na dokumento, kathang-isip na kompanya."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "May sariling mga patakaran sa privacy ang GitHub at iba pang naka-link na serbisyo. Hindi ina-upload ang iyong mga file kapag bumisita ka sa website na ito."
   },
   "seo": {
-    "homeTitle": "OFF42 — Libreng Open-Source Office Suite para sa Mac",
+    "homeTitle": "OFF42 — Libreng Office para sa Mac, Walang Subscription",
     "homeDescription": "Libreng open-source office para sa macOS: PDF editor, DOCX na dokumento, XLSX na spreadsheet, PPTX na slide, image editor at OCR scanner. Gumagana offline.",
     "featuresTitle": "Mga Tampok: PDF, Dokumento, Spreadsheet, Scan | OFF42",
     "featuresDescription": "Mag-edit at pumirma ng PDF, paliitin ang malalaking file, mag-scan na may OCR, gumamit ng DOCX, XLSX at PPTX. Tingnan ang kaya ng libreng OFF42 sa Mac.",

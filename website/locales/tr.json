@@ -10,9 +10,9 @@
     "home": "Ana sayfa"
   },
   "home": {
-    "eyebrow": "DOSYALARINIZ. ARAÇLARINIZ. KURALLARINIZ.",
-    "title": "En iyi çalışmalarınıza yer açın.",
-    "intro": "OFF42 ile tanışın. Belgeler, hesap tabloları, sunumlar, PDF'ler, görseller ve taramalar için altı odaklı uygulama. Mac'inizde açık kaynaklı bir ofis.",
+    "eyebrow": "ÜCRETSİZ · AÇIK KAYNAK · MAC İÇİN",
+    "title": "Eksiksiz ofis. Abonelik yok.",
+    "intro": "OFF42; PDF'ler, belgeler, hesap tabloları, sunumlar, görseller ve taramalar için altı yerel Mac uygulamasıdır. Ücretsiz ve açık kaynaklı. Dosyalarınız başkasının bulutunda değil, Mac'inizde kalır.",
     "primary": "OFF42'yi edinin",
     "secondary": "Araçları keşfedin",
     "note": "Ücretsiz · Açık kaynak · macOS 14+ · 20 dil",
@@ -29,8 +29,8 @@
     "openTitle": "Her anlamıyla açık bir ofis.",
     "openText": "OFF42, MIT lisansıyla sunulur. Kodu inceleyin, kendiniz derleyin, hata bildirin veya sonraki sürümü geliştirmeye yardımcı olun.",
     "openLink": "GitHub'da keşfedin",
-    "endTitle": "İyi işler doğru araçlarla başlar.",
-    "endText": "Günlük işleriniz için yeni ofisinizi keşfedin.",
+    "endTitle": "Abonelikler off. Ofis sizde.",
+    "endText": "Ücretsiz, açık kaynaklı ve Mac'iniz için yapıldı.",
     "formatsLabel": "OFFICE VE AÇIK BİÇİMLER",
     "formatsTitle": "Elinizdeki dosyalarla çalışır.",
     "formatsText": "Çalışma arkadaşlarınızın gönderdiklerini açın, bekledikleri biçimde kaydedin. Karmaşık düzenler farklı görünebilir; önemli dosyaları içe aktardıktan sonra kontrol edin.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "İSMİN ARDINDA NE VAR",
+    "title": "OFF, office'ten gelir. Bir de kapatabileceğiniz her şeyden.",
+    "officeTitle": "Eksiksiz bir ofis",
+    "officeText": "Masanızdaki her dosya için altı uygulama: PDF'ler, Word ve Excel dosyaları, slaytlar, fotoğraflar ve taramalar.",
+    "offlineTitle": "Çevrimdışı çalışır",
+    "offlineText": "Temel düzenleme Mac'inizde yapılır. Hesap yok, dosya yükleme yok, sunucu beklemek yok.",
+    "offTitle": "Abonelikler: off",
+    "offText": "Abonelik yok, deneme süresi yok, reklam yok. MIT lisanslı ve ücretsiz; bugün de, yarın da.",
+    "answerTitle": "Peki ya 42?",
+    "answerText": "Hayat, Evren ve Her Şey hakkındaki Nihai Soru'nun cevabı. Biz sadece onu ofise uyguladık.",
+    "stats": [
+      "uygulama, tek pakette",
+      "dosya biçimi",
+      "arayüz dili",
+      "abonelik",
+      "dosya yüklemesi"
+    ]
+  },
+  "marks": {
+    "label": "İMZALAR VE KAŞELER",
+    "title": "Kâğıttaki gibi imzalayın ve kaşeleyin. Yazıcısız, tarayıcısız.",
+    "text": "OFF42 bir isimden el yazısı imza oluşturur, şirket kaşesini basar ve ikisini doğrudan belgeye yerleştirir. Her baskı biraz farklı çıkar; tıpkı kâğıttaki gerçek mürekkep gibi.",
+    "points": [
+      "Tükenmez, jel, dolma veya keçeli kalemle imzalar",
+      "132 kaşe stili: yuvarlak mühürler, şirket kaşeleri, “Ödendi” ve “Teslim Alındı”",
+      "Birkaç örnekten kendi imzanızı öğrenir",
+      "PDF'lerde, belgelerde, slaytlarda, tablolarda, görsellerde ve taramalarda çalışır"
+    ],
+    "note": "Çizilmiş bir imza, sertifika tabanlı dijital imza değildir. Gerektiğinde PDF42 sizin sertifikanızla imzalar.",
+    "signedCaption": "PDF42'de imzalanmış ve kaşelenmiş bir sözleşme. İsimler ve şirketler kurgusaldır."
+  },
+  "show": {
+    "label": "İŞ BAŞINDA",
+    "title": "Gerçek uygulamalar. Gerçek belgeler.",
+    "text": "Buradaki her görsel, OFF42'nin Mac'teki ekran görüntüsüdür; uygulamalarda kurgusal şirketlere ait örnek belgeler açıktır. Maket yok."
+  },
   "labels": {
     "learn": "Keşfedin",
     "allFeatures": "Tüm özellikler",
@@ -88,7 +125,8 @@
     "notFound": "Bu sayfa masadan kalkmış.",
     "notFoundText": "Keşfetmeye devam etmek için ana sayfaya gidin veya bir dil seçin.",
     "copy": "Kopyala",
-    "copied": "Kopyalandı"
+    "copied": "Kopyalandı",
+    "screenshot": "macOS'ta ekran görüntüsü. Örnek belgeler, kurgusal şirketler."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub ve bağlantı verilen diğer hizmetlerin kendi gizlilik politikaları vardır. Bu siteyi ziyaret etmeniz dosyalarınızı yüklemez."
   },
   "seo": {
-    "homeTitle": "OFF42 — Mac için Ücretsiz, Açık Kaynak Ofis Paketi",
+    "homeTitle": "OFF42 — Mac için Ücretsiz Ofis Paketi, Abonelik Yok",
     "homeDescription": "macOS için ücretsiz, açık kaynak ofis: PDF düzenleyici, DOCX belgeler, XLSX tablolar, PPTX slaytlar, görsel düzenleyici ve OCR'li tarayıcı. Çevrimdışı çalışır.",
     "featuresTitle": "Özellikler: PDF, Belgeler, Tablolar, Tarama | OFF42",
     "featuresDescription": "PDF düzenleyin ve imzalayın, büyük dosyaları küçültün, OCR ile tarayın, DOCX yazın, XLSX ve PPTX ile çalışın. Ücretsiz OFF42'nin Mac'te yapabildiklerini görün.",

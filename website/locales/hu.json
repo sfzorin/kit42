@@ -10,9 +10,9 @@
     "home": "Kezdőlap"
   },
   "home": {
-    "eyebrow": "A TE FÁJLJAID. A TE ESZKÖZEID. A TE SZABÁLYAID.",
-    "title": "Adj teret a legjobb munkádnak.",
-    "intro": "Ismerd meg az OFF42-t. Hat célzott alkalmazás dokumentumokhoz, táblázatokhoz, bemutatókhoz, PDF-ekhez, képekhez és szkenneléshez. Egy nyílt forráskódú irodai csomag, közvetlenül a Maceden.",
+    "eyebrow": "INGYENES · NYÍLT FORRÁSKÓD · MACRE KÉSZÜLT",
+    "title": "Teljes iroda. Előfizetés nélkül.",
+    "intro": "Az OFF42 hat natív Mac-alkalmazás PDF-ekhez, dokumentumokhoz, táblázatokhoz, bemutatókhoz, képekhez és szkenneléshez. Ingyenes és nyílt forráskódú. A fájljaid a Maceden maradnak, nem valaki más felhőjében.",
     "primary": "OFF42 beszerzése",
     "secondary": "Fedezd fel az eszközöket",
     "note": "Ingyenes · Nyílt forráskód · macOS 14+ · 20 nyelv",
@@ -29,8 +29,8 @@
     "openTitle": "Nyitott iroda, minden értelemben.",
     "openText": "Az OFF42 MIT-licenccel érhető el. Olvasd a kódot, fordítsd le magadnak, jelents hibát, vagy segíts jobbá tenni a következő verziót.",
     "openLink": "Fedezd fel a GitHubon",
-    "endTitle": "A jó munka a megfelelő eszközökkel kezdődik.",
-    "endText": "Ismerd meg új, mindennapi irodai csomagodat.",
+    "endTitle": "Előfizetések: off. Az iroda a tiéd.",
+    "endText": "Ingyenes, nyílt forráskódú, és a Macedre készült.",
     "formatsLabel": "OFFICE- ÉS NYÍLT FORMÁTUMOK",
     "formatsTitle": "Működik a meglévő fájljaiddal.",
     "formatsText": "Nyisd meg, amit a kollégáid küldenek, és mentsd olyan formátumban, amilyet várnak. Az összetett elrendezések eltérhetnek, ezért importálás után ellenőrizd a fontos fájlokat.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "MI VAN A NÉVBEN?",
+    "title": "Az OFF az office-ból jön. És mindenből, amit ki lehet kapcsolni.",
+    "officeTitle": "Teljes iroda",
+    "officeText": "Hat alkalmazás az asztalodon lévő összes fájlhoz: PDF-ek, Word- és Excel-fájlok, diák, fotók és szkennelt anyagok.",
+    "offlineTitle": "Offline is működik",
+    "offlineText": "Az alapvető szerkesztés a Maceden fut. Nincs fiók, nincs feltöltés, nincs várakozás a szerverre.",
+    "offTitle": "Előfizetés: off",
+    "offText": "Nincs előfizetés, nincs próbaidőszak, nincsenek hirdetések. MIT-licenc és ingyenes – ma és holnap is.",
+    "answerTitle": "És a 42?",
+    "answerText": "A válasz az életre, a világmindenségre meg mindenre vonatkozó végső kérdésre. Mi csak alkalmaztuk az irodára.",
+    "stats": [
+      "alkalmazás egy csomagban",
+      "fájlformátum",
+      "felületnyelv",
+      "előfizetés",
+      "fájlfeltöltés"
+    ]
+  },
+  "marks": {
+    "label": "ALÁÍRÁSOK ÉS BÉLYEGZŐK",
+    "title": "Aláírás és bélyegző, mint papíron. Nyomtató és szkenner nélkül.",
+    "text": "Az OFF42 egy névből kézzel írt aláírást készít, rányomja a cégbélyegzőt, és mindkettőt egyenesen a dokumentumba helyezi. Minden lenyomat kicsit más, akár a valódi tinta a papíron.",
+    "points": [
+      "Aláírás golyóstollal, zselés tollal, töltőtollal vagy filctollal",
+      "132 bélyegzőstílus: körbélyegzők, cégbélyegzők, „Fizetve” és „Átvéve”",
+      "Néhány mintából megtanulja a saját aláírásodat",
+      "Működik PDF-ekben, dokumentumokban, diákban, táblázatokban, képekben és szkennelt anyagokban"
+    ],
+    "note": "A rajzolt aláírás nem tanúsítványalapú digitális aláírás. Ha ilyenre van szükséged, a PDF42 a saját tanúsítványoddal ír alá.",
+    "signedCaption": "PDF42-ben aláírt és lebélyegzett szerződés. A nevek és a cégek kitaláltak."
+  },
+  "show": {
+    "label": "MŰKÖDÉS KÖZBEN",
+    "title": "Valódi appok. Valódi dokumentumok.",
+    "text": "Minden kép itt az OFF42 képernyőképe Macen, kitalált cégek mintadokumentumaival az appokban. Semmi látványterv."
+  },
   "labels": {
     "learn": "Felfedezés",
     "allFeatures": "Összes funkció",
@@ -88,7 +125,8 @@
     "notFound": "Ez az oldal lekerült az asztalról.",
     "notFoundText": "Próbáld a kezdőlapot, vagy válassz nyelvet a további böngészéshez.",
     "copy": "Másolás",
-    "copied": "Másolva"
+    "copied": "Másolva",
+    "screenshot": "Képernyőkép macOS-en. Mintadokumentumok, kitalált cégek."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "A GitHubnak és más hivatkozott szolgáltatásoknak saját adatvédelmi szabályzatuk van. A webhely meglátogatása nem tölti fel a fájljaidat."
   },
   "seo": {
-    "homeTitle": "OFF42 — ingyenes, nyílt forráskódú irodai csomag Macre",
+    "homeTitle": "OFF42 — ingyenes irodai csomag Macre, előfizetés nélkül",
     "homeDescription": "Ingyenes, nyílt forráskódú iroda macOS-re: PDF-szerkesztő, DOCX-dokumentumok, XLSX-táblázatok, PPTX-diák, képszerkesztő és OCR-es szkenner. Offline is működik.",
     "featuresTitle": "Funkciók: PDF, dokumentumok, táblázatok, szkennelés | OFF42",
     "featuresDescription": "Szerkessz és írj alá PDF-et, kicsinyíts nagy fájlokat, szkennelj OCR-rel, írj DOCX-et, kezelj XLSX- és PPTX-fájlt. Nézd meg, mit tud az ingyenes OFF42 Macen.",

@@ -39,3 +39,22 @@ Do not publish a partial build.
 - 2026-11-06: on `/ar/download/` at 375 px the unbroken `git clone` command widened the
   page to 554 px (grid track without `minmax(0, …)`). The code line now scrolls inside
   its own box. Keep scenario 7 for long commands in RTL and LTR locales.
+- 2026-11-06: the signatures section used a percentage `gap`; in the one-column mobile
+  layout the percentage row gap resolved after sizing and the signed-contract figure
+  overflowed the section by about 95 px onto the next heading. Row gaps are now fixed
+  lengths. Check the signatures section bottom at 375 px.
+
+## Focused local audit — 2026-11-06
+
+The full build and structural check passed for 260 pages in 20 locales, 11,460 internal
+targets and 5,460 exact hreflang URLs. Browser checks covered English features on mobile,
+Arabic PDF detail on mobile, German features at 1440 × 900, and English downloads on mobile.
+The menu, contextual language switch and gallery ArrowRight (PDF to DOC) worked; these views
+had no page overflow or console errors. Lighthouse reported accessibility 100 with no failed audits on the four representative pages. Cold local Fast 4G / 4× CPU traces measured home
+LCP 661 ms and PDF LCP 617 ms, both CLS 0; these are lab measurements taken before the final no-transform header, not field metrics.
+
+These focused checks are not a full browser language matrix. Downloads, installation and native
+applications were not exercised. Reports are retained under the ignored `build/website-audit/`.
+
+The final deployed home page passed a fresh Chrome smoke check with first-party assets loading
+and no console or CSP errors. In the tested location, `no-transform` responses were uncompressed.

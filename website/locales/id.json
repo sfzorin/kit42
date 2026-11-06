@@ -10,9 +10,9 @@
     "home": "Beranda"
   },
   "home": {
-    "eyebrow": "FILE ANDA. ALAT ANDA. ATURAN ANDA.",
-    "title": "Ruang untuk karya terbaik Anda.",
-    "intro": "Inilah OFF42. Enam aplikasi khusus untuk dokumen, spreadsheet, presentasi, PDF, gambar, dan pemindaian. Satu paket perkantoran sumber terbuka, langsung di Mac Anda.",
+    "eyebrow": "GRATIS · SUMBER TERBUKA · DIBUAT UNTUK MAC",
+    "title": "Seluruh kantor Anda. Tanpa langganan.",
+    "intro": "OFF42 adalah enam aplikasi Mac native untuk PDF, dokumen, spreadsheet, presentasi, gambar, dan pemindaian. Gratis dan sumber terbuka. File Anda tetap di Mac Anda, bukan di cloud orang lain.",
     "primary": "Dapatkan OFF42",
     "secondary": "Jelajahi alatnya",
     "note": "Gratis · Sumber terbuka · macOS 14+ · 20 bahasa",
@@ -29,8 +29,8 @@
     "openTitle": "Terbuka dalam setiap arti.",
     "openText": "OFF42 dirilis dengan lisensi MIT. Baca kodenya, bangun sendiri, laporkan bug, atau bantu menyempurnakan versi berikutnya.",
     "openLink": "Jelajahi di GitHub",
-    "endTitle": "Kerja yang baik dimulai dari alat yang tepat.",
-    "endText": "Temukan paket perkantoran untuk keseharian Anda.",
+    "endTitle": "Langganan: off. Kantor tetap milik Anda.",
+    "endText": "Gratis, sumber terbuka, dan dibuat untuk Mac Anda.",
     "formatsLabel": "FORMAT OFFICE DAN TERBUKA",
     "formatsTitle": "Bekerja dengan file yang sudah Anda miliki.",
     "formatsText": "Buka file kiriman rekan kerja dan simpan dalam format yang mereka harapkan. Tata letak yang rumit bisa tampak berbeda, jadi periksa file penting setelah diimpor.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "APALAH ARTI SEBUAH NAMA",
+    "title": "OFF berasal dari office. Juga dari semua yang bisa dimatikan.",
+    "officeTitle": "Kantor yang lengkap",
+    "officeText": "Enam aplikasi untuk setiap file di meja Anda: PDF, file Word dan Excel, slide, foto, dan hasil pindaian.",
+    "offlineTitle": "Bekerja secara offline",
+    "offlineText": "Pengeditan utama berjalan di Mac Anda. Tanpa akun, tanpa unggahan, tanpa menunggu server.",
+    "offTitle": "Langganan: off",
+    "offText": "Tanpa langganan, tanpa masa uji coba, tanpa iklan. Berlisensi MIT dan gratis, hari ini dan seterusnya.",
+    "answerTitle": "Lalu 42?",
+    "answerText": "Jawaban atas Pertanyaan Pamungkas tentang Kehidupan, Alam Semesta, dan Segalanya. Kami hanya menerapkannya pada urusan kantor.",
+    "stats": [
+      "aplikasi dalam satu paket",
+      "format file",
+      "bahasa antarmuka",
+      "langganan",
+      "unggahan file Anda"
+    ]
+  },
+  "marks": {
+    "label": "TANDA TANGAN DAN STEMPEL",
+    "title": "Tanda tangan dan stempel seperti di kertas. Tanpa printer, tanpa pemindai.",
+    "text": "OFF42 menulis tanda tangan tulisan tangan dari sebuah nama, membubuhkan stempel perusahaan, lalu menaruh keduanya langsung di dokumen. Setiap bubuhan sedikit berbeda, seperti tinta asli di atas kertas.",
+    "points": [
+      "Tanda tangan dengan pulpen, pena gel, pena tinta, atau spidol",
+      "132 gaya stempel: stempel bulat, stempel perusahaan, “Lunas” dan “Diterima”",
+      "Mempelajari tanda tangan Anda sendiri dari beberapa contoh",
+      "Berfungsi di PDF, dokumen, slide, spreadsheet, gambar, dan hasil pindaian"
+    ],
+    "note": "Tanda tangan yang digambar bukan tanda tangan digital berbasis sertifikat. Saat Anda memerlukannya, PDF42 menandatangani dengan sertifikat Anda.",
+    "signedCaption": "Kontrak yang ditandatangani dan distempel di PDF42. Nama dan perusahaan adalah fiktif."
+  },
+  "show": {
+    "label": "LIHAT CARA KERJANYA",
+    "title": "Aplikasi nyata. Dokumen nyata.",
+    "text": "Setiap gambar di sini adalah tangkapan layar OFF42 di Mac, dengan contoh dokumen perusahaan fiktif yang dibuka di aplikasi. Bukan mock-up."
+  },
   "labels": {
     "learn": "Jelajahi",
     "allFeatures": "Semua fitur",
@@ -88,7 +125,8 @@
     "notFound": "Halaman ini tidak ada di meja.",
     "notFoundText": "Coba beranda atau pilih bahasa untuk terus menjelajah.",
     "copy": "Salin",
-    "copied": "Tersalin"
+    "copied": "Tersalin",
+    "screenshot": "Tangkapan layar di macOS. Contoh dokumen, perusahaan fiktif."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub dan layanan tertaut lainnya memiliki kebijakan privasi sendiri. File Anda tidak diunggah saat mengunjungi situs ini."
   },
   "seo": {
-    "homeTitle": "OFF42 — Aplikasi Office Gratis Sumber Terbuka untuk Mac",
+    "homeTitle": "OFF42 — Aplikasi Office Gratis untuk Mac Tanpa Langganan",
     "homeDescription": "Paket perkantoran gratis dan sumber terbuka untuk macOS: editor PDF, dokumen DOCX, spreadsheet XLSX, slide PPTX, editor gambar, dan pemindai OCR. Bisa offline.",
     "featuresTitle": "Fitur: PDF, Dokumen, Spreadsheet, Pemindaian | OFF42",
     "featuresDescription": "Edit dan tanda tangani PDF, perkecil file besar, pindai dengan OCR, tulis DOCX, serta olah XLSX dan PPTX. Lihat semua yang bisa dilakukan OFF42 gratis di Mac.",

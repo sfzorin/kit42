@@ -10,9 +10,9 @@
     "home": "Trang chủ"
   },
   "home": {
-    "eyebrow": "TỆP CỦA BẠN. CÔNG CỤ CỦA BẠN. THEO CÁCH CỦA BẠN.",
-    "title": "Dành chỗ cho những ý tưởng hay.",
-    "intro": "Khám phá OFF42. Sáu ứng dụng chuyên biệt cho tài liệu, bảng tính, bài trình chiếu, PDF, hình ảnh và bản quét. Một bộ công cụ văn phòng mã nguồn mở, ngay trên Mac của bạn.",
+    "eyebrow": "MIỄN PHÍ · MÃ NGUỒN MỞ · DÀNH CHO MAC",
+    "title": "Trọn bộ văn phòng. Không thuê bao.",
+    "intro": "OFF42 gồm sáu ứng dụng gốc cho Mac để làm việc với PDF, tài liệu, bảng tính, bài trình chiếu, hình ảnh và bản quét. Miễn phí và mã nguồn mở. Tệp của bạn ở lại trên Mac của bạn, không nằm trên đám mây của ai khác.",
     "primary": "Tải OFF42",
     "secondary": "Khám phá công cụ",
     "note": "Miễn phí · Mã nguồn mở · macOS 14+ · 20 ngôn ngữ",
@@ -29,8 +29,8 @@
     "openTitle": "Một bộ văn phòng thực sự rộng mở.",
     "openText": "OFF42 được phát hành theo giấy phép MIT. Đọc mã nguồn, tự biên dịch, báo lỗi hoặc cùng cải thiện phiên bản tiếp theo.",
     "openLink": "Khám phá trên GitHub",
-    "endTitle": "Công việc tốt bắt đầu từ công cụ phù hợp.",
-    "endText": "Khám phá bộ văn phòng mới cho mỗi ngày.",
+    "endTitle": "Thuê bao — off. Văn phòng — của bạn.",
+    "endText": "Miễn phí, mã nguồn mở và dành cho Mac của bạn.",
     "formatsLabel": "ĐỊNH DẠNG OFFICE VÀ ĐỊNH DẠNG MỞ",
     "formatsTitle": "Làm việc với chính những tệp bạn đang có.",
     "formatsText": "Mở tệp đồng nghiệp gửi và lưu đúng định dạng họ cần. Bố cục phức tạp có thể hiển thị khác, vì vậy hãy kiểm tra các tệp quan trọng sau khi nhập.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "Ý NGHĨA CÁI TÊN",
+    "title": "OFF là từ office. Và từ mọi thứ bạn có thể tắt đi.",
+    "officeTitle": "Trọn bộ văn phòng",
+    "officeText": "Sáu ứng dụng cho mọi tệp trên bàn làm việc: PDF, tệp Word và Excel, trang trình chiếu, ảnh và bản quét.",
+    "offlineTitle": "Chạy ngoại tuyến",
+    "offlineText": "Các thao tác chỉnh sửa chính chạy ngay trên Mac. Không tài khoản, không tải lên, không chờ máy chủ.",
+    "offTitle": "Thuê bao: off",
+    "offText": "Không thuê bao, không thời gian dùng thử, không quảng cáo. Giấy phép MIT và miễn phí, hôm nay và cả ngày mai.",
+    "answerTitle": "Còn 42?",
+    "answerText": "Câu trả lời cho câu hỏi tối thượng về sự sống, vũ trụ và vạn vật. Chúng tôi chỉ áp dụng nó vào văn phòng.",
+    "stats": [
+      "ứng dụng trong một bộ",
+      "định dạng tệp",
+      "ngôn ngữ giao diện",
+      "thuê bao",
+      "lần tải tệp của bạn lên"
+    ]
+  },
+  "marks": {
+    "label": "CHỮ KÝ VÀ CON DẤU",
+    "title": "Ký tên, đóng dấu như trên giấy. Không cần máy in hay máy quét.",
+    "text": "Chỉ từ một cái tên, OFF42 viết ra chữ ký tay, đóng dấu công ty rồi đặt cả hai ngay vào tài liệu. Mỗi lần chèn lại hơi khác một chút, như mực thật trên giấy.",
+    "points": [
+      "Chữ ký bằng bút bi, bút gel, bút máy hoặc bút dạ",
+      "132 kiểu con dấu: dấu tròn, dấu công ty, “Đã thanh toán” và “Đã nhận”",
+      "Học chữ ký của chính bạn từ vài mẫu",
+      "Dùng được trong PDF, văn bản, trang chiếu, bảng tính, hình ảnh và bản quét"
+    ],
+    "note": "Chữ ký vẽ tay không phải chữ ký số dựa trên chứng thư số. Khi cần, PDF42 ký bằng chứng thư số của bạn.",
+    "signedCaption": "Hợp đồng được ký và đóng dấu trong PDF42. Tên người và công ty là hư cấu."
+  },
+  "show": {
+    "label": "XEM THỰC TẾ",
+    "title": "Ứng dụng thật. Tài liệu thật.",
+    "text": "Mọi hình ảnh ở đây đều là ảnh chụp màn hình OFF42 trên Mac, với tài liệu mẫu của các công ty hư cấu mở trong ứng dụng. Không phải ảnh dựng."
+  },
   "labels": {
     "learn": "Khám phá",
     "allFeatures": "Tất cả tính năng",
@@ -88,7 +125,8 @@
     "notFound": "Không tìm thấy trang này.",
     "notFoundText": "Về trang chủ hoặc chọn một ngôn ngữ để tiếp tục khám phá.",
     "copy": "Sao chép",
-    "copied": "Đã sao chép"
+    "copied": "Đã sao chép",
+    "screenshot": "Ảnh chụp màn hình trên macOS. Tài liệu mẫu, công ty hư cấu."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub và các dịch vụ được liên kết khác có chính sách quyền riêng tư riêng. Truy cập trang web này không tải lên các tệp của bạn."
   },
   "seo": {
-    "homeTitle": "OFF42 — Bộ văn phòng miễn phí, mã nguồn mở cho Mac",
+    "homeTitle": "OFF42 — Phần mềm văn phòng miễn phí cho Mac, không thuê bao",
     "homeDescription": "Bộ văn phòng miễn phí, mã nguồn mở cho macOS: chỉnh sửa PDF, tài liệu DOCX, bảng tính XLSX, trình chiếu PPTX, chỉnh sửa ảnh và quét có OCR. Dùng được ngoại tuyến.",
     "featuresTitle": "Tính năng: PDF, tài liệu, bảng tính, bản quét | OFF42",
     "featuresDescription": "Chỉnh sửa và ký PDF, nén tệp lớn, quét có OCR, soạn DOCX, làm việc với XLSX và PPTX. Xem mọi việc bộ văn phòng miễn phí OFF42 làm được trên Mac.",

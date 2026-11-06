@@ -10,9 +10,9 @@
     "home": "Accueil"
   },
   "home": {
-    "eyebrow": "VOS FICHIERS. VOS OUTILS. VOS RÈGLES.",
-    "title": "Faites place à votre meilleur travail.",
-    "intro": "Découvrez OFF42. Six applications dédiées aux documents, tableaux, présentations, PDF, images et numérisations. Une suite bureautique open source, sur votre Mac.",
+    "eyebrow": "GRATUIT · OPEN SOURCE · CONÇU POUR MAC",
+    "title": "Tout votre bureau. Sans abonnement.",
+    "intro": "OFF42, ce sont six applications Mac natives pour les PDF, documents, tableaux, présentations, images et numérisations. Gratuit et open source. Vos fichiers restent sur votre Mac, pas dans le cloud d'un autre.",
     "primary": "Obtenir OFF42",
     "secondary": "Découvrir les outils",
     "note": "Gratuit · Open source · macOS 14+ · 20 langues",
@@ -29,8 +29,8 @@
     "openTitle": "Un bureau ouvert, à tous les sens du terme.",
     "openText": "OFF42 est distribué sous licence MIT. Consultez le code, compilez-le, signalez un bogue ou contribuez à améliorer la prochaine version.",
     "openLink": "Découvrir sur GitHub",
-    "endTitle": "Un bon travail commence par les bons outils.",
-    "endText": "Découvrez votre nouvelle suite bureautique au quotidien.",
+    "endTitle": "Abonnements : off. Le bureau reste à vous.",
+    "endText": "Gratuit, open source et conçu pour votre Mac.",
     "formatsLabel": "FORMATS OFFICE ET OUVERTS",
     "formatsTitle": "Compatible avec les fichiers que vous avez déjà.",
     "formatsText": "Ouvrez ce que vos collègues vous envoient et enregistrez dans le format qu'ils attendent. Les mises en page complexes peuvent différer : vérifiez les fichiers importants après l'import.",
@@ -60,6 +60,43 @@
       }
     ]
   },
+  "name": {
+    "label": "QU'Y A-T-IL DANS UN NOM ?",
+    "title": "OFF comme office. Et comme tout ce qu'on peut éteindre.",
+    "officeTitle": "Une suite bureautique complète",
+    "officeText": "Six applications pour tous les fichiers de votre bureau : PDF, fichiers Word et Excel, diapositives, photos et numérisations.",
+    "offlineTitle": "Fonctionne hors ligne",
+    "offlineText": "L'édition courante se fait sur votre Mac. Pas de compte, pas d'envoi de fichiers, pas d'attente d'un serveur.",
+    "offTitle": "Abonnements : off",
+    "offText": "Pas d'abonnement, pas de période d'essai, pas de publicité. Sous licence MIT et gratuit, aujourd'hui comme demain.",
+    "answerTitle": "Et 42 ?",
+    "answerText": "La réponse à la grande question sur la vie, l'univers et le reste. Nous l'avons simplement appliquée au bureau.",
+    "stats": [
+      "applications en une suite",
+      "formats de fichiers",
+      "langues d'interface",
+      "abonnement",
+      "envoi de vos fichiers"
+    ]
+  },
+  "marks": {
+    "label": "SIGNATURES ET TAMPONS",
+    "title": "Signez et tamponnez comme sur papier. Sans imprimante ni scanner.",
+    "text": "OFF42 trace une signature manuscrite à partir d'un nom, appose le tampon de l'entreprise et place le tout directement dans le document. Chaque empreinte est légèrement différente, comme de la vraie encre sur du papier.",
+    "points": [
+      "Signatures au stylo bille, stylo gel, stylo plume ou feutre",
+      "132 styles de tampons : cachets ronds, tampons d'entreprise, « Payé » et « Reçu »",
+      "Apprend votre propre signature à partir de quelques exemples",
+      "Fonctionne dans les PDF, documents, présentations, tableurs, images et numérisations"
+    ],
+    "note": "Une signature dessinée n'est pas une signature numérique par certificat. Quand il vous en faut une, PDF42 signe avec votre certificat.",
+    "signedCaption": "Un contrat signé et tamponné dans PDF42. Les noms et les entreprises sont fictifs."
+  },
+  "show": {
+    "label": "EN SITUATION",
+    "title": "De vraies apps. De vrais documents.",
+    "text": "Chaque image ici est une capture d'écran d'OFF42 sur Mac, avec des documents d'exemple d'entreprises fictives ouverts dans les apps. Aucune maquette."
+  },
   "labels": {
     "learn": "Découvrir",
     "allFeatures": "Toutes les fonctionnalités",
@@ -88,7 +125,8 @@
     "notFound": "Cette page a quitté le bureau.",
     "notFoundText": "Essayez l'accueil ou choisissez une langue pour poursuivre la découverte.",
     "copy": "Copier",
-    "copied": "Copié"
+    "copied": "Copié",
+    "screenshot": "Capture d'écran sur macOS. Documents d'exemple, entreprises fictives."
   },
   "apps": {
     "pdf": {
@@ -319,7 +357,7 @@
     "linksText": "GitHub et les autres services liés ont leurs propres politiques de confidentialité. La visite de ce site n'envoie pas vos fichiers."
   },
   "seo": {
-    "homeTitle": "OFF42 — suite bureautique gratuite et open source pour Mac",
+    "homeTitle": "OFF42 — Suite bureautique gratuite pour Mac, sans abonnement",
     "homeDescription": "Bureautique gratuite et open source pour macOS : éditeur PDF, DOCX, tableurs XLSX, présentations PPTX, retouche d'images et scanner avec OCR. Hors ligne.",
     "featuresTitle": "Fonctions : PDF, documents, tableurs, scans | OFF42",
     "featuresDescription": "Modifiez et signez vos PDF, réduisez les gros fichiers, numérisez avec OCR, travaillez en DOCX, XLSX et PPTX. Tout ce que fait la suite gratuite OFF42 sur Mac.",

@@ -33,14 +33,18 @@ source, audit output or native app bundles.
 
 Custom domains `off42.cc` and `www.off42.cc` are attached in the Worker's Domains tab. The canonical
 site origin is `https://off42.cc`, including sitemap, alternate-language tags and
-social previews. `/` redirects to `/en/`; `/404.html` is a noindex error page.
-`_headers` sets content security and other response headers. No analytics,
+social previews. `/` redirects to `/en/`; `/404.html` is a noindex error page with error-specific metadata, without canonical or alternate-language links.
+`_headers` sets content security and other response headers, including `no-transform` to prevent edge HTML injection. In the tested location this also resulted in uncompressed responses, a performance tradeoff. No analytics,
 advertising, account system, cookies or file uploads are implemented by the site.
 Cloudflare may process requests to serve and protect it.
 
-Deployment evidence and current domain status are recorded in the root `STATUS.md`.
+Deployment metadata is recorded in `deployment.json`; detailed local audit evidence is in the root `STATUS.md`.
 The initial deployment uses direct upload, not a Git-connected auto-deploy pipeline.
-A source edit needs rebuild, verification and a fresh upload to take effect.
+A source edit needs rebuild, verification and a fresh upload to take effect. For redeployment,
+run the build and checks above, package the contents of `dist/` (not its parent directory),
+and upload them to the existing `off42` Worker using the dashboard's static-files flow. Keep
+the existing asset settings and canonical redirect rule, then verify the canonical and `www`
+hosts, redirects and representative routes. Record the deployed version and checks in `STATUS.md`.
 
 ## GitHub repository
 
@@ -93,8 +97,26 @@ Titles carry the OFF42 name and must stay unique across all 260 pages. JSON-LD a
 (free offer, MIT license, macOS 14+) and `FAQPage` on the home and feature pages, plus `BreadcrumbList` on
 feature pages. The home page also lists the formats each app opens and saves and answers common questions;
 the downloads page shows build-from-source commands with copy buttons while no installer is released.
-Social previews use the 1200 × 630 `assets/og-image.jpg`. The sitemap carries `lastmod` with the build date.
+Social previews use the 1200 × 630 `assets/og-image.jpg`. The sitemap omits `lastmod` until meaningful per-page dates are available. No `downloadUrl` is emitted while installer files are unavailable.
 `/` redirects permanently (301) to `/en/`.
+
+## Screenshots
+
+`public/assets/shots/` holds real screenshots of the six apps in all 20 languages (WebP, two widths each): the
+interface runs in the page's language (`-Suite42Language`) and the documents are localized samples of fictional
+companies — agreement and invoice, proposal letter, budget with chart, deck — with generated signatures and
+country-style stamps (company stamps, round seals, hanko/kakuin, Chinese seals, “Paid” stamps). East Asian samples
+seal instead of signing; Arabic samples are right-to-left. `screenshots/sizes.json` lists every image's size; the
+build falls back to English for a missing language. Signature designs are pinned (`design` in the samples,
+`K42_GENERATOR_DESIGNS` for the generator window) after contact-sheet review.
+
+Optional regeneration requires a special external PDF42 binary supporting `--site-samples` at
+`$OFF42_REPO/.build/debug/PDF42`, plus prebuilt isolated audit bundles. The current native
+source tree does not include that helper; this pipeline is not self-contained. It also requires
+`python-docx`, `openpyxl`, and `python-pptx`. Set `OFF42_REPO`, `OFF42_WEBSITE`, and
+`OFF42_SAMPLES` when their default paths do not apply, then run
+`website/screenshots/pipeline.sh en,ru` (or the required comma-separated languages).
+The pipeline exits nonzero on failure. Rebuild and check the website after updating images.
 
 ## Assets
 
