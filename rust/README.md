@@ -91,3 +91,14 @@ printing, scanner acquisition or third-party interoperability. On Windows, exerc
 commands, Undo/Redo, failure paths and save/reopen for representative documents in each app. Test PDFium alongside
 the packaged executable, print to file, and separately test scanner hardware and installed OCR languages. Retain
 fixtures for defects and record the executable identity and any skipped checks.
+
+## Technical objects inside documents
+
+In PDF42, DOC42, XLS42 and PPT42, **Production → Insert Symbol or Code** places a QR, Data Matrix,
+Code 128, Aztec or technical symbol at the current document location. **Edit Symbol or Code** changes
+the saved value, format, caption and width in millimetres. Choose an object if several are available;
+PDF42 lists the current page. Insertion and replacement each form one Undo step.
+PNG recipes survive DOCX/ODT/RTF, XLSX/ODS and PPTX/ODP exports for the supported image objects. PDF42
+uses the same `/Suite42TechnicalElement` annotation key as the macOS implementation and restores the
+editor after reopening. Document insertion currently uses a raster appearance; vector insertion remains
+a parity item. **Create Symbol or Code** exports a reusable PNG without changing the document.

@@ -325,7 +325,36 @@ def audit_sheet_pictures(process, main, output, results):
     results["checks"].append("spreadsheet picture insertion, exact geometry, native pixels, mouse drag, Undo/Redo, deletion and reopen")
 
 
-def audit(binary, output, extended, pictures=False):
+def audit_technical_objects(process, main, binary, output, results):
+    fill_prompt(process, main, 65509, "Symbol or Code", ["QR", "PCB-0007", "20", "no"])
+    wait_for(lambda: u.IsWindowEnabled(main), "technical object inserted", process)
+    def editor_value(expected, change=False):
+        command(main, 65508)
+        dialog = modal(process, title="Symbol or Code", native_class="Suite42InputDialog")
+        assert text(u.GetDlgItem(dialog, 101)) == expected
+        if change:
+            set_text(u.GetDlgItem(dialog, 101), "PCB-0008")
+            set_text(u.GetDlgItem(dialog, 102), "25")
+        click(dialog, 1 if change else 2)
+        wait_for(lambda: u.IsWindowEnabled(main), "technical editor closed", process)
+    editor_value("PCB-0007", True)
+    extension = {"doc42": "doc42", "xls42": "xls42", "pdf42": "pdf", "ppt42": "json"}[binary.stem.lower()]
+    saved = output / f"{binary.stem}-technical.{extension}"
+    command(main, 18)
+    choose_file(process, saved)
+    output_ready(process, main, saved, b"%PDF-" if extension == "pdf" else b"{")
+    command(main, 4)
+    editor_value("PCB-0007")
+    command(main, 5)
+    editor_value("PCB-0008")
+    command(main, 1)
+    choose_file(process, saved)
+    wait_for(lambda: saved.name in text(main) and u.IsWindowEnabled(main), "technical document reopened", process)
+    editor_value("PCB-0008")
+    results["checks"].append("technical object insertion, recipe editing, Undo/Redo and edit after saved-document reopen")
+
+
+def audit(binary, output, extended, pictures=False, technical=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -369,6 +398,8 @@ def audit(binary, output, extended, pictures=False):
         if extended and binary.stem.lower() in {"img42", "scn42"}:
             audit_marks(process, main, binary, output, results)
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
+            if technical and binary.stem.lower() == "ppt42":
+                audit_technical_objects(process, main, binary, output, results)
             return results
         if binary.stem.lower() == "pdf42" and not startup:
             source = output / "input.pdf"
@@ -427,6 +458,8 @@ def audit(binary, output, extended, pictures=False):
             results["checks"].append("calibration sheet exported through the normal menu")
         if pictures and binary.stem.lower() == "xls42":
             audit_sheet_pictures(process, main, output, results)
+        if technical:
+            audit_technical_objects(process, main, binary, output, results)
         return results
     finally:
         if process.poll() is None:
@@ -446,6 +479,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--extended", action="store_true")
     parser.add_argument("--pictures", action="store_true")
+    parser.add_argument("--technical-objects", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -454,7 +488,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects))
             except Exception as error:
                 results.append({"app": app, "error": str(error)})
             print(json.dumps(results[-1]), flush=True)

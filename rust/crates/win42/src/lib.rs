@@ -1,4 +1,56 @@
+pub use label42::{Format as BarcodeFormat, TechnicalElement};
 use std::path::{Path, PathBuf};
+pub struct TechnicalTarget {
+    pub id: u64,
+    pub title: String,
+    pub element: TechnicalElement,
+}
+impl TechnicalTarget {
+    pub fn new(id: u64, element: TechnicalElement) -> Self {
+        let title = element
+            .symbol_id
+            .as_deref()
+            .and_then(|id| label42::symbols().iter().find(|symbol| symbol.id == id))
+            .map(|symbol| symbol.title.to_owned())
+            .unwrap_or_else(|| {
+                element
+                    .value
+                    .chars()
+                    .take(80)
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect()
+            });
+        Self { id, title, element }
+    }
+}
+pub struct TechnicalRaster {
+    pub element: TechnicalElement,
+    pub png: Vec<u8>,
+    pub width_points: f64,
+    pub height_points: f64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+impl TechnicalRaster {
+    pub fn render(element: TechnicalElement) -> Result<Self, String> {
+        let png = element.png()?;
+        let decoded = image::load_from_memory(&png)
+            .map_err(|e| e.to_string())?
+            .into_rgba8();
+        let width_points = element.width_mm * 72.0 / 25.4;
+        let height_points = width_points * f64::from(decoded.height()) / f64::from(decoded.width());
+        Ok(Self {
+            element,
+            png,
+            width_points,
+            height_points,
+            pixel_width: decoded.width(),
+            pixel_height: decoded.height(),
+            rgba: decoded.into_raw().into(),
+        })
+    }
+}
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -164,6 +216,25 @@ pub trait App {
     }
     fn supports_production(&self) -> bool {
         false
+    }
+    fn supports_technical_elements(&self) -> bool {
+        false
+    }
+    fn can_insert_technical_element(&self) -> bool {
+        self.supports_technical_elements()
+    }
+    fn technical_targets(&self) -> Vec<TechnicalTarget> {
+        Vec::new()
+    }
+    fn selected_technical_target(&self) -> Option<u64> {
+        None
+    }
+    fn apply_technical_element(
+        &mut self,
+        _id: Option<u64>,
+        _raster: TechnicalRaster,
+    ) -> Result<(), String> {
+        Err("Technical elements are unavailable".into())
     }
     fn label_source(&self) -> Result<LabelSource, String> {
         Ok(LabelSource::Text(String::new()))

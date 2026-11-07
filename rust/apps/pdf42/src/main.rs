@@ -272,7 +272,90 @@ impl Pdf {
         Ok(())
     }
 }
+fn technical_id(selection: pdf42_core::AnnotationSelection) -> u64 {
+    match selection {
+        pdf42_core::AnnotationSelection::New(index) => (index as u64) * 2 + 1,
+        pdf42_core::AnnotationSelection::Existing((object, generation)) => {
+            (u64::from(object) << 17) | (u64::from(generation) << 1)
+        }
+    }
+}
 impl win42::App for Pdf {
+    fn supports_technical_elements(&self) -> bool {
+        true
+    }
+    fn can_insert_technical_element(&self) -> bool {
+        self.doc.as_ref().is_some_and(PdfDocument::allows_changes)
+    }
+    fn technical_targets(&self) -> Vec<win42::TechnicalTarget> {
+        let Some(doc) = &self.doc else {
+            return Vec::new();
+        };
+        doc.technical_stamps(doc.current())
+            .into_iter()
+            .filter_map(|(selection, rect, recipe)| {
+                win42::TechnicalElement::from_description(&recipe).map(|mut element| {
+                    element.width_mm = (rect[2] - rect[0]).abs() * 25.4 / 72.0;
+                    win42::TechnicalTarget::new(technical_id(selection), element)
+                })
+            })
+            .collect()
+    }
+    fn selected_technical_target(&self) -> Option<u64> {
+        self.selected_annotation.map(technical_id)
+    }
+    fn apply_technical_element(
+        &mut self,
+        target: Option<u64>,
+        raster: win42::TechnicalRaster,
+    ) -> Result<(), String> {
+        let doc = self.doc.as_mut().ok_or("Open a PDF first")?;
+        if !doc.allows_changes() {
+            return Err("This PDF does not permit changes".into());
+        }
+        let bounds = doc.page_box(doc.current())?;
+        let existing = target
+            .map(|id| {
+                doc.technical_stamps(doc.current())
+                    .into_iter()
+                    .find(|(selection, _, _)| technical_id(*selection) == id)
+                    .ok_or("The technical object no longer exists")
+            })
+            .transpose()?;
+        let (left, bottom) = existing.as_ref().map_or(
+            (
+                (bounds[0] + bounds[2] - raster.width_points) / 2.0,
+                (bounds[1] + bounds[3] - raster.height_points) / 2.0,
+            ),
+            |(_, rect, _)| (rect[0].min(rect[2]), rect[1].min(rect[3])),
+        );
+        let rect = [
+            left,
+            bottom,
+            left + raster.width_points,
+            bottom + raster.height_points,
+        ];
+        if rect[0] < bounds[0] || rect[1] < bounds[1] || rect[2] > bounds[2] || rect[3] > bounds[3]
+        {
+            return Err("Choose a smaller width: the technical object must fit on the page".into());
+        }
+        self.selected_annotation = Some(doc.replace_technical_stamp(
+            doc.current(),
+            existing.map(|v| v.0),
+            rect,
+            pdf42_core::ImageStamp {
+                width: raster.pixel_width,
+                height: raster.pixel_height,
+                rgba: raster.rgba,
+            },
+            raster.element.description()?,
+        )?);
+        #[cfg(windows)]
+        self.search_hits.clear();
+        self.branch();
+        self.request_render()?;
+        Ok(())
+    }
     fn supports_production(&self) -> bool {
         true
     }
@@ -2523,5 +2606,64 @@ mod tests {
         b.action(11).unwrap();
         assert_eq!(b.doc.as_ref().unwrap().page_count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod technical_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn technical_recipe_survives_pdf_reopen_and_atomic_replacement() {
+        let dir = std::env::temp_dir().join(format!("pdf42-technical-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("input.pdf");
+        let output = dir.join("output.pdf");
+        let mut scan = scn42_core::ScanDocument::new();
+        scan.add_rgba(800, 800, vec![255; 800 * 800 * 4]).unwrap();
+        scan.export_pdf(&input).unwrap();
+        let mut app = Pdf::default();
+        app.doc = Some(PdfDocument::open(&input).unwrap());
+        let first = win42::TechnicalElement {
+            symbol_id: None,
+            code_type: win42::BarcodeFormat::Qr,
+            value: "PCB-0007".into(),
+            width_mm: 20.0,
+            caption: false,
+        };
+        app.apply_technical_element(None, win42::TechnicalRaster::render(first.clone()).unwrap())
+            .unwrap();
+        let id = app.technical_targets()[0].id;
+        let mut second = first.clone();
+        second.value = "PCB-0008".into();
+        second.width_mm = 25.0;
+        app.apply_technical_element(
+            Some(id),
+            win42::TechnicalRaster::render(second.clone()).unwrap(),
+        )
+        .unwrap();
+        app.action(4).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0007");
+        app.action(5).unwrap();
+        app.doc.as_mut().unwrap().save_as(&output).unwrap();
+        app.doc = Some(PdfDocument::open(&output).unwrap());
+        let target = &app.technical_targets()[0];
+        assert_eq!(target.element.value, "PCB-0008");
+        app.apply_technical_element(
+            Some(target.id),
+            win42::TechnicalRaster::render(first.clone()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.technical_targets().len(), 1);
+        app.action(4).unwrap();
+        assert_eq!(app.technical_targets().len(), 1);
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0008");
+        app.action(5).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0007");
+        let (bytes, _) = app.doc.as_ref().unwrap().save_snapshot().unwrap();
+        std::fs::write(&output, bytes).unwrap();
+        let restored = PdfDocument::open(&output).unwrap();
+        assert_eq!(restored.technical_stamps(0).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

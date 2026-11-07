@@ -49,6 +49,8 @@ const CONFIGURE_CALIBRATION: u16 = 65513;
 const TOGGLE_CALIBRATION: u16 = 65512;
 const CALIBRATION_SHEET: u16 = 65511;
 const TOGGLE_PROOFING: u16 = 65510;
+const INSERT_TECHNICAL: u16 = 65509;
+const EDIT_TECHNICAL: u16 = 65508;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -549,6 +551,24 @@ unsafe fn refresh() {
                 MF_GRAYED
             },
     );
+    let (insert_technical, edit_technical) = STATE.with(|state| {
+        let state = state.borrow();
+        let app = &state.as_ref().unwrap().app;
+        (
+            app.can_insert_technical_element(),
+            !app.technical_targets().is_empty(),
+        )
+    });
+    for (id, enabled) in [
+        (INSERT_TECHNICAL, insert_technical),
+        (EDIT_TECHNICAL, insert_technical && edit_technical),
+    ] {
+        EnableMenuItem(
+            menu,
+            id as u32,
+            MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+        );
+    }
     let calibration_enabled = STATE.with(|state| state.borrow().as_ref().unwrap().calibrate_print);
     CheckMenuItem(
         menu,
@@ -1358,6 +1378,80 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
     }
     Ok(())
 }
+unsafe fn technical_command(hwnd: HWND, edit: bool) -> Result<(), String> {
+    let enabled = STATE.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .app
+            .can_insert_technical_element()
+    });
+    if !enabled {
+        return Ok(());
+    }
+    let (target, request) = if edit {
+        let (targets, selected) = STATE.with(|state| {
+            let state = state.borrow();
+            let app = &state.as_ref().unwrap().app;
+            (app.technical_targets(), app.selected_technical_target())
+        });
+        if targets.is_empty() {
+            return Err("The current document has no editable symbols or codes.".into());
+        }
+        let selected = selected
+            .and_then(|id| targets.iter().position(|target| target.id == id))
+            .unwrap_or(0);
+        let selected = if targets.len() == 1 {
+            0
+        } else {
+            let labels = targets
+                .iter()
+                .map(|target| format!("{} — {}", target.id, target.title))
+                .collect::<Vec<_>>();
+            let request = crate::InputRequest {
+                title: "Choose Symbol or Code",
+                fields: vec![("Object", labels[selected].clone())],
+            };
+            let Some(values) =
+                crate::prompt::show_choices(hwnd, &request, false, false, &[(0, labels.clone())])
+            else {
+                return Ok(());
+            };
+            labels
+                .iter()
+                .position(|label| label == &values[0])
+                .ok_or("Choose an existing technical object")?
+        };
+        let target = &targets[selected];
+        (
+            Some(target.id),
+            crate::production::edit_technical_request(&target.element),
+        )
+    } else {
+        (None, crate::production::technical_request())
+    };
+    let Some(values) = crate::prompt::show_choices(
+        hwnd,
+        &request,
+        false,
+        false,
+        &crate::production::technical_choices(),
+    ) else {
+        return Ok(());
+    };
+    let raster = crate::TechnicalRaster::render(crate::production::technical_element(&values)?)?;
+    STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .app
+            .apply_technical_element(target, raster)
+    })?;
+    refresh();
+    Ok(())
+}
 
 unsafe fn pick_library_image(hwnd: HWND, directory: &Path) -> Result<Option<PathBuf>, String> {
     use windows::{
@@ -1805,11 +1899,20 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             }
             if matches!(
                 id,
-                CREATE_LABEL_SHEET | CREATE_BARCODE | IMPORT_MARK | INSERT_MARK | EXPORT_TECHNICAL
+                CREATE_LABEL_SHEET
+                    | CREATE_BARCODE
+                    | IMPORT_MARK
+                    | INSERT_MARK
+                    | EXPORT_TECHNICAL
+                    | INSERT_TECHNICAL
+                    | EDIT_TECHNICAL
             ) {
                 let result = match id {
                     CREATE_LABEL_SHEET | CREATE_BARCODE | EXPORT_TECHNICAL => {
                         production_command(hwnd, id)
+                    }
+                    INSERT_TECHNICAL | EDIT_TECHNICAL => {
+                        technical_command(hwnd, id == EDIT_TECHNICAL)
                     }
                     _ => mark_command(hwnd, id),
                 };
@@ -2735,7 +2838,7 @@ pub fn run(app: Box<dyn App>) {
             };
             item(menu, spec.id, &title);
         }
-        if app.supports_production() {
+        if app.supports_production() || app.supports_technical_elements() {
             let menu =
                 if let Some((_, menu)) = groups.iter().find(|(name, _)| *name == "Production") {
                     *menu
@@ -2744,9 +2847,17 @@ pub fn run(app: Box<dyn App>) {
                     groups.push(("Production", menu));
                     menu
                 };
-            item(menu, CREATE_BARCODE, "Create Barcode…");
+            if app.supports_production() {
+                item(menu, CREATE_BARCODE, "Create Barcode…");
+            }
             item(menu, EXPORT_TECHNICAL, "Create Symbol or Code…");
-            item(menu, CREATE_LABEL_SHEET, "Create Label Sheet…");
+            if app.supports_production() {
+                item(menu, CREATE_LABEL_SHEET, "Create Label Sheet…");
+            }
+            if app.supports_technical_elements() {
+                item(menu, INSERT_TECHNICAL, "Insert Symbol or Code…");
+                item(menu, EDIT_TECHNICAL, "Edit Symbol or Code…");
+            }
         }
         for (name, menu) in groups {
             AppendMenuW(bar, MF_POPUP, menu as usize, wide(name).as_ptr());

@@ -453,6 +453,92 @@ impl Doc {
     }
 }
 impl App for Doc {
+    fn supports_technical_elements(&self) -> bool {
+        true
+    }
+    fn technical_targets(&self) -> Vec<win42::TechnicalTarget> {
+        self.doc
+            .state()
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Image(image) => {
+                    win42::TechnicalElement::from_png(&image.data).map(|mut element| {
+                        element.width_mm = f64::from(image.width_twips) * 25.4 / 1440.0;
+                        win42::TechnicalTarget::new(image.id, element)
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    fn apply_technical_element(
+        &mut self,
+        target: Option<u64>,
+        raster: win42::TechnicalRaster,
+    ) -> Result<(), String> {
+        let paragraph = self
+            .doc
+            .position_from_utf16(self.selection.1)
+            .ok()
+            .map(|p| p.paragraph);
+        self.doc
+            .transact(|state| {
+                let width = (raster.width_points * 20.0).round() as u32;
+                let height = (raster.height_points * 20.0).round() as u32;
+                if let Some(id) = target {
+                    let image = state
+                        .blocks
+                        .iter_mut()
+                        .find_map(|block| match block {
+                            Block::Image(image) if image.id == id => Some(image),
+                            _ => None,
+                        })
+                        .ok_or(doc42_core::rich::Error::Invalid(
+                            "The technical object no longer exists".into(),
+                        ))?;
+                    if win42::TechnicalElement::from_png(&image.data).is_none() {
+                        return Err(doc42_core::rich::Error::Invalid(
+                            "Choose a technical object".into(),
+                        ));
+                    }
+                    image.data = raster.png;
+                    image.mime = "image/png".into();
+                    image.width_twips = width;
+                    image.height_twips = height;
+                } else {
+                    let index = state
+                        .blocks
+                        .iter()
+                        .position(
+                            |block| matches!(block, Block::Paragraph(p) if Some(p.id) == paragraph),
+                        )
+                        .map_or(state.blocks.len(), |index| index + 1);
+                    let id = state.next_id;
+                    state.next_id = id.checked_add(1).ok_or(doc42_core::rich::Error::Limit)?;
+                    state.blocks.insert(
+                        index,
+                        Block::Image(Image {
+                            id,
+                            mime: "image/png".into(),
+                            data: raster.png,
+                            width_twips: width,
+                            height_twips: height,
+                            alt: String::new(),
+                        }),
+                    );
+                    for section in &mut state.sections {
+                        if section.start_block >= index && section.start_block != 0 {
+                            section.start_block += 1;
+                        }
+                    }
+                    state.selection = Selection::default();
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
     fn supports_production(&self) -> bool {
         true
     }
@@ -3396,5 +3482,58 @@ mod find_adapter_regression {
         assert_eq!(a.find_next("😀", 2).unwrap(), Some((6, 8)));
         assert_eq!(a.find_next("😀", 8).unwrap(), Some((0, 2)));
         assert_eq!(a.find_next("missing", 0).unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod technical_regression {
+    use super::*;
+    fn element(value: &str, width: f64) -> win42::TechnicalElement {
+        win42::TechnicalElement {
+            symbol_id: None,
+            code_type: win42::BarcodeFormat::Qr,
+            value: value.into(),
+            width_mm: width,
+            caption: false,
+        }
+    }
+    #[test]
+    fn technical_insert_edit_undo_and_word_round_trip() {
+        let mut app = Doc::new();
+        let first = element("PCB-0007", 20.0);
+        app.apply_technical_element(None, win42::TechnicalRaster::render(first.clone()).unwrap())
+            .unwrap();
+        let id = app.technical_targets()[0].id;
+        let second = element("PCB-0008", 25.0);
+        app.apply_technical_element(
+            Some(id),
+            win42::TechnicalRaster::render(second.clone()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0008");
+        app.action(4).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0007");
+        app.action(5).unwrap();
+        for format in [Format::Project, Format::Docx, Format::Odt, Format::Rtf] {
+            let bytes = app.doc.encode(format).unwrap();
+            let restored = RichDocument::decode(&bytes, format).unwrap();
+            let image = restored
+                .state()
+                .blocks
+                .iter()
+                .find_map(|block| {
+                    if let Block::Image(image) = block {
+                        Some(image)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert_eq!(
+                win42::TechnicalElement::from_png(&image.data),
+                Some(second.clone())
+            );
+            assert!((f64::from(image.width_twips) * 25.4 / 1440.0 - 25.0).abs() < 0.02);
+        }
     }
 }

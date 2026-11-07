@@ -1470,9 +1470,26 @@ impl PdfDocument {
     pub fn add_image_stamp(
         &mut self,
         index: usize,
-        mut rect: [f64; 4],
+        rect: [f64; 4],
         image: ImageStamp,
     ) -> Result<(), String> {
+        self.replace_technical_stamp(index, None, rect, image, String::new())
+            .map(|_| ())
+    }
+    /// Insert or replace one image annotation as a single history transaction.
+    pub fn replace_technical_stamp(
+        &mut self,
+        index: usize,
+        selection: Option<AnnotationSelection>,
+        mut rect: [f64; 4],
+        image: ImageStamp,
+        recipe: String,
+    ) -> Result<AnnotationSelection, String> {
+        if !recipe.is_empty()
+            && (!recipe.starts_with("Suite42.TechnicalElement.v1:") || recipe.len() > 24_000)
+        {
+            return Err("Invalid technical object recipe".into());
+        }
         let page = *self
             .history
             .current()
@@ -1499,17 +1516,86 @@ impl PdfDocument {
             return Err("Drag a larger stamp area".into());
         }
         let mut state = self.history.current().clone();
+        if let Some(selection) = selection {
+            match selection {
+                AnnotationSelection::New(i) => {
+                    let old = state
+                        .annotations
+                        .get(i)
+                        .ok_or("The technical object no longer exists")?;
+                    if old.page != page || !old.contents.starts_with("Suite42.TechnicalElement.v1:")
+                    {
+                        return Err("Choose a technical object on the current page".into());
+                    }
+                    state.annotations.remove(i);
+                }
+                AnnotationSelection::Existing(id) => {
+                    if !self
+                        .technical_stamps(index)
+                        .iter()
+                        .any(|(candidate, _, _)| *candidate == selection)
+                        || !state.deleted_annotations.insert(id)
+                    {
+                        return Err("The technical object no longer exists".into());
+                    }
+                }
+            }
+        }
+        let target = AnnotationSelection::New(state.annotations.len());
         state.annotations.push(Annotation {
             page,
             kind: AnnotationKind::ImageStamp,
             rect,
-            contents: String::new(),
+            contents: recipe,
             points: Vec::new(),
             quads: Vec::new(),
             image: Some(image),
         });
         self.history.apply(state);
-        Ok(())
+        Ok(target)
+    }
+    pub fn technical_stamps(&self, index: usize) -> Vec<(AnnotationSelection, [f64; 4], String)> {
+        let Some(&page) = self.history.current().pages.get(index) else {
+            return Vec::new();
+        };
+        let state = self.history.current();
+        let mut output = state
+            .annotations
+            .iter()
+            .enumerate()
+            .filter(|(_, annotation)| {
+                annotation.page == page
+                    && annotation.kind == AnnotationKind::ImageStamp
+                    && annotation
+                        .contents
+                        .starts_with("Suite42.TechnicalElement.v1:")
+            })
+            .map(|(index, annotation)| {
+                (
+                    AnnotationSelection::New(index),
+                    annotation.rect,
+                    annotation.contents.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (id, rect) in self.existing_annotations(page) {
+            if state.deleted_annotations.contains(&id) {
+                continue;
+            }
+            let Some(recipe) = self
+                .doc
+                .get_dictionary(id)
+                .ok()
+                .and_then(|d| d.get(b"Suite42TechnicalElement").ok())
+                .and_then(|value| lopdf::decode_text_string(value).ok())
+            else {
+                continue;
+            };
+            if recipe.starts_with("Suite42.TechnicalElement.v1:") && recipe.len() <= 24_000 {
+                output.push((AnnotationSelection::Existing(id), rect, recipe));
+            }
+        }
+        output
     }
     pub fn add_ink(&mut self, index: usize, points: &[[f64; 2]]) -> Result<(), String> {
         let page = *self
@@ -3828,6 +3914,17 @@ impl PdfDocument {
                 AnnotationKind::Note | AnnotationKind::FreeText | AnnotationKind::Stamp
             ) {
                 annot.set("Contents", lopdf::text_string(&annotation.contents));
+            }
+            if annotation.kind == AnnotationKind::ImageStamp
+                && annotation
+                    .contents
+                    .starts_with("Suite42.TechnicalElement.v1:")
+            {
+                annot.set(
+                    "Suite42TechnicalElement",
+                    lopdf::text_string(&annotation.contents),
+                );
+                annot.set("Contents", lopdf::text_string("Technical symbol or code"));
             }
             if annotation.kind == AnnotationKind::Link {
                 annot.set("A", lopdf::dictionary!{"S"=>"URI", "URI"=>Object::string_literal(annotation.contents.as_bytes())});

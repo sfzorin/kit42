@@ -386,6 +386,28 @@ impl Presentation {
         }
         self.insert_content(ObjectKind::Picture, String::new(), bytes, Vec::new())
     }
+    pub fn insert_picture_sized(
+        &mut self,
+        bytes: Vec<u8>,
+        width: f64,
+        height: f64,
+    ) -> Result<u64, String> {
+        if bytes.is_empty()
+            || !width.is_finite()
+            || !height.is_finite()
+            || width <= 0.0
+            || height <= 0.0
+        {
+            return Err("Invalid picture dimensions".into());
+        }
+        self.insert_content_sized(
+            ObjectKind::Picture,
+            String::new(),
+            bytes,
+            Vec::new(),
+            [width, height],
+        )
+    }
     pub fn insert_table(&mut self, rows: usize, columns: usize) -> Result<u64, String> {
         if rows == 0 || columns == 0 || rows > 100 || columns > 100 {
             return Err("Invalid table size".into());
@@ -404,6 +426,16 @@ impl Presentation {
         media: Vec<u8>,
         cells: Vec<Vec<String>>,
     ) -> Result<u64, String> {
+        self.insert_content_sized(kind, text, media, cells, [180.0, 90.0])
+    }
+    fn insert_content_sized(
+        &mut self,
+        kind: ObjectKind,
+        text: String,
+        media: Vec<u8>,
+        cells: Vec<Vec<String>>,
+        size: [f64; 2],
+    ) -> Result<u64, String> {
         let mut state = self.history.current().clone();
         let slide = &mut state.deck.slides[self.current()];
         let id = slide.next_object_id;
@@ -413,8 +445,8 @@ impl Presentation {
             group_id: None,
             x: 100.0,
             y: 120.0,
-            width: 180.0,
-            height: 90.0,
+            width: size[0],
+            height: size[1],
             rotation_degrees: 0.0,
             kind,
             fill: [220, 230, 245],

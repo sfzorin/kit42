@@ -710,6 +710,53 @@ impl Ppt {
     }
 }
 impl win42::App for Ppt {
+    fn supports_technical_elements(&self) -> bool {
+        true
+    }
+    fn technical_targets(&self) -> Vec<win42::TechnicalTarget> {
+        self.deck.slides()[self.deck.current()]
+            .objects
+            .iter()
+            .filter(|object| object.kind == ppt42_core::ObjectKind::Picture)
+            .filter_map(|object| {
+                win42::TechnicalElement::from_png(&object.media).map(|mut element| {
+                    element.width_mm = object.width * 25.4 / 72.0;
+                    win42::TechnicalTarget::new(object.id, element)
+                })
+            })
+            .collect()
+    }
+    fn selected_technical_target(&self) -> Option<u64> {
+        self.selected_object
+    }
+    fn apply_technical_element(
+        &mut self,
+        id: Option<u64>,
+        raster: win42::TechnicalRaster,
+    ) -> Result<(), String> {
+        let id = if let Some(id) = id {
+            let mut object = self.deck.slides()[self.deck.current()]
+                .objects
+                .iter()
+                .find(|object| object.id == id)
+                .cloned()
+                .ok_or("The technical object no longer exists")?;
+            if win42::TechnicalElement::from_png(&object.media).is_none() {
+                return Err("Choose a technical object".into());
+            }
+            object.media = raster.png;
+            object.width = raster.width_points;
+            object.height = raster.height_points;
+            self.deck.update_object(object)?;
+            id
+        } else {
+            self.deck
+                .insert_picture_sized(raster.png, raster.width_points, raster.height_points)?
+        };
+        self.selected_object = Some(id);
+        self.selected_objects.clear();
+        Ok(())
+    }
     fn inline_rich_rect(&self) -> Option<win42::CanvasRect> {
         let o = self.rich_draft.as_ref()?;
         Some(win42::CanvasRect {
@@ -969,7 +1016,7 @@ impl win42::App for Ppt {
             },
             win42::FileFormat {
                 id: "json",
-                title: "Suite42 slides JSON",
+                title: "off42 slides JSON",
                 extensions: &["json"],
             },
         ]
@@ -1519,7 +1566,7 @@ impl win42::App for Ppt {
         vec![
             win42::FileFormat {
                 id: "json",
-                title: "Suite42 slides JSON",
+                title: "off42 slides JSON",
                 extensions: &["json"],
             },
             win42::FileFormat {
@@ -2651,5 +2698,53 @@ mod identity_regression {
         assert!(!reopened.can_redo());
         assert_eq!(reopened.deck.slides()[1].body, "branch\r\nend");
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod technical_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn technical_insert_edit_and_office_round_trip() {
+        let mut app = Ppt::new(Presentation::new());
+        let first = win42::TechnicalElement {
+            symbol_id: None,
+            code_type: win42::BarcodeFormat::Qr,
+            value: "PCB-0007".into(),
+            width_mm: 20.0,
+            caption: false,
+        };
+        app.apply_technical_element(None, win42::TechnicalRaster::render(first.clone()).unwrap())
+            .unwrap();
+        let id = app.technical_targets()[0].id;
+        let mut second = first.clone();
+        second.value = "PCB-0008".into();
+        second.width_mm = 25.0;
+        app.apply_technical_element(
+            Some(id),
+            win42::TechnicalRaster::render(second.clone()).unwrap(),
+        )
+        .unwrap();
+        app.action(4).unwrap();
+        assert_eq!(app.technical_targets()[0].element, first);
+        app.action(5).unwrap();
+        for format in ["pptx", "odp"] {
+            let (_, bytes) = app.save_snapshot(format).unwrap().unwrap();
+            let restored = if format == "pptx" {
+                ppt42_core::pptx::import(&bytes).unwrap().0
+            } else {
+                ppt42_core::odp::import(&bytes).unwrap()
+            };
+            let restored = Ppt::new(restored);
+            assert_eq!(restored.technical_targets().len(), 1);
+            let actual = &restored.technical_targets()[0].element;
+            assert_eq!(actual.value, second.value);
+            assert_eq!(actual.code_type, second.code_type);
+            assert_eq!(actual.symbol_id, second.symbol_id);
+            assert_eq!(actual.caption, second.caption);
+            // Office geometry is quantized to integral EMUs (1/914400 inch).
+            assert!((actual.width_mm - second.width_mm).abs() < 0.0001);
+        }
     }
 }

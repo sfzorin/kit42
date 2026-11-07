@@ -20,6 +20,10 @@ on:
         description: Include spreadsheet picture UI checks on a compatible build artifact
         type: boolean
         default: false
+      audit_technical:
+        description: Include technical object insertion and editing checks on a compatible build artifact
+        type: boolean
+        default: false
 jobs:
   windows:
     if: inputs.audit_only != true
@@ -69,7 +73,7 @@ jobs:
           Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/off42/licenses/NotoSans-OFL.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -141,11 +145,13 @@ jobs:
         env:
           AUDIT_RUN_ID: ${{ inputs.audit_run_id }}
           AUDIT_PICTURES: ${{ inputs.audit_pictures }}
+          AUDIT_TECHNICAL: ${{ inputs.audit_technical }}
         shell: pwsh
         run: |
           $extra = @()
           if ($env:AUDIT_RUN_ID) { $extra += '--extended' }
           if ($env:AUDIT_PICTURES -eq 'true') { $extra += '--pictures' }
+          if ($env:AUDIT_TECHNICAL -eq 'true') { $extra += '--technical-objects' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()

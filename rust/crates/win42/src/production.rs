@@ -192,6 +192,25 @@ pub(crate) fn technical_request() -> InputRequest {
         ],
     }
 }
+pub(crate) fn edit_technical_request(element: &label42::TechnicalElement) -> InputRequest {
+    let kind = element
+        .symbol_id
+        .as_ref()
+        .and_then(|id| label42::symbols().iter().find(|symbol| symbol.id == *id))
+        .map(|symbol| symbol.title)
+        .unwrap_or(match element.code_type {
+            Format::Qr => "QR",
+            Format::DataMatrix => "Data Matrix",
+            Format::Code128 => "Code 128",
+            Format::Aztec => "Aztec",
+        });
+    let mut request = technical_request();
+    request.fields[0].1 = kind.into();
+    request.fields[1].1 = element.value.clone();
+    request.fields[2].1 = format!("{:.3}", element.width_mm);
+    request.fields[3].1 = if element.caption { "yes" } else { "no" }.into();
+    request
+}
 
 pub(crate) fn technical_choices() -> Vec<(usize, Vec<String>)> {
     let mut types = vec![

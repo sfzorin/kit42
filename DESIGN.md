@@ -472,3 +472,7 @@ single movement commit at pointer release. Drag previews stay in the host; docum
 anchors, point offsets and physical size. Frozen panes clip objects using the same geometry as cells.
 XLS42 preserves original PNG bytes (including technical recipes) in projects and Office exports; imported
 Office pictures retain provenance so only the corresponding original drawing node is replaced.
+
+Shared Windows technical-object commands pass an immutable rendered object to an app adapter. Each
+adapter inserts or replaces the object in one document-history transaction and retains the portable
+recipe. Object choice uses current document identities; PDF recipes share the macOS annotation key.

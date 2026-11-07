@@ -85,6 +85,69 @@ impl Xls {
     }
 }
 impl win42::App for Xls {
+    fn supports_technical_elements(&self) -> bool {
+        true
+    }
+    fn can_insert_technical_element(&self) -> bool {
+        !self.book.is_read_only() && !self.book.is_protected()
+    }
+    fn technical_targets(&self) -> Vec<win42::TechnicalTarget> {
+        self.book
+            .images()
+            .iter()
+            .filter_map(|picture| {
+                win42::TechnicalElement::from_png(&picture.data).map(|mut element| {
+                    element.width_mm = picture.width_points * 25.4 / 72.0;
+                    win42::TechnicalTarget::new(picture.id, element)
+                })
+            })
+            .collect()
+    }
+    fn selected_technical_target(&self) -> Option<u64> {
+        self.selected_picture
+    }
+    fn apply_technical_element(
+        &mut self,
+        id: Option<u64>,
+        raster: win42::TechnicalRaster,
+    ) -> Result<(), String> {
+        let description = raster.element.description()?;
+        if let Some(id) = id {
+            let mut picture = self
+                .book
+                .images()
+                .iter()
+                .find(|picture| picture.id == id)
+                .cloned()
+                .ok_or("The technical object no longer exists")?;
+            if win42::TechnicalElement::from_png(&picture.data).is_none() {
+                return Err("Choose a technical object".into());
+            }
+            picture.data = raster.png.into();
+            picture.pixel_width = raster.pixel_width;
+            picture.pixel_height = raster.pixel_height;
+            picture.width_points = raster.width_points;
+            picture.height_points = raster.height_points;
+            picture.description = description;
+            self.book.update_image(picture).map_err(|e| e.to_string())?;
+            self.selected_picture = Some(id);
+        } else {
+            self.selected_picture = Some(
+                self.book
+                    .insert_image(
+                        self.row,
+                        self.col,
+                        raster.png,
+                        raster.width_points,
+                        raster.height_points,
+                        description,
+                    )
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        self.preview = None;
+        Ok(())
+    }
     fn mark_file_action(&self) -> Option<u16> {
         Some(76)
     }
@@ -2405,6 +2468,64 @@ mod picture_regression {
             assert_eq!(
                 label42::TechnicalElement::from_png(&restored.images()[0].data),
                 Some(recipe.clone())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod technical_edit_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn editing_a_code_is_one_transaction_and_keeps_its_anchor() {
+        let mut app = Xls {
+            book: Workbook::new(8, 8).unwrap(),
+            row: 3,
+            col: 4,
+            preview: None,
+            visible_cache: Default::default(),
+            picture_cache: Default::default(),
+            selected_picture: None,
+        };
+        let first = win42::TechnicalElement {
+            symbol_id: None,
+            code_type: win42::BarcodeFormat::Qr,
+            value: "PCB-0007".into(),
+            width_mm: 20.0,
+            caption: false,
+        };
+        app.apply_technical_element(None, win42::TechnicalRaster::render(first.clone()).unwrap())
+            .unwrap();
+        let id = app.technical_targets()[0].id;
+        let original = app.book.images()[0].clone();
+        let mut next = first.clone();
+        next.value = "PCB-0008".into();
+        next.width_mm = 25.0;
+        app.apply_technical_element(
+            Some(id),
+            win42::TechnicalRaster::render(next.clone()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            (app.book.images()[0].row, app.book.images()[0].column),
+            (3, 4)
+        );
+        assert_eq!(app.technical_targets()[0].element, next);
+        app.action(4).unwrap();
+        assert_eq!(app.book.images(), &[original]);
+        app.action(5).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0008");
+        for kind in ["xlsx", "ods"] {
+            let bytes = if kind == "xlsx" {
+                app.book.xlsx_bytes().unwrap()
+            } else {
+                app.book.ods_bytes().unwrap()
+            };
+            let restored = Workbook::from_office_bytes(&bytes, kind).unwrap();
+            assert_eq!(
+                win42::TechnicalElement::from_png(&restored.images()[0].data),
+                Some(next.clone())
             );
         }
     }
