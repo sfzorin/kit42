@@ -491,3 +491,13 @@ The Windows host defers real menu/toolbar commands received while refreshing nat
 and TSF can pump messages inside a refresh; generated control notifications remain suppressed, while
 user commands are posted back in order after the refresh releases the model. Deferred commands are also
 flushed after smaller guarded control updates and normal command dispatch.
+
+## Windows language host
+
+The Rust host bundles exported macOS catalogs (reproduce with `rust/scripts/export-localizations.py`).
+`win42::localization` owns the twenty-language set, matching, process overrides and bounded atomic preferences
+in `%LOCALAPPDATA%/off42/Preferences/language.json`. View → Language confirms unsaved changes and restarts
+with the current saved path. Only UI keys pass through lookup; field data and document strings stay untouched.
+Choice prompts retain original values/indices independently from translated display labels. Prompt label heights
+are measured with the GUI font; Arabic labels align right without mirroring document geometry. Missing Windows
+keys use English. This does not establish full translation or proofing coverage.

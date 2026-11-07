@@ -1,3 +1,4 @@
+pub mod localization;
 pub use label42::{Format as BarcodeFormat, TechnicalElement};
 use std::path::{Path, PathBuf};
 pub struct TechnicalTarget {

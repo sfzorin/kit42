@@ -64,8 +64,10 @@ The local macOS packages are ad-hoc signed; this source publication does not ins
 ## Windows Rust workspace
 
 The separate Rust workspace implements the six apps for Windows. Its formats, runtime dependencies, build commands
-and current limitations are described in [rust/README.md](rust/README.md). Native Windows interaction, printing,
-scanner hardware and PDFium interoperability have not been verified on a Windows desktop; it is not a parity claim.
+and current limitations are described in [rust/README.md](rust/README.md). Native interaction and saved-output checks
+run on Windows CI; their scope and failures are recorded in [the parity tracker](rust/PARITY.md). Printer drivers,
+scanner hardware and full macOS feature parity remain unverified. The development branch adds a shared language
+picker and bundled catalogs; this has not yet shipped in the downloadable Windows preview.
 
 <a id="install"></a>
 

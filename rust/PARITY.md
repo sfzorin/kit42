@@ -7,7 +7,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
 | Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo | Verify command-line file opening, drag/drop, multiple windows, recents, recovery and associations |
-| Localization and appearance | English native host | Twenty interface languages, shared picker, dark mode, panel visibility and remembered layout |
+| Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify native switching/layout, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
@@ -51,3 +51,8 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   remember only settings; header signatures guard restored mappings. Portable tests cover source
   snapshots, merged covered slots, Undo, layout restoration and exclusion of document values from
   preferences. A native DOC-table/PDFium-output/preferences audit is included for the next build.
+
+- Language host changes pass 341 portable tests (one OCR test ignored) and Windows GNU compilation.
+  Translation checks cover all catalogs, language aliases, CLI paths and bounded preference round trips.
+  Numeric opt-in command tracing and a nonpublishing debug CI build support diagnosis of DOC42 About,
+  which still times out in runs 42347783278 and 42347967756. The earlier refresh deferral did not resolve it.

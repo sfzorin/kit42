@@ -440,7 +440,9 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
         elif binary.stem.lower() == "doc42":
             startup = output / "startup.rtf"
             startup.write_bytes(br"{\rtf1\ansi Board 0007}")
-    process = subprocess.Popen([str(binary)] + ([str(startup)] if startup else []))
+    environment = os.environ.copy()
+    environment["OFF42_UI_TRACE_FILE"] = str(output / (binary.stem + "-commands.log"))
+    process = subprocess.Popen([str(binary)] + ([str(startup)] if startup else []), env=environment)
     results = {"app": binary.name, "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "checks": []}
     try:
         main = modal(process, native_class="Suite42Native")

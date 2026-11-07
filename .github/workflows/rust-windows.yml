@@ -8,6 +8,10 @@ on:
     paths: ['rust/**', '.github/workflows/rust-windows.yml']
   workflow_dispatch:
     inputs:
+      quick_ui:
+        description: Build debug apps for fast native UI feedback; never publishes a release
+        type: boolean
+        default: false
       audit_only:
         description: Run native GUI audits against the current Windows preview
         type: boolean
@@ -39,7 +43,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/cache/restore@v4
+        if: inputs.quick_ui == true
+        id: debug-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target/debug
+          key: windows-native-debug-${{ hashFiles('rust/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: windows-native-debug-${{ hashFiles('rust/Cargo.lock') }}-
       - name: Provision pinned PDFium for file-engine tests
+        if: inputs.quick_ui != true
         shell: pwsh
         run: |
           python scripts/fetch-pdfium.py build/test-pdfium
@@ -47,9 +61,17 @@ jobs:
           New-Item -ItemType Directory -Force target/debug/deps | Out-Null
           Copy-Item build/test-pdfium/pdfium.dll target/debug/deps/pdfium.dll
       - run: cargo test --locked --workspace
-      - name: Build six native executables with Windows visual styles
+        if: inputs.quick_ui != true
+      - name: Build six native executables
+        id: build
         shell: pwsh
+        env:
+          QUICK_UI: ${{ inputs.quick_ui }}
         run: |
+          if ($env:QUICK_UI -eq 'true') {
+            cargo build --locked -p img42 -p doc42 -p xls42 -p ppt42 -p pdf42 -p scn42
+            exit $LASTEXITCODE
+          }
           Push-Location scripts
           rc.exe /fo windows-app.res windows-app.rc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -60,12 +82,15 @@ jobs:
 
       - name: Stage PDFium runtime and licenses
         shell: pwsh
+        env:
+          QUICK_UI: ${{ inputs.quick_ui }}
         run: |
+          $profile = if ($env:QUICK_UI -eq 'true') { 'debug' } else { 'release' }
           New-Item -ItemType Directory -Force build/off42 | Out-Null
           python scripts/fetch-pdfium.py build/off42
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($app in @('img42','doc42','xls42','ppt42','pdf42','scn42')) {
-            Copy-Item "target/release/$app.exe" "build/off42/$($app.ToUpper()).exe"
+            Copy-Item "target/$profile/$app.exe" "build/off42/$($app.ToUpper()).exe"
           }
           cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc | Out-File -Encoding utf8 build/metadata.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -75,6 +100,7 @@ jobs:
           if (Test-Path $rustLicenses) { Copy-Item -Recurse $rustLicenses build/off42/licenses/rust-toolchain }
           Copy-Item ../LICENSE build/off42/licenses/off42-LICENSE
           Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/off42/licenses/NotoSans-OFL.txt
+          "Commit: $env:GITHUB_SHA`nProfile: $profile`nWorkflow: $env:GITHUB_RUN_ID" | Out-File -Encoding utf8 build/off42/BUILD-IDENTITY.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
       - name: Audit native commands in the packaged apps
         run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources
@@ -89,8 +115,16 @@ jobs:
           name: Suite42-windows-x64
           path: rust/build/Suite42-windows-x64.zip
 
+      - uses: actions/cache/save@v4
+        if: always() && inputs.quick_ui == true && steps.build.outcome == 'success' && steps.debug-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target/debug
+          key: windows-native-debug-${{ hashFiles('rust/Cargo.lock') }}-${{ github.sha }}
+
   publish-preview:
-    if: startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-windows-preview.')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-windows-preview.')
     needs: windows
     runs-on: ubuntu-latest
     permissions:

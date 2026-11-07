@@ -112,3 +112,13 @@ data snapshot. Export does not edit the document.
 Label dialogs remember their layout, stock, code format and copy/start settings in local preferences.
 Column mappings are restored only when the source header signature matches; document text and code
 payloads are never stored in these preferences. Text labels and tabular sources have separate profiles.
+
+### Windows interface languages (development branch)
+
+View → Language lists the same twenty languages as macOS, using their native names. English is the default.
+The chosen language is stored for all six Windows apps; switching asks about unsaved work and restarts the app.
+`--language ru -- document.docx` overrides only the current process. Bundled catalogs translate matching menus,
+toolbar actions, prompt labels and choices; Windows-specific strings without a matching entry fall back to English.
+Document text, barcode values, filenames and formula syntax are not translated. Windows system dialogs follow
+Windows settings. Arabic prompt labels align right; document and grid coordinates retain their normal layout.
+Native language interaction and label layout still require verification; this is not a full translation coverage claim.

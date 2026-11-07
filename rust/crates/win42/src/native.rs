@@ -51,6 +51,7 @@ const CALIBRATION_SHEET: u16 = 65511;
 const TOGGLE_PROOFING: u16 = 65510;
 const INSERT_TECHNICAL: u16 = 65509;
 const EDIT_TECHNICAL: u16 = 65508;
+const LANGUAGE_FIRST: u16 = 64000;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -66,6 +67,7 @@ struct State {
     app: Box<dyn App>,
     calibrate_print: bool,
     deferred_commands: Vec<(u16, u16)>,
+    close_confirmed: bool,
     path: Option<PathBuf>,
     session: suite42_core::session::DocumentSession,
     async_open: Option<AsyncOpen>,
@@ -114,7 +116,7 @@ unsafe fn pick_folder(hwnd: HWND, title: &str) -> Option<String> {
             | FOS_PATHMUSTEXIST
             | FOS_NOCHANGEDIR;
         picker.SetOptions(flags)?;
-        let title = wide(title);
+        let title = wide(&crate::localization::text(title));
         picker.SetTitle(PCWSTR(title.as_ptr()))?;
         picker.Show(Some(WinHwnd(hwnd)))?;
         let item = picker.GetResult()?;
@@ -160,7 +162,7 @@ unsafe fn file_dialog(
         | if save { 0 } else { OFN_FILEMUSTEXIST };
     let title;
     if let Some(name) = private_title {
-        title = wide(name);
+        title = wide(&crate::localization::text(name));
         f.lpstrTitle = title.as_ptr();
         f.Flags |= OFN_DONTADDTORECENT;
     }
@@ -189,7 +191,7 @@ unsafe fn format_dialog(
             .map(|e| format!("*.{e}"))
             .collect::<Vec<_>>()
             .join(";");
-        filter.extend(format.title.encode_utf16());
+        filter.extend(crate::localization::text(format.title).encode_utf16());
         filter.push(0);
         filter.extend(pattern.encode_utf16());
         filter.push(0);
@@ -456,7 +458,7 @@ unsafe fn refresh() {
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Untitled".into()),
+                    .unwrap_or_else(|| crate::localization::text("Untitled")),
                 if s.app.dirty() { " *" } else { "" },
                 s.app.name()
             ),
@@ -1103,7 +1105,14 @@ unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
             open_document_path(path)
         } else {
             std::env::current_exe()
-                .and_then(|exe| std::process::Command::new(exe).arg("--").arg(path).spawn())
+                .and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .arg("--language")
+                        .arg(crate::localization::current().code)
+                        .arg("--")
+                        .arg(path)
+                        .spawn()
+                })
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         };
@@ -1673,6 +1682,43 @@ unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
     Ok(())
 }
 
+unsafe fn language_command(hwnd: HWND, index: usize) -> Result<(), String> {
+    let language = *crate::localization::LANGUAGES
+        .get(index)
+        .ok_or("Unknown UI language")?;
+    if language == crate::localization::current() || !confirm(hwnd) {
+        return Ok(());
+    }
+    EnableWindow(hwnd, 0);
+    let result = (|| -> Result<(), String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let path = STATE.with(|state| {
+            let state = state.borrow();
+            let state = state.as_ref().unwrap();
+            state
+                .session
+                .location()
+                .map(|location| location.path.clone())
+                .or_else(|| state.path.clone())
+        });
+        crate::localization::save(language)?;
+        let mut process = std::process::Command::new(executable);
+        process.arg("--language").arg(language.code).arg("--");
+        if let Some(path) = path {
+            process.arg(path);
+        }
+        process
+            .spawn()
+            .map_err(|error| format!("Could not restart this app: {error}"))?;
+        STATE.with(|state| state.borrow_mut().as_mut().unwrap().close_confirmed = true);
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        Ok(())
+    })();
+    if result.is_err() {
+        EnableWindow(hwnd, 1);
+    }
+    result
+}
 unsafe fn flush_deferred_commands() {
     if REFRESHING.with(|refreshing| refreshing.get()) {
         return;
@@ -1693,7 +1739,28 @@ unsafe fn flush_deferred_commands() {
         }
     }
 }
+fn trace_command(stage: &str, id: u16, notify: u16) {
+    use std::io::Write;
+    static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    if let Some(path) =
+        PATH.get_or_init(|| std::env::var_os("OFF42_UI_TRACE_FILE").map(PathBuf::from))
+    {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(
+                file,
+                "{} {stage} command={id} notify={notify} refreshing={}",
+                std::process::id(),
+                REFRESHING.with(|refreshing| refreshing.get())
+            );
+        }
+    }
+}
 unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
+    trace_command("received", id, notify);
     if REFRESHING.with(|refreshing| refreshing.get()) {
         // RichEdit/TSF can pump posted messages during a model refresh. Keep
         // actual menu and toolbar clicks; ignore generated control notifications.
@@ -1705,6 +1772,13 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                     }
                 }
             });
+        }
+        return;
+    }
+    if (LANGUAGE_FIRST..LANGUAGE_FIRST + crate::localization::LANGUAGES.len() as u16).contains(&id)
+    {
+        if let Err(error) = language_command(hwnd, usize::from(id - LANGUAGE_FIRST)) {
+            msg(hwnd, &error, MB_OK | MB_ICONERROR);
         }
         return;
     }
@@ -1736,7 +1810,12 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                     } else {
                         MF_UNCHECKED
                     };
-                AppendMenuW(menu, flags, id as usize, wide(title).as_ptr());
+                AppendMenuW(
+                    menu,
+                    flags,
+                    id as usize,
+                    wide(&crate::localization::menu(title)).as_ptr(),
+                );
             }
             let mut r: RECT = zeroed();
             GetWindowRect(button, &mut r);
@@ -1974,6 +2053,7 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             return;
         }
         ABOUT => {
+            trace_command("about_begin", id, notify);
             let text = STATE.with(|s| {
                 format!(
                     "{}\n\n{}",
@@ -1982,6 +2062,7 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 )
             });
             msg(hwnd, &text, MB_OK | MB_ICONINFORMATION);
+            trace_command("about_end", id, notify);
         }
         _ => {
             let (edit, rich) = STATE.with(|s| {
@@ -2310,7 +2391,7 @@ unsafe fn update_caption() {
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .map(|x| x.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Untitled".into()),
+                    .unwrap_or_else(|| crate::localization::text("Untitled")),
                 if s.app.dirty() { " *" } else { "" },
                 s.app.name()
             ),
@@ -2806,7 +2887,13 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                     return 0;
                 }
             }
-            if confirm(h) {
+            let confirmed = STATE.with(|state| {
+                state
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|state| state.close_confirmed)
+            });
+            if confirmed || confirm(h) {
                 cancel_pending_open();
                 DestroyWindow(h);
             }
@@ -2821,7 +2908,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
     }
 }
 unsafe fn item(m: HMENU, id: u16, t: &str) {
-    AppendMenuW(m, MF_STRING, id as usize, wide(t).as_ptr());
+    AppendMenuW(
+        m,
+        MF_STRING,
+        id as usize,
+        wide(&crate::localization::menu(t)).as_ptr(),
+    );
 }
 struct ComApartment;
 impl Drop for ComApartment {
@@ -2900,10 +2992,15 @@ pub fn run(app: Box<dyn App>) {
             file,
             MF_POPUP,
             printing as usize,
-            wide("Printer Calibration").as_ptr(),
+            wide(&crate::localization::menu("Printer Calibration")).as_ptr(),
         );
         item(file, EXIT, "E&xit");
-        AppendMenuW(bar, MF_POPUP, file as usize, wide("&File").as_ptr());
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            file as usize,
+            wide(&crate::localization::menu("&File")).as_ptr(),
+        );
         let editmenu = CreatePopupMenu();
         item(editmenu, UNDO, "&Undo\tCtrl+Z");
         item(editmenu, REDO, "&Redo\tCtrl+Y");
@@ -2917,14 +3014,42 @@ pub fn run(app: Box<dyn App>) {
         for &(id, t) in app.actions() {
             item(editmenu, id, t)
         }
-        AppendMenuW(bar, MF_POPUP, editmenu as usize, wide("&Edit").as_ptr());
-        if !app.view_actions().is_empty() {
-            let view = CreatePopupMenu();
-            for &(id, title) in app.view_actions() {
-                item(view, id, title);
-            }
-            AppendMenuW(bar, MF_POPUP, view as usize, wide("&View").as_ptr());
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            editmenu as usize,
+            wide(&crate::localization::menu("&Edit")).as_ptr(),
+        );
+        let view = CreatePopupMenu();
+        for &(id, title) in app.view_actions() {
+            item(view, id, title);
         }
+        let languages = CreatePopupMenu();
+        for (index, language) in crate::localization::LANGUAGES.iter().enumerate() {
+            AppendMenuW(
+                languages,
+                MF_STRING
+                    | if *language == crate::localization::current() {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    },
+                usize::from(LANGUAGE_FIRST) + index,
+                wide(language.name).as_ptr(),
+            );
+        }
+        AppendMenuW(
+            view,
+            MF_POPUP,
+            languages as usize,
+            wide(&crate::localization::menu("Language")).as_ptr(),
+        );
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            view as usize,
+            wide(&crate::localization::menu("&View")).as_ptr(),
+        );
         let specs = app.command_specs();
         let mut groups: Vec<(&str, HMENU)> = Vec::new();
         for spec in &specs {
@@ -2964,7 +3089,12 @@ pub fn run(app: Box<dyn App>) {
             }
         }
         for (name, menu) in groups {
-            AppendMenuW(bar, MF_POPUP, menu as usize, wide(name).as_ptr());
+            AppendMenuW(
+                bar,
+                MF_POPUP,
+                menu as usize,
+                wide(&crate::localization::menu(name)).as_ptr(),
+            );
         }
         if app.supports_marks() {
             let menu = CreatePopupMenu();
@@ -2974,17 +3104,23 @@ pub fn run(app: Box<dyn App>) {
                 bar,
                 MF_POPUP,
                 menu as usize,
-                wide("Signatures && Stamps").as_ptr(),
+                wide(&crate::localization::menu("Signatures && Stamps")).as_ptr(),
             );
         }
         let help = CreatePopupMenu();
         item(help, ABOUT, "&About");
-        AppendMenuW(bar, MF_POPUP, help as usize, wide("&Help").as_ptr());
+        AppendMenuW(
+            bar,
+            MF_POPUP,
+            help as usize,
+            wide(&crate::localization::menu("&Help")).as_ptr(),
+        );
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
                 app,
                 calibrate_print: false,
                 deferred_commands: Vec::new(),
+                close_confirmed: false,
                 path: None,
                 session: Default::default(),
                 async_open: None,
@@ -3026,7 +3162,7 @@ pub fn run(app: Box<dyn App>) {
             let button = CreateWindowExW(
                 0,
                 wide("BUTTON").as_ptr(),
-                wide(spec.title).as_ptr(),
+                wide(&crate::localization::text(spec.title)).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 0,
                 0,
@@ -3251,13 +3387,12 @@ pub fn run(app: Box<dyn App>) {
         SetTimer(h, 42, 100, None);
         ShowWindow(h, SW_SHOW);
         DragAcceptFiles(h, 1);
-        let mut arguments = std::env::args_os().skip(1).peekable();
-        if arguments.peek().is_some_and(|argument| argument == "--") {
-            arguments.next();
-        }
-        let paths = arguments.map(PathBuf::from).collect::<Vec<_>>();
-        if !paths.is_empty() {
-            open_paths(h, paths);
+        match crate::localization::launch_arguments(std::env::args_os().skip(1)) {
+            Ok(arguments) if !arguments.files.is_empty() => open_paths(h, arguments.files),
+            Ok(_) => {}
+            Err(error) => {
+                msg(h, &error, MB_OK | MB_ICONERROR);
+            }
         }
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
@@ -3290,7 +3425,26 @@ pub fn run(app: Box<dyn App>) {
                 refresh();
                 continue;
             }
-            if TranslateAcceleratorW(h, a, &m) == 0 && IsDialogMessageW(h, &m) == 0 {
+            let accelerator = TranslateAcceleratorW(h, a, &m);
+            let dialog = if accelerator == 0 {
+                IsDialogMessageW(h, &m)
+            } else {
+                0
+            };
+            if m.message == WM_COMMAND {
+                trace_command(
+                    if accelerator != 0 {
+                        "accelerator_processed"
+                    } else if dialog != 0 {
+                        "dialog_processed"
+                    } else {
+                        "dispatch"
+                    },
+                    m.wParam as u16,
+                    (m.wParam >> 16) as u16,
+                );
+            }
+            if accelerator == 0 && dialog == 0 {
                 TranslateMessage(&m);
                 DispatchMessageW(&m);
             }

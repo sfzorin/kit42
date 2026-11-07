@@ -7,11 +7,15 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::LibraryLoader::GetModuleHandleW,
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        SystemServices::{SS_NOPREFIX, SS_RIGHT},
+    },
     UI::{Controls::*, HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 struct Prompt {
     fields: Vec<HWND>,
+    choices: Vec<(usize, Vec<String>)>,
     result: Option<Vec<String>>,
     done: bool,
 }
@@ -19,20 +23,38 @@ thread_local! { static PROMPT: RefCell<Option<Prompt>> = const { RefCell::new(No
 unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match m {
         WM_COMMAND if (w & 0xffff) as i32 == IDOK => {
-            let fields = PROMPT.with(|p| p.borrow().as_ref().unwrap().fields.clone());
+            let (fields, choices) = PROMPT.with(|p| {
+                let p = p.borrow();
+                let p = p.as_ref().unwrap();
+                (p.fields.clone(), p.choices.clone())
+            });
             let mut values = Vec::new();
-            for field in fields {
+            for (index, field) in fields.into_iter().enumerate() {
                 let n = GetWindowTextLengthW(field) as usize;
                 let mut buf = vec![0u16; n + 1];
                 GetWindowTextW(field, buf.as_mut_ptr(), (n + 1) as i32);
                 let decoded = String::from_utf16(&buf[..n]);
                 buf.fill(0);
                 match decoded {
-                    Ok(s) => values.push(s),
+                    Ok(s) => {
+                        let value = if let Some((_, options)) =
+                            choices.iter().find(|(field, _)| *field == index)
+                        {
+                            let selected = SendMessageW(field, CB_GETCURSEL, 0, 0);
+                            options
+                                .get(selected as usize)
+                                .filter(|option| crate::localization::text(option) == s)
+                                .cloned()
+                                .unwrap_or_else(|| crate::localization::choice_value(options, &s))
+                        } else {
+                            s
+                        };
+                        values.push(value);
+                    }
                     Err(_) => {
                         MessageBoxW(
                             h,
-                            wide("Invalid text").as_ptr(),
+                            wide(&crate::localization::text("Invalid text")).as_ptr(),
                             wide("off42").as_ptr(),
                             MB_OK,
                         );
@@ -94,17 +116,49 @@ pub unsafe fn show_choices(
     RegisterClassW(&wc);
     let dpi = GetDpiForWindow(owner) as i32;
     let scale = |x: i32| x * dpi / 96;
-    let width = scale(400);
-    let extra = if multiline && !req.fields.is_empty() {
-        100
-    } else {
-        0
-    };
-    let height = scale(110 + req.fields.len() as i32 * 58 + extra);
+    let width = scale(460);
+    let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
+    let dc = GetDC(owner);
+    let previous_font = SelectObject(dc, font as HGDIOBJ);
+    let mut positions = Vec::new();
+    let mut next_y = scale(12);
+    for (index, (label, _)) in req.fields.iter().enumerate() {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: scale(420),
+            bottom: 0,
+        };
+        let label = wide(&crate::localization::text(label));
+        DrawTextW(
+            dc,
+            label.as_ptr(),
+            -1,
+            &mut rect,
+            DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+        );
+        let label_height = (rect.bottom - rect.top).max(scale(20));
+        let extra = if multiline && index == 0 {
+            scale(100)
+        } else {
+            0
+        };
+        positions.push((next_y, label_height, extra));
+        next_y += label_height + scale(38) + extra;
+    }
+    SelectObject(dc, previous_font);
+    ReleaseDC(owner, dc);
+    let button_y = next_y + scale(6);
+    let height = button_y + scale(92);
     let h = CreateWindowExW(
-        WS_EX_DLGMODALFRAME,
+        WS_EX_DLGMODALFRAME
+            | if crate::localization::current().rtl {
+                WS_EX_RTLREADING
+            } else {
+                0
+            },
         class.as_ptr(),
-        wide(req.title).as_ptr(),
+        wide(&crate::localization::text(req.title)).as_ptr(),
         WS_CAPTION | WS_SYSMENU | WS_POPUP,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -118,19 +172,29 @@ pub unsafe fn show_choices(
     if h.is_null() {
         return None;
     }
-    let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
     let mut fields = Vec::new();
     for (i, (label, value)) in req.fields.iter().enumerate() {
-        let y = scale(12 + i as i32 * 58 + if i > 0 { extra } else { 0 });
+        let (y, label_height, extra) = positions[i];
         let t = CreateWindowExW(
-            0,
+            if crate::localization::current().rtl {
+                WS_EX_RTLREADING
+            } else {
+                0
+            },
             wide("STATIC").as_ptr(),
-            wide(label).as_ptr(),
-            WS_CHILD | WS_VISIBLE,
+            wide(&crate::localization::text(label)).as_ptr(),
+            WS_CHILD
+                | WS_VISIBLE
+                | SS_NOPREFIX
+                | if crate::localization::current().rtl {
+                    SS_RIGHT
+                } else {
+                    0
+                },
             scale(12),
             y,
-            scale(360),
-            scale(20),
+            scale(420),
+            label_height,
             h,
             null_mut(),
             instance,
@@ -161,13 +225,9 @@ pub unsafe fn show_choices(
                         }
                 },
             scale(12),
-            y + scale(21),
-            scale(360),
-            scale(if combo {
-                220
-            } else {
-                24 + if multiline && i == 0 { extra } else { 0 }
-            }),
+            y + label_height + scale(1),
+            scale(420),
+            if combo { scale(220) } else { scale(24) + extra },
             h,
             (100 + i) as HMENU,
             instance,
@@ -175,9 +235,18 @@ pub unsafe fn show_choices(
         );
         if let Some(options) = options {
             for option in options {
-                SendMessageW(e, CB_ADDSTRING, 0, wide(option).as_ptr() as LPARAM);
+                SendMessageW(
+                    e,
+                    CB_ADDSTRING,
+                    0,
+                    wide(&crate::localization::text(option)).as_ptr() as LPARAM,
+                );
             }
-            SetWindowTextW(e, wide(value).as_ptr());
+            if let Some(selected) = options.iter().position(|option| option == value) {
+                SendMessageW(e, CB_SETCURSEL, selected, 0);
+            } else {
+                SetWindowTextW(e, wide(value).as_ptr());
+            }
         }
         SendMessageW(t, WM_SETFONT, font, 1);
         SendMessageW(e, WM_SETFONT, font, 1);
@@ -189,15 +258,15 @@ pub unsafe fn show_choices(
         );
         fields.push(e);
     }
-    let y = scale(18 + req.fields.len() as i32 * 58 + extra);
+    let y = button_y;
     for (id, title, x, style) in [
-        (IDOK, "OK", 200, BS_DEFPUSHBUTTON),
-        (IDCANCEL, "Cancel", 290, BS_PUSHBUTTON),
+        (IDOK, "OK", 260, BS_DEFPUSHBUTTON),
+        (IDCANCEL, "Cancel", 350, BS_PUSHBUTTON),
     ] {
         let b = CreateWindowExW(
             0,
             wide("BUTTON").as_ptr(),
-            wide(title).as_ptr(),
+            wide(&crate::localization::text(title)).as_ptr(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | style as u32,
             scale(x),
             y,
@@ -213,6 +282,7 @@ pub unsafe fn show_choices(
     PROMPT.with(|p| {
         *p.borrow_mut() = Some(Prompt {
             fields: fields.clone(),
+            choices: choices.to_vec(),
             result: None,
             done: false,
         })
