@@ -133,7 +133,7 @@ def fill_prompt(process, main, identifier, title, values):
     return dialog
 
 
-def choose_file(process, path, format_index=None):
+def choose_file(process, path, format_name=None):
     def filename_control():
         for dialog in windows(process.pid):
             if classname(dialog) != "#32770" or not u.IsWindowEnabled(dialog):
@@ -144,12 +144,29 @@ def choose_file(process, path, format_index=None):
                 return dialog, control
         return None
     dialog, control = wait_for(filename_control, "file dialog filename field", process)
-    if format_index is not None:
-        selector = wait_for(lambda: next((h for h in windows(process.pid, dialog)
-            if classname(h).lower() == "combobox" and u.GetDlgCtrlID(h) == 1136
-            and u.SendMessageW(h, 0x146, 0, 0) > format_index), None), "save format selector", process)
-        assert u.SendMessageW(selector, 0x14E, format_index, 0) == format_index
-        u.SendMessageW(dialog, WM_COMMAND, 1136 | (1 << 16), selector)
+    if format_name is not None:
+        def format_selector():
+            for combo in windows(process.pid, dialog):
+                if classname(combo).lower() != "combobox":
+                    continue
+                count = u.SendMessageW(combo, 0x146, 0, 0)  # CB_GETCOUNT
+                if not 0 < count <= 64:
+                    continue
+                for index in range(count):
+                    length = u.SendMessageW(combo, 0x149, index, 0)  # CB_GETLBTEXTLEN
+                    if not 0 <= length < 1024:
+                        continue
+                    value = c.create_unicode_buffer(length + 1)
+                    u.SendMessageW(combo, 0x148, index, c.cast(value, c.c_void_p).value)
+                    if value.value == format_name:
+                        return combo, index
+            return None
+        selector, index = wait_for(format_selector, "save format " + format_name, process)
+        # Real key handling emits the parent notifications required by the modern picker.
+        for key in [0x24] + [0x28] * index:  # Home, then Down to the requested named option.
+            u.SendMessageW(selector, 0x100, key, 1)
+            u.SendMessageW(selector, 0x101, key, 0xC0000001)
+        assert u.SendMessageW(selector, 0x147, 0, 0) == index  # CB_GETCURSEL
         dialog, control = wait_for(filename_control, "filename field after format selection", process)
     set_text(control, str(path))
     click(dialog, 1)
@@ -664,7 +681,7 @@ def audit_engineering_formulas(process, main, binary, output, results):
     def save(name):
         target = output / name
         save_as(main)
-        choose_file(process, target, format_index=1)  # XLSX in the normal Save As format list.
+        choose_file(process, target, format_name="Excel workbook")
         output_ready(process, main, target, b"PK")
         import xml.etree.ElementTree as ET
         with zipfile.ZipFile(target) as archive:
