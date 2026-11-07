@@ -2230,12 +2230,26 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 let settings =
                     STATE.with(|s| s.borrow().as_ref().unwrap().app.file_input_request(id));
                 let settings = if let Some(request) = settings {
-                    match crate::prompt::show(hwnd, &request) {
+                    let choices = STATE.with(|s| s.borrow().as_ref().unwrap().app.input_choices(id));
+                    match crate::prompt::show_choices(hwnd, &request, false, false, &choices) {
                         Some(values) => Some(values),
                         None => return,
                     }
                 } else {
                     None
+                };
+                let a = if let Some(values) = &settings {
+                    match STATE.with(|s| {
+                        s.borrow().as_ref().unwrap().app.configured_file_action(id, values)
+                    }) {
+                        Ok(action) => action,
+                        Err(error) => {
+                            msg(hwnd, &error, MB_OK | MB_ICONWARNING);
+                            return;
+                        }
+                    }
+                } else {
+                    a
                 };
                 if let Some(p) = dialog(hwnd, a.save, a.extension, a.format, a.pattern) {
                     let problem = if !a.save {

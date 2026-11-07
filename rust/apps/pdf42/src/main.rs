@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod page_export;
+mod text_export;
 use pdf42_core::PdfDocument;
 use std::path::Path;
 #[cfg(windows)]
@@ -105,6 +106,8 @@ struct Pdf {
     )>,
     operation_error: Option<String>,
     page_export: Option<page_export::Worker>,
+    #[cfg(windows)]
+    text_export: Option<text_export::Worker>,
     #[cfg(windows)]
     print_pending: Option<(
         std::sync::mpsc::Receiver<Result<win42::PrintJob, String>>,
@@ -582,6 +585,17 @@ impl win42::App for Pdf {
         #[cfg(windows)]
         {
             let mut changed = page_changed;
+            if let Some(worker) = &mut self.text_export {
+                changed |= worker.progress_changed();
+            }
+            if let Some(result) = self.text_export.as_ref().and_then(|worker| worker.poll()) {
+                self.text_export = None;
+                self.operation_error = Some(match result {
+                    Ok(()) => "PDF text exported successfully".into(),
+                    Err(error) => error,
+                });
+                changed = true;
+            }
             if let Some((rx, _, _, _)) = &self.object_inspect {
                 if let Ok(result) = rx.try_recv() {
                     let (_, source, generation, _) = self.object_inspect.take().unwrap();
@@ -1062,6 +1076,20 @@ impl win42::App for Pdf {
         id == 76
     }
     fn input_choices(&self, id: u16) -> Vec<(usize, Vec<String>)> {
+        if id == 86 {
+            return vec![(
+                1,
+                [
+                    "Plain text (TXT)",
+                    "Rich text (RTF)",
+                    "Web page (HTML)",
+                    "Word document (DOCX)",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            )];
+        }
         if id == 83 {
             vec![(
                 2,
@@ -1610,6 +1638,18 @@ impl win42::App for Pdf {
     }
     fn file_input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let doc = self.doc.as_ref()?;
+        if id == 86 {
+            return Some(win42::InputRequest {
+                title: "Export PDF Text",
+                fields: vec![
+                    (
+                        "Pages (for example: 1, 3-5; reverse order: 5-3)",
+                        format!("1-{}", doc.page_count()),
+                    ),
+                    ("Format", "Plain text (TXT)".into()),
+                ],
+            });
+        }
         if id != 80 && id != 81 {
             return None;
         }
@@ -1629,7 +1669,75 @@ impl win42::App for Pdf {
             )],
         })
     }
-    fn file_action_with_input(&mut self, id: u16, path: &Path, values: &[String]) -> Result<(), String> {
+    fn configured_file_action(
+        &self,
+        id: u16,
+        values: &[String],
+    ) -> Result<win42::FileAction, String> {
+        if id != 86 {
+            return self
+                .file_actions()
+                .iter()
+                .find(|action| action.id == id)
+                .copied()
+                .ok_or_else(|| "Unsupported file action".into());
+        }
+        let [pages, format] = values else {
+            return Err("Invalid text export settings".into());
+        };
+        let doc = self.doc.as_ref().ok_or("Open a PDF first")?;
+        page_export::parse_pages(pages, doc.page_count())?;
+        let (extension, name, pattern) = match format.as_str() {
+            "Plain text (TXT)" => ("txt", "Plain text", "*.txt"),
+            "Rich text (RTF)" => ("rtf", "Rich text", "*.rtf"),
+            "Web page (HTML)" => ("html", "HTML document", "*.html"),
+            "Word document (DOCX)" => ("docx", "Word document", "*.docx"),
+            _ => return Err("Choose a supported text export format".into()),
+        };
+        Ok(win42::FileAction {
+            id,
+            title: "Export Text…",
+            save: true,
+            extension,
+            format: name,
+            pattern,
+        })
+    }
+    fn file_action_with_input(
+        &mut self,
+        id: u16,
+        path: &Path,
+        values: &[String],
+    ) -> Result<(), String> {
+        if id == 86 {
+            #[cfg(windows)]
+            {
+                if self.text_export.is_some() || !self.enabled(id) {
+                    return Err("Text export unavailable".into());
+                }
+                let action = self.configured_file_action(id, values)?;
+                let doc = self.doc.as_ref().ok_or("Open a PDF first")?;
+                let pages = page_export::parse_pages(&values[0], doc.page_count())?;
+                let output = match action.extension {
+                    "txt" => text_export::Output::Text,
+                    "rtf" => text_export::Output::Rtf,
+                    "html" => text_export::Output::Html,
+                    "docx" => text_export::Output::Docx,
+                    _ => return Err("Unsupported text export format".into()),
+                };
+                let (snapshot, _) = doc.save_snapshot()?;
+                self.text_export = Some(text_export::Worker::start(
+                    snapshot,
+                    pages,
+                    path.to_owned(),
+                    output,
+                )?);
+                self.operation_error = None;
+                return Ok(());
+            }
+            #[cfg(not(windows))]
+            return Err("PDF text extraction requires Windows".into());
+        }
         if !matches!(id, 80 | 81) || self.page_export.is_some() {
             return Err("Page export unavailable".into());
         }
@@ -1640,13 +1748,24 @@ impl win42::App for Pdf {
         let indices = page_export::parse_pages(pages, doc.page_count())?;
         let prepared = doc.prepare_page_extraction()?;
         self.page_export = Some(page_export::Worker::start(
-            prepared, indices, path.to_owned(), id == 81,
+            prepared,
+            indices,
+            path.to_owned(),
+            id == 81,
         )?);
         self.operation_error = None;
         Ok(())
     }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[
+            win42::FileAction {
+                id: 86,
+                title: "Export Text…",
+                save: true,
+                extension: "txt",
+                format: "Plain text",
+                pattern: "*.txt",
+            },
             win42::FileAction {
                 id: 80,
                 title: "Extract PDF Pages…",
@@ -1955,6 +2074,7 @@ impl win42::App for Pdf {
     }
     fn actions(&self) -> &'static [(u16, &'static str)] {
         &[
+            (87, "Cancel PDF Text Export"),
             (82, "Cancel PDF Page Export"),
             (83, "Page Labels…"),
             (84, "Go to Page…"),
@@ -2050,6 +2170,10 @@ impl win42::App for Pdf {
         "Open a PDF document.".into()
     }
     fn status(&self) -> String {
+        #[cfg(windows)]
+        if let Some(worker) = &self.text_export {
+            return format!("Exporting PDF text: {} of {} pages", worker.progress.load(std::sync::atomic::Ordering::Relaxed), worker.total);
+        }
         if let Some(worker) = &self.page_export {
             return format!(
                 "Exporting PDF pages: {} of {}",
@@ -2143,6 +2267,18 @@ impl win42::App for Pdf {
         let n = d.page_count();
         let index = d.current();
         match id {
+            86 => {
+                #[cfg(windows)]
+                { self.text_export.is_none() && self.object_edit.is_none() && self.flatten_pending.is_none() }
+                #[cfg(not(windows))]
+                { false }
+            }
+            87 => {
+                #[cfg(windows)]
+                { self.text_export.is_some() }
+                #[cfg(not(windows))]
+                { false }
+            }
             10 => index < n,
             11 => d.can_reorder() && n > 1 && index < n,
             12 => d.can_reorder() && index > 0 && index < n,
@@ -2305,6 +2441,11 @@ impl win42::App for Pdf {
     fn action(&mut self, id: u16) -> Result<(), String> {
         if id >= 10 && !self.enabled(id) {
             return Err("Command unavailable".into());
+        }
+        if id == 87 {
+            #[cfg(windows)]
+            if let Some(worker) = &self.text_export { worker.cancel.store(true, std::sync::atomic::Ordering::Relaxed); }
+            return Ok(());
         }
         if id == 85 {
             self.doc

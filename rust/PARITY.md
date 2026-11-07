@@ -13,7 +13,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Full technical-object selection/placement controls and richer label artwork sources |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
-| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
+| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
 | XLS42 | Grid editing, formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
@@ -110,3 +110,12 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   Boolean/string/error results remain distinct, and ODS keeps scalar cached text/Boolean values. XML regressions
   inspect types and values directly, including literal spreadsheet escapes and invalid XML character encoding.
   External XLSX/ODS tests edit inputs before recalculation to exclude saved-cache false positives.
+
+- Static-runtime build 42355577552 passed PE ordinary/delayed-import checks for all six executables and bundled
+  PDFium: no VC++ Redistributable DLL imports remain. Its native suite passed the other app/language/recent cases;
+  the engineering case retained an older harness interaction. Public preview.3 was not changed.
+- PDF text export now offers TXT/RTF/HTML/DOCX through one format/page-list prompt and a correctly configured
+  picker. Portable regressions cover Unicode, text styling, page/blank-page boundaries, HTML escaping and safe
+  cancellation/no-overwrite publication. Windows-only regressions check extraction from the current redacted and
+  page-edited snapshot. Workspace: 360 portable tests passed, one OCR fixture ignored; Windows GNU test compilation
+  passed. Native four-format output/history/source checks await the next build.

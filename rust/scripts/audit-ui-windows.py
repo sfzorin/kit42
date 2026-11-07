@@ -672,6 +672,62 @@ def audit_rectangle_command(process, main, binary, output, results):
 
 
 
+def audit_pdf_text_exports(process, main, binary, output, results):
+    import xml.etree.ElementTree as ET
+    from html.parser import HTMLParser
+    source = output / "pdf-text-source.pdf"
+    minimal_pdf(source, ["PAGE-ONE", "PAGE-TWO", "PAGE-THREE"])
+    original = source.read_bytes()
+    command(main, 1)
+    choose_file(process, source)
+    wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "text export source opened", process)
+    command(main, 11)  # Delete the first page without saving the PDF.
+    wait_for(lambda: " * - " in text(main) and any("Page 1 of 2" in text(h) for h in windows(process.pid, main)), "current PDF page deletion", process)
+    caption = text(main)
+    command(main, 86)
+    settings = modal(process, title="Export PDF Text", native_class="Suite42InputDialog")
+    click(settings, 2)
+    wait_for(lambda: u.IsWindowEnabled(main), "text settings cancelled", process)
+    formats = [("txt", "Plain text (TXT)"), ("rtf", "Rich text (RTF)"), ("html", "Web page (HTML)"), ("docx", "Word document (DOCX)")]
+    for extension, name in formats:
+        fill_prompt(process, main, 86, "Export PDF Text", ["2,1", name])
+        path = output / ("current-pdf-text." + extension)
+        choose_file(process, path)
+        wait_for(lambda: path.is_file() and any("PDF text exported successfully" in text(h) for h in windows(process.pid, main)), "text export " + extension, process)
+        data = path.read_bytes()
+        if extension == "docx":
+            with zipfile.ZipFile(path) as archive:
+                root = ET.fromstring(archive.read("word/document.xml"))
+            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            value = "\n".join(node.text or "" for node in root.findall(".//w:t", ns))
+            assert root.find(".//w:pageBreakBefore", ns) is not None
+        elif extension == "html":
+            class Extract(HTMLParser):
+                def __init__(self):
+                    super().__init__(); self.parts = []
+                def handle_data(self, value):
+                    self.parts.append(value)
+            parser = Extract(); parser.feed(data.decode("utf-8")); value = "".join(parser.parts)
+            assert "page-break-before:always" in data.decode("utf-8")
+        elif extension == "rtf":
+            assert data.startswith(b"{\\rtf") and b"\\pagebb" in data
+            value = data.decode("ascii")
+        else:
+            value = data.decode("utf-8")
+            assert "\f" in value
+        assert value.index("PAGE-THREE") < value.index("PAGE-TWO"), value
+        assert "PAGE-ONE" not in value, value
+        assert source.read_bytes() == original and text(main) == caption
+    fill_prompt(process, main, 86, "Export PDF Text", ["1-2", "Plain text (TXT)"])
+    picker = modal(process, native_class="#32770")
+    click(picker, 2)
+    wait_for(lambda: u.IsWindowEnabled(main), "text file picker cancelled", process)
+    assert source.read_bytes() == original and text(main) == caption
+    command(main, 4)
+    wait_for(lambda: " * - " not in text(main), "export leaves page Undo intact", process)
+    results["checks"].append("native TXT/RTF/HTML/DOCX exports use current unsaved pages in requested order, retain page boundaries, cancel without changes and preserve PDF source/history")
+
+
 def audit_engineering_formulas(process, main, binary, output, results):
     source = output / "engineering-formulas.csv"
     records = [
@@ -721,7 +777,7 @@ def audit_engineering_formulas(process, main, binary, output, results):
     click(confirmation, 7)
     wait_for(lambda: saved.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main), "engineering XLSX reopened from saved bytes", process)
     fill_prompt(process, main, 25, "Range (1-based)", ["1", "2", "1", "2"])
-    assert text(u.GetDlgItem(main, 101)) == "=DEC2HEX($A$1,4)"
+    wait_for(lambda: text(u.GetDlgItem(main, 101)) == "=DEC2HEX($A$1,4)", "saved B1 formula after range selection", process)
     _, restored = save("engineering-reopened.xlsx")
     for address, value in expected.items():
         assert restored[address][1] == value
@@ -729,7 +785,7 @@ def audit_engineering_formulas(process, main, binary, output, results):
     results["checks"].append("engineering formula typed through native editor, independent XLSX cached results, Undo/Redo and discard/reopen preserve formulas and source")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False):
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -854,6 +910,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_rectangle_command(process, main, binary, output, results)
         if pages and binary.stem.lower() == "pdf42":
             audit_pdf_page_exports(process, main, binary, output, results)
+        if text_exports and binary.stem.lower() == "pdf42":
+            audit_pdf_text_exports(process, main, binary, output, results)
         return results
     finally:
         if process.poll() is None:
@@ -1140,6 +1198,7 @@ def main():
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
+    parser.add_argument("--text-exports", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -1148,7 +1207,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

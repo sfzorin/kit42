@@ -11,6 +11,7 @@ workload and Windows SDK, and Python 3. In a Developer PowerShell from the repos
 
 ```powershell
 cd rust
+python scripts/fetch-pdfium.py target/x86_64-pc-windows-msvc/debug/deps
 cargo test --locked --workspace --target x86_64-pc-windows-msvc
 Push-Location scripts
 rc.exe /fo windows-app.res windows-app.rc
@@ -176,3 +177,16 @@ macros keep their host flags. Release resource flags also retain `+crt-static`. 
 and delayed PE imports for all six apps and PDFium; non-system dependencies other than bundled PDFium fail the build.
 The import report includes binary hashes. This gate is checked before ZIP creation. The existing public preview.3
 still uses a separate VC++ runtime as described in its release notes; source configuration does not replace that asset.
+
+
+### PDF text export (development branch)
+
+**Export Text…** offers TXT, RTF, HTML and DOCX in one settings dialog, with an explicit page list and format.
+The picker uses the selected extension. Extraction runs in the background against the current saved-output
+snapshot: unsaved page edits and applied raster redactions are reflected, and the source PDF is not modified.
+Cancel is available during extraction; publication uses a temporary file and refuses an existing destination.
+
+Text follows PDFium reading order. Rich formats retain basic font family, size, bold/italic and text color, and
+page boundaries (form feeds in TXT). This is text extraction, not reconstruction of PDF columns, tables, images,
+positioned layout or embedded fonts. Scans without a text layer need OCR first. Exports are bounded to 1000 pages,
+4 MB of text and 100000 style runs. Unmapped glyphs are represented by a replacement character.

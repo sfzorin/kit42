@@ -556,3 +556,17 @@ the target-specific output directory and tests with PDFium beside target-specifi
 PE reader examines import and delay-import tables, requires x64 PE32+ images and rejects redistributable C++ runtimes
 and unknown libraries. OS/API-set imports and bundled PDFium are allowed. Reports record each binary's SHA-256.
 The archive is created only after this gate passes. The source handoff includes the target configuration.
+
+
+## PDF text export and configured file actions
+
+A file action can resolve its extension/filter after its settings prompt and before the system picker. The
+`configured_file_action` hook is read-only; prompt cancellation, invalid settings and picker cancellation start
+no work. Choice controls use the same stable underlying values as ordinary command prompts.
+
+PDF text export takes the same committed `save_snapshot` as other outputs. A worker owns the immutable bytes,
+serializes PDFium use with existing search/edit sessions, and closes every native handle through RAII. It reads
+pages in the requested order, coalesces equal character styles, normalizes line endings, and preserves blank page
+boundaries. DOC42 adapters serialize RTF/HTML/DOCX; the HTML adapter now round-trips explicit page breaks. Font
+names are sanitized before entering rich-text output. Paragraph/text/style-run limits bound allocation, and
+cancellation is checked between pages and during glyph iteration. Final publication is atomic and no-clobber.
