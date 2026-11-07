@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise native windows and production dialogs through their normal commands."""
 import argparse
+import csv
 import ctypes as c
 from ctypes import wintypes as w
 import hashlib
@@ -132,7 +133,7 @@ def fill_prompt(process, main, identifier, title, values):
     return dialog
 
 
-def choose_file(process, path):
+def choose_file(process, path, format_index=None):
     def filename_control():
         for dialog in windows(process.pid):
             if classname(dialog) != "#32770" or not u.IsWindowEnabled(dialog):
@@ -143,6 +144,13 @@ def choose_file(process, path):
                 return dialog, control
         return None
     dialog, control = wait_for(filename_control, "file dialog filename field", process)
+    if format_index is not None:
+        selector = wait_for(lambda: next((h for h in windows(process.pid, dialog)
+            if classname(h).lower() == "combobox" and u.GetDlgCtrlID(h) == 1136
+            and u.SendMessageW(h, 0x146, 0, 0) > format_index), None), "save format selector", process)
+        assert u.SendMessageW(selector, 0x14E, format_index, 0) == format_index
+        u.SendMessageW(dialog, WM_COMMAND, 1136 | (1 << 16), selector)
+        dialog, control = wait_for(filename_control, "filename field after format selection", process)
     set_text(control, str(path))
     click(dialog, 1)
 
@@ -634,7 +642,64 @@ def audit_rectangle_command(process, main, binary, output, results):
     results["checks"].append("rectangle command is separate from Save As; native mouse drawing, PDFium annotation count and Undo/Redo output")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False):
+
+def audit_engineering_formulas(process, main, binary, output, results):
+    source = output / "engineering-formulas.csv"
+    records = [
+        ["16", "", "", "", "", "", "", ""],
+        ["13", "=BITAND(A2,25)", "", "", "", "", "", ""],
+        ["1", '=CONVERT(A3,"Mibyte","bit")', "", "", "", "", "", ""],
+        ["FF", "=HEX2DEC(A4)", "", "", "", "", "", ""],
+        ["-1", "=DEC2BIN(A5)", "", "", "", "", "", ""],
+    ]
+    with source.open("w", encoding="utf-8", newline="") as file:
+        csv.writer(file).writerows(records)
+    original = source.read_bytes()
+    command(main, 1)
+    choose_file(process, source)
+    wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "engineering source opened", process)
+    fill_prompt(process, main, 25, "Range (1-based)", ["1", "2", "1", "2"])
+    edit = u.GetDlgItem(main, 101)
+    set_text(edit, "=DEC2HEX($A$1,4)")
+    def save(name):
+        target = output / name
+        save_as(main)
+        choose_file(process, target, format_index=1)  # XLSX in the normal Save As format list.
+        output_ready(process, main, target, b"PK")
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(target) as archive:
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        cells = {cell.attrib["r"]: (cell.findtext("s:f", namespaces=ns), cell.findtext("s:v", namespaces=ns), cell.attrib.get("t")) for cell in sheet.findall(".//s:c", ns)}
+        return target, cells
+    saved, cells = save("engineering-results.xlsx")
+    expected = {"B1":"0010", "B2":"9", "B3":"8388608", "B4":"255", "B5":"1111111111"}
+    for address, value in expected.items():
+        assert cells[address][1] == value, (address, cells[address])
+    assert cells["B1"][0] == "DEC2HEX($A$1,4)"
+    assert cells["B1"][2] == "str" and cells["B5"][2] == "str", "Formula strings must preserve leading zeroes and text type"
+    command(main, 4)
+    wait_for(lambda: text(edit) == "", "Undo typed engineering formula", process)
+    command(main, 5)
+    wait_for(lambda: text(edit) == "=DEC2HEX($A$1,4)", "Redo engineering formula", process)
+    set_text(edit, "=DEC2HEX($A$1,2)")
+    command(main, 1)
+    choose_file(process, saved)
+    confirmation = wait_for(lambda: next((h for h in windows(process.pid)
+        if classname(h) == "#32770" and u.IsWindowEnabled(h)
+        and all(u.GetDlgItem(h, identifier) for identifier in (2, 6, 7))), None), "discard unsaved formula edit", process)
+    click(confirmation, 7)
+    wait_for(lambda: saved.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main), "engineering XLSX reopened from saved bytes", process)
+    fill_prompt(process, main, 25, "Range (1-based)", ["1", "2", "1", "2"])
+    assert text(u.GetDlgItem(main, 101)) == "=DEC2HEX($A$1,4)"
+    _, restored = save("engineering-reopened.xlsx")
+    for address, value in expected.items():
+        assert restored[address][1] == value
+    assert source.read_bytes() == original
+    results["checks"].append("engineering formula typed through native editor, independent XLSX cached results, Undo/Redo and discard/reopen preserve formulas and source")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -753,6 +818,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_technical_objects(process, main, binary, output, results)
         if labels and binary.stem.lower() == "doc42":
             audit_table_labels(process, main, binary, output, results)
+        if engineering and binary.stem.lower() == "xls42":
+            audit_engineering_formulas(process, main, binary, output, results)
         if host_commands and binary.stem.lower() == "pdf42":
             audit_rectangle_command(process, main, binary, output, results)
         if pages and binary.stem.lower() == "pdf42":
@@ -1042,6 +1109,7 @@ def main():
     parser.add_argument("--recents", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
+    parser.add_argument("--engineering", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -1050,7 +1118,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

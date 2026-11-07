@@ -532,3 +532,19 @@ IDs so it can still inspect older downloadable previews. Canvas pointer moves up
 captured gesture; current tools have no passive-hover state. This keeps idle synthesized moves out of caption/
 paint updates and lets background timers run. Native regressions check full crop pixels/history and drawn PDF
 annotations, alongside the pending asynchronous-open scenario.
+
+## Windows engineering calculations
+
+The formula parser recognizes a complete function token (including digits/dots and Excel compatibility prefixes)
+before considering A1 references; reference parsing remains separate. Scalar engineering arguments reuse bounded
+expression parsing. Signed radix conversions and 48-bit operations enforce bounds before integer conversion/shifting.
+Unit constants are exported reproducibly from the macOS source by `rust/scripts/export-unit-conversions.py`; the
+bundled catalog is lazy and case sensitive. Dimensions, SI powers, binary-information prefixes and temperature
+scale/offset handling remain separate. Explicit scalar Boolean/numeric-text coercion does not affect range filtering.
+
+Office export obtains typed formula results from one evaluator/cache per sheet. The XLSX writer infers types from
+string values, so generated text formula caches are corrected to `t="str"` before computing the embedded project
+digest. The patch retains formula XML, other cell attributes and unrelated ZIP entries. Spreadsheet string escapes
+preserve literal `_xHHHH_` text and encode invalid XML characters. ODS gets typed scalar values directly; error
+cache display is textual because that writer has no error variant. External imports are tested after changing an
+input, ensuring recomputation cannot pass solely through a saved cached result.

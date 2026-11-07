@@ -1,4 +1,6 @@
 //! Small, bounded spreadsheet expression evaluator. Raw cells remain authoritative.
+mod engineering;
+mod units;
 use crate::{CellContent, SheetId, Workbook};
 use std::collections::{HashMap, HashSet};
 
@@ -7,7 +9,7 @@ const MAX_STEPS: usize = 1_000_000;
 const MAX_FORMULA: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq)]
-enum Value {
+pub(super) enum Value {
     Number(f64),
     Text(String),
     Boolean(bool),
@@ -344,6 +346,43 @@ impl Parser<'_, '_> {
             return Value::Error("#REF!");
         }
         let start = self.pos;
+        // Function names can contain digits and Excel compatibility prefixes.
+        // Recognize the complete token followed by '(' before trying A1 references.
+        if self
+            .input
+            .get(start)
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        {
+            let mut end = start;
+            while self
+                .input
+                .get(end)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.')
+            {
+                end += 1;
+            }
+            let mut next = end;
+            while self.input.get(next).is_some_and(u8::is_ascii_whitespace) {
+                next += 1;
+            }
+            if self.input.get(next) == Some(&b'(') {
+                let mut name = std::str::from_utf8(&self.input[start..end])
+                    .unwrap_or("")
+                    .to_ascii_uppercase();
+                loop {
+                    if let Some(tail) = name
+                        .strip_prefix("_XLFN.")
+                        .or_else(|| name.strip_prefix("_XLWS."))
+                    {
+                        name = tail.to_owned();
+                    } else {
+                        break;
+                    }
+                }
+                self.pos = next + 1;
+                return self.named_call(&name);
+            }
+        }
         if let Some((sheet, row, col)) = self.read_qualified_ref() {
             return self.eval.cell(sheet, row, col, self.depth + 1);
         }
@@ -388,15 +427,7 @@ impl Parser<'_, '_> {
                     _ => Value::Error("#ERROR!"),
                 };
             }
-            self.depth += 1;
-            if matches!(name.as_str(), "IF" | "IFERROR" | "IFNA" | "AND" | "OR") {
-                let value = self.lazy_conditional(&name);
-                self.depth -= 1;
-                return value;
-            }
-            let value = self.function(&name);
-            self.depth -= 1;
-            return value;
+            return self.named_call(&name);
         }
         while self
             .input
@@ -416,9 +447,28 @@ impl Parser<'_, '_> {
             None => Value::Error("#ERROR!"),
         }
     }
+    fn named_call(&mut self, name: &str) -> Value {
+        self.depth += 1;
+        let value = if self.depth > MAX_DEPTH {
+            Value::Error("#LIMIT!")
+        } else if matches!(name, "IF" | "IFERROR" | "IFNA" | "AND" | "OR") {
+            self.lazy_conditional(name)
+        } else {
+            self.function(name)
+        };
+        self.depth -= 1;
+        value
+    }
     fn function(&mut self, name: &str) -> Value {
         if self.depth > MAX_DEPTH {
             return Value::Error("#LIMIT!");
+        }
+        if matches!(name, "TRUE" | "FALSE") {
+            return if self.take(b')') {
+                Value::Boolean(name == "TRUE")
+            } else {
+                Value::Error("#ERROR!")
+            };
         }
         if name == "LOOKUP" {
             return self.lookup();
@@ -431,6 +481,9 @@ impl Parser<'_, '_> {
         }
         if matches!(name, "COUNTIFS" | "SUMIFS" | "AVERAGEIF" | "AVERAGEIFS") {
             return self.conditional_aggregate(name);
+        }
+        if engineering::handles(name) {
+            return self.text_function(name);
         }
         if matches!(name, "ISBLANK" | "ISNUMBER" | "ISTEXT" | "ISERROR" | "ISNA") {
             return self.type_predicate(name);
@@ -496,7 +549,19 @@ impl Parser<'_, '_> {
                             nonempty += 1
                         }
                         Value::Error(e) => return Value::Error(e),
-                        Value::Text(_) | Value::Boolean(_) => return Value::Error("#VALUE!"),
+                        Value::Boolean(value) => {
+                            values.push(f64::from(value));
+                            nonempty += 1;
+                        }
+                        Value::Text(_) if name == "COUNTA" => nonempty += 1,
+                        Value::Text(value) => match value.trim().parse::<f64>() {
+                            Ok(number) if number.is_finite() => {
+                                values.push(number);
+                                nonempty += 1;
+                            }
+                            _ if name == "COUNT" => {}
+                            _ => return Value::Error("#VALUE!"),
+                        },
                     }
                 }
                 if self.take(b')') {
@@ -1498,6 +1563,9 @@ impl Parser<'_, '_> {
                 }
             }
         }
+        if engineering::handles(name) {
+            return engineering::call(name, &args);
+        }
         let string = |n: usize| args.get(n).cloned().map(Value::display);
         let number = |n: usize, default: usize| -> Option<usize> {
             match args.get(n) {
@@ -2002,6 +2070,34 @@ fn calc(a: Value, b: Value, op: u8) -> Value {
         ),
         _ => Value::Error("#VALUE!"),
     }
+}
+
+/// Typed formula results share one evaluation cache and clock per sheet export.
+pub(super) fn formula_results_at(
+    book: &Workbook,
+    now: chrono::NaiveDateTime,
+) -> std::collections::BTreeMap<(usize, usize), Value> {
+    let mut eval = Eval {
+        book,
+        cache: HashMap::new(),
+        visiting: HashSet::new(),
+        steps: 0,
+        text_bytes: 0,
+        now,
+    };
+    book.history
+        .current()
+        .sheet()
+        .cells
+        .iter()
+        .filter(|(_, cell)| matches!(cell.text, CellContent::Formula(_)))
+        .map(|(&(row, column), _)| {
+            (
+                (row, column),
+                eval.cell(book.active_sheet(), row, column, 0),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn display_grid(book: &Workbook) -> Vec<Vec<String>> {

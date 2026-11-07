@@ -6,6 +6,7 @@ use std::io::{Cursor, Read, Write};
 const EXTRA: &str = "xls42/project.json";
 const LIMIT: usize = 64 * 1024 * 1024;
 mod pictures;
+mod formula_cache;
 fn format(s: &CellStyle) -> Format {
     let mut f = Format::new();
     if s.bold {
@@ -140,7 +141,8 @@ impl Workbook {
         let formats: Vec<_> = state.styles.iter().map(format).collect();
         let mut book = Xlsx::new();
         let recalc_time = chrono::Local::now().naive_local();
-        for sheet in &state.sheets {
+        let mut text_results: BTreeMap<usize, BTreeMap<String, String>> = BTreeMap::new();
+        for (sheet_index, sheet) in state.sheets.iter().enumerate() {
             let ws = book.add_worksheet();
             ws.set_name(&sheet.name)
                 .map_err(|_| Error::Invalid("invalid XLSX sheet name"))?;
@@ -195,7 +197,7 @@ impl Workbook {
                 external_format: None,
                 external_cache: BTreeMap::new(),
             };
-            let grid = formula::display_grid_at(&eval, recalc_time);
+            let results = formula::formula_results_at(&eval, recalc_time);
             for (&(r, c), cell) in &sheet.cells {
                 let (r, c) = (r as u32, c as u16);
                 let f = &formats[cell.style];
@@ -213,11 +215,33 @@ impl Workbook {
                         ws.write_boolean_with_format(r, c, t.raw().eq_ignore_ascii_case("true"), f)
                     }
                     CellContent::Formula(t) => {
-                        let value = &grid[r as usize][c as usize];
-                        let value = if value.starts_with('#') {
-                            "#N/A"
-                        } else {
-                            value.as_str()
+                        let value = match results
+                            .get(&(r as usize, c as usize))
+                            .ok_or(Error::Invalid("Missing formula result"))?
+                        {
+                            formula::Value::Number(value) => value.to_string(),
+                            formula::Value::Boolean(value) => {
+                                if *value {
+                                    "TRUE".into()
+                                } else {
+                                    "FALSE".into()
+                                }
+                            }
+                            formula::Value::Text(value) => {
+                                text_results.entry(sheet_index + 1).or_default().insert(
+                                    format!("{}{}", col_name(c as usize), r + 1),
+                                    value.clone(),
+                                );
+                                value.clone()
+                            }
+                            formula::Value::Error(value) => match *value {
+                                "#DIV/0!" | "#N/A" | "#NAME?" | "#NULL!" | "#NUM!" | "#REF!"
+                                | "#VALUE!" => (*value).into(),
+                                "#CYCLE!" => "#REF!".into(),
+                                "#ERROR!" => "#NAME?".into(),
+                                "#LIMIT!" => "#NUM!".into(),
+                                _ => "#N/A".into(),
+                            },
                         };
                         ws.write_formula_with_format(
                             r,
@@ -475,6 +499,7 @@ impl Workbook {
         let bytes = book
             .save_to_buffer()
             .map_err(|_| Error::Invalid("cannot encode XLSX"))?;
+        let bytes = formula_cache::patch_text_results(bytes, &text_results)?;
         let bytes = if state.date_1904 {
             set_generated_xlsx_1904(&bytes)?
         } else {
@@ -1028,7 +1053,7 @@ impl Workbook {
                 external_format: None,
                 external_cache: BTreeMap::new(),
             };
-            let grid = formula::display_grid_at(&eval, recalc_time);
+            let results = formula::formula_results_at(&eval, recalc_time);
             for (&(r, c), cell) in &sh.cells {
                 let (r, c) = (r as u32, c as u32);
                 match &cell.text {
@@ -1044,8 +1069,16 @@ impl Workbook {
                         sheet.set_value(r, c, t.raw().eq_ignore_ascii_case("true"))
                     }
                     CellContent::Formula(t) => {
-                        if let Ok(n) = grid[r as usize][c as usize].parse::<f64>() {
-                            sheet.set_value(r, c, n)
+                        match results
+                            .get(&(r as usize, c as usize))
+                            .ok_or(Error::Invalid("Missing formula result"))?
+                        {
+                            formula::Value::Number(value) => sheet.set_value(r, c, *value),
+                            formula::Value::Boolean(value) => sheet.set_value(r, c, *value),
+                            formula::Value::Text(value) => sheet.set_value(r, c, value.clone()),
+                            formula::Value::Error(value) => {
+                                sheet.set_value(r, c, (*value).to_owned())
+                            }
                         }
                         sheet.set_formula(r, c, ods_formula(t.raw())?)
                     }

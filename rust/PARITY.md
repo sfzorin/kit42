@@ -10,15 +10,15 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify shared language switching, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
-| Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
+| Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Full technical-object selection/placement controls and richer label artwork sources |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
-| PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
+| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
 | XLS42 | Grid editing, formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
 | IMG42 | Image decoding, transforms, adjustments, selections, text, metadata and batch output | Full markup selection/editing, smart lasso, live text, background removal, viewing panels and additional supported system codecs |
-| SCN42 | WIA acquisition, image/PDF import, page processing, OCR and searchable output | Scan areas and rescan, device/preset controls, scan history, mark placement, full export settings and physical-device checks |
+| SCN42 | WIA acquisition, image/PDF import, page processing, OCR and searchable output | Scan areas and rescan, device/preset controls, scan history, full export settings and physical-device checks |
 
 ## Recorded checks
 
@@ -95,3 +95,18 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   the saved file, and checks clean saved state. Earlier same-filename waits could read the existing model;
   earlier results do not establish asynchronous PDF reopen. Open-phase tracing in 42352293454 shows no
   later polling after the initial document commit. The updated host awaits native verification.
+
+- Native audit 42353607494 passed all six aaed968 executables with the strengthened dirty/discard/reopen
+  checks, real IMG/SCN crop pixels and history, drawn PDF rectangles, ordered extraction/split ZIP and
+  editable labels/Undo/Redo/clear/navigation after reopen. PDFium independently checks output text,
+  annotation counts and labels. Tracing confirms later async opens reach identity verification and commit
+  after idle canvas work was removed. Harness fixes identify confirmation/errors separately from closing pickers.
+- XLS adds 22 engineering functions, 112 shared units/27 prefixes, digit-bearing function tokenization and
+  Excel compatibility prefixes. Portable tests cover reference examples, signed bounds, shifts, coercion,
+  dimensional/unit limits and native/external XLSX/ODS formulas. Workspace: 357 passed; one OCR ignored.
+  Windows GNU compilation passes; native editing/cached-XLSX-result checks await a new build.
+
+- Generated Office caches now retain formula result types: XLSX numeric-looking text keeps leading zeroes,
+  Boolean/string/error results remain distinct, and ODS keeps scalar cached text/Boolean values. XML regressions
+  inspect types and values directly, including literal spreadsheet escapes and invalid XML character encoding.
+  External XLSX/ODS tests edit inputs before recalculation to exclude saved-cache false positives.

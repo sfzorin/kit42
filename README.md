@@ -68,7 +68,8 @@ and current limitations are described in [rust/README.md](rust/README.md). Nativ
 run on Windows CI; their scope and failures are recorded in [the parity tracker](rust/PARITY.md). Printer drivers,
 scanner hardware and full macOS feature parity remain unverified. The development branch adds a shared language
 picker and bundled catalogs; menu/prompt checks pass on twenty languages in Windows CI. Successful-file recents
-are also implemented. PDF page-list extraction and per-page ZIP exports are also implemented on the development branch. These changes
+are also implemented. PDF page-list extraction, per-page ZIP exports, editable page labels and engineering spreadsheet functions are also
+implemented on the development branch. These changes
 have not yet shipped in the downloadable Windows preview.
 
 <a id="install"></a>

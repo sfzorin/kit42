@@ -148,3 +148,23 @@ Page Labels edits an inclusive range with decimal, Roman, PDF letter numbering o
 support Unicode. The page list displays logical labels, and Go to Page accepts a label or a physical page number.
 Clear Page Labels and changes to ranges support Undo/Redo. Labels stay with their pages after reordering and
 extraction and are written into the standard PDF page-label tree. Source extremes have bounded display formatting.
+
+### Engineering formulas (development branch)
+
+XLS42 calculates decimal/binary/octal/hexadecimal conversions, `BASE`, `DECIMAL`, bitwise AND/OR/XOR/shifts,
+`DELTA`, `GESTEP` and `CONVERT`. The conversion table is based on the macOS 112 units and 27 SI/binary prefixes,
+including squared/cubed dimensions, information sizes and temperature offsets. Binary prefixes are limited to
+information units. Formula names containing digits and Excel `_xlfn.`/`_xlws.` prefixes retain normal A1 references.
+Signed conversions use the respective 10/30/40-bit formats; bitwise values are bounded to 48 bits. These bounds
+follow the suite and [Microsoft's engineering function reference](https://support.microsoft.com/en-us/excel/engineering-functions-reference).
+Raw formulas remain authoritative in saved workbooks. This adds a subset of the macOS function catalog;
+dynamic arrays and the remaining functions are tracked separately.
+
+The Windows exporter corrects the source table's `flb` factor to foot pound-force, derived from its `lbf` and `ft`
+constants. Microsoft names that unit [foot-pound](https://support.microsoft.com/en-us/excel/functions/convert-function);
+[NIST distinguishes it from foot poundal](https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b9).
+The macOS source correction is separate from this Windows branch.
+
+Generated XLSX keeps formula text results as strings, including numeric-looking identifiers with leading zeroes.
+Cached Boolean, number and standard error values keep their corresponding types. ODS stores scalar text/Boolean/
+number caches; cached error display remains textual because the ODS writer has no distinct error value type.

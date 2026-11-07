@@ -24,6 +24,10 @@ on:
         description: Verify crop and drawing commands are separate from Save As
         type: boolean
         default: false
+      audit_engineering:
+        description: Verify engineering formulas through native editing and XLSX export
+        type: boolean
+        default: false
       audit_only:
         description: Run native GUI audits against the current Windows preview
         type: boolean
@@ -123,7 +127,7 @@ jobs:
           cargo test --locked -p win42 -p pdf42-core -p pdf42 -p xls42-core
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents --page-exports --host-commands
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents --page-exports --host-commands --engineering
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -208,6 +212,7 @@ jobs:
           AUDIT_LANGUAGES: ${{ inputs.audit_languages }}
           AUDIT_PAGES: ${{ inputs.audit_pages }}
           AUDIT_HOST_COMMANDS: ${{ inputs.audit_host_commands }}
+          AUDIT_ENGINEERING: ${{ inputs.audit_engineering }}
         shell: pwsh
         run: |
           $extra = @()
@@ -218,6 +223,7 @@ jobs:
           if ($env:AUDIT_LANGUAGES -eq 'true') { $extra += '--languages' }
           if ($env:AUDIT_PAGES -eq 'true') { $extra += '--page-exports' }
           if ($env:AUDIT_HOST_COMMANDS -eq 'true') { $extra += '--host-commands' }
+          if ($env:AUDIT_ENGINEERING -eq 'true') { $extra += '--engineering' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()
