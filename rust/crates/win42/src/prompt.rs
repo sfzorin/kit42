@@ -68,6 +68,15 @@ pub unsafe fn show_options(
     multiline: bool,
     password: bool,
 ) -> Option<Vec<String>> {
+    show_choices(owner, req, multiline, password, &[])
+}
+pub unsafe fn show_choices(
+    owner: HWND,
+    req: &InputRequest,
+    multiline: bool,
+    password: bool,
+    choices: &[(usize, Vec<String>)],
+) -> Option<Vec<String>> {
     if PROMPT.with(|p| p.borrow().is_some()) {
         return None;
     }
@@ -127,14 +136,21 @@ pub unsafe fn show_options(
             instance,
             null(),
         );
+        let options = choices
+            .iter()
+            .find(|(field, _)| *field == i)
+            .map(|(_, values)| values);
+        let combo = options.is_some();
         let e = CreateWindowExW(
             WS_EX_CLIENTEDGE,
-            wide("EDIT").as_ptr(),
+            wide(if combo { "COMBOBOX" } else { "EDIT" }).as_ptr(),
             wide(value).as_ptr(),
             WS_CHILD
                 | WS_VISIBLE
                 | WS_TABSTOP
-                | if multiline && i == 0 {
+                | if combo {
+                    WS_VSCROLL | CBS_DROPDOWN as u32 | CBS_AUTOHSCROLL as u32
+                } else if multiline && i == 0 {
                     WS_VSCROLL | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32 | ES_WANTRETURN as u32
                 } else {
                     ES_AUTOHSCROLL as u32
@@ -147,17 +163,27 @@ pub unsafe fn show_options(
             scale(12),
             y + scale(21),
             scale(360),
-            scale(24 + if multiline && i == 0 { extra } else { 0 }),
+            scale(if combo {
+                220
+            } else {
+                24 + if multiline && i == 0 { extra } else { 0 }
+            }),
             h,
             (100 + i) as HMENU,
             instance,
             null(),
         );
+        if let Some(options) = options {
+            for option in options {
+                SendMessageW(e, CB_ADDSTRING, 0, wide(option).as_ptr() as LPARAM);
+            }
+            SetWindowTextW(e, wide(value).as_ptr());
+        }
         SendMessageW(t, WM_SETFONT, font, 1);
         SendMessageW(e, WM_SETFONT, font, 1);
         SendMessageW(
             e,
-            EM_SETLIMITTEXT,
+            if combo { CB_LIMITTEXT } else { EM_SETLIMITTEXT },
             if multiline && i == 0 { 65536 } else { 4096 },
             0,
         );

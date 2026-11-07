@@ -21,7 +21,7 @@ use windows_sys::Win32::{
             EnableWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL,
             VK_SHIFT,
         },
-        Shell::ShellExecuteW,
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, ShellExecuteW},
         WindowsAndMessaging::*,
     },
 };
@@ -44,6 +44,10 @@ const CREATE_LABEL_SHEET: u16 = 65518;
 const CREATE_BARCODE: u16 = 65517;
 const IMPORT_MARK: u16 = 65516;
 const INSERT_MARK: u16 = 65515;
+const EXPORT_TECHNICAL: u16 = 65514;
+const CONFIGURE_CALIBRATION: u16 = 65513;
+const TOGGLE_CALIBRATION: u16 = 65512;
+const CALIBRATION_SHEET: u16 = 65511;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -57,6 +61,7 @@ enum AsyncOpenPhase {
 }
 struct State {
     app: Box<dyn App>,
+    calibrate_print: bool,
     path: Option<PathBuf>,
     session: suite42_core::session::DocumentSession,
     async_open: Option<AsyncOpen>,
@@ -539,6 +544,17 @@ unsafe fn refresh() {
                 MF_ENABLED
             } else {
                 MF_GRAYED
+            },
+    );
+    let calibration_enabled = STATE.with(|state| state.borrow().as_ref().unwrap().calibrate_print);
+    CheckMenuItem(
+        menu,
+        TOGGLE_CALIBRATION as u32,
+        MF_BYCOMMAND
+            | if calibration_enabled {
+                MF_CHECKED
+            } else {
+                MF_UNCHECKED
             },
     );
     let opening = STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()));
@@ -1039,6 +1055,27 @@ unsafe fn cancel_pending_open() {
         update_caption();
     }
 }
+unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
+    let add = STATE.with(|state| state.borrow().as_ref().unwrap().app.open_is_add());
+    if !add && !confirm(hwnd) {
+        return;
+    }
+    for (index, path) in paths.into_iter().enumerate() {
+        let result = if index == 0 || add {
+            open_document_path(path)
+        } else {
+            std::env::current_exe()
+                .and_then(|exe| std::process::Command::new(exe).arg("--").arg(path).spawn())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        };
+        if let Err(error) = result {
+            msg(hwnd, &error, MB_OK | MB_ICONERROR);
+        }
+    }
+    refresh();
+}
+
 unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
     cancel_pending_open();
     let async_started = STATE.with(|s| {
@@ -1246,11 +1283,21 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
     };
     let request = if is_sheet {
         production::sheet_request(&source)
+    } else if id == EXPORT_TECHNICAL {
+        production::technical_request()
     } else {
         production::barcode_request(String::new())
     };
     let multiline = is_sheet && matches!(&source, LabelSource::Text(_));
-    let Some(fields) = crate::prompt::show_options(hwnd, &request, multiline, false) else {
+    let choices = if is_sheet {
+        production::sheet_choices()?
+    } else if id == EXPORT_TECHNICAL {
+        production::technical_choices()
+    } else {
+        production::barcode_choices()
+    };
+    let Some(fields) = crate::prompt::show_choices(hwnd, &request, multiline, false, &choices)
+    else {
         return Ok(());
     };
     let (output, ext, name, pattern) = if is_sheet {
@@ -1259,6 +1306,13 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
             "pdf",
             "PDF label sheet",
             "*.pdf",
+        )
+    } else if id == EXPORT_TECHNICAL {
+        (
+            production::technical_element(&fields)?.png()?,
+            "png",
+            "PNG symbol or code",
+            "*.png",
         )
     } else {
         (
@@ -1424,6 +1478,16 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         return;
     }
     if REFRESHING.with(|x| x.get()) {
+        return;
+    }
+    if matches!(
+        id,
+        CONFIGURE_CALIBRATION | TOGGLE_CALIBRATION | CALIBRATION_SHEET
+    ) {
+        if let Err(error) = calibration_command(hwnd, id) {
+            msg(hwnd, &error, MB_OK | MB_ICONERROR);
+        }
+        refresh();
         return;
     }
     if id == CANCEL_OPEN {
@@ -1652,10 +1716,12 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             }
             if matches!(
                 id,
-                CREATE_LABEL_SHEET | CREATE_BARCODE | IMPORT_MARK | INSERT_MARK
+                CREATE_LABEL_SHEET | CREATE_BARCODE | IMPORT_MARK | INSERT_MARK | EXPORT_TECHNICAL
             ) {
                 let result = match id {
-                    CREATE_LABEL_SHEET | CREATE_BARCODE => production_command(hwnd, id),
+                    CREATE_LABEL_SHEET | CREATE_BARCODE | EXPORT_TECHNICAL => {
+                        production_command(hwnd, id)
+                    }
                     _ => mark_command(hwnd, id),
                 };
                 if let Err(error) = result {
@@ -2400,6 +2466,26 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
             }
             0
         }
+        WM_DROPFILES => {
+            let drop = w as windows_sys::Win32::UI::Shell::HDROP;
+            let count = DragQueryFileW(drop, u32::MAX, null_mut(), 0);
+            let mut paths = Vec::new();
+            for index in 0..count {
+                let length = DragQueryFileW(drop, index, null_mut(), 0);
+                let mut buffer = vec![0; length as usize + 1];
+                let copied = DragQueryFileW(drop, index, buffer.as_mut_ptr(), buffer.len() as u32);
+                if copied == length && copied != 0 {
+                    paths.push(PathBuf::from(OsString::from_wide(
+                        &buffer[..copied as usize],
+                    )));
+                }
+            }
+            DragFinish(drop);
+            if !paths.is_empty() {
+                open_paths(h, paths);
+            }
+            0
+        }
         WM_DPICHANGED => {
             let r = &*(l as *const RECT);
             SetWindowPos(
@@ -2480,6 +2566,28 @@ pub fn run(app: Box<dyn App>) {
         for a in app.file_actions() {
             item(file, a.id, a.title);
         }
+        let printing = CreatePopupMenu();
+        item(
+            printing,
+            TOGGLE_CALIBRATION,
+            "Use Saved Printer Calibration",
+        );
+        item(
+            printing,
+            CONFIGURE_CALIBRATION,
+            "Configure Printer Calibration…",
+        );
+        item(
+            printing,
+            CALIBRATION_SHEET,
+            "Export 100 mm Calibration Sheet…",
+        );
+        AppendMenuW(
+            file,
+            MF_POPUP,
+            printing as usize,
+            wide("Printer Calibration").as_ptr(),
+        );
         item(file, EXIT, "E&xit");
         AppendMenuW(bar, MF_POPUP, file as usize, wide("&File").as_ptr());
         let editmenu = CreatePopupMenu();
@@ -2527,6 +2635,7 @@ pub fn run(app: Box<dyn App>) {
                     menu
                 };
             item(menu, CREATE_BARCODE, "Create Barcode…");
+            item(menu, EXPORT_TECHNICAL, "Create Symbol or Code…");
             item(menu, CREATE_LABEL_SHEET, "Create Label Sheet…");
         }
         for (name, menu) in groups {
@@ -2549,6 +2658,7 @@ pub fn run(app: Box<dyn App>) {
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
                 app,
+                calibrate_print: false,
                 path: None,
                 session: Default::default(),
                 async_open: None,
@@ -2813,6 +2923,15 @@ pub fn run(app: Box<dyn App>) {
         refresh();
         SetTimer(h, 42, 100, None);
         ShowWindow(h, SW_SHOW);
+        DragAcceptFiles(h, 1);
+        let mut arguments = std::env::args_os().skip(1).peekable();
+        if arguments.peek().is_some_and(|argument| argument == "--") {
+            arguments.next();
+        }
+        let paths = arguments.map(PathBuf::from).collect::<Vec<_>>();
+        if !paths.is_empty() {
+            open_paths(h, paths);
+        }
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             if m.message == WM_KEYDOWN
@@ -3745,13 +3864,177 @@ unsafe fn draw_rgba(
     DeleteDC(memory);
 }
 
+unsafe fn selected_printer_name(handle: HGLOBAL) -> Result<String, String> {
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    if handle.is_null() {
+        return Err("Printer identity is unavailable.".into());
+    }
+    let size = GlobalSize(handle);
+    let data = GlobalLock(handle);
+    if data.is_null() {
+        return Err("Could not read printer identity.".into());
+    }
+    let result = (|| {
+        if size < size_of::<DEVNAMES>() {
+            return Err("Invalid printer identity.".into());
+        }
+        let names = &*(data as *const DEVNAMES);
+        let start = usize::from(names.wDeviceOffset);
+        let units = std::slice::from_raw_parts(data as *const u16, size / 2);
+        let rest = units.get(start..).ok_or("Invalid printer name offset.")?;
+        let end = rest
+            .iter()
+            .position(|&value| value == 0)
+            .ok_or("Invalid printer name.")?;
+        String::from_utf16(&rest[..end]).map_err(|error| error.to_string())
+    })();
+    GlobalUnlock(handle);
+    result
+}
+
+unsafe fn printer_profile_key(name: &str, dc: HDC) -> Result<String, String> {
+    let (dx, dy) = (
+        GetDeviceCaps(dc, LOGPIXELSX as i32),
+        GetDeviceCaps(dc, LOGPIXELSY as i32),
+    );
+    let (w, h) = (
+        GetDeviceCaps(dc, PHYSICALWIDTH as i32),
+        GetDeviceCaps(dc, PHYSICALHEIGHT as i32),
+    );
+    if dx <= 0 || dy <= 0 || w <= 0 || h <= 0 {
+        return Err("Printer reported invalid paper dimensions.".into());
+    }
+    let width = (f64::from(w) * 25400.0 / f64::from(dx)).round() as i64;
+    let height = (f64::from(h) * 25400.0 / f64::from(dy)).round() as i64;
+    Ok(format!("{name}/{width}x{height}um"))
+}
+
+unsafe fn calibration_command(hwnd: HWND, id: u16) -> Result<(), String> {
+    if id == TOGGLE_CALIBRATION {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.as_mut().unwrap();
+            state.calibrate_print = !state.calibrate_print;
+        });
+        return Ok(());
+    }
+    if id == CALIBRATION_SHEET {
+        let bytes = label42::calibration_pdf()?;
+        if let Some(path) = dialog(hwnd, true, "pdf", "PDF calibration sheet", "*.pdf") {
+            if !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+            {
+                return Err("Choose a file name ending in .pdf.".into());
+            }
+            suite42_core::write_new(&path, &bytes).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let mut chooser: PRINTDLGW = zeroed();
+    chooser.lStructSize = size_of::<PRINTDLGW>() as u32;
+    chooser.hwndOwner = hwnd;
+    chooser.Flags = PD_RETURNDC | PD_NOSELECTION | PD_NOPAGENUMS;
+    let accepted = PrintDlgW(&mut chooser) != 0;
+    let name = selected_printer_name(chooser.hDevNames);
+    let key = name
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|name| printer_profile_key(name, chooser.hDC));
+    if !chooser.hDevMode.is_null() {
+        GlobalFree(chooser.hDevMode);
+    }
+    if !chooser.hDevNames.is_null() {
+        GlobalFree(chooser.hDevNames);
+    }
+    if !chooser.hDC.is_null() {
+        DeleteDC(chooser.hDC);
+    }
+    if !accepted {
+        return Ok(());
+    }
+    let (name, key) = (name?, key?);
+    let root = crate::print_calibration::directory()?;
+    let value = crate::print_calibration::load(&root, &key)?.unwrap_or_default();
+    let request = crate::InputRequest {
+        title: "Printer Calibration",
+        fields: vec![
+            (
+                "Measured horizontal 100 mm line (mm)",
+                format!("{:.5}", 100.0 / value.scale_x),
+            ),
+            (
+                "Measured vertical 100 mm line (mm)",
+                format!("{:.5}", 100.0 / value.scale_y),
+            ),
+            (
+                "Horizontal offset (mm, right is positive)",
+                value.offset_x.to_string(),
+            ),
+            (
+                "Vertical offset (mm, down is positive)",
+                value.offset_y.to_string(),
+            ),
+        ],
+    };
+    let Some(fields) = crate::prompt::show(hwnd, &request) else {
+        return Ok(());
+    };
+    let values = fields
+        .iter()
+        .map(|value| {
+            value
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "Enter measurements in millimetres.".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let correction = crate::print_calibration::PrintCorrection::measured(
+        values[0], values[1], values[2], values[3],
+    )?;
+    crate::print_calibration::save(&root, &key, correction)?;
+    msg(hwnd, &format!("Calibration saved for {name}. Turn on Use Saved Printer Calibration to apply it when printing."), MB_OK | MB_ICONINFORMATION);
+    Ok(())
+}
+
+unsafe fn apply_rich_print_correction(
+    dc: HDC,
+    correction: crate::print_calibration::PrintCorrection,
+    physical: (i32, i32),
+    dpi: (i32, i32),
+) -> Result<i32, String> {
+    let saved = SaveDC(dc);
+    if saved == 0 {
+        return Err("Could not save print device state.".into());
+    }
+    if correction == crate::print_calibration::PrintCorrection::default() {
+        return Ok(saved);
+    }
+    let (x, y) = correction.device_origin((0, 0), physical, dpi);
+    let transform = XFORM {
+        eM11: correction.scale_x as f32,
+        eM12: 0.0,
+        eM21: 0.0,
+        eM22: correction.scale_y as f32,
+        eDx: x as f32,
+        eDy: y as f32,
+    };
+    if SetGraphicsMode(dc, GM_ADVANCED) == 0 || SetWorldTransform(dc, &transform) == 0 {
+        RestoreDC(dc, saved);
+        return Err("The printer does not support calibrated text output.".into());
+    }
+    Ok(saved)
+}
+
 /// Print explicit page coordinates against the selected printer's physical geometry.
 unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
     use windows_sys::Win32::Storage::Xps::{
         AbortDoc, EndDoc, EndPage, StartDocW, StartPage, DOCINFOW,
     };
     let geometries: Vec<crate::PrintGeometry> = match job {
-        crate::PrintJob::Scenes(pages) => pages.iter().map(|p| p.geometry).collect(),
+        crate::PrintJob::Scenes(pages) | crate::PrintJob::ActualSizeScenes(pages) => {
+            pages.iter().map(|p| p.geometry).collect()
+        }
         crate::PrintJob::RichText(g) => vec![g.geometry],
     };
     if geometries.is_empty() || geometries.iter().any(|g| !g.valid()) {
@@ -3763,6 +4046,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
     dialog.Flags = PD_RETURNDC | PD_NOSELECTION | PD_NOPAGENUMS;
     dialog.nCopies = 1;
     let accepted = PrintDlgW(&mut dialog) != 0;
+    let printer_name = selected_printer_name(dialog.hDevNames);
     if !dialog.hDevMode.is_null() {
         GlobalFree(dialog.hDevMode);
     }
@@ -3793,6 +4077,22 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
         DeleteDC(dc);
         return Err("Printer reported invalid dimensions".into());
     }
+    let correction = if STATE.with(|state| state.borrow().as_ref().unwrap().calibrate_print) {
+        let result = printer_name.and_then(|name| {
+            let key = printer_profile_key(&name, dc)?;
+            crate::print_calibration::load(&crate::print_calibration::directory()?, &key)?
+                .ok_or_else(|| "No calibration is saved for this printer and paper. Configure it before enabling calibration.".into())
+        });
+        match result {
+            Ok(correction) => correction,
+            Err(error) => {
+                DeleteDC(dc);
+                return Err(error);
+            }
+        }
+    } else {
+        crate::print_calibration::PrintCorrection::default()
+    };
     let twips = |pixels: i32, dpi: i32| (i64::from(pixels) * 1440 / i64::from(dpi)) as i32;
     let paper = crate::PrintGeometry {
         width_twips: twips(width, dpi_x),
@@ -3819,7 +4119,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
         }
         _ => job,
     };
-    let title = wide("Suite42 document");
+    let title = wide("off42 document");
     let info = DOCINFOW {
         cbSize: size_of::<DOCINFOW>() as i32,
         lpszDocName: title.as_ptr(),
@@ -3830,7 +4130,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
         return Err("Could not start print job".into());
     }
     let result: Result<(), String> = (|| match job {
-        crate::PrintJob::Scenes(pages) => {
+        crate::PrintJob::Scenes(pages) | crate::PrintJob::ActualSizeScenes(pages) => {
             for page in pages {
                 if StartPage(dc) <= 0 {
                     return Err("Could not start print page".into());
@@ -3858,14 +4158,19 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                     f64::from(clip_w) * f64::from(dpi_x) / 72.0,
                     f64::from(clip_h) * f64::from(dpi_y) / 72.0,
                 );
-                let (scale, ox, oy) =
-                    crate::fit_print_content(content, (ox, oy), (print_w, print_h));
+                let (scale, ox, oy) = if matches!(job, crate::PrintJob::ActualSizeScenes(_)) {
+                    (1.0, ox, oy)
+                } else {
+                    crate::fit_print_content(content, (ox, oy), (print_w, print_h))
+                };
+                let (ox, oy) =
+                    correction.device_origin((ox, oy), (offset_x, offset_y), (dpi_x, dpi_y));
                 SetMapMode(dc, MM_ANISOTROPIC);
                 SetWindowExtEx(dc, 72_000, 72_000, null_mut());
                 SetViewportExtEx(
                     dc,
-                    (f64::from(dpi_x) * scale * 1000.0).round() as i32,
-                    (f64::from(dpi_y) * scale * 1000.0).round() as i32,
+                    (f64::from(dpi_x) * scale * correction.scale_x * 1000.0).round() as i32,
+                    (f64::from(dpi_y) * scale * correction.scale_y * 1000.0).round() as i32,
                     null_mut(),
                 );
                 SetViewportOrgEx(dc, ox, oy, null_mut());
@@ -3905,6 +4210,12 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                         if StartPage(dc) <= 0 {
                             return Err("Could not start print page".into());
                         }
+                        let saved = apply_rich_print_correction(
+                            dc,
+                            correction,
+                            (offset_x, offset_y),
+                            (dpi_x, dpi_y),
+                        )?;
                         if crate::rich_print::body(edit, dc, job.geometry, (ox, oy), start) != end {
                             return Err("Print pagination changed while rendering".into());
                         }
@@ -3915,6 +4226,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                             page,
                             pages.len(),
                         )?;
+                        RestoreDC(dc, saved);
                         if EndPage(dc) <= 0 {
                             return Err("Could not finish print page".into());
                         }
@@ -3925,6 +4237,12 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                         if StartPage(dc) <= 0 {
                             return Err("Could not start print page".into());
                         }
+                        let saved = apply_rich_print_correction(
+                            dc,
+                            correction,
+                            (offset_x, offset_y),
+                            (dpi_x, dpi_y),
+                        )?;
                         crate::rich_notes::draw_page(
                             edit,
                             dc,
@@ -3934,6 +4252,7 @@ unsafe fn print_job(hwnd: HWND, job: &crate::PrintJob) -> Result<(), String> {
                             (ox, oy),
                             (offset_x, offset_y),
                         )?;
+                        RestoreDC(dc, saved);
                         if EndPage(dc) <= 0 {
                             return Err("Could not finish print page".into());
                         }

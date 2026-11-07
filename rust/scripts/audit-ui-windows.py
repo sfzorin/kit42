@@ -153,12 +153,26 @@ def minimal_pdf(path):
     path.write_bytes(data)
 
 
-def audit(binary, output):
-    process = subprocess.Popen([str(binary)])
+def audit(binary, output, extended):
+    startup = None
+    if extended:
+        if binary.stem.lower() == "pdf42":
+            startup = output / "startup.pdf"
+            minimal_pdf(startup)
+        elif binary.stem.lower() == "xls42":
+            startup = output / "startup.csv"
+            startup.write_text("Name,Code\nBoard 0007,PCB-0007\nBoard 0008,PCB-0008\n", encoding="utf-8")
+        elif binary.stem.lower() == "doc42":
+            startup = output / "startup.rtf"
+            startup.write_bytes(br"{\rtf1\ansi Board 0007}")
+    process = subprocess.Popen([str(binary)] + ([str(startup)] if startup else []))
     results = {"app": binary.name, "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "checks": []}
     try:
         main = modal(process, native_class="Suite42Native")
         results["checks"].append("native main window visible")
+        if startup:
+            wait_for(lambda: startup.name in text(main) and u.IsWindowEnabled(main), "command-line file open", process)
+            results["checks"].append("command-line file open reaches the normal document session")
         command(main, 6)
         about = modal(process, native_class="#32770")
         content = " ".join(text(h) for h in windows(process.pid, about))
@@ -168,18 +182,19 @@ def audit(binary, output):
         results["checks"].append("About command identifies app and closes")
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
             return results
-        if binary.stem.lower() == "pdf42":
+        if binary.stem.lower() == "pdf42" and not startup:
             source = output / "input.pdf"
             minimal_pdf(source)
             command(main, 1)
             choose_file(process, source)
             wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "PDF open", process)
         elif binary.stem.lower() == "xls42":
-            source = output / "input.csv"
-            source.write_text("Name,Code\nBoard 0007,PCB-0007\nBoard 0008,PCB-0008\n", encoding="utf-8")
-            command(main, 1)
-            choose_file(process, source)
-            wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "CSV open", process)
+            if not startup:
+                source = output / "input.csv"
+                source.write_text("Name,Code\nBoard 0007,PCB-0007\nBoard 0008,PCB-0008\n", encoding="utf-8")
+                command(main, 1)
+                choose_file(process, source)
+                wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "CSV open", process)
             fill_prompt(process, main, 25, "Range (1-based)", ["1", "1", "3", "2"])
             wait_for(lambda: u.IsWindowEnabled(main), "range selected", process)
         png = output / f"{binary.stem}-barcode.png"
@@ -197,6 +212,31 @@ def audit(binary, output):
         choose_file(process, pdf)
         output_ready(process, main, pdf, b"%PDF-")
         results["checks"].append("label sheet created through native dialog and saved as PDF")
+        if extended:
+            preset = output / f"{binary.stem}-stock.pdf"
+            fields[3] = "AVERY L4732 — 35.6 × 16.9 mm"
+            fields[2] = "QR"
+            fields[4] = "1, 1"
+            if binary.stem.lower() == "xls42":
+                fields[0], fields[1] = "1", "0, 0, 1"
+            else:
+                fields[0], fields[1] = "Board", ""
+            fill_prompt(process, main, 65518, "Create Label Sheet", fields)
+            choose_file(process, preset)
+            output_ready(process, main, preset, b"%PDF-")
+            results["checks"].append("named stock selected through the native combo box")
+            symbol = output / f"{binary.stem}-symbol.png"
+            fill_prompt(process, main, 65514, "Symbol or Code", ["Protective earth", "", "20", "no"])
+            choose_file(process, symbol)
+            output_ready(process, main, symbol, b"\x89PNG\r\n\x1a\n")
+            raw = symbol.read_bytes()
+            assert b"Description\0Suite42.TechnicalElement.v1:" in raw
+            results["checks"].append("technical symbol exported with a reusable recipe")
+            calibration = output / f"{binary.stem}-calibration.pdf"
+            command(main, 65511)
+            choose_file(process, calibration)
+            output_ready(process, main, calibration, b"%PDF-")
+            results["checks"].append("calibration sheet exported through the normal menu")
         return results
     finally:
         if process.poll() is None:
@@ -214,6 +254,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--extended", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -221,7 +262,7 @@ def main():
     results = []
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
-            results.append(audit(args.bin_dir / (app + ".exe"), args.output))
+            results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended))
             print(json.dumps(results[-1]), flush=True)
     finally:
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")

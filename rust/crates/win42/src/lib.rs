@@ -366,6 +366,8 @@ mod native;
 mod note_pagination;
 #[cfg(windows)]
 mod production;
+#[cfg(any(windows, test))]
+mod print_calibration;
 #[cfg(windows)]
 mod prompt;
 #[cfg(windows)]
@@ -899,6 +901,7 @@ pub struct RichPrint {
 #[derive(Clone, Debug)]
 pub enum PrintJob {
     Scenes(Vec<PrintPage>),
+    ActualSizeScenes(Vec<PrintPage>),
     RichText(RichPrint),
 }
 #[derive(Clone, Debug, Default)]

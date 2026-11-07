@@ -1,5 +1,5 @@
 use crate::{InputRequest, LabelSource};
-use label42::{Format, Label, Layout, MAX_LABELS};
+use label42::{Format, Label, Stock, MAX_LABELS};
 
 pub(crate) fn sheet_request(source: &LabelSource) -> InputRequest {
     let mut fields = match source {
@@ -28,7 +28,7 @@ pub(crate) fn sheet_request(source: &LabelSource) -> InputRequest {
             "QR".into(),
         ),
         (
-            "Width, height, horizontal gap, vertical gap (mm)",
+            "Stock name or width, height, gaps (mm)",
             "70, 37, 0, 0".into(),
         ),
         ("Copies per label, first slot (top left = 1)", "1, 1".into()),
@@ -37,6 +37,35 @@ pub(crate) fn sheet_request(source: &LabelSource) -> InputRequest {
         title: "Create Label Sheet",
         fields,
     }
+}
+
+pub(crate) fn barcode_choices() -> Vec<(usize, Vec<String>)> {
+    vec![(
+        1,
+        ["QR", "Data Matrix", "Code 128", "Aztec"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    )]
+}
+
+pub(crate) fn sheet_choices() -> Result<Vec<(usize, Vec<String>)>, String> {
+    Ok(vec![
+        (
+            2,
+            ["QR", "Data Matrix", "Code 128", "Aztec"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        ),
+        (
+            3,
+            Stock::catalog()?
+                .iter()
+                .map(|stock| stock.name.clone())
+                .collect(),
+        ),
+    ])
 }
 
 pub(crate) fn barcode_request(value: String) -> InputRequest {
@@ -79,15 +108,15 @@ pub(crate) fn sheet_output(source: LabelSource, fields: &[String]) -> Result<Vec
     let [first, second, format, size, print] = fields else {
         return Err("Invalid label settings.".into());
     };
-    let [width, height, horizontal_gap, vertical_gap] = numbers(size, "label size")?;
-    let [copies, first_slot] = numbers(print, "copies and first slot")?;
-    let layout = Layout {
-        width,
-        height,
-        horizontal_gap,
-        vertical_gap,
-        first_slot,
+    let stock = if let Some(stock) = Stock::catalog()?.iter().find(|stock| {
+        stock.id.eq_ignore_ascii_case(size.trim()) || stock.name.eq_ignore_ascii_case(size.trim())
+    }) {
+        stock.clone()
+    } else {
+        let [width, height, horizontal_gap, vertical_gap] = numbers(size, "label size")?;
+        Stock::custom(width, height, horizontal_gap, vertical_gap)?
     };
+    let [copies, first_slot] = numbers(print, "copies and first slot")?;
     let labels = match source {
         LabelSource::Text(_) => vec![Label {
             text: first.trim().into(),
@@ -149,5 +178,62 @@ pub(crate) fn sheet_output(source: LabelSource, fields: &[String]) -> Result<Vec
         .any(|label| label.code.is_some())
         .then(|| Format::parse(format))
         .transpose()?;
-    label42::sheet_pdf(layout, format, &labels)
+    label42::sheet_pdf_stock(&stock, first_slot, format, &labels)
+}
+
+pub(crate) fn technical_request() -> InputRequest {
+    InputRequest {
+        title: "Symbol or Code",
+        fields: vec![
+            ("Symbol or barcode format", "QR".into()),
+            ("Barcode value", String::new()),
+            ("Width (mm)", "35".into()),
+            ("Caption (yes/no)", "yes".into()),
+        ],
+    }
+}
+
+pub(crate) fn technical_choices() -> Vec<(usize, Vec<String>)> {
+    let mut types = vec![
+        "QR".into(),
+        "Data Matrix".into(),
+        "Code 128".into(),
+        "Aztec".into(),
+    ];
+    types.extend(
+        label42::symbols()
+            .iter()
+            .map(|symbol| symbol.title.to_owned()),
+    );
+    vec![(0, types), (3, vec!["yes".into(), "no".into()])]
+}
+
+pub(crate) fn technical_element(fields: &[String]) -> Result<label42::TechnicalElement, String> {
+    let [kind, value, width, caption] = fields else {
+        return Err("Invalid technical element settings.".into());
+    };
+    let symbol = label42::symbols().iter().find(|symbol| {
+        symbol.id.eq_ignore_ascii_case(kind.trim())
+            || symbol.title.eq_ignore_ascii_case(kind.trim())
+    });
+    let element = label42::TechnicalElement {
+        symbol_id: symbol.map(|symbol| symbol.id.to_owned()),
+        code_type: if symbol.is_some() {
+            Format::Qr
+        } else {
+            Format::parse(kind)?
+        },
+        value: value.clone(),
+        width_mm: width
+            .trim()
+            .parse()
+            .map_err(|_| "Enter a width in millimetres.")?,
+        caption: match caption.trim().to_ascii_lowercase().as_str() {
+            "yes" => true,
+            "no" => false,
+            _ => return Err("Choose yes or no for the caption.".into()),
+        },
+    };
+    element.validate()?;
+    Ok(element)
 }

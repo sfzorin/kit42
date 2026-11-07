@@ -60,6 +60,13 @@ jobs:
           Copy-Item ../LICENSE build/off42/licenses/off42-LICENSE
           Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/off42/licenses/NotoSans-OFL.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
+      - name: Audit native commands in the packaged apps
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-windows-ui-built
+          path: rust/build/native-ui
       - uses: actions/upload-artifact@v4
         with:
           name: Suite42-windows-x64
