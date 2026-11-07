@@ -35,6 +35,25 @@ impl RichDocument {
             });
             let mut plans = vec![];
             let mut resulting_bytes = 0usize;
+            let context_items = s
+                .bookmarks
+                .len()
+                .saturating_add(s.comments.len())
+                .saturating_add(s.footnotes.len())
+                .saturating_add(s.fields.len())
+                .saturating_add(s.revisions.len().saturating_mul(2))
+                .saturating_add(
+                    s.tables_of_contents
+                        .iter()
+                        .map(|toc| {
+                            toc.entries.len().saturating_add(
+                                toc.odt_cached
+                                    .as_ref()
+                                    .map_or(0, |cache| cache.title_paragraphs.len()),
+                            )
+                        })
+                        .sum::<usize>(),
+                );
             for paragraph in paragraphs {
                 let text: String = paragraph.runs.iter().map(|run| run.text.as_str()).collect();
                 let matches: Vec<usize> = text
@@ -57,6 +76,11 @@ impl RichDocument {
                     .ok_or(Error::Limit)?;
                 if matches.is_empty() {
                     continue;
+                }
+                // The existing anchor remapper walks document-wide contexts.
+                // Bound aggregate work before entering any matching/rewriting loop.
+                if count.saturating_mul(context_items) > 10_000_000 {
+                    return Err(Error::Limit);
                 }
                 if s.footnotes.iter().any(|note| {
                     note.at.paragraph == paragraph.id
@@ -416,5 +440,38 @@ mod tests {
         ));
         assert_eq!(doc.state(), &before);
         assert!(!doc.is_dirty());
+    }
+    #[test]
+    fn excessive_annotation_remap_work_is_refused_before_mutation() {
+        let mut doc = RichDocument::decode("x".repeat(10001).as_bytes(), Format::Text).unwrap();
+        doc.transact(|state| {
+            for index in 0..1001 {
+                let id = state.next_id;
+                state.next_id += 1;
+                state.bookmarks.push(Bookmark {
+                    id,
+                    name: format!("mark{index}"),
+                    start: Position {
+                        paragraph: 1,
+                        offset: 0,
+                    },
+                    end: Position {
+                        paragraph: 1,
+                        offset: 0,
+                    },
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+        doc.mark_saved();
+        let before = doc.snapshot();
+        assert!(matches!(doc.replace_all_text("x", "y"), Err(Error::Limit)));
+        assert_eq!(doc.state(), &before);
+        assert!(!doc.is_dirty());
+        assert!(doc.undo());
+        assert!(doc.state().bookmarks.is_empty());
+        assert!(doc.redo());
+        assert_eq!(doc.state(), &before);
     }
 }

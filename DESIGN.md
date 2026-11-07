@@ -624,3 +624,8 @@ boundaries to retain formatting/links without rescanning all runs per match, and
 from right to left. Matches covering invisible note markers are refused so a plain text query cannot silently remove a note. Revision/field
 anchors and cached TOC content remain guarded. One history entry contains the entire operation; invalid/oversized
 results commit nothing. The ODT reader isolates outer bookmark markers while parsing inline note paragraphs.
+
+
+An additional preflight bounds matches multiplied by document annotation/field/revision/TOC contexts. The generic
+anchor remapper is deliberately reused for consistent gravity, and excessive aggregate work is refused before
+any rewrite. This prevents the independent match/document caps from multiplying into a long UI-blocking operation.
