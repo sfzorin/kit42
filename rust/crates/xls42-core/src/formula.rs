@@ -1,5 +1,6 @@
 //! Small, bounded spreadsheet expression evaluator. Raw cells remain authoritative.
 mod engineering;
+mod text;
 mod units;
 use crate::{CellContent, SheetId, Workbook};
 use std::collections::{HashMap, HashSet};
@@ -463,6 +464,9 @@ impl Parser<'_, '_> {
         if self.depth > MAX_DEPTH {
             return Value::Error("#LIMIT!");
         }
+        if text::handles(name) {
+            return self.extended_text_function(name);
+        }
         if matches!(name, "TRUE" | "FALSE") {
             return if self.take(b')') {
                 Value::Boolean(name == "TRUE")
@@ -500,8 +504,6 @@ impl Parser<'_, '_> {
                 | "LEFT"
                 | "RIGHT"
                 | "MID"
-                | "CONCAT"
-                | "CONCATENATE"
                 | "EXACT"
                 | "VALUE"
                 | "DATEVALUE"
@@ -1546,6 +1548,72 @@ impl Parser<'_, '_> {
             Value::Error("#N/A")
         }
     }
+    fn extended_text_function(&mut self, name: &str) -> Value {
+        let mut args = Vec::new();
+        if self.take(b')') {
+            return text::call(name, &args);
+        }
+        loop {
+            self.space();
+            if matches!(self.input.get(self.pos), Some(b',' | b')')) {
+                args.push(text::Arg::Missing);
+            } else {
+                let start = self.pos;
+                let range = if matches!(name, "TEXTJOIN" | "CONCAT" | "CONCATENATE") {
+                    self.read_range()
+                } else {
+                    None
+                };
+                self.space();
+                if let Some((sheet, top, left, bottom, right)) =
+                    range.filter(|_| matches!(self.input.get(self.pos), Some(b',' | b')')))
+                {
+                    let mut values = Vec::new();
+                    for row in top..=bottom {
+                        for col in left..=right {
+                            self.eval.steps += 1;
+                            if self.eval.steps > MAX_STEPS || values.len() >= 100_000 {
+                                return Value::Error("#LIMIT!");
+                            }
+                            let Some(raw) = self.eval.raw(sheet, row, col) else {
+                                return Value::Error("#REF!");
+                            };
+                            values.push(if raw.is_empty() {
+                                Value::Text(String::new())
+                            } else {
+                                self.eval.cell(sheet, row, col, self.depth + 1)
+                            });
+                        }
+                    }
+                    args.push(text::Arg::Range(values));
+                } else {
+                    self.pos = start;
+                    // A directly referenced blank cell remains blank for text aggregation.
+                    let reference_start = self.pos;
+                    let reference = self.read_any_ref(self.sheet);
+                    self.space();
+                    let blank = reference
+                        .filter(|_| matches!(self.input.get(self.pos), Some(b',' | b')')))
+                        .is_some_and(|(sheet, row, col)| {
+                            self.eval.raw(sheet, row, col) == Some("")
+                        });
+                    if blank {
+                        args.push(text::Arg::Scalar(Value::Text(String::new())));
+                    } else {
+                        self.pos = reference_start;
+                        args.push(text::Arg::Scalar(self.comparison()));
+                    }
+                }
+            }
+            if self.take(b')') {
+                break;
+            }
+            if !self.take(b',') || args.len() >= 1024 {
+                return Value::Error("#ERROR!");
+            }
+        }
+        text::call(name, &args)
+    }
     fn text_function(&mut self, name: &str) -> Value {
         let mut args = Vec::new();
         if !self.take(b')') {
@@ -1630,17 +1698,6 @@ impl Parser<'_, '_> {
                     .collect::<Vec<_>>()
                     .join(" "),
             ),
-            "CONCAT" | "CONCATENATE" => {
-                let mut out = String::new();
-                for arg in args {
-                    let v = arg.display();
-                    if out.len().saturating_add(v.len()) > crate::MAX_TEXT {
-                        return Value::Error("#LIMIT!");
-                    }
-                    out.push_str(&v)
-                }
-                Value::Text(out)
-            }
             "EXACT" if args.len() == 2 => Value::Boolean(string(0) == string(1)),
             "LEFT" | "RIGHT" if (1..=2).contains(&args.len()) => {
                 let Some(count) = number(1, 1) else {

@@ -190,3 +190,20 @@ Text follows PDFium reading order. Rich formats retain basic font family, size, 
 page boundaries (form feeds in TXT). This is text extraction, not reconstruction of PDF columns, tables, images,
 positioned layout or embedded fonts. Scans without a text layer need OCR first. Exports are bounded to 1000 pages,
 4 MB of text and 100000 style runs. Unmapped glyphs are represented by a replacement character.
+
+
+### Text formulas and reference coverage (development branch)
+
+XLS42 adds PROPER, CLEAN, NUMBERVALUE, TEXTBEFORE/TEXTAFTER, SUBSTITUTE, REPLACE, REPT, FIND/SEARCH,
+CHAR/UNICHAR, CODE/UNICODE, T/N and TEXTJOIN. CONCAT/CONCATENATE and TEXTJOIN accept row-major ranges,
+preserving Boolean values and empty slots. SEARCH supports case-insensitive `*`, `?` and `~` escapes;
+text-before/after support negative occurrences, optional defaults and end matching. Search work and output size
+are bounded. NUMBERVALUE accepts explicit decimal/group separators; defaults use the existing `.`/`,` formula
+convention. CHAR/CODE follow off42's Unicode/Latin-1 reference semantics, not the Windows ANSI code page.
+Invalid code points/counts and formula errors are reported rather than silently clamped.
+
+`cargo run --manifest-path rust/Cargo.toml -p xls42-core --example formula-parity` prints a JSON report for 494
+macOS reference cases, including every mismatch. Two cases have locale-dependent expected output and are skipped.
+After this block, 136 fixed cases match and 356 differ. This measures example results, not complete function
+coverage or Excel conformance; arrays and many statistical/financial/date functions still need porting.
+Regenerate the fixture with `python3 rust/scripts/export-formula-cases.py`; its source hash is recorded.

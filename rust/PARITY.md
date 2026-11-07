@@ -119,3 +119,11 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   cancellation/no-overwrite publication. Windows-only regressions check extraction from the current redacted and
   page-edited snapshot. Workspace: 360 portable tests passed, one OCR fixture ignored; Windows GNU test compilation
   passed. Native four-format output/history/source checks await the next build.
+
+- A reproducible report covers all 494 macOS function examples (two locale-dependent cases skipped). The starting
+  Windows evaluator matched 110 fixed examples; after 17 new text functions and range-aware CONCAT/CONCATENATE,
+  136 match and 356 remain different. This is example coverage, not a count of implemented functions.
+- Text regressions cover optional/missing arguments, negative delimiter occurrences, wildcard search/escapes,
+  Unicode and count/code-point bounds, error propagation, range blanks/Boolean values and input edits after
+  independent XLSX/ODS import. Portable workspace: 363 passed, one OCR test ignored; GNU test compilation passes.
+  Native XLSX text-result and dirty/discard/reopen checks are included for the next compatible build.

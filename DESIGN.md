@@ -570,3 +570,17 @@ pages in the requested order, coalesces equal character styles, normalizes line 
 boundaries. DOC42 adapters serialize RTF/HTML/DOCX; the HTML adapter now round-trips explicit page breaks. Font
 names are sanitized before entering rich-text output. Paragraph/text/style-run limits bound allocation, and
 cancellation is checked between pages and during glyph iteration. Final publication is atomic and no-clobber.
+
+
+## XLS scalar text arguments and parity reporting
+
+The extended text dispatcher preserves omitted arguments separately from explicit values. Text aggregators read
+bounded row-major ranges and preserve truly blank cells as empty strings; ordinary numeric aggregation retains
+its existing type-filtering rules. Existing scalar formula values remain authoritative, and Office caches use
+the previously established typed result path. Text functions live behind one dispatcher with explicit argument,
+output and search-work limits. Wildcard SEARCH uses bounded dynamic programming rather than repeated regex or
+quadratic suffix scans. Tests strip internal Office project data and edit inputs before checking recalculation.
+
+The reference-case exporter reads only the macOS fixed fixture list and records its SHA-256. A standalone report
+compares actual portable calculation results with those examples and retains all gaps. It is a diagnostic report,
+not an all-pass test or a feature-count claim; locale-dependent examples are identified separately.
