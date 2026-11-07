@@ -26,6 +26,7 @@ u.GetDlgItem.restype = w.HWND
 u.GetDlgCtrlID.argtypes = [w.HWND]
 u.IsWindowVisible.argtypes = [w.HWND]
 u.IsWindowEnabled.argtypes = [w.HWND]
+u.SetForegroundWindow.argtypes = [w.HWND]
 u.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
 u.SendMessageW.restype = w.LPARAM
@@ -84,6 +85,19 @@ def command(hwnd, identifier):
     assert u.PostMessageW(hwnd, WM_COMMAND, identifier, 0)
 
 
+def click(dialog, identifier):
+    button = u.GetDlgItem(dialog, identifier)
+    assert button, [(classname(h), u.GetDlgCtrlID(h), text(h)) for h in windows_for_dialog(dialog)]
+    u.SetForegroundWindow(dialog)
+    assert u.PostMessageW(button, 0xF5, 0, 0)  # BM_CLICK
+
+
+def windows_for_dialog(dialog):
+    pid = w.DWORD()
+    u.GetWindowThreadProcessId(dialog, c.byref(pid))
+    return windows(pid.value, dialog)
+
+
 def set_text(hwnd, value):
     data = c.create_unicode_buffer(value)
     u.SendMessageW(hwnd, WM_SETTEXT, 0, c.cast(data, c.c_void_p).value)
@@ -97,7 +111,7 @@ def fill_prompt(process, main, identifier, title, values):
         control = u.GetDlgItem(dialog, 100 + index)
         assert control, f"Missing field {index} in {title}"
         set_text(control, value)
-    command(dialog, 1)
+    click(dialog, 1)
     return dialog
 
 
@@ -110,7 +124,7 @@ def choose_file(process, path):
         assert len(edits) == 1, [(classname(h), u.GetDlgCtrlID(h), text(h)) for h in children]
         control = edits[0]
     set_text(control, str(path))
-    command(dialog, 1)
+    click(dialog, 1)
 
 
 def output_ready(process, main, path, signature):
@@ -144,7 +158,7 @@ def audit(binary, output):
         about = modal(process, native_class="#32770")
         content = " ".join(text(h) for h in windows(process.pid, about))
         assert binary.stem.upper() in content, content
-        command(about, 1)
+        click(about, 1)
         wait_for(lambda: u.IsWindowEnabled(main), "About closed", process)
         results["checks"].append("About command identifies app and closes")
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
