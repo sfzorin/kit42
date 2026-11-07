@@ -65,7 +65,14 @@ preservation varies by feature and source file; test important documents before 
   such as `0007` or `PCB-0007`. Filtered or hidden rows are skipped. Undo restores the whole operation.
 - In PDF42, DOC42 and PPT42, **Signatures & Stamps** imports PNG or JPEG copies into the shared local library
   in `%LOCALAPPDATA%/off42/Signatures and Stamps`. Use **Insert from Library** to place an image.
-  PNG imports retain transparency. These are visual marks.
+  PNG imports retain transparency; import can remove white paper. IMG42 and SCN42 place the mark in a pixel rectangle
+  and support Undo/Redo. SCN42 clears OCR for a changed page and restores it with Undo. These are visual marks.
+
+## Native text proofing
+
+DOC42 and PPT42 enable inline spelling through Windows Rich Edit and TSF. The Edit menu toggles it.
+Available languages and proofing tips depend on installed Windows text services.
+[Microsoft documents the Rich Edit language options](https://learn.microsoft.com/en-us/windows/win32/controls/em-getlangoptions).
 
 ## Validation boundary
 

@@ -48,6 +48,7 @@ const EXPORT_TECHNICAL: u16 = 65514;
 const CONFIGURE_CALIBRATION: u16 = 65513;
 const TOGGLE_CALIBRATION: u16 = 65512;
 const CALIBRATION_SHEET: u16 = 65511;
+const TOGGLE_PROOFING: u16 = 65510;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -533,8 +534,10 @@ unsafe fn refresh() {
     let can_insert_mark = STATE.with(|s| {
         let s = s.borrow();
         let app = &s.as_ref().unwrap().app;
-        app.mark_file_action()
-            .is_some_and(|id| app.command_state(id).enabled)
+        app.mark_file_action().map_or_else(
+            || app.mark_canvas_size().is_some(),
+            |id| app.command_state(id).enabled,
+        )
     });
     EnableMenuItem(
         menu,
@@ -556,6 +559,16 @@ unsafe fn refresh() {
             } else {
                 MF_UNCHECKED
             },
+    );
+    let proofing = STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref().unwrap();
+        state.app.uses_rich_edit() && crate::rich_edit::proofing_enabled(state.edit)
+    });
+    CheckMenuItem(
+        menu,
+        TOGGLE_PROOFING as u32,
+        MF_BYCOMMAND | if proofing { MF_CHECKED } else { MF_UNCHECKED },
     );
     let opening = STATE.with(|s| s.borrow().as_ref().is_some_and(|s| s.async_open.is_some()));
     EnableMenuItem(
@@ -1056,11 +1069,14 @@ unsafe fn cancel_pending_open() {
     }
 }
 unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
-    let add = STATE.with(|state| state.borrow().as_ref().unwrap().app.open_is_add());
-    if !add && !confirm(hwnd) {
+    let first_add = paths.first().is_some_and(|path| {
+        STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(path))
+    });
+    if !first_add && !confirm(hwnd) {
         return;
     }
     for (index, path) in paths.into_iter().enumerate() {
+        let add = STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(&path));
         let result = if index == 0 || add {
             open_document_path(path)
         } else {
@@ -1078,6 +1094,9 @@ unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
 
 unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
     cancel_pending_open();
+    if STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(&path)) {
+        return STATE.with(|state| state.borrow_mut().as_mut().unwrap().app.import_open(&path));
+    }
     let async_started = STATE.with(|s| {
         let mut s = s.borrow_mut();
         let s = s.as_mut().unwrap();
@@ -1388,15 +1407,17 @@ unsafe fn pick_library_image(hwnd: HWND, directory: &Path) -> Result<Option<Path
 }
 
 unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
-    let target = STATE.with(|state| {
+    let (supported, target, canvas) = STATE.with(|state| {
         let state = state.borrow();
         let app = &state.as_ref().unwrap().app;
-        let action = app.mark_file_action()?;
-        (id == IMPORT_MARK || app.command_state(action).enabled).then_some(action)
+        let target = app
+            .mark_file_action()
+            .filter(|&action| app.command_state(action).enabled);
+        (app.supports_marks(), target, app.mark_canvas_size())
     });
-    let Some(target) = target else {
+    if !supported || (id != IMPORT_MARK && target.is_none() && canvas.is_none()) {
         return Ok(());
-    };
+    }
     let directory = crate::marks::library_directory()?;
     if id == IMPORT_MARK {
         if let Some(source) = file_dialog(
@@ -1407,7 +1428,25 @@ unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
             "*.png;*.jpg;*.jpeg",
             Some("Import Your Signature or Stamp"),
         ) {
-            crate::marks::import_image(&source, &directory)?;
+            let request = crate::InputRequest {
+                title: "Import Signature or Stamp",
+                fields: vec![("Remove white paper background (yes/no)", "no".into())],
+            };
+            let Some(values) = crate::prompt::show_choices(
+                hwnd,
+                &request,
+                false,
+                false,
+                &[(0, vec!["no".into(), "yes".into()])],
+            ) else {
+                return Ok(());
+            };
+            let cleanup = match values[0].trim().to_ascii_lowercase().as_str() {
+                "yes" => true,
+                "no" => false,
+                _ => return Err("Choose yes or no for background cleanup.".into()),
+            };
+            crate::marks::import_image_with_cleanup(&source, &directory, cleanup)?;
             msg(
                 hwnd,
                 "Saved to the shared signature and stamp library.",
@@ -1416,14 +1455,56 @@ unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
         }
     } else if let Some(path) = pick_library_image(hwnd, &directory)? {
         let path = crate::marks::library_image(&path, &directory)?;
-        STATE.with(|state| {
-            state
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .app
-                .file_action(target, &path)
-        })?;
+        if let Some(target) = target {
+            STATE.with(|state| {
+                state
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .app
+                    .file_action(target, &path)
+            })?;
+        } else if let Some((canvas_width, canvas_height)) = canvas {
+            let mark = crate::marks::read_image(&path)?;
+            let width = mark.width().min((canvas_width / 3).max(1));
+            let height = ((f64::from(width) * f64::from(mark.height()) / f64::from(mark.width()))
+                .round() as u32)
+                .clamp(1, canvas_height);
+            let request = crate::InputRequest {
+                title: "Place Signature or Stamp",
+                fields: vec![
+                    ("Left (pixels)", ((canvas_width - width) / 2).to_string()),
+                    ("Top (pixels)", ((canvas_height - height) / 2).to_string()),
+                    ("Width (pixels)", width.to_string()),
+                    ("Height (pixels)", height.to_string()),
+                ],
+            };
+            let Some(fields) = crate::prompt::show(hwnd, &request) else {
+                return Ok(());
+            };
+            let values = fields
+                .iter()
+                .map(|value| {
+                    value
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| "Enter whole pixel coordinates and dimensions.".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                let app = &mut state.as_mut().unwrap().app;
+                if app.mark_canvas_size() != canvas {
+                    return Err("The target page changed while choosing the mark.".into());
+                }
+                app.place_mark(
+                    mark.width(),
+                    mark.height(),
+                    mark.as_raw(),
+                    [values[0], values[1], values[2], values[3]],
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -1478,6 +1559,20 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         return;
     }
     if REFRESHING.with(|x| x.get()) {
+        return;
+    }
+    if id == TOGGLE_PROOFING {
+        STATE.with(|state| {
+            let state = state.borrow();
+            let state = state.as_ref().unwrap();
+            if state.app.uses_rich_edit() {
+                crate::rich_edit::set_proofing(
+                    state.edit,
+                    !crate::rich_edit::proofing_enabled(state.edit),
+                );
+            }
+        });
+        refresh();
         return;
     }
     if matches!(
@@ -1596,9 +1691,6 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             }
         }
         OPEN => {
-            if !STATE.with(|s| s.borrow().as_ref().unwrap().app.open_is_add()) && !confirm(hwnd) {
-                return;
-            }
             let (e, f, pattern) = STATE.with(|s| {
                 let s = s.borrow();
                 let a = &s.as_ref().unwrap().app;
@@ -1610,11 +1702,8 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             } else {
                 format_dialog(hwnd, &formats, false).map(|v| v.0)
             };
-            if let Some(p) = selected {
-                let r = open_document_path(p);
-                if let Err(e) = r {
-                    msg(hwnd, &e, MB_OK | MB_ICONERROR);
-                }
+            if let Some(path) = selected {
+                open_paths(hwnd, vec![path]);
             }
         }
         SAVE => {
@@ -2527,8 +2616,26 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
 unsafe fn item(m: HMENU, id: u16, t: &str) {
     AppendMenuW(m, MF_STRING, id as usize, wide(t).as_ptr());
 }
+struct ComApartment;
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
 pub fn run(app: Box<dyn App>) {
     unsafe {
+        if CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) < 0 {
+            msg(
+                null_mut(),
+                "Could not initialize Windows text and document services.",
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+        let _apartment = ComApartment;
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
         let class = wide("Suite42Native");
@@ -2597,6 +2704,9 @@ pub fn run(app: Box<dyn App>) {
             item(editmenu, FIND, "&Find...\tCtrl+F");
             item(editmenu, REPLACE, "&Replace All...\tCtrl+H");
         }
+        if app.uses_rich_edit() {
+            item(editmenu, TOGGLE_PROOFING, "Check Spelling as You Type");
+        }
         for &(id, t) in app.actions() {
             item(editmenu, id, t)
         }
@@ -2641,7 +2751,7 @@ pub fn run(app: Box<dyn App>) {
         for (name, menu) in groups {
             AppendMenuW(bar, MF_POPUP, menu as usize, wide(name).as_ptr());
         }
-        if app.mark_file_action().is_some() {
+        if app.supports_marks() {
             let menu = CreatePopupMenu();
             item(menu, IMPORT_MARK, "Import to Library…");
             item(menu, INSERT_MARK, "Insert from Library…");
@@ -2807,6 +2917,7 @@ pub fn run(app: Box<dyn App>) {
         if rich {
             crate::rich_edit::disable_undo(edit);
             crate::rich_edit::notify_changes(edit);
+            crate::rich_edit::set_proofing(edit, true);
         }
         let status = CreateWindowExW(
             0,

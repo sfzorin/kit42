@@ -50,6 +50,29 @@ impl Img {
     }
 }
 impl win42::App for Img {
+    fn supports_marks(&self) -> bool {
+        true
+    }
+    fn mark_canvas_size(&self) -> Option<(u32, u32)> {
+        self.doc
+            .as_ref()
+            .map(|document| (document.width(), document.height()))
+    }
+    fn place_mark(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        rect: [u32; 4],
+    ) -> Result<(), String> {
+        self.doc
+            .as_mut()
+            .ok_or("Open an image first.")?
+            .place_mark(width, height, rgba, rect)
+            .map_err(|error| error.to_string())?;
+        self.gesture.clear();
+        Ok(())
+    }
     fn poll_background(&mut self) -> bool {
         let mut changed = false;
         let mut done = None;

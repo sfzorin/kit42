@@ -10,6 +10,8 @@ from pathlib import Path
 import struct
 import subprocess
 import time
+import uuid
+import zlib
 
 if os.name != "nt":
     raise SystemExit("Run this audit on Windows.")
@@ -153,6 +155,114 @@ def minimal_pdf(path):
     path.write_bytes(data)
 
 
+def write_png(path, width, height, rgba):
+    def chunk(name, data):
+        return struct.pack(">I", len(data)) + name + data + struct.pack(">I", zlib.crc32(name + data))
+    rows = b"".join(b"\0" + rgba[y * width * 4:(y + 1) * width * 4] for y in range(height))
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def png_pixels(path):
+    data = path.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    offset, compressed = 8, bytearray()
+    while offset < len(data):
+        size = struct.unpack_from(">I", data, offset)[0]
+        kind = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + size]
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", payload)
+            assert depth == 8 and color in (2, 6) and interlace == 0
+        elif kind == b"IDAT":
+            compressed.extend(payload)
+        offset += size + 12
+    channels = 4 if color == 6 else 3
+    stride = width * channels
+    raw, rows, previous = zlib.decompress(compressed), [], bytearray(stride)
+    for row in range(height):
+        start = row * (stride + 1)
+        mode, line = raw[start], bytearray(raw[start + 1:start + stride + 1])
+        for index in range(stride):
+            left = line[index - channels] if index >= channels else 0
+            above = previous[index]
+            corner = previous[index - channels] if index >= channels else 0
+            if mode == 1:
+                predictor = left
+            elif mode == 2:
+                predictor = above
+            elif mode == 3:
+                predictor = (left + above) // 2
+            elif mode == 4:
+                prediction = left + above - corner
+                scores = [(abs(prediction - value), order, value) for order, value in enumerate((left, above, corner))]
+                predictor = min(scores)[2]
+            else:
+                assert mode == 0
+                predictor = 0
+            line[index] = (line[index] + predictor) & 255
+        rows.extend(line[i:i + 3] + b"\xff" for i in range(0, stride, channels))
+        previous = line
+    return width, height, b"".join(rows)
+
+
+def finish_prompt(process, title, values):
+    dialog = modal(process, title=title, native_class="Suite42InputDialog")
+    for index, value in enumerate(values):
+        control = u.GetDlgItem(dialog, 100 + index)
+        assert control
+        set_text(control, value)
+    click(dialog, 1)
+
+
+def audit_marks(process, main, binary, output, results):
+    source = output / f"audit-mark-{uuid.uuid4().hex}.png"
+    write_png(source, 2, 2, bytes([255,255,255,255, 0,0,0,255, 0,0,255,255, 255,255,255,255]))
+    library = Path(os.environ["LOCALAPPDATA"]) / "off42" / "Signatures and Stamps" / ("Mark - " + source.stem + ".png")
+    try:
+        command(main, 65516)
+        choose_file(process, source)
+        finish_prompt(process, "Import Signature or Stamp", ["yes"])
+        message = modal(process, native_class="#32770")
+        click(message, 1)
+        wait_for(lambda: library.is_file() and u.IsWindowEnabled(main), "shared library import", process)
+        command(main, 65515)
+        choose_file(process, library)
+        finish_prompt(process, "Place Signature or Stamp", ["8", "12", "20", "20"])
+        wait_for(lambda: u.IsWindowEnabled(main), "mark placed", process)
+        def export(name):
+            path = output / f"{binary.stem}-{name}.png"
+            command(main, 31 if binary.stem.lower() == "scn42" else 18)
+            choose_file(process, path)
+            output_ready(process, main, path, b"\x89PNG\r\n\x1a\n")
+            return png_pixels(path)
+        marked = export("marked")
+        assert marked[:2] == (64, 64)
+        pixels = marked[2]
+        assert any(value != 255 for value in pixels)
+        for y in range(64):
+            for x in range(64):
+                if not (8 <= x < 28 and 12 <= y < 32):
+                    assert pixels[(y * 64 + x) * 4:(y * 64 + x + 1) * 4] == bytes([255] * 4)
+        command(main, 4)
+        restored = export("undo")
+        assert restored[2] == bytes([255] * (64 * 64 * 4))
+        command(main, 5)
+        assert export("redo") == marked
+        if binary.stem.lower() == "scn42":
+            project = output / "marked.scn42"
+            command(main, 18)
+            choose_file(process, project)
+            wait_for(lambda: project.is_file() and u.IsWindowEnabled(main), "scan project saved", process)
+            command(main, 1)
+            choose_file(process, project)
+            wait_for(lambda: project.name in text(main) and u.IsWindowEnabled(main), "scan project reopened", process)
+            assert export("reopened") == marked
+        results["checks"].append("shared mark import, white cleanup, placement, pixel bounds, Undo/Redo and saved output")
+    finally:
+        if library.exists():
+            library.unlink()
+
+
 def audit(binary, output, extended):
     startup = None
     if extended:
@@ -162,6 +272,9 @@ def audit(binary, output, extended):
         elif binary.stem.lower() == "xls42":
             startup = output / "startup.csv"
             startup.write_text("Name,Code\nBoard 0007,PCB-0007\nBoard 0008,PCB-0008\n", encoding="utf-8")
+        elif binary.stem.lower() in {"img42", "scn42"}:
+            startup = output / (binary.stem + "-canvas.png")
+            write_png(startup, 64, 64, bytes([255] * (64 * 64 * 4)))
         elif binary.stem.lower() == "doc42":
             startup = output / "startup.rtf"
             startup.write_bytes(br"{\rtf1\ansi Board 0007}")
@@ -171,7 +284,10 @@ def audit(binary, output, extended):
         main = modal(process, native_class="Suite42Native")
         results["checks"].append("native main window visible")
         if startup:
-            wait_for(lambda: startup.name in text(main) and u.IsWindowEnabled(main), "command-line file open", process)
+            if binary.stem.lower() == "scn42":
+                wait_for(lambda: any(text(h).startswith("1 pages |") for h in windows(process.pid, main)), "scan image import", process)
+            else:
+                wait_for(lambda: startup.name in text(main) and u.IsWindowEnabled(main), "command-line file open", process)
             results["checks"].append("command-line file open reaches the normal document session")
         command(main, 6)
         about = modal(process, native_class="#32770")
@@ -180,6 +296,16 @@ def audit(binary, output, extended):
         click(about, 1)
         wait_for(lambda: u.IsWindowEnabled(main), "About closed", process)
         results["checks"].append("About command identifies app and closes")
+        if extended and binary.stem.lower() in {"doc42", "ppt42"}:
+            edit = u.GetDlgItem(main, 101)
+            assert u.SendMessageW(edit, 1024 + 121, 0, 0) & 0x0800
+            command(main, 65510)
+            wait_for(lambda: not (u.SendMessageW(edit, 1024 + 121, 0, 0) & 0x0800), "spelling disabled", process)
+            command(main, 65510)
+            wait_for(lambda: u.SendMessageW(edit, 1024 + 121, 0, 0) & 0x0800, "spelling enabled", process)
+            results["checks"].append("native inline proofing flags follow the menu toggle")
+        if extended and binary.stem.lower() in {"img42", "scn42"}:
+            audit_marks(process, main, binary, output, results)
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
             return results
         if binary.stem.lower() == "pdf42" and not startup:

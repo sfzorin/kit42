@@ -2004,6 +2004,7 @@ dependencies = [
 name = "scn42-core"
 version = "0.1.0"
 dependencies = [
+ "image",
  "lopdf",
  "suite42-core",
  "suite42-pdf-text",

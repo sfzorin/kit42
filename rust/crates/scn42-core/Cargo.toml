@@ -3,6 +3,7 @@ name = "scn42-core"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
+image = { version = "0.25", default-features = false }
 suite42-core = { path = "../suite42-core" }
 lopdf = "0.47"
 suite42-pdf-text = { path = "../suite42-pdf-text" }

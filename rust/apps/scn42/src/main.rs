@@ -45,6 +45,27 @@ impl Scn {
     }
 }
 impl win42::App for Scn {
+    fn supports_marks(&self) -> bool {
+        true
+    }
+    fn mark_canvas_size(&self) -> Option<(u32, u32)> {
+        self.doc
+            .pages()
+            .get(self.index)
+            .map(|page| (page.width, page.height))
+    }
+    fn place_mark(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        rect: [u32; 4],
+    ) -> Result<(), String> {
+        self.doc.place_mark(self.index, width, height, rgba, rect)?;
+        self.invalidate_ocr();
+        self.generation = self.generation.wrapping_add(1);
+        Ok(())
+    }
     fn take_pending_print_job(&mut self) -> Option<Result<win42::PrintJob, String>> {
         let result = self
             .print_pending
@@ -202,7 +223,25 @@ impl win42::App for Scn {
         "SCN42 project"
     }
     fn open_filter(&self) -> String {
-        "*.scn42".into()
+        "*.scn42;*.pdf;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.gif;*.webp;*.svg".into()
+    }
+    fn opens_as_import(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                [
+                    "pdf", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "gif", "webp", "svg",
+                ]
+                .iter()
+                .any(|format| ext.eq_ignore_ascii_case(format))
+            })
+    }
+    fn import_open(&mut self, path: &Path) -> Result<(), String> {
+        let pdf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+        self.file_action(if pdf { 33 } else { 20 }, path)
     }
     fn supports_new(&self) -> bool {
         true

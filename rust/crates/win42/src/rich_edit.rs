@@ -56,6 +56,34 @@ pub unsafe fn notify_changes(hwnd: HWND) {
     let mask = SendMessageW(hwnd, EM_GETEVENTMASK, 0, 0) as usize;
     SendMessageW(hwnd, EM_SETEVENTMASK, 0, (mask | ENM_CHANGE) as LPARAM);
 }
+/// Retain the user's IME/language options while enabling system spelling and TSF tips.
+pub unsafe fn set_proofing(hwnd: HWND, enabled: bool) {
+    const EM_GETLANGOPTIONS: u32 = WM_USER + 121;
+    const EM_SETLANGOPTIONS: u32 = WM_USER + 120;
+    const EM_SETEDITSTYLE: u32 = WM_USER + 204;
+    const SES_USECTF: usize = 0x00010000;
+    const SES_CTFALLOWPROOFING: usize = 0x00800000;
+    const IMF_SPELLCHECKING: usize = 0x0800;
+    let flags = SendMessageW(hwnd, EM_GETLANGOPTIONS, 0, 0) as usize;
+    let flags = if enabled {
+        flags | IMF_SPELLCHECKING
+    } else {
+        flags & !IMF_SPELLCHECKING
+    };
+    SendMessageW(hwnd, EM_SETLANGOPTIONS, 0, flags as LPARAM);
+    let mask = SES_USECTF | SES_CTFALLOWPROOFING;
+    SendMessageW(
+        hwnd,
+        EM_SETEDITSTYLE,
+        if enabled { mask } else { SES_USECTF },
+        mask as LPARAM,
+    );
+}
+
+pub unsafe fn proofing_enabled(hwnd: HWND) -> bool {
+    SendMessageW(hwnd, WM_USER + 121, 0, 0) & 0x0800 != 0
+}
+
 pub unsafe fn selection(hwnd: HWND) -> (usize, usize) {
     let mut range = CharRange { min: 0, max: 0 };
     SendMessageW(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as LPARAM);

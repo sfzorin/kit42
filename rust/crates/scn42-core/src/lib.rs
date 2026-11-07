@@ -525,6 +525,49 @@ impl ScanDocument {
         doc.history = PageHistory::new(doc.pages().to_vec(), 5);
         Ok(doc)
     }
+    pub fn place_mark(
+        &mut self,
+        index: usize,
+        source_width: u32,
+        source_height: u32,
+        rgba: &[u8],
+        rect: [u32; 4],
+    ) -> Result<(), String> {
+        let page = self.pages().get(index).ok_or("page index out of range")?;
+        let [x, y, width, height] = rect;
+        if source_width == 0
+            || source_height == 0
+            || u64::from(source_width) * u64::from(source_height) > 4_000_000
+            || rgba.len() as u64 != u64::from(source_width) * u64::from(source_height) * 4
+            || width == 0
+            || height == 0
+            || x.checked_add(width).is_none_or(|end| end > page.width)
+            || y.checked_add(height).is_none_or(|end| end > page.height)
+        {
+            return Err("Place the mark entirely inside the page.".into());
+        }
+        let source = image::RgbaImage::from_raw(source_width, source_height, rgba.to_vec())
+            .ok_or("Invalid mark image.")?;
+        let mark = image::imageops::resize(
+            &source,
+            width,
+            height,
+            image::imageops::FilterType::Triangle,
+        );
+        let mut canvas = image::RgbaImage::from_raw(page.width, page.height, page.pixels.to_vec())
+            .ok_or("Invalid page pixels.")?;
+        image::imageops::overlay(&mut canvas, &mark, i64::from(x), i64::from(y));
+        if canvas.as_raw() == page.pixels.as_ref() {
+            return Ok(());
+        }
+        let mut pages = self.pages().to_vec();
+        pages[index].pixels = canvas.into_raw().into();
+        pages[index].words = Arc::from([]);
+        pages[index].ocr_language.clear();
+        self.history.apply(pages);
+        Ok(())
+    }
+
     pub fn flip(&mut self, index: usize, horizontal: bool) -> Result<(), String> {
         let mut pages = self.pages().to_vec();
         let page = pages.get_mut(index).ok_or("page index out of range")?;
@@ -1526,5 +1569,44 @@ mod tests {
         assert!(d.is_dirty());
         assert!(d.undo());
         assert!(d.is_dirty());
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    #[test]
+    fn marks_clear_stale_ocr_and_restore_it_with_pixels_on_undo() {
+        let mut document = ScanDocument::new();
+        document.add_rgba(4, 4, vec![255; 64]).unwrap();
+        let source = document.pages()[0].clone();
+        document
+            .apply_ocr(
+                0,
+                &source,
+                vec![OcrWord {
+                    text: "Board".into(),
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                }],
+            )
+            .unwrap();
+        let before = document.pages()[0].clone();
+        document
+            .place_mark(0, 1, 1, &[0, 0, 255, 128], [1, 1, 2, 2])
+            .unwrap();
+        assert!(document.pages()[0].words.is_empty());
+        assert_eq!(&document.pages()[0].pixels[..4], &[255; 4]);
+        assert!(document.undo());
+        assert_eq!(document.pages()[0], before);
+        assert!(document.redo());
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("marked.scn42");
+        document.save_project(&path).unwrap();
+        let reopened = ScanDocument::open_project(&path).unwrap();
+        assert_eq!(reopened.pages(), document.pages());
     }
 }

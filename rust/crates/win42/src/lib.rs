@@ -168,6 +168,21 @@ pub trait App {
     fn label_source(&self) -> Result<LabelSource, String> {
         Ok(LabelSource::Text(String::new()))
     }
+    fn supports_marks(&self) -> bool {
+        self.mark_file_action().is_some()
+    }
+    fn mark_canvas_size(&self) -> Option<(u32, u32)> {
+        None
+    }
+    fn place_mark(
+        &mut self,
+        _width: u32,
+        _height: u32,
+        _rgba: &[u8],
+        _rect: [u32; 4],
+    ) -> Result<(), String> {
+        Err("Image marks are unavailable in this document.".into())
+    }
     /// Existing import action that can insert a saved PNG signature or stamp.
     fn mark_file_action(&self) -> Option<u16> {
         None
@@ -249,6 +264,12 @@ pub trait App {
     }
     fn open_is_add(&self) -> bool {
         false
+    }
+    fn opens_as_import(&self, _path: &Path) -> bool {
+        self.open_is_add()
+    }
+    fn import_open(&mut self, path: &Path) -> Result<(), String> {
+        self.open(path)
     }
     fn selected(&self) -> usize {
         0
@@ -364,10 +385,10 @@ mod marks;
 mod native;
 #[cfg(any(windows, test))]
 mod note_pagination;
-#[cfg(windows)]
-mod production;
 #[cfg(any(windows, test))]
 mod print_calibration;
+#[cfg(windows)]
+mod production;
 #[cfg(windows)]
 mod prompt;
 #[cfg(windows)]
