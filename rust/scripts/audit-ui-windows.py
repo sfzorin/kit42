@@ -34,8 +34,9 @@ WM_COMMAND, WM_SETTEXT, WM_CLOSE = 0x111, 0xC, 0x10
 
 
 def text(hwnd):
-    value = c.create_unicode_buffer(u.GetWindowTextLengthW(hwnd) + 1)
-    u.GetWindowTextW(hwnd, value, len(value))
+    length = u.SendMessageW(hwnd, 0xE, 0, 0)  # WM_GETTEXTLENGTH marshals cross-process controls.
+    value = c.create_unicode_buffer(length + 1)
+    u.SendMessageW(hwnd, 0xD, len(value), c.cast(value, c.c_void_p).value)
     return value.value
 
 
@@ -105,7 +106,7 @@ def windows_for_dialog(dialog):
 def set_text(hwnd, value):
     data = c.create_unicode_buffer(value)
     u.SendMessageW(hwnd, WM_SETTEXT, 0, c.cast(data, c.c_void_p).value)
-    assert text(hwnd) == value
+    assert text(hwnd) == value, (classname(hwnd), u.GetDlgCtrlID(hwnd), text(hwnd), value)
 
 
 def fill_prompt(process, main, identifier, title, values):
