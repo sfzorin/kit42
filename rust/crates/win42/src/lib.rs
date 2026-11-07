@@ -499,6 +499,8 @@ mod label_preferences;
 mod marks;
 #[cfg(any(windows, test))]
 mod recents;
+#[cfg(any(windows, test))]
+mod window_layout;
 #[cfg(windows)]
 mod native;
 #[cfg(any(windows, test))]

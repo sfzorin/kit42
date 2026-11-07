@@ -1172,6 +1172,62 @@ fn spawn_document_window(path: Option<&Path>) -> Result<(), String> {
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
+unsafe fn restore_window_layout(hwnd: HWND) {
+    let app = STATE.with(|state| state.borrow().as_ref().unwrap().app.name());
+    if let Some(layout) = crate::window_layout::load(app) {
+        let [left, top, right, bottom] = layout.normal;
+        let placement = WINDOWPLACEMENT {
+            length: size_of::<WINDOWPLACEMENT>() as u32,
+            showCmd: if layout.maximized {
+                SW_SHOWMAXIMIZED as u32
+            } else {
+                SW_SHOWNORMAL as u32
+            },
+            ptMinPosition: POINT { x: -1, y: -1 },
+            ptMaxPosition: POINT { x: -1, y: -1 },
+            rcNormalPosition: RECT {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            ..zeroed()
+        };
+        // Keep WINDOWPLACEMENT coordinates paired with its API. Windows adjusts
+        // entirely offscreen positions after monitor/resolution changes.
+        if SetWindowPlacement(hwnd, &placement) != 0 {
+            return;
+        }
+    }
+    ShowWindow(hwnd, SW_SHOW);
+}
+unsafe fn remember_window_layout(hwnd: HWND) {
+    let (app, fullscreen) = STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref().unwrap();
+        (
+            state.app.name(),
+            state.fullscreen.as_ref().map(|(_, placement)| *placement),
+        )
+    });
+    let mut placement = fullscreen.unwrap_or(WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..zeroed()
+    });
+    if fullscreen.is_none() && GetWindowPlacement(hwnd, &mut placement) == 0 {
+        return;
+    }
+    let r = placement.rcNormalPosition;
+    let maximized = placement.showCmd == SW_SHOWMAXIMIZED as u32
+        || (placement.showCmd == SW_SHOWMINIMIZED as u32
+            && placement.flags & WPF_RESTORETOMAXIMIZED != 0);
+    if let Some(layout) =
+        crate::window_layout::Layout::new([r.left, r.top, r.right, r.bottom], maximized)
+    {
+        // A preference write failure must not prevent closing a saved document.
+        let _ = crate::window_layout::save(app, &layout);
+    }
+}
 unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
     let first_add = paths.first().is_some_and(|path| {
         STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(path))
@@ -3037,6 +3093,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
             });
             if confirmed || confirm(h) {
                 cancel_pending_open();
+                remember_window_layout(h);
                 DestroyWindow(h);
             }
             0
@@ -3543,7 +3600,7 @@ pub fn run(app: Box<dyn App>) {
         update_recent_menu();
         refresh();
         SetTimer(h, 42, 100, None);
-        ShowWindow(h, SW_SHOW);
+        restore_window_layout(h);
         DragAcceptFiles(h, 1);
         match crate::localization::launch_arguments(std::env::args_os().skip(1)) {
             Ok(arguments) if !arguments.files.is_empty() => open_paths(h, arguments.files),

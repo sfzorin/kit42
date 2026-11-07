@@ -1219,6 +1219,59 @@ def audit_multiple_windows(bin_dir, output):
     return result
 
 
+def audit_window_layout(bin_dir,output):
+    class Placement(c.Structure):
+        _fields_=[("length",w.UINT),("flags",w.UINT),("showCmd",w.UINT),("ptMinPosition",w.POINT),("ptMaxPosition",w.POINT),("rcNormalPosition",w.RECT)]
+    u.GetWindowPlacement.argtypes=[w.HWND,c.POINTER(Placement)]
+    u.SetWindowPos.argtypes=[w.HWND,w.HWND,c.c_int,c.c_int,c.c_int,c.c_int,w.UINT]
+    u.ShowWindow.argtypes=[w.HWND,c.c_int]
+    u.IsZoomed.argtypes=[w.HWND]
+    u.MonitorFromWindow.argtypes,u.MonitorFromWindow.restype=[w.HWND,w.DWORD],w.HANDLE
+    def placement(hwnd):
+        value=Placement();value.length=c.sizeof(value)
+        assert u.GetWindowPlacement(hwnd,c.byref(value))
+        r=value.rcNormalPosition
+        return [r.left,r.top,r.right,r.bottom]
+    root=output/"window-layout-settings";root.mkdir(exist_ok=True)
+    environment=os.environ.copy();environment["LOCALAPPDATA"]=str(root)
+    result={"scenario":"native window placement", "checks":[]}
+    for app in ["DOC42","XLS42","PDF42","IMG42","PPT42","SCN42"]:
+        process=None
+        def launch():
+            process=subprocess.Popen([str(bin_dir/(app+".exe")),"--language","en"],env=environment)
+            return process,modal(process,native_class="Suite42Native")
+        preferences=root/"off42"/"Window Layout"/(app+".json")
+        try:
+            process,main=launch()
+            assert u.SetWindowPos(main,None,70,80,800,560,0x14)
+            expected=placement(main)
+            assert expected[2]-expected[0]==800 and expected[3]-expected[1]==560
+            u.PostMessageW(main,WM_CLOSE,0,0);process.wait(timeout=5)
+            saved=json.loads(preferences.read_text(encoding="utf-8"))
+            assert saved=={"version":1,"normal":expected,"maximized":False}
+            process,main=launch()
+            wait_for(lambda: placement(main)==expected and not u.IsZoomed(main),"restored normal frame "+app,process)
+            u.ShowWindow(main,3)
+            wait_for(lambda: u.IsZoomed(main),"maximized frame "+app,process)
+            u.PostMessageW(main,WM_CLOSE,0,0);process.wait(timeout=5)
+            saved=json.loads(preferences.read_text(encoding="utf-8"))
+            assert saved["maximized"] and saved["normal"]==expected
+            process,main=launch()
+            wait_for(lambda: u.IsZoomed(main),"restored maximized state "+app,process)
+            u.ShowWindow(main,9)
+            wait_for(lambda: placement(main)==expected and not u.IsZoomed(main),"maximized window restores original normal bounds "+app,process)
+            u.PostMessageW(main,WM_CLOSE,0,0);process.wait(timeout=5)
+            preferences.write_text(json.dumps({"version":1,"normal":[100000,100000,100800,100560],"maximized":False}),encoding="utf-8")
+            process,main=launch()
+            wait_for(lambda: bool(u.MonitorFromWindow(main,0)),"offscreen saved position relocated to a current monitor "+app,process)
+            assert placement(main)!=[100000,100000,100800,100560]
+            u.PostMessageW(main,WM_CLOSE,0,0);process.wait(timeout=5)
+            result["checks"].append(app+": normal bounds, maximize/restore and offscreen recovery survive real process restarts")
+        finally:
+            if process and process.poll() is None:process.terminate();process.wait(timeout=5)
+    return result
+
+
 def audit_language_picker(bin_dir, output):
     root = output / "language-picker-settings"
     root.mkdir(exist_ok=True)
@@ -1309,6 +1362,7 @@ def main():
     parser.add_argument("--languages", action="store_true")
     parser.add_argument("--recents", action="store_true")
     parser.add_argument("--multiwindow", action="store_true")
+    parser.add_argument("--window-layout", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
@@ -1358,6 +1412,13 @@ def main():
             results.append({"scenario":"independent document windows", "error":str(error), "traceback":traceback.format_exc()})
         print(json.dumps(results[-1]),flush=True)
         (args.output / "results.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
+    if args.window_layout:
+        try:
+            results.append(audit_window_layout(args.bin_dir,args.output))
+        except Exception as error:
+            results.append({"scenario":"native window placement", "error":str(error), "traceback":traceback.format_exc()})
+        print(json.dumps(results[-1]),flush=True)
+        (args.output/"results.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
     assert all("error" not in result for result in results), results
 
 

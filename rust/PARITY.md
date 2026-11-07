@@ -144,3 +144,10 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - New/New Window now starts an independent document/viewer process, retains current unsaved work and forwards the
   language override. PPT exposes New. All six native window lifecycles and dirty DOC parent/child history/save/
   closure are covered by a new audit pending its first compatible build. No autosave/association claim is added.
+
+- Native run 42358211751 passed 3481fb3, including independent windows in all six apps, inherited language,
+  two DOC New commands with child history/save and unchanged dirty parent/source, and closing either side without
+  terminating the other. The preceding optimized 5334878 run passed 368 MSVC tests with one OCR fixture ignored.
+- All six hosts now persist normal/maximized outer placement with validated atomic preferences and paired native
+  placement APIs. Fullscreen PPT preserves its original frame. Portable preference corruption/bounds/atomicity
+  tests pass; GNU tests compile. Native resize/maximize/restart and synthetic offscreen relocation await a build.

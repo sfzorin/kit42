@@ -229,3 +229,9 @@ foot-pound unit constant. External XLSX/ODS regressions change input values befo
 **File → New Window** (`Ctrl+Shift+N`) opens another window in all six apps. Each window has an independent process,
 file session and Undo/Redo history; it inherits the current interface language. Windows can be saved and closed
 independently. This does not add document recovery autosave or change file associations.
+
+
+The apps remember their normal window rectangle and maximized state when a window closes. The next window of
+that app restores the saved placement; Windows relocates a completely offscreen frame onto a current display.
+Settings live under `%LOCALAPPDATA%/off42/Window Layout`. Corrupt/unsupported preferences use the normal default
+window. This covers outer placement only; panel visibility, split positions and cross-display DPI still need work.

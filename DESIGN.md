@@ -601,3 +601,11 @@ or cancel its asynchronous open. File → New Window (Ctrl+Shift+N) is available
 Both blank windows and additional dropped/opened documents use the same spawn helper, forwarding the current
 language override and a `--` path separator. Save paths, histories and native handles remain process-local. Shared
 library/preferences/recents retain their established local-file behavior.
+
+
+Window placement is a separate bounded preference per app: normal workspace rectangle and maximized state only.
+GetWindowPlacement/SetWindowPlacement are paired so taskbar/workspace coordinates are not mixed with screen
+coordinates. Windows relocates entirely offscreen rectangles after display changes. Fullscreen slideshow windows
+save their pre-fullscreen placement; minimized state is never restored. Preferences are validated and published
+atomically only after close is confirmed, and preference failures do not block document closure. No document path
+or text is stored in layout files.
