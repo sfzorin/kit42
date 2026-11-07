@@ -1775,6 +1775,14 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         }
         return;
     }
+    // Control notifications are not app commands. In particular, RichEdit
+    // emits EN_UPDATE on focus/layout changes; treating ID 101 as an action
+    // reloads the editor, which emits another EN_UPDATE and starves modal UI.
+    if (id == EDIT as u16 && notify != EN_CHANGE as u16)
+        || (id == LIST as u16 && notify != LBN_SELCHANGE as u16)
+    {
+        return;
+    }
     if (LANGUAGE_FIRST..LANGUAGE_FIRST + crate::localization::LANGUAGES.len() as u16).contains(&id)
     {
         if let Err(error) = language_command(hwnd, usize::from(id - LANGUAGE_FIRST)) {

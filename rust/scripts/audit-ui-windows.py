@@ -453,6 +453,13 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             else:
                 wait_for(lambda: startup.name in text(main) and u.IsWindowEnabled(main), "command-line file open", process)
             results["checks"].append("command-line file open reaches the normal document session")
+        if extended and binary.stem.lower() in {"doc42", "ppt42"}:
+            original_caption = text(main)
+            command(main, 101 | (0x400 << 16))  # EN_UPDATE must not dispatch app action 101.
+            command(main, 101 | (0x200 << 16))  # EN_KILLFOCUS is also only a notification.
+            time.sleep(0.1)
+            assert text(main) == original_caption, "Control notification changed document state"
+            results["checks"].append("editor layout/focus notifications do not reload or dirty the document")
         command(main, 6)
         about = modal(process, native_class="#32770")
         content = " ".join(text(h) for h in windows(process.pid, about))
