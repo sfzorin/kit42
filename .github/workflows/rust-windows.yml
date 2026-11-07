@@ -1,13 +1,20 @@
 name: Rust Windows
 on:
   push:
+    branches: ['main']
     tags: ['v*-windows-preview.*']
     paths: ['rust/**', '.github/workflows/rust-windows.yml']
   pull_request:
     paths: ['rust/**', '.github/workflows/rust-windows.yml']
   workflow_dispatch:
+    inputs:
+      audit_only:
+        description: Run native GUI audits against the current Windows preview
+        type: boolean
+        default: false
 jobs:
   windows:
+    if: inputs.audit_only != true
     runs-on: windows-latest
     defaults:
       run:
@@ -95,3 +102,24 @@ jobs:
           EOF
           gh release create "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
             --title "off42 ${TAG#v} (x64)" --notes-file release-notes.md
+
+  native-ui:
+    if: inputs.audit_only == true
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the current Windows preview
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.0.0-windows-preview.3 --repo $env:GITHUB_REPOSITORY --pattern '*-x64.zip' --dir build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive build/*.zip -DestinationPath build/preview
+      - name: Audit native commands and generated files
+        run: python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-windows-ui
+          path: build/native-ui
