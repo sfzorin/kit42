@@ -6,12 +6,12 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
-| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo | Verify command-line file opening, drag/drop, multiple windows, recents, recovery and associations |
-| Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify native switching/layout, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
+| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu | Verify native recents, drag/drop, multiple windows, recovery and associations |
+| Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify shared language switching, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
-| Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview, direct print and native verification of DOC table sources/preferences |
+| Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
 | PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, split/merge workflows, page labels, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
@@ -60,3 +60,10 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - ODS picture regression reproduced duplication after sheet reordering. Original image identity now resolves
   through the imported sheet ID/order instead of its current position. All 66 XLS core tests pass, including
   move/save/reopen/delete and opaque package preservation. This is portable format evidence only.
+
+- Run 42350186789 verified all six debug Windows executables after the notification dispatcher fix.
+  DOC42 About, proofing toggle, technical Undo/Redo/save/reopen and real table-derived labels now pass.
+  The table audit checks PDFium-extracted text/copies, source preservation and restored profiles.
+  All twenty DOC42 language launches pass translated File menu/current-language checks, prompt actions,
+  translated choice identity and unchanged document/code data. Six real prompt screenshots were inspected;
+  special Windows labels still often use English fallback. This is not complete UI translation coverage.

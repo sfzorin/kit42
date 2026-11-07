@@ -501,3 +501,11 @@ with the current saved path. Only UI keys pass through lookup; field data and do
 Choice prompts retain original values/indices independently from translated display labels. Prompt label heights
 are measured with the GUI font; Arabic labels align right without mirroring document geometry. Missing Windows
 keys use English. This does not establish full translation or proofing coverage.
+
+## Windows recent documents
+
+Each app has a bounded atomic JSON path list in `%LOCALAPPDATA%/off42/Recent Documents/`. Only successful
+normal session opens and saved snapshots update it. Asynchronous opens enter the list after identity validation
+and commit. File → Open Recent uses stable command IDs and the same `open_paths`/unsaved confirmation as Open.
+Menu display escapes filename mnemonics and never translates paths. Clear Menu changes preferences only.
+There is no document content in this file and no cloud synchronization. Import-only scan sources are excluded.

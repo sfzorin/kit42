@@ -471,6 +471,8 @@ mod grid_geometry;
 mod label_preferences;
 #[cfg(any(windows, test))]
 mod marks;
+#[cfg(any(windows, test))]
+mod recents;
 #[cfg(windows)]
 mod native;
 #[cfg(any(windows, test))]

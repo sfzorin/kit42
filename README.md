@@ -67,7 +67,8 @@ The separate Rust workspace implements the six apps for Windows. Its formats, ru
 and current limitations are described in [rust/README.md](rust/README.md). Native interaction and saved-output checks
 run on Windows CI; their scope and failures are recorded in [the parity tracker](rust/PARITY.md). Printer drivers,
 scanner hardware and full macOS feature parity remain unverified. The development branch adds a shared language
-picker and bundled catalogs; this has not yet shipped in the downloadable Windows preview.
+picker and bundled catalogs; menu/prompt checks pass on twenty languages in Windows CI. Successful-file recents
+are also implemented. These changes have not yet shipped in the downloadable Windows preview.
 
 <a id="install"></a>
 

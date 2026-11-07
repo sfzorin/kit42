@@ -52,6 +52,8 @@ const TOGGLE_PROOFING: u16 = 65510;
 const INSERT_TECHNICAL: u16 = 65509;
 const EDIT_TECHNICAL: u16 = 65508;
 const LANGUAGE_FIRST: u16 = 64000;
+const RECENT_FIRST: u16 = 62000;
+const CLEAR_RECENTS: u16 = RECENT_FIRST + crate::recents::LIMIT as u16;
 struct AsyncOpen {
     path: PathBuf,
     phase: AsyncOpenPhase,
@@ -78,6 +80,8 @@ struct State {
     canvas: HWND,
     status: HWND,
     menu: HMENU,
+    recent_menu: HMENU,
+    recent_paths: Vec<PathBuf>,
     grid_cache: Option<Vec<Vec<String>>>,
     toolbar: Vec<(u16, HWND)>,
     toolbar_more: HWND,
@@ -359,6 +363,7 @@ unsafe fn save_snapshot(hwnd: HWND, save_as: bool) -> bool {
         msg(hwnd, &e.to_string(), MB_OK | MB_ICONERROR);
         return false;
     }
+    remember_current_document();
     true
 }
 unsafe fn legacy_save(hwnd: HWND) -> bool {
@@ -400,7 +405,10 @@ unsafe fn legacy_save(hwnd: HWND) -> bool {
             r
         });
         match r {
-            Ok(()) => return true,
+            Ok(()) => {
+                remember_current_document();
+                return true;
+            }
             Err(e) => {
                 msg(hwnd, &e, MB_OK | MB_ICONERROR);
                 return false;
@@ -1092,6 +1100,56 @@ unsafe fn cancel_pending_open() {
         update_caption();
     }
 }
+unsafe fn update_recent_menu() {
+    let (hwnd, menu, app) = STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref().unwrap();
+        (state.hwnd, state.recent_menu, state.app.name())
+    });
+    let paths = crate::recents::load(app);
+    while GetMenuItemCount(menu) > 0 {
+        DeleteMenu(menu, 0, MF_BYPOSITION);
+    }
+    if paths.is_empty() {
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_GRAYED,
+            0,
+            wide(&crate::localization::text("No Recent Documents")).as_ptr(),
+        );
+    }
+    for (index, path) in paths.iter().enumerate() {
+        // Path text is user data: escape menu mnemonics, never translate it.
+        let title = format!(
+            "{}. {}",
+            index + 1,
+            path.to_string_lossy().replace('&', "&&")
+        );
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            usize::from(RECENT_FIRST) + index,
+            wide(&title).as_ptr(),
+        );
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    item(menu, CLEAR_RECENTS, "Clear Menu");
+    STATE.with(|state| state.borrow_mut().as_mut().unwrap().recent_paths = paths);
+    DrawMenuBar(hwnd);
+}
+unsafe fn remember_current_document() {
+    let document = STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref()?;
+        Some((state.app.name(), state.path.clone()?))
+    });
+    if let Some((app, path)) = document {
+        if crate::recents::remember(app, &path).is_ok() {
+            update_recent_menu();
+        }
+    }
+}
+
 unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
     let first_add = paths.first().is_some_and(|path| {
         STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(path))
@@ -1146,7 +1204,7 @@ unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
         });
         return Ok(());
     }
-    STATE.with(|s| {
+    let result = STATE.with(|s| {
         let mut s = s.borrow_mut();
         let s = s.as_mut().unwrap();
         let result = s.app.open(&path);
@@ -1170,7 +1228,11 @@ unsafe fn open_document_path(path: PathBuf) -> Result<(), String> {
             s.path = Some(path);
         }
         result
-    })
+    });
+    if result.is_ok() {
+        remember_current_document();
+    }
+    result
 }
 unsafe fn poll_pending_open(hwnd: HWND) {
     use std::sync::mpsc::{self, TryRecvError};
@@ -1302,7 +1364,10 @@ unsafe fn poll_pending_open(hwnd: HWND) {
         Ok(Some(pending)) => {
             STATE.with(|s| s.borrow_mut().as_mut().unwrap().async_open = Some(pending))
         }
-        Ok(None) => refresh(),
+        Ok(None) => {
+            remember_current_document();
+            refresh();
+        }
         Err(e) => {
             STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.cancel_async_open());
             msg(hwnd, &e, MB_OK | MB_ICONERROR);
@@ -1781,6 +1846,29 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
     if (id == EDIT as u16 && notify != EN_CHANGE as u16)
         || (id == LIST as u16 && notify != LBN_SELCHANGE as u16)
     {
+        return;
+    }
+    if id == CLEAR_RECENTS {
+        let app = STATE.with(|state| state.borrow().as_ref().unwrap().app.name());
+        if let Err(error) = crate::recents::clear(app) {
+            msg(hwnd, &error, MB_OK | MB_ICONERROR);
+        }
+        update_recent_menu();
+        return;
+    }
+    if (RECENT_FIRST..CLEAR_RECENTS).contains(&id) {
+        let path = STATE.with(|state| {
+            state
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .recent_paths
+                .get(usize::from(id - RECENT_FIRST))
+                .cloned()
+        });
+        if let Some(path) = path {
+            open_paths(hwnd, vec![path]);
+        }
         return;
     }
     if (LANGUAGE_FIRST..LANGUAGE_FIRST + crate::localization::LANGUAGES.len() as u16).contains(&id)
@@ -2974,6 +3062,13 @@ pub fn run(app: Box<dyn App>) {
             item(file, NEW, "&New\tCtrl+N");
         }
         item(file, OPEN, "&Open...\tCtrl+O");
+        let recent_menu = CreatePopupMenu();
+        AppendMenuW(
+            file,
+            MF_POPUP,
+            recent_menu as usize,
+            wide(&crate::localization::menu("Open Recent")).as_ptr(),
+        );
         item(file, CANCEL_OPEN, "Cancel opening\tEsc");
         item(file, SAVE, "&Save\tCtrl+S");
         item(file, SAVE_AS, "Save &As...\tCtrl+Shift+S");
@@ -3139,6 +3234,8 @@ pub fn run(app: Box<dyn App>) {
                 canvas: null_mut(),
                 status: null_mut(),
                 menu: bar,
+                recent_menu,
+                recent_paths: Vec::new(),
                 grid_cache: None,
                 toolbar: Vec::new(),
                 toolbar_more: null_mut(),
@@ -3391,6 +3488,7 @@ pub fn run(app: Box<dyn App>) {
             }
         }
         let a = CreateAcceleratorTableW(acc.as_ptr(), acc.len() as i32);
+        update_recent_menu();
         refresh();
         SetTimer(h, 42, 100, None);
         ShowWindow(h, SW_SHOW);

@@ -107,7 +107,7 @@ jobs:
           "Commit: $env:GITHUB_SHA`nProfile: $profile`nWorkflow: $env:GITHUB_RUN_ID" | Out-File -Encoding utf8 build/off42/BUILD-IDENTITY.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents
       - uses: actions/upload-artifact@v4
         if: always()
         with:

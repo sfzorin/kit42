@@ -642,6 +642,64 @@ def audit_language(binary, output, code, index):
             process.wait(timeout=5)
 
 
+
+def audit_recents(binary, output):
+    """Use isolated local preferences; never clear the user's actual recent list."""
+    root = output / "lifecycle-settings"
+    root.mkdir(exist_ok=True)
+    environment = os.environ.copy()
+    environment["LOCALAPPDATA"] = str(root)
+    source_a, source_b = [output / ("recent-" + uuid.uuid4().hex + suffix + ".rtf") for suffix in ("-A", "-B")]
+    source_a.write_bytes(br"{\rtf1\ansi Board A}")
+    source_b.write_bytes(br"{\rtf1\ansi Board B}")
+    process = subprocess.Popen([str(binary), "--language", "en", "--", str(source_a)], env=environment)
+    result = {"app": binary.name, "scenario": "recent documents", "checks": []}
+    prefs = root / "off42" / "Recent Documents" / "DOC42.json"
+    def paths():
+        try:
+            return json.loads(prefs.read_text(encoding="utf-8"))["paths"]
+        except (FileNotFoundError, ValueError):
+            return []
+    try:
+        main = modal(process, native_class="Suite42Native")
+        wait_for(lambda: source_a.name in text(main) and paths() == [str(source_a)], "first successful open recorded", process)
+        command(main, 1)
+        choose_file(process, source_b)
+        wait_for(lambda: source_b.name in text(main) and paths() == [str(source_b), str(source_a)], "second successful open recorded", process)
+        command(main, 62001)
+        wait_for(lambda: source_a.name in text(main) and paths() == [str(source_a), str(source_b)], "recent command opens original file and moves it first", process)
+        edit = u.GetDlgItem(main, 101)
+        set_text(edit, "unsaved own text")
+        wait_for(lambda: " * - DOC42" in text(main), "editor dirty state", process)
+        command(main, 62001)
+        confirmation = modal(process, native_class="#32770")
+        click(confirmation, 2)  # Cancel must preserve all unsaved text.
+        wait_for(lambda: u.IsWindowEnabled(main), "recent open cancelled", process)
+        assert source_a.name in text(main) and text(edit) == "unsaved own text"
+        assert paths() == [str(source_a), str(source_b)]
+        command(main, 62001)
+        confirmation = modal(process, native_class="#32770")
+        click(confirmation, 7)  # Explicit discard in this test-owned document.
+        wait_for(lambda: source_b.name in text(main) and u.IsWindowEnabled(main), "confirmed recent open", process)
+        result["checks"].append("recent order/deduplication and real unsaved-change Cancel/Discard preserve expected document state")
+        u.PostMessageW(main, WM_CLOSE, 0, 0)
+        process.wait(timeout=5)
+        process = subprocess.Popen([str(binary), "--language", "en"], env=environment)
+        main = modal(process, native_class="Suite42Native")
+        command(main, 62001)
+        wait_for(lambda: source_a.name in text(main), "recent list restored after process restart", process)
+        command(main, 62010)
+        wait_for(lambda: paths() == [], "recent menu cleared persistently", process)
+        result["checks"].append("recent paths survive restart and Clear Menu persists without altering source files")
+        assert source_a.read_bytes() == br"{\rtf1\ansi Board A}"
+        assert source_b.read_bytes() == br"{\rtf1\ansi Board B}"
+        return result
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -651,6 +709,7 @@ def main():
     parser.add_argument("--technical-objects", action="store_true")
     parser.add_argument("--label-sources", action="store_true")
     parser.add_argument("--languages", action="store_true")
+    parser.add_argument("--recents", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -673,6 +732,13 @@ def main():
             except Exception as error:
                 results.append({"language": code, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
+        (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if args.recents:
+        try:
+            results.append(audit_recents(args.bin_dir / "DOC42.exe", args.output))
+        except Exception as error:
+            results.append({"scenario": "recent documents", "error": str(error), "traceback": traceback.format_exc()})
+        print(json.dumps(results[-1]), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     assert all("error" not in result for result in results), results
 

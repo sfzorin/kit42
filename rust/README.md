@@ -1,8 +1,8 @@
 # off42 for Windows
 
 This separate Rust workspace implements six native Windows apps; the macOS Swift apps remain separate. The current
-implementation is a work in progress, not a feature-parity or Windows release claim. Native interaction, printing,
-scanner hardware and PDFium interoperability still need testing on a logged-in Windows desktop.
+implementation is a work in progress, not a feature-parity or Windows release claim. Native interaction and saved output are checked on Windows CI; see [the parity tracker](PARITY.md) for evidence
+and failures. Printing drivers and scanner hardware still need testing on a logged-in Windows desktop.
 
 ## Build and run
 
@@ -121,4 +121,12 @@ The chosen language is stored for all six Windows apps; switching asks about uns
 toolbar actions, prompt labels and choices; Windows-specific strings without a matching entry fall back to English.
 Document text, barcode values, filenames and formula syntax are not translated. Windows system dialogs follow
 Windows settings. Arabic prompt labels align right; document and grid coordinates retain their normal layout.
-Native language interaction and label layout still require verification; this is not a full translation coverage claim.
+Native File menus and technical prompts pass data-preservation checks in all twenty languages. Six prompt
+screenshots were inspected. Full string coverage and shared picker restart behavior remain separate checks.
+
+### Recent documents (development branch)
+
+File → Open Recent lists the ten most recently opened or saved documents for each app. Selecting one uses the
+normal document open path and unsaved-work confirmation. Clear Menu removes only this local list; files remain
+unchanged. Paths are kept in `%LOCALAPPDATA%/off42/Recent Documents/`; missing files report the normal open error.
+Failed opens and uncommitted asynchronous imports are not recorded. Native interaction checks are included in CI.
