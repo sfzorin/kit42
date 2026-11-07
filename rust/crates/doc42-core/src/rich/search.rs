@@ -58,6 +58,16 @@ impl RichDocument {
                 if matches.is_empty() {
                     continue;
                 }
+                if s.footnotes.iter().any(|note| {
+                    note.at.paragraph == paragraph.id
+                        && matches.iter().any(|start| {
+                            *start <= note.at.offset && note.at.offset < start + query.len()
+                        })
+                }) {
+                    return Err(Error::Unsupported(
+                        "replacement includes a footnote or endnote marker".into(),
+                    ));
+                }
                 if cached_toc_paragraph(s, paragraph.id) {
                     return Err(Error::Unsupported(
                         "update the imported TOC before editing its cached entries".into(),
@@ -385,5 +395,26 @@ mod tests {
             Err(Error::Limit)
         ));
         assert_eq!(expansion.state(), &before);
+    }
+    #[test]
+    fn a_match_covering_an_invisible_note_anchor_is_refused_atomically() {
+        let mut doc = RichDocument::decode(b"before target after", Format::Text).unwrap();
+        doc.add_note(
+            Position {
+                paragraph: 1,
+                offset: 9,
+            },
+            "keep this note".into(),
+            false,
+        )
+        .unwrap();
+        doc.mark_saved();
+        let before = doc.snapshot();
+        assert!(matches!(
+            doc.replace_all_text("target", "changed"),
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(doc.state(), &before);
+        assert!(!doc.is_dirty());
     }
 }

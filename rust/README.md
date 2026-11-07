@@ -253,7 +253,7 @@ DOC42's literal **Find next** uses actual native Rich Edit offsets, so table cel
 no longer break selection or wraparound. **Replace all** includes body/table paragraphs while preserving picture
 bytes/geometry, run formatting and hyperlinks. Bookmarks, comments and note anchors follow the changed text;
 Undo/Redo covers the whole operation. Replacements across rich paragraph boundaries, cached TOC content and
-matched revision/field anchors remain guarded. It does not add regex or whole-word options.
+matches covering note markers and matched revision/field anchors remain guarded. It does not add regex or whole-word options.
 
 ODT import also retains surrounding body bookmarks when a paragraph contains an inline footnote/endnote. Portable
 regressions reopen project, DOCX and ODT output and verify bookmark destinations plus tables, pictures, comments and

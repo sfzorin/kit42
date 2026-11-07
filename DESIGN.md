@@ -621,6 +621,6 @@ structured documents without claiming new regex/whole-word behavior.
 Literal body replacement is isolated in DOC42's search module. It plans bounded nonoverlapping matches before
 mutating a disposable transaction, includes table paragraphs and skips images/section separators, indexes run
 boundaries to retain formatting/links without rescanning all runs per match, and remaps bookmarks/comments/notes
-from right to left. Covered note anchors follow the same removal rule as ordinary text edits. Revision/field
+from right to left. Matches covering invisible note markers are refused so a plain text query cannot silently remove a note. Revision/field
 anchors and cached TOC content remain guarded. One history entry contains the entire operation; invalid/oversized
 results commit nothing. The ODT reader isolates outer bookmark markers while parsing inline note paragraphs.
