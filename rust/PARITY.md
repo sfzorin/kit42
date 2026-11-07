@@ -56,3 +56,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   Translation checks cover all catalogs, language aliases, CLI paths and bounded preference round trips.
   Numeric opt-in command tracing and a nonpublishing debug CI build support diagnosis of DOC42 About,
   which still times out in runs 42347783278 and 42347967756. The earlier refresh deferral did not resolve it.
+
+- ODS picture regression reproduced duplication after sheet reordering. Original image identity now resolves
+  through the imported sheet ID/order instead of its current position. All 66 XLS core tests pass, including
+  move/save/reopen/delete and opaque package preservation. This is portable format evidence only.

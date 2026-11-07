@@ -878,7 +878,7 @@ fn patch_ods(parts: &mut Parts, old: &State, current: &State) -> Result<(), Erro
         })
         .collect();
     let mut removals = Vec::new();
-    for (index, table) in tables.iter().enumerate() {
+    for table in &tables {
         let Some(sheet) = current
             .sheets
             .iter()
@@ -886,7 +886,14 @@ fn patch_ods(parts: &mut Parts, old: &State, current: &State) -> Result<(), Erro
         else {
             continue;
         };
-        let Some(before) = old.sheets.iter().find(|s| s.id == sheet.id) else {
+        // Package tables have already been reordered. Provenance refers to the
+        // imported baseline order, so resolve it through the stable sheet ID.
+        let Some((index, before)) = old
+            .sheets
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.id == sheet.id)
+        else {
             continue;
         };
         for picture in &before.images {

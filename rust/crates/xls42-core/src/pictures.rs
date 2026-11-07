@@ -394,6 +394,59 @@ mod tests {
         }
     }
     #[test]
+    fn reordered_external_ods_removes_the_original_picture_before_replacing() {
+        let mut original = Workbook::new(20, 8).unwrap();
+        let first = original.active_sheet();
+        let first_name = original.sheets()[0].1.clone();
+        original
+            .insert_image(2, 3, png(), 72.0, 36.0, "original".into())
+            .unwrap();
+        original.add_sheet("Second").unwrap();
+        original.select_sheet(first).unwrap();
+        let source = external(&office(&original, "ods"));
+        let mut book = Workbook::from_office_bytes(&source, "ods").unwrap();
+        let first = book.active_sheet();
+        book.reorder_sheet(first, 1).unwrap();
+        book.select_sheet(first).unwrap();
+        let mut picture = book.images()[0].clone();
+        picture.column = 5;
+        picture.width_points = 90.0;
+        book.update_image(picture).unwrap();
+        let moved = office(&book, "ods");
+        let mut reopened = Workbook::from_office_bytes(&moved, "ods").unwrap();
+        let first = reopened
+            .sheets()
+            .into_iter()
+            .find(|(_, name)| name == &first_name)
+            .unwrap()
+            .0;
+        reopened.select_sheet(first).unwrap();
+        assert_eq!(
+            reopened.images().len(),
+            1,
+            "moving a sheet must not duplicate its picture"
+        );
+        assert_eq!(reopened.images()[0].column, 5);
+        assert!((reopened.images()[0].width_points - 90.0).abs() < 0.01);
+        let id = reopened.images()[0].id;
+        reopened.reorder_sheet(first, 0).unwrap();
+        reopened.delete_image(id).unwrap();
+        let deleted = office(&reopened, "ods");
+        let mut reopened = Workbook::from_office_bytes(&deleted, "ods").unwrap();
+        let first = reopened
+            .sheets()
+            .into_iter()
+            .find(|(_, name)| name == &first_name)
+            .unwrap()
+            .0;
+        reopened.select_sheet(first).unwrap();
+        assert!(reopened.images().is_empty());
+        assert_eq!(
+            part(&deleted, "custom/retained.bin"),
+            part(&source, "custom/retained.bin")
+        );
+    }
+    #[test]
     fn structural_history_moves_anchors_and_duplicates_with_unique_ids() {
         let mut book = Workbook::new(20, 8).unwrap();
         let first = book.active_sheet();
