@@ -584,3 +584,10 @@ quadratic suffix scans. Tests strip internal Office project data and edit inputs
 The reference-case exporter reads only the macOS fixed fixture list and records its SHA-256. A standalone report
 compares actual portable calculation results with those examples and retains all gaps. It is a diagnostic report,
 not an all-pass test or a feature-count claim; locale-dependent examples are identified separately.
+
+
+The math dispatcher shares numeric coercion with the established evaluator and receives both flattened numeric
+values and the original argument count. This keeps range filtering intact while rejecting invalid arities even
+when ranges contain no numbers. GCD/LCM use bounded exact integers and checked products; combinatorial loops stop
+when no finite f64 result is possible. Stable reciprocal/asymptotic forms avoid needless overflow for ACOTH and
+SQRTPI. Calculation never substitutes NaN/Inf for a visible formula error.

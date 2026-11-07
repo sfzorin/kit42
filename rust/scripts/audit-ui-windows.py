@@ -728,7 +728,7 @@ def audit_pdf_text_exports(process, main, binary, output, results):
     results["checks"].append("native TXT/RTF/HTML/DOCX exports use current unsaved pages in requested order, retain page boundaries, cancel without changes and preserve PDF source/history")
 
 
-def audit_engineering_formulas(process, main, binary, output, results, include_text=False):
+def audit_engineering_formulas(process, main, binary, output, results, include_extended=False):
     source = output / "engineering-formulas.csv"
     records = [
         ["16", "", "", "", "", "", "", ""],
@@ -737,7 +737,7 @@ def audit_engineering_formulas(process, main, binary, output, results, include_t
         ["FF", "=HEX2DEC(A4)", "", "", "", "", "", ""],
         ["-1", "=DEC2BIN(A5)", "", "", "", "", "", ""],
     ]
-    if include_text:
+    if include_extended:
         records.extend([
             ["a--b", '=TEXTJOIN("-",FALSE,"a","","b")', "", "", "", "", "", ""],
             ["1.234,5", '=NUMBERVALUE(A7,",",".")', "", "", "", "", "", ""],
@@ -745,6 +745,16 @@ def audit_engineering_formulas(process, main, binary, output, results, include_t
             ["ПЛАТА", '=UNICODE(A9)', "", "", "", "", "", ""],
             ["", '=CONCAT(A6:A9)', "", "", "", "", "", ""],
             ["", '=TEXTJOIN("|",FALSE,A10:A11)', "", "", "", "", "", ""],
+            ["10", '=COMBIN(A12,3)', "", "", "", "", "", ""],
+            ["5.5", '=CEILING.MATH(-A13,2,1)', "", "", "", "", "", ""],
+            ["100", '=SUMSQ(A12:A14)', "", "", "", "", "", ""],
+            ["24", '=GCD(A12,A15)', "", "", "", "", "", ""],
+            ["0", '=ATAN2(1,0)', "", "", "", "", "", ""],
+            ["7", '=FACTDOUBLE(A17)', "", "", "", "", "", ""],
+            ["4", '=MULTINOMIAL(2,3,A18)', "", "", "", "", "", ""],
+            ["12", '=TRUNC(-A19/10,0)', "", "", "", "", "", ""],
+            ["0", '=COT(A20)', "", "", "", "", "", ""],
+            ["0", '=PERMUT(10,3)', "", "", "", "", "", ""],
         ])
     with source.open("w", encoding="utf-8", newline="") as file:
         csv.writer(file).writerows(records)
@@ -769,14 +779,17 @@ def audit_engineering_formulas(process, main, binary, output, results, include_t
         return target, cells
     saved, cells = save("engineering-results.xlsx")
     expected = {"B1":"0010", "B2":"9", "B3":"8388608", "B4":"255", "B5":"1111111111"}
-    if include_text:
+    if include_extended:
         expected.update({"B6":"a--b", "B7":"1234.5", "B8":"42", "B9":"1055", "B10":"a--b1.234,5BOARD-42ПЛАТА", "B11":"|"})
+        expected.update({"B12":"120", "B13":"-6", "B14":"10130.25", "B15":"2", "B16":"0", "B17":"105", "B18":"1260", "B19":"-1", "B20":"#DIV/0!", "B21":"720"})
     for address, value in expected.items():
         assert cells[address][1] == value, (address, cells[address])
     assert cells["B1"][0] == "DEC2HEX($A$1,4)"
     assert cells["B1"][2] == "str" and cells["B5"][2] == "str", "Formula strings must preserve leading zeroes and text type"
-    if include_text:
+    if include_extended:
         assert all(cells[address][2] == "str" for address in ["B6", "B8", "B10", "B11"])
+        assert cells["B20"][2] == "e"
+        assert all(cells["B" + str(row)][2] in (None,"n") for row in [12,13,14,15,16,17,18,19,21])
     command(main, 4)
     wait_for(lambda: text(edit) == "", "Undo typed engineering formula", process)
     command(main, 5)
@@ -797,11 +810,11 @@ def audit_engineering_formulas(process, main, binary, output, results, include_t
     assert source.read_bytes() == original
     results["checks"].append("engineering formula typed through native editor, independent XLSX cached results, Undo/Redo and discard/reopen preserve formulas and source")
 
-    if include_text:
-        results["checks"].append("native XLSX text-function results, locale-independent numeric parsing, Unicode, blank range slots and typed text caches survive discard/reopen")
+    if include_extended:
+        results["checks"].append("native XLSX math/text functions, numeric/error/text cache types, explicit numeric separators, Unicode and blank range slots survive discard/reopen")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, text_functions=False):
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -921,7 +934,7 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
         if labels and binary.stem.lower() == "doc42":
             audit_table_labels(process, main, binary, output, results)
         if engineering and binary.stem.lower() == "xls42":
-            audit_engineering_formulas(process, main, binary, output, results, include_text=text_functions)
+            audit_engineering_formulas(process, main, binary, output, results, include_extended=extended_formulas)
         if host_commands and binary.stem.lower() == "pdf42":
             audit_rectangle_command(process, main, binary, output, results)
         if pages and binary.stem.lower() == "pdf42":
@@ -1215,7 +1228,7 @@ def main():
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
     parser.add_argument("--text-exports", action="store_true")
-    parser.add_argument("--text-functions", action="store_true")
+    parser.add_argument("--extended-formulas", "--text-functions", dest="extended_formulas", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -1224,7 +1237,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.text_functions))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

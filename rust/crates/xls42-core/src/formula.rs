@@ -1,5 +1,6 @@
 //! Small, bounded spreadsheet expression evaluator. Raw cells remain authoritative.
 mod engineering;
+mod math;
 mod text;
 mod units;
 use crate::{CellContent, SheetId, Workbook};
@@ -515,12 +516,14 @@ impl Parser<'_, '_> {
             name,
             "SUM" | "AVERAGE" | "MIN" | "MAX" | "COUNT" | "COUNTA" | "PRODUCT"
         );
+        let mut argument_count = 0usize;
         let mut values = Vec::new();
         let mut nonempty = 0usize;
         if !self.take(b')') {
             loop {
+                argument_count += 1;
                 let start = self.pos;
-                let range = if aggregate { self.read_range() } else { None };
+                let range = if aggregate || math::aggregate(name) { self.read_range() } else { None };
                 self.space();
                 if let Some((sheet, top, left, bottom, right)) =
                     range.filter(|_| matches!(self.input.get(self.pos), Some(b',' | b')')))
@@ -576,6 +579,9 @@ impl Parser<'_, '_> {
                     return Value::Error("#LIMIT!");
                 }
             }
+        }
+        if math::handles(name) {
+            return math::call(name, &values, argument_count);
         }
         if aggregate {
             return match name {
@@ -724,7 +730,6 @@ impl Parser<'_, '_> {
             "LOG10" if one => Value::Error("#NUM!"),
             "RADIANS" if one => finite(values[0].to_radians()),
             "DEGREES" if one => finite(values[0].to_degrees()),
-            "TRUNC" if one => finite(values[0].trunc()),
             "POWER" if values.len() == 2 => finite(values[0].powf(values[1])),
             "MOD" if values.len() == 2 && values[1] == 0.0 => Value::Error("#DIV/0!"),
             "MOD" if values.len() == 2 => {

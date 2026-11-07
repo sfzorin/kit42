@@ -207,3 +207,17 @@ macOS reference cases, including every mismatch. Two cases have locale-dependent
 After this block, 136 fixed cases match and 356 differ. This measures example results, not complete function
 coverage or Excel conformance; arrays and many statistical/financial/date functions still need porting.
 Regenerate the fixture with `python3 rust/scripts/export-formula-cases.py`; its source hash is recorded.
+
+
+### Additional math formulas (development branch)
+
+A further 36 math functions cover inverse/hyperbolic trigonometry, reciprocal functions, combinations and
+permutations, double factorial, GCD/LCM, sums of squares, multinomial coefficients, MROUND, EVEN/ODD and the
+MATH/PRECISE ceiling/floor variants. TRUNC now accepts decimal digits. Domain errors, arity errors and overflow
+remain distinct, with bounded integer/combination loops and finite-result checks. Range aggregates preserve the
+existing rule that text and Boolean source cells are excluded.
+
+The reference report now matches 176 fixed examples, with 316 differing and the same two locale cases skipped.
+This remains far short of complete formula parity. FACTDOUBLE rejects negative inputs according to the documented
+Excel domain; the macOS reference currently permits -1 and needs a separate correction, like the previously recorded
+foot-pound unit constant. External XLSX/ODS regressions change input values before asserting recalculation.

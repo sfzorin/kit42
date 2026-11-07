@@ -127,3 +127,13 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   Unicode and count/code-point bounds, error propagation, range blanks/Boolean values and input edits after
   independent XLSX/ODS import. Portable workspace: 363 passed, one OCR test ignored; GNU test compilation passes.
   Native XLSX text-result and dirty/discard/reopen checks are included for the next compatible build.
+
+- Native run 42356965075 passed all six 5918f9b executables, twenty language prompts, shared-picker/recent
+  lifecycle and strict engineering dirty/discard/reopen checks. PDF text export passes real TXT/RTF/HTML/DOCX
+  output from unsaved page edits, page ordering/boundaries, cancellation and unchanged source/history checks.
+  The Windows PDFium regression separately verifies redacted source text is absent. Its fixture retains the
+  refusal of shared-resource partial redaction and duplicates only its first page's font for the allowed case.
+- Another 36 math functions plus TRUNC digit support bring fixed reference agreement to 176/492 (316 gaps).
+  Domain/arity/overflow and large-finite-number regressions pass, along with every supported math reference case
+  and independent XLSX/ODS recalculation. Workspace: 366 portable passes, one OCR fixture ignored; GNU tests compile.
+  Native numeric/error cache and reopen scenarios are extended for the next compatible build.
