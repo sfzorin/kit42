@@ -171,6 +171,17 @@ pub fn pages(book: &Workbook, visible: &[usize]) -> Result<Vec<PrintPage>, Strin
         return Err("Print job exceeds page limit".into());
     }
     let grid = book.display_grid();
+    let mut picture_bytes = 0usize;
+    let decoded = book
+        .images()
+        .iter()
+        .filter(|picture| rows.contains(&picture.row) && cols.contains(&picture.column))
+        .map(|picture| {
+            image::load_from_memory(&picture.data)
+                .map(|data| (picture, data.into_rgba8()))
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut pages = Vec::new();
     for page_rows in &row_pages {
         for page_cols in &col_pages {
@@ -265,6 +276,84 @@ pub fn pages(book: &Workbook, visible: &[usize]) -> Result<Vec<PrintPage>, Strin
                     x += cw(c) * scale;
                 }
                 y += rh(r) * scale;
+            }
+            let page_width: f64 = page_cols.iter().map(|&col| cw(col) * scale).sum();
+            let page_height: f64 = page_rows.iter().map(|&row| rh(row) * scale).sum();
+            for (picture, rgba) in &decoded {
+                let anchor_x: f64 = cols
+                    .iter()
+                    .take_while(|&&col| col < picture.column)
+                    .map(|&col| cw(col) * scale)
+                    .sum();
+                let page_x: f64 = cols
+                    .iter()
+                    .take_while(|&&col| col < page_cols[0])
+                    .map(|&col| cw(col) * scale)
+                    .sum();
+                let x = anchor_x - page_x + picture.offset_x * scale;
+                let (y, clip_top, clip_height) = if picture.row < header_end {
+                    let y: f64 = headers
+                        .iter()
+                        .take_while(|&&row| row < picture.row)
+                        .map(|&row| rh(row) * scale)
+                        .sum();
+                    (y + picture.offset_y * scale, 0.0, header_height)
+                } else {
+                    let anchor: f64 = body
+                        .iter()
+                        .take_while(|&&row| row < picture.row)
+                        .map(|&row| rh(row) * scale)
+                        .sum();
+                    let first_body = page_rows
+                        .iter()
+                        .find(|&&row| row >= header_end)
+                        .copied()
+                        .unwrap_or(header_end);
+                    let page: f64 = body
+                        .iter()
+                        .take_while(|&&row| row < first_body)
+                        .map(|&row| rh(row) * scale)
+                        .sum();
+                    (
+                        header_height + anchor - page + picture.offset_y * scale,
+                        header_height,
+                        page_height - header_height,
+                    )
+                };
+                let w = picture.width_points * scale;
+                let h = picture.height_points * scale;
+                if clip_height <= 0.0
+                    || x >= page_width
+                    || x + w <= 0.0
+                    || y >= clip_top + clip_height
+                    || y + h <= clip_top
+                {
+                    continue;
+                }
+                picture_bytes = picture_bytes
+                    .checked_add(rgba.len())
+                    .ok_or("Print image budget exceeded")?;
+                if picture_bytes > 128 * 1024 * 1024 {
+                    return Err("Print fewer pages at a time: image data exceeds 128 MB".into());
+                }
+                scene.items.push(SceneItem::ClippedOffset {
+                    clip: win42::CanvasRect {
+                        x: 0.0,
+                        y: clip_top,
+                        width: page_width,
+                        height: clip_height,
+                    },
+                    offset: win42::Point { x: 0.0, y: 0.0 },
+                    items: vec![SceneItem::ImageScaled {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                        pixel_width: picture.pixel_width,
+                        pixel_height: picture.pixel_height,
+                        rgba: rgba.as_raw().clone(),
+                    }],
+                });
             }
             pages.push(PrintPage {
                 geometry: geom,
@@ -381,5 +470,71 @@ mod tests {
         assert!(texts.contains(&("Row11", false)));
         assert!(!texts.iter().any(|(s, _)| *s == "Row2"));
         assert!(texts.iter().any(|(s, bold)| *s == "Row0" && *bold));
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+    fn image_bytes() -> Vec<u8> {
+        let mut data = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([255, 0, 0, 128]))
+            .write_to(&mut data, image::ImageFormat::Png)
+            .unwrap();
+        data.into_inner()
+    }
+    #[test]
+    fn picture_printing_keeps_physical_size_and_clips_across_pages() {
+        let mut book = Workbook::new(20, 8).unwrap();
+        book.insert_image(0, 0, image_bytes(), 180.0, 120.0, String::new())
+            .unwrap();
+        let mut setup = book.print_settings().clone();
+        setup.paper_width_twips = 2400;
+        setup.paper_height_twips = 2400;
+        setup.margin_left_twips = 200;
+        setup.margin_top_twips = 200;
+        setup.margin_right_twips = 200;
+        setup.margin_bottom_twips = 200;
+        setup.fit_width = false;
+        book.set_print_settings(setup).unwrap();
+        let pages = pages(&book, &book.visible_rows()).unwrap();
+        assert!(pages.len() >= 4);
+        let mut images = 0;
+        for page in &pages {
+            for item in &page.scene.items {
+                if let SceneItem::ClippedOffset { clip, items, .. } = item {
+                    assert!(clip.width <= 100.0 && clip.height <= 100.0);
+                    for image in items {
+                        if let SceneItem::ImageScaled {
+                            width,
+                            height,
+                            rgba,
+                            ..
+                        } = image
+                        {
+                            assert_eq!((*width, *height), (180.0, 120.0));
+                            assert_eq!(rgba[3], 128);
+                            images += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(images >= 4);
+        book.set_cell(1, 0, "Visible after hiding the picture anchor".into())
+            .unwrap();
+        let mut view = book.sheet_view().clone();
+        view.hidden_rows.insert(0);
+        book.set_sheet_view(view).unwrap();
+        for page in pages_without_shadow(&book) {
+            assert!(!page
+                .scene
+                .items
+                .iter()
+                .any(|item| matches!(item, SceneItem::ClippedOffset { .. })));
+        }
+    }
+    fn pages_without_shadow(book: &Workbook) -> Vec<PrintPage> {
+        pages(book, &book.visible_rows()).unwrap()
     }
 }

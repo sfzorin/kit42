@@ -9,7 +9,9 @@ mod display;
 pub use analytics::{Chart, ChartData, ChartKind, ChartSeries, Pivot, PivotAggregate};
 mod formula;
 mod office;
+mod pictures;
 mod project;
+pub use pictures::SheetImage;
 mod rules;
 pub use rules::{Condition, ConditionalFormat, DataValidation, ValidationKind};
 mod xlsx_styles;
@@ -170,6 +172,7 @@ struct Sheet {
     validations: Vec<DataValidation>,
     conditional_formats: Vec<ConditionalFormat>,
     charts: Vec<Chart>,
+    images: Vec<SheetImage>,
     pivots: Vec<Pivot>,
     tables: Vec<SpreadsheetTable>,
     view: SheetView,
@@ -204,6 +207,7 @@ impl Sheet {
             validations: Vec::new(),
             conditional_formats: Vec::new(),
             charts: Vec::new(),
+            images: Vec::new(),
             pivots: Vec::new(),
             tables: Vec::new(),
             view: SheetView::default(),
@@ -518,6 +522,7 @@ impl Workbook {
             || state.sheet().protected
             || !state.sheet().validations.is_empty()
             || !state.sheet().conditional_formats.is_empty()
+            || !state.sheet().images.is_empty()
             || !state.sheet().charts.is_empty()
             || !state.sheet().pivots.is_empty()
             || !state.sheet().tables.is_empty()
@@ -659,9 +664,17 @@ impl Workbook {
             }
         }
         st.next_id += 1;
+        for image in &mut sheet.images {
+            image.source = None;
+            image.id = st.next_id;
+            st.next_id = st.next_id.checked_add(1).ok_or(Error::Limit)?;
+        }
         let new_id = sheet.id;
         st.sheets.push(sheet);
         st.active = new_id;
+        if !pictures::valid_budget(&st) {
+            return Err(Error::Limit);
+        }
         if st.bytes() > MAX_TEXT {
             return Err(Error::Limit);
         }
@@ -1130,6 +1143,22 @@ impl Workbook {
         } else {
             s.cols = if delete { size - count } else { size + count };
             shift_geometry(&mut s.col_widths, at, count, delete)
+        }
+        for image in &mut s.images {
+            let anchor = if rows {
+                &mut image.row
+            } else {
+                &mut image.column
+            };
+            *anchor = if delete && *anchor >= at && *anchor < at + count {
+                at.min(if rows { s.rows } else { s.cols } - 1)
+            } else if delete && *anchor >= at + count {
+                *anchor - count
+            } else if !delete && *anchor >= at {
+                *anchor + count
+            } else {
+                *anchor
+            };
         }
         if !layout::valid_view(&st.sheet().view, st.sheet()) {
             return Err(Error::Invalid(

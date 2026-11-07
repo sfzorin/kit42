@@ -2801,6 +2801,8 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 name = "xls42"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "label42",
  "win42",
  "xls42-core",
 ]
@@ -2809,9 +2811,11 @@ dependencies = [
 name = "xls42-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "calamine",
  "chrono",
  "csv",
+ "image",
  "roxmltree",
  "rust_xlsxwriter",
  "serde",

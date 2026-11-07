@@ -314,6 +314,16 @@ pub trait App {
     fn select_grid_range_with_focus(&mut self, range: GridRange, _focus: (usize, usize)) {
         self.select_grid_range(range)
     }
+    fn grid_pictures(&self) -> Vec<GridPicture> {
+        Vec::new()
+    }
+    fn select_grid_picture(&mut self, _id: Option<u64>) {}
+    fn move_grid_picture(&mut self, _id: u64, _dx: f64, _dy: f64) -> Result<(), String> {
+        Err("Picture movement unavailable".into())
+    }
+    fn grid_picture_commands(&self) -> Option<(u16, u16)> {
+        None
+    }
     fn grid_cell_style(&self, _row: usize, _column: usize) -> Option<GridCellStyle> {
         None
     }
@@ -938,6 +948,21 @@ pub struct GridRange {
     pub bottom: usize,
     pub right: usize,
 }
+#[derive(Clone)]
+pub struct GridPicture {
+    pub selected: bool,
+    pub id: u64,
+    pub row: usize,
+    pub column: usize,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct GridCellStyle {
     pub foreground: Option<[u8; 3]>,

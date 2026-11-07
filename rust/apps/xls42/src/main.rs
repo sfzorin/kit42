@@ -6,12 +6,15 @@ use xls42_core::{
     Chart, ChartKind, ChartSeries, Condition, ConditionalFormat, DataValidation, Pivot,
     PivotAggregate, Range, SheetFilter, ValidationKind, Workbook,
 };
+type PictureCache = std::collections::BTreeMap<u64, (std::sync::Arc<[u8]>, std::sync::Arc<[u8]>)>;
 struct Xls {
     book: Workbook,
     row: usize,
     col: usize,
     preview: Option<u64>,
     visible_cache: std::cell::RefCell<Vec<usize>>,
+    picture_cache: std::cell::RefCell<PictureCache>,
+    selected_picture: Option<u64>,
 }
 impl Xls {
     fn normalize_focus(&mut self) {
@@ -82,6 +85,74 @@ impl Xls {
     }
 }
 impl win42::App for Xls {
+    fn mark_file_action(&self) -> Option<u16> {
+        Some(76)
+    }
+    fn file_actions(&self) -> &'static [win42::FileAction] {
+        &[win42::FileAction {
+            id: 76,
+            title: "Insert picture…",
+            save: false,
+            extension: "png",
+            format: "PNG or JPEG picture",
+            pattern: "*.png;*.jpg;*.jpeg",
+        }]
+    }
+    fn file_action(&mut self, id: u16, path: &Path) -> Result<(), String> {
+        use std::io::Read;
+        if id != 76 {
+            return Err("Unknown picture command".into());
+        }
+        let mut data = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| e.to_string())?
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        if data.len() > 16 * 1024 * 1024 {
+            return Err("Pictures are limited to 16 MB".into());
+        }
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(&data))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(4096);
+        limits.max_image_height = Some(4096);
+        limits.max_alloc = Some(32 * 1024 * 1024);
+        reader.limits(limits);
+        let decoded = reader.decode().map_err(|e| e.to_string())?;
+        if u64::from(decoded.width()) * u64::from(decoded.height()) > 4_000_000 {
+            return Err("Pictures are limited to four million pixels".into());
+        }
+        let recipe = label42::TechnicalElement::from_png(&data);
+        let description = recipe
+            .as_ref()
+            .map(|element| element.description())
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let width = recipe
+            .as_ref()
+            .map_or((f64::from(decoded.width()) * 0.75).min(216.0), |element| {
+                element.width_mm * 72.0 / 25.4
+            });
+        let height = width * f64::from(decoded.height()) / f64::from(decoded.width());
+        // Preserve the original PNG, including the reusable technical recipe and DPI.
+        if !data.starts_with(b"\x89PNG\r\n\x1a\n") {
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            decoded
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+            data = encoded.into_inner();
+        }
+        self.selected_picture = Some(
+            self.book
+                .insert_image(self.row, self.col, data, width, height, description)
+                .map_err(|e| e.to_string())?,
+        );
+        self.preview = None;
+        Ok(())
+    }
     fn supports_production(&self) -> bool {
         true
     }
@@ -150,6 +221,8 @@ impl win42::App for Xls {
     }
     fn new_document(&mut self) -> Result<(), String> {
         self.book = Workbook::new(20, 8).map_err(|e| e.to_string())?;
+        self.selected_picture = None;
+        self.clear_visible_cache();
         self.row = 0;
         self.col = 0;
         self.preview = None;
@@ -212,6 +285,8 @@ impl win42::App for Xls {
             (73, "Hide selected columns"),
             (74, "Unhide selected columns"),
             (75, "Fill Serial Numbers…"),
+            (77, "Picture position and size…"),
+            (78, "Delete picture"),
         ]
         .into_iter()
         .map(|(id, title)| win42::CommandSpec {
@@ -221,6 +296,7 @@ impl win42::App for Xls {
             group: match id {
                 0..=24 => "Sheets",
                 75 => "Production",
+                77 | 78 => "Pictures",
                 _ => "Cells",
             },
         })
@@ -359,6 +435,24 @@ impl win42::App for Xls {
         Ok(())
     }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 77 {
+            let picture = self
+                .book
+                .images()
+                .iter()
+                .find(|image| Some(image.id) == self.selected_picture)?;
+            return Some(win42::InputRequest {
+                title: "Picture Position and Size",
+                fields: vec![
+                    ("Row (1-based)", (picture.row + 1).to_string()),
+                    ("Column (1-based)", (picture.column + 1).to_string()),
+                    ("Left offset (points)", picture.offset_x.to_string()),
+                    ("Top offset (points)", picture.offset_y.to_string()),
+                    ("Width (points)", picture.width_points.to_string()),
+                    ("Height (points)", picture.height_points.to_string()),
+                ],
+            });
+        }
         let (title, fields) = match id {
             20 | 21 | 22 => ("Sheet name", vec![("Name", String::new())]),
             75 => (
@@ -567,6 +661,30 @@ impl win42::App for Xls {
                 .ok_or_else(|| "Enter a positive integer".into())
         };
         match id {
+            77 => {
+                if v.len() != 6 {
+                    return Err("Invalid picture geometry".into());
+                }
+                let mut picture = self
+                    .book
+                    .images()
+                    .iter()
+                    .find(|image| Some(image.id) == self.selected_picture)
+                    .cloned()
+                    .ok_or("Select a picture")?;
+                picture.row = n(0)?;
+                picture.column = n(1)?;
+                let number = |i: usize| {
+                    v[i].trim()
+                        .parse::<f64>()
+                        .map_err(|_| "Enter a number".to_string())
+                };
+                picture.offset_x = number(2)?;
+                picture.offset_y = number(3)?;
+                picture.width_points = number(4)?;
+                picture.height_points = number(5)?;
+                self.book.update_image(picture).map_err(|e| e.to_string())?;
+            }
             75 => {
                 let range = self.selection_range();
                 if range.left != range.right
@@ -1038,6 +1156,110 @@ impl win42::App for Xls {
             self.col = focus.1;
         }
     }
+    fn select_grid_picture(&mut self, id: Option<u64>) {
+        self.selected_picture =
+            id.filter(|id| self.book.images().iter().any(|image| image.id == *id));
+    }
+    fn grid_picture_commands(&self) -> Option<(u16, u16)> {
+        Some((77, 78))
+    }
+    fn move_grid_picture(&mut self, id: u64, dx: f64, dy: f64) -> Result<(), String> {
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err("Invalid picture position".into());
+        }
+        let mut picture = self
+            .book
+            .images()
+            .iter()
+            .find(|image| image.id == id)
+            .cloned()
+            .ok_or("Select a picture")?;
+        let visible = self.visible_rows();
+        let index = visible
+            .iter()
+            .position(|row| *row == picture.row)
+            .ok_or("The picture anchor is hidden")?;
+        let mut x = (0..picture.column)
+            .map(|column| f64::from(self.grid_column_width(column)))
+            .sum::<f64>()
+            + picture.offset_x / 0.75
+            + dx;
+        let mut y = (0..index)
+            .map(|row| f64::from(self.grid_row_height(row)))
+            .sum::<f64>()
+            + picture.offset_y / 0.75
+            + dy;
+        x = x.max(0.0);
+        y = y.max(0.0);
+        let mut column = 0;
+        while column + 1 < self.book.cols() {
+            let width = f64::from(self.grid_column_width(column));
+            if width > 0.0 && x < width {
+                break;
+            }
+            x -= width;
+            column += 1;
+        }
+        let mut row = 0;
+        while row + 1 < visible.len() {
+            let height = f64::from(self.grid_row_height(row));
+            if height > 0.0 && y < height {
+                break;
+            }
+            y -= height;
+            row += 1;
+        }
+        picture.row = visible[row];
+        picture.column = column;
+        picture.offset_x = x * 0.75;
+        picture.offset_y = y * 0.75;
+        self.book.update_image(picture).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn grid_pictures(&self) -> Vec<win42::GridPicture> {
+        let images = self.book.images();
+        let mut cache = self.picture_cache.borrow_mut();
+        cache.retain(|id, _| images.iter().any(|image| image.id == *id));
+        images
+            .iter()
+            .filter_map(|picture| {
+                let row = self.visible_position(picture.row)?;
+                if self
+                    .book
+                    .sheet_view()
+                    .hidden_columns
+                    .contains(&picture.column)
+                {
+                    return None;
+                }
+                let rgba = if let Some((data, rgba)) = cache
+                    .get(&picture.id)
+                    .filter(|(data, _)| std::sync::Arc::ptr_eq(data, &picture.data))
+                {
+                    let _ = data;
+                    rgba.clone()
+                } else {
+                    let decoded = image::load_from_memory(&picture.data).ok()?.into_rgba8();
+                    let rgba: std::sync::Arc<[u8]> = decoded.into_raw().into();
+                    cache.insert(picture.id, (picture.data.clone(), rgba.clone()));
+                    rgba
+                };
+                Some(win42::GridPicture {
+                    selected: self.selected_picture == Some(picture.id),
+                    id: picture.id,
+                    row,
+                    column: picture.column,
+                    offset_x: picture.offset_x / 0.75,
+                    offset_y: picture.offset_y / 0.75,
+                    width: picture.width_points / 0.75,
+                    height: picture.height_points / 0.75,
+                    pixel_width: picture.pixel_width,
+                    pixel_height: picture.pixel_height,
+                    rgba,
+                })
+            })
+            .collect()
+    }
     fn grid_cell_style(&self, row: usize, column: usize) -> Option<win42::GridCellStyle> {
         let row = self.visible_at(row)?;
         let s = self.book.effective_style(row, column)?;
@@ -1216,6 +1438,7 @@ impl win42::App for Xls {
             }
         }
         self.book = book;
+        self.selected_picture = None;
         self.preview = None;
         self.clear_visible_cache();
         self.row = 0;
@@ -1253,6 +1476,16 @@ impl win42::App for Xls {
             10 => self.book.can_add_row(),
             11 => self.book.can_add_column(),
             75 => !self.book.is_read_only() && !self.book.is_protected(),
+            76 => !self.book.is_read_only() && !self.book.is_protected(),
+            77 | 78 => {
+                !self.book.is_read_only()
+                    && !self.book.is_protected()
+                    && self
+                        .book
+                        .images()
+                        .iter()
+                        .any(|picture| Some(picture.id) == self.selected_picture)
+            }
             _ => true,
         }
     }
@@ -1261,6 +1494,12 @@ impl win42::App for Xls {
             return Err("Command unavailable".into());
         }
         match id {
+            78 => {
+                self.book
+                    .delete_image(self.selected_picture.ok_or("Select a picture")?)
+                    .map_err(|e| e.to_string())?;
+                self.selected_picture = None;
+            }
             4 => {
                 self.book.undo();
             }
@@ -1394,6 +1633,8 @@ fn main() {
         col: 0,
         preview: None,
         visible_cache: std::cell::RefCell::new(Vec::new()),
+        picture_cache: Default::default(),
+        selected_picture: None,
     }))
 }
 #[cfg(test)]
@@ -1410,6 +1651,8 @@ mod tests {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         assert_eq!(a.text(), "a\r\nb");
         a.edit("a".into()).unwrap();
@@ -1430,6 +1673,8 @@ mod regression {
             col: 1,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         app.book.set_cell(0, 1, "=A1".into()).unwrap();
         let bytes = match app.clipboard_request(39).unwrap() {
@@ -1491,6 +1736,8 @@ mod regression {
             col: 1,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         assert_eq!(
             app.table()
@@ -1570,6 +1817,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: Default::default(),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         let win42::LabelSource::Rows(rows) = app.label_source().unwrap() else {
             panic!("expected rows")
@@ -1613,6 +1862,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         let rendered = app.table().unwrap();
         assert_eq!(
@@ -1695,6 +1946,8 @@ mod regression {
             col: 1,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         let rendered = app.table().unwrap();
         assert_eq!(
@@ -1737,6 +1990,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         app.book.set_cell(1, 1, "hidden value".into()).unwrap();
         app.book
@@ -1786,6 +2041,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         app.book.set_cell(0, 0, "Amount".into()).unwrap();
         app.book.set_cell(1, 0, "10".into()).unwrap();
@@ -1821,6 +2078,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         app.select_cell(1, 1);
         let prior = app.table().unwrap();
@@ -1858,6 +2117,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         a.select_cell(1, 1);
         a.action(11).unwrap();
@@ -1897,6 +2158,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         a.edit("a".into()).unwrap();
         a.select_cell(0, 1);
@@ -1920,6 +2183,8 @@ mod regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         assert!(!a.enabled(10));
         assert!(!a.enabled(11));
@@ -1942,6 +2207,8 @@ mod policy_regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         a.edit("single".into()).unwrap();
         assert!(a.edit("x".repeat(4 * 1024 * 1024 + 1)).is_err());
@@ -1996,6 +2263,8 @@ mod filter_ui_regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         assert_eq!(app.table().unwrap().len(), 3);
         app.select_cell(2, 0);
@@ -2035,6 +2304,8 @@ mod custom_grid_regression {
             col: 0,
             preview: None,
             visible_cache: std::cell::RefCell::new(Vec::new()),
+            picture_cache: Default::default(),
+            selected_picture: None,
         };
         assert!(app.uses_custom_grid());
         assert_eq!(app.table().unwrap().len(), 3);
@@ -2059,5 +2330,82 @@ mod custom_grid_regression {
         app.edit("target".into()).unwrap();
         assert_eq!(app.book.cell(3, 2), Some("target"));
         assert_eq!(app.book.cell(2, 2), Some(""));
+    }
+}
+
+#[cfg(test)]
+mod picture_regression {
+    use super::*;
+    use win42::App;
+    #[test]
+    fn technical_picture_keeps_recipe_size_and_moves_over_visible_cells_only() {
+        let mut app = Xls {
+            book: Workbook::new(8, 8).unwrap(),
+            row: 2,
+            col: 2,
+            preview: None,
+            visible_cache: Default::default(),
+            picture_cache: Default::default(),
+            selected_picture: None,
+        };
+        let recipe = label42::TechnicalElement {
+            symbol_id: Some("protective-earth".into()),
+            code_type: label42::Format::Qr,
+            value: String::new(),
+            width_mm: 20.0,
+            caption: false,
+        };
+        let bytes = recipe.png().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "off42-xls-picture-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = app.file_action(76, &path);
+        std::fs::remove_file(&path).unwrap();
+        result.unwrap();
+        let original = app.book.images()[0].clone();
+        assert_eq!(original.data.as_ref(), bytes);
+        assert!((original.width_points - 20.0 * 72.0 / 25.4).abs() < 1e-9);
+        assert_eq!(
+            label42::TechnicalElement::from_description(&original.description),
+            Some(recipe.clone())
+        );
+        let mut view = app.book.sheet_view().clone();
+        view.hidden_rows.insert(1);
+        view.hidden_columns.insert(1);
+        app.book.set_sheet_view(view).unwrap();
+        app.clear_visible_cache();
+        let rendered = app.grid_pictures();
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].row, 1);
+        assert_eq!(
+            rendered[0].rgba.len(),
+            (original.pixel_width * original.pixel_height * 4) as usize
+        );
+        app.move_grid_picture(original.id, 80.0, 20.0).unwrap();
+        assert_eq!(
+            (app.book.images()[0].row, app.book.images()[0].column),
+            (3, 3)
+        );
+        app.action(4).unwrap();
+        assert_eq!(app.book.images(), &[original.clone()]);
+        app.action(5).unwrap();
+        for kind in ["xlsx", "ods"] {
+            let bytes = if kind == "xlsx" {
+                app.book.xlsx_bytes().unwrap()
+            } else {
+                app.book.ods_bytes().unwrap()
+            };
+            let restored = Workbook::from_office_bytes(&bytes, kind).unwrap();
+            assert_eq!(
+                label42::TechnicalElement::from_png(&restored.images()[0].data),
+                Some(recipe.clone())
+            );
+        }
     }
 }

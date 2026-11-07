@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read, Write};
 const EXTRA: &str = "xls42/project.json";
 const LIMIT: usize = 64 * 1024 * 1024;
+mod pictures;
 fn format(s: &CellStyle) -> Format {
     let mut f = Format::new();
     if s.bold {
@@ -166,7 +167,8 @@ impl Workbook {
                 ws.set_row_height_pixels(r as u32, h as u32)
                     .map_err(|_| Error::Invalid("invalid row height"))?;
             }
-            for (&c, &w) in &sheet.col_widths {
+            for c in 0..sheet.cols {
+                let w = *sheet.col_widths.get(&c).unwrap_or(&80);
                 ws.set_column_width_pixels(c as u16, w as u32)
                     .map_err(|_| Error::Invalid("invalid column width"))?;
             }
@@ -368,6 +370,30 @@ impl Workbook {
                 }
                 ws.insert_chart(chart.anchor_row as u32, chart.anchor_col as u16, &xchart)
                     .map_err(|_| Error::Invalid("cannot encode XLSX chart"))?;
+            }
+            for picture in &sheet.images {
+                if picture.offset_x < 0.0 || picture.offset_y < 0.0 {
+                    return Err(Error::Invalid(
+                        "Negative picture offsets are not supported in XLSX",
+                    ));
+                }
+                let image = rust_xlsxwriter::Image::new_from_buffer(&picture.data)
+                    .map_err(|_| Error::Invalid("Invalid picture data"))?
+                    .set_scale_to_size(
+                        picture.width_points / 0.75,
+                        picture.height_points / 0.75,
+                        false,
+                    )
+                    .set_alt_text(&picture.description)
+                    .set_object_movement(rust_xlsxwriter::ObjectMovement::MoveButDontSizeWithCells);
+                ws.insert_image_with_offset(
+                    picture.row as u32,
+                    picture.column as u16,
+                    &image,
+                    (picture.offset_x / 0.75).round() as u32,
+                    (picture.offset_y / 0.75).round() as u32,
+                )
+                .map_err(|_| Error::Invalid("Could not encode XLSX picture"))?;
             }
             for rule in &sheet.validations {
                 use rust_xlsxwriter::{DataValidation as XValidation, DataValidationRule};
@@ -1027,6 +1053,19 @@ impl Workbook {
                 }
                 sheet.set_cellstyle(r, c, &styles[cell.style]);
             }
+            for picture in &sh.images {
+                let mut frame = spreadsheet_ods::draw::DrawFrame::new();
+                frame.set_draw_name(format!("off42-picture-{}", picture.id));
+                frame.set_desc(&picture.description);
+                frame.set_width(Length::Pt(picture.width_points));
+                frame.set_height(Length::Pt(picture.height_points));
+                frame.svg_x(Length::Pt(picture.offset_x));
+                frame.svg_y(Length::Pt(picture.offset_y));
+                let mut image = spreadsheet_ods::draw::DrawImage::new();
+                image.set_binary(&picture.data);
+                frame.push_content(spreadsheet_ods::draw::DrawFrameContent::Image(image));
+                sheet.add_draw_frame(picture.row as u32, picture.column as u32, frame);
+            }
             book.push_sheet(sheet);
         }
         let bytes = spreadsheet_ods::write_ods_buf(&mut book, Vec::new())
@@ -1224,6 +1263,7 @@ impl Workbook {
             }
             import_xlsx_layout(bytes, &mut state)?;
         }
+        pictures::import(bytes, kind, &mut state)?;
         Ok(Self {
             history: SnapshotHistory::new(state.clone(), 8),
             snapshots: BTreeMap::new(),
@@ -2158,6 +2198,13 @@ impl Workbook {
         patch_xlsx(bytes, old, state, &changes, &renames).map(|_| ())
     }
     fn patch_external(&self, kind: &str) -> Result<Vec<u8>, Error> {
+        let mut output = self.patch_external_cells(kind)?;
+        if let Some(old) = &self.external_baseline {
+            output = pictures::patch(&output, kind, old, self.history.current())?;
+        }
+        Ok(output)
+    }
+    fn patch_external_cells(&self, kind: &str) -> Result<Vec<u8>, Error> {
         if self.external_format.as_deref() != Some(kind) {
             return Err(Error::Invalid(
                 "Conversion would discard unsupported Office content; save in the original format",
@@ -2879,6 +2926,7 @@ fn patch_ods(
     let after = zip_text(&mut generated_zip, "content.xml")?
         .ok_or(Error::Invalid("missing generated ODS content"))?;
     let after = preserve_ods_auto_styles(&before, &after)?;
+    let after = pictures::preserve_odf_drawings(&before, &after, current)?;
     verify_ods_opaque_content(&before, &after, view_changed)?;
     if view_changed {
         let parsed = spreadsheet_ods::read_ods_buf(&generated)

@@ -31,6 +31,8 @@ struct ProjectSheet {
     #[serde(default)]
     charts: Vec<Chart>,
     #[serde(default)]
+    images: Vec<SheetImage>,
+    #[serde(default)]
     pivots: Vec<Pivot>,
     #[serde(default)]
     tables: Vec<SpreadsheetTable>,
@@ -83,6 +85,7 @@ impl Project {
                     validations: sh.validations.clone(),
                     conditional_formats: sh.conditional_formats.clone(),
                     charts: sh.charts.clone(),
+                    images: sh.images.clone(),
                     pivots: sh.pivots.clone(),
                     tables: sh.tables.clone(),
                     view: sh.view.clone(),
@@ -146,6 +149,25 @@ impl Project {
             }
             s.validations = sh.validations;
             s.conditional_formats = sh.conditional_formats;
+            s.images = sh.images;
+            if s.images.len() > 1000
+                || s.images
+                    .iter()
+                    .any(|image| image.id >= state.next_id || !pictures::valid(image, &s))
+                || s.images
+                    .iter()
+                    .map(|image| image.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != s.images.len()
+            {
+                return Err(Error::Invalid("invalid sheet pictures"));
+            }
+            for image in &s.images {
+                if pictures::validate_png(&image.data)? != (image.pixel_width, image.pixel_height) {
+                    return Err(Error::Invalid("Picture dimensions do not match its data"));
+                }
+            }
             s.charts = sh.charts;
             s.pivots = sh.pivots;
             s.tables = sh.tables;
@@ -228,7 +250,15 @@ impl Project {
         }) {
             return Err(Error::Invalid("invalid chart or pivot"));
         }
-        if state.bytes() > MAX_TEXT
+        if !pictures::valid_budget(&state)
+            || state
+                .sheets
+                .iter()
+                .flat_map(|sheet| &sheet.images)
+                .map(|image| image.data.len())
+                .sum::<usize>()
+                > pictures::MAX_PICTURE_BYTES
+            || state.bytes() > MAX_TEXT
             || !state.sheets.iter().any(|s| s.id == state.active)
             || !state.selection.valid(state.sheet())
         {

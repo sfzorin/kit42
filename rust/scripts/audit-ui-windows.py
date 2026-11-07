@@ -123,11 +123,16 @@ def fill_prompt(process, main, identifier, title, values):
 
 
 def choose_file(process, path):
-    dialog = modal(process, native_class="#32770")
     def filename_control():
-        edits = [h for h in windows(process.pid, dialog) if classname(h).lower() == "edit" and u.IsWindowVisible(h)]
-        return next((h for h in edits if u.GetDlgCtrlID(h) in (1148, 1001)), edits[0] if len(edits) == 1 else None)
-    control = wait_for(filename_control, "file dialog filename field", process)
+        for dialog in windows(process.pid):
+            if classname(dialog) != "#32770" or not u.IsWindowEnabled(dialog):
+                continue
+            edits = [h for h in windows(process.pid, dialog) if classname(h).lower() == "edit"]
+            control = next((h for h in edits if u.GetDlgCtrlID(h) in (1148, 1001)), edits[0] if len(edits) == 1 else None)
+            if control:
+                return dialog, control
+        return None
+    dialog, control = wait_for(filename_control, "file dialog filename field", process)
     set_text(control, str(path))
     click(dialog, 1)
 
@@ -261,7 +266,66 @@ def audit_marks(process, main, binary, output, results):
             library.unlink()
 
 
-def audit(binary, output, extended):
+def audit_sheet_pictures(process, main, output, results):
+    source = output / "sheet-own-stamp.png"
+    write_png(source, 20, 10, bytes([255, 0, 0, 255] * 200))
+    command(main, 76)
+    choose_file(process, source)
+    wait_for(lambda: u.IsWindowEnabled(main), "picture inserted", process)
+    fill_prompt(process, main, 77, "Picture Position and Size", ["2", "2", "6", "6", "30", "15"])
+    wait_for(lambda: u.IsWindowEnabled(main), "picture geometry applied", process)
+    project = output / "pictures.xls42"
+    command(main, 18)
+    choose_file(process, project)
+    output_ready(process, main, project, b"{")
+    def picture():
+        images = json.loads(project.read_text(encoding="utf-8"))["sheets"][0]["images"]
+        return images[0] if images else None
+    original = picture()
+    assert (original["row"], original["column"], original["width_points"], original["height_points"]) == (1, 1, 30, 15)
+    grid = u.GetDlgItem(main, 102)
+    assert classname(grid) == "Off42VariableGrid"
+    gdi = c.WinDLL("gdi32", use_last_error=True)
+    gdi.GetPixel.argtypes = [w.HDC, c.c_int, c.c_int]
+    gdi.GetPixel.restype = w.DWORD
+    u.GetDC.argtypes, u.GetDC.restype = [w.HWND], w.HDC
+    u.ReleaseDC.argtypes = [w.HWND, w.HDC]
+    def red(x, y):
+        dc = u.GetDC(grid)
+        try:
+            return gdi.GetPixel(dc, x, y) == 0x0000FF
+        finally:
+            u.ReleaseDC(grid, dc)
+    wait_for(lambda: red(150, 63), "rendered picture pixels", process)
+    def point(x, y):
+        return (y << 16) | x
+    u.SendMessageW(grid, 0x201, 1, point(150, 63))
+    u.SendMessageW(grid, 0x200, 1, point(230, 83))
+    u.SendMessageW(grid, 0x202, 0, point(230, 83))
+    command(main, 2)
+    wait_for(lambda: picture()["column"] == 2 and picture()["row"] == 2, "drag saved at the new anchor", process)
+    moved = picture()
+    wait_for(lambda: red(230, 83), "picture renders after dragging", process)
+    command(main, 4)
+    command(main, 2)
+    wait_for(lambda: picture() == original, "Undo restores complete picture geometry", process)
+    command(main, 5)
+    command(main, 2)
+    wait_for(lambda: picture() == moved, "Redo restores complete picture geometry", process)
+    command(main, 78)
+    command(main, 2)
+    wait_for(lambda: picture() is None, "picture deletion saved", process)
+    command(main, 4)
+    command(main, 2)
+    wait_for(lambda: picture() == moved, "Undo restores deleted picture and data", process)
+    command(main, 1)
+    choose_file(process, project)
+    wait_for(lambda: project.name in text(main) and u.IsWindowEnabled(main), "picture project reopened", process)
+    wait_for(lambda: red(230, 83), "saved picture renders after reopening", process)
+    results["checks"].append("spreadsheet picture insertion, exact geometry, native pixels, mouse drag, Undo/Redo, deletion and reopen")
+
+
+def audit(binary, output, extended, pictures=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -361,6 +425,8 @@ def audit(binary, output, extended):
             choose_file(process, calibration)
             output_ready(process, main, calibration, b"%PDF-")
             results["checks"].append("calibration sheet exported through the normal menu")
+        if pictures and binary.stem.lower() == "xls42":
+            audit_sheet_pictures(process, main, output, results)
         return results
     finally:
         if process.poll() is None:
@@ -379,6 +445,7 @@ def main():
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--extended", action="store_true")
+    parser.add_argument("--pictures", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -387,7 +454,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures))
             except Exception as error:
                 results.append({"app": app, "error": str(error)})
             print(json.dumps(results[-1]), flush=True)

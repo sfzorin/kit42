@@ -63,10 +63,20 @@ preservation varies by feature and source file; test important documents before 
   and characters absent from that font need another text workflow.
 - In XLS42, select part of one column and use **Production → Fill Serial Numbers** to enter literal identifiers
   such as `0007` or `PCB-0007`. Filtered or hidden rows are skipped. Undo restores the whole operation.
-- In PDF42, DOC42 and PPT42, **Signatures & Stamps** imports PNG or JPEG copies into the shared local library
+- In all six apps, **Signatures & Stamps** imports PNG or JPEG copies into the shared local library
   in `%LOCALAPPDATA%/off42/Signatures and Stamps`. Use **Insert from Library** to place an image.
   PNG imports retain transparency; import can remove white paper. IMG42 and SCN42 place the mark in a pixel rectangle
   and support Undo/Redo. SCN42 clears OCR for a changed page and restores it with Undo. These are visual marks.
+
+## Spreadsheet pictures
+
+XLS42 inserts PNG and JPEG pictures at the active cell. Click to select, drag to move, double-click for
+position and physical size, or press Delete. Each edit supports Undo/Redo. Pictures follow row and column
+insertions, respect hidden anchors and print at their recorded size, including page clipping.
+Native XLS42, XLSX and ODS output contains the image and geometry. Supported PNG pictures in external
+XLSX/ODS packages can be moved or deleted, and new pictures can be added while preserving unrelated ZIP
+parts. Cropped/rotated drawings and unsupported image formats remain opaque. CSV export rejects pictures.
+Technical PNG files retain the same editable recipe and physical width used by the macOS apps.
 
 ## Native text proofing
 

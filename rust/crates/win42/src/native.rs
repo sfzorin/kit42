@@ -3893,7 +3893,7 @@ unsafe fn draw_rich_scene(
 }
 
 /// Draw an RGBA raster over the existing destination using premultiplied alpha.
-unsafe fn draw_rgba(
+pub(super) unsafe fn draw_rgba(
     dc: HDC,
     x: f64,
     y: f64,
@@ -4418,6 +4418,7 @@ pub(super) fn grid_snapshot() -> Option<crate::grid::Snapshot> {
             frozen: s.app.grid_frozen_panes(),
             readonly: s.app.text_readonly(),
             clipboard: s.app.grid_clipboard_commands(),
+            pictures: s.app.grid_pictures(),
         })
     })
 }
@@ -4445,10 +4446,51 @@ pub(super) unsafe fn grid_select(row: usize, col: usize) {
 pub(super) unsafe fn grid_select_range(range: crate::GridRange, focus: (usize, usize)) {
     STATE.with(|s| {
         if let Some(s) = s.borrow_mut().as_mut() {
+            s.app.select_grid_picture(None);
             s.app.select_grid_range_with_focus(range, focus)
         }
     });
     refresh();
+}
+pub(super) unsafe fn grid_select_picture(id: Option<u64>) {
+    STATE.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            state.app.select_grid_picture(id);
+        }
+    });
+    refresh();
+}
+pub(super) unsafe fn grid_move_picture(id: u64, dx: f64, dy: f64) {
+    let (hwnd, result) = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().unwrap();
+        (state.hwnd, state.app.move_grid_picture(id, dx, dy))
+    });
+    if let Err(error) = result {
+        msg(hwnd, &error, MB_OK | MB_ICONERROR);
+    }
+    refresh();
+}
+pub(super) unsafe fn grid_picture_command(delete: bool) -> bool {
+    let target = STATE.with(|state| {
+        let state = state.borrow();
+        let state = state.as_ref()?;
+        if !state
+            .app
+            .grid_pictures()
+            .iter()
+            .any(|picture| picture.selected)
+        {
+            return None;
+        }
+        let commands = state.app.grid_picture_commands()?;
+        Some((state.hwnd, if delete { commands.1 } else { commands.0 }))
+    });
+    if let Some((hwnd, id)) = target {
+        command(hwnd, id, 0);
+        return true;
+    }
+    false
 }
 pub(super) unsafe fn grid_resize(row: bool, index: usize, pixels: u16) {
     cancel_pending_open();

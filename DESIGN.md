@@ -465,3 +465,10 @@ These complement the behavioral suites and must not be reported as editing or co
 - Extension strings use `PL("…")` (legacy rows in `Previews42/Strings.swift`, additional languages in the Kit42
   catalogs) and follow the first supported system language: the sandbox cannot read the suite's language choice.
 
+
+
+Windows spreadsheet pictures use shared grid object hooks for immutable decoded pixels, selection and a
+single movement commit at pointer release. Drag previews stay in the host; document history stores cell
+anchors, point offsets and physical size. Frozen panes clip objects using the same geometry as cells.
+XLS42 preserves original PNG bytes (including technical recipes) in projects and Office exports; imported
+Office pictures retain provenance so only the corresponding original drawing node is replaced.

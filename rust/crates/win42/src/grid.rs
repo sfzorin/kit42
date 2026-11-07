@@ -30,6 +30,7 @@ pub(super) struct Snapshot {
     pub readonly: bool,
     pub frozen: (usize, usize),
     pub clipboard: Option<(u16, u16)>,
+    pub pictures: Vec<crate::GridPicture>,
 }
 const HEADER: i32 = 25;
 const ROW_HEADER: i32 = 48;
@@ -45,6 +46,13 @@ struct GridState {
     focus_pane: Option<(bool, bool)>,
     editor: HWND,
     committing: bool,
+    picture_drag: Option<PictureDrag>,
+}
+#[derive(Clone, Copy)]
+struct PictureDrag {
+    id: u64,
+    start: (i32, i32),
+    delta: (i32, i32),
 }
 #[derive(Clone, Copy)]
 struct Drag {
@@ -358,6 +366,65 @@ unsafe fn paint(hwnd: HWND) {
                 );
             }
             RestoreDC(dc, pane);
+        }
+    }
+    // Objects share the cell coordinate system, including frozen-pane clipping.
+    let split_x = ROW_HEADER + xs[snap.frozen.1.min(snap.widths.len())];
+    let split_y = HEADER + ys[snap.frozen.0.min(snap.heights.len())];
+    for picture in &snap.pictures {
+        if picture.column >= snap.widths.len() || picture.row >= snap.heights.len() {
+            continue;
+        }
+        for frozen_y in [true, false] {
+            for frozen_x in [true, false] {
+                let left = if frozen_x { ROW_HEADER } else { split_x };
+                let top = if frozen_y { HEADER } else { split_y };
+                let right = if frozen_x { split_x } else { rc.right }.min(rc.right);
+                let bottom = if frozen_y { split_y } else { rc.bottom }.min(rc.bottom);
+                if left >= right || top >= bottom {
+                    continue;
+                }
+                let x = ROW_HEADER + xs[picture.column] - if frozen_x { 0 } else { st.x };
+                let y = HEADER + ys[picture.row] - if frozen_y { 0 } else { st.y };
+                let delta = st
+                    .picture_drag
+                    .filter(|drag| drag.id == picture.id)
+                    .map_or((0, 0), |drag| drag.delta);
+                let x = x + picture.offset_x.round() as i32 + delta.0;
+                let y = y + picture.offset_y.round() as i32 + delta.1;
+                if x as f64 + picture.width <= left as f64
+                    || x >= right
+                    || y as f64 + picture.height <= top as f64
+                    || y >= bottom
+                {
+                    continue;
+                }
+                let pane = SaveDC(dc);
+                IntersectClipRect(dc, left, top, right, bottom);
+                super::native::draw_rgba(
+                    dc,
+                    x as f64,
+                    y as f64,
+                    picture.width,
+                    picture.height,
+                    picture.pixel_width,
+                    picture.pixel_height,
+                    &picture.rgba,
+                );
+                if picture.selected {
+                    let right = x + picture.width.round() as i32;
+                    let bottom = y + picture.height.round() as i32;
+                    for (a, b) in [
+                        ((x, y), (right, y)),
+                        ((right, y), (right, bottom)),
+                        ((right, bottom), (x, bottom)),
+                        ((x, bottom), (x, y)),
+                    ] {
+                        line(dc, a.0, a.1, b.0, b.1, [35, 100, 210]);
+                    }
+                }
+                RestoreDC(dc, pane);
+            }
         }
     }
     RestoreDC(dc, save);
@@ -900,6 +967,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 focus_pane: None,
                 editor: null_mut(),
                 committing: false,
+                picture_drag: None,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(st) as isize);
             1
@@ -950,6 +1018,47 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
             };
             let xs = offsets(&snap.widths);
             let ys = offsets(&snap.heights);
+            if x >= ROW_HEADER && y >= HEADER {
+                let logical_x = x - ROW_HEADER
+                    + if x < ROW_HEADER + xs[snap.frozen.1.min(snap.widths.len())] {
+                        0
+                    } else {
+                        sx
+                    };
+                let logical_y = y - HEADER
+                    + if y < HEADER + ys[snap.frozen.0.min(snap.heights.len())] {
+                        0
+                    } else {
+                        sy
+                    };
+                let picture = snap.pictures.iter().rev().find(|picture| {
+                    let Some((&left, &top)) = xs.get(picture.column).zip(ys.get(picture.row))
+                    else {
+                        return false;
+                    };
+                    let px = left as f64 + picture.offset_x;
+                    let py = top as f64 + picture.offset_y;
+                    logical_x as f64 >= px
+                        && (logical_x as f64) < px + picture.width
+                        && logical_y as f64 >= py
+                        && (logical_y as f64) < py + picture.height
+                });
+                if let Some(picture) = picture {
+                    super::native::grid_select_picture(Some(picture.id));
+                    SetFocus(hwnd);
+                    if !snap.readonly {
+                        if let Some(st) = state(hwnd) {
+                            st.picture_drag = Some(PictureDrag {
+                                id: picture.id,
+                                start: (x, y),
+                                delta: (0, 0),
+                            });
+                        }
+                        SetCapture(hwnd);
+                    }
+                    return 0;
+                }
+            }
             let boundary = if y < HEADER && x >= ROW_HEADER {
                 xs.iter()
                     .enumerate()
@@ -1111,6 +1220,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
             0
         }
         WM_MOUSEMOVE => {
+            let (px, py) = coordinate(l);
+            if let Some(drag) = state(hwnd).and_then(|st| st.picture_drag.as_mut()) {
+                drag.delta = (px - drag.start.0, py - drag.start.1);
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let (x, y) = coordinate(l);
             let (drag, selecting, anchor) = state(hwnd)
                 .map(|s| (s.drag, s.selecting, s.anchor))
@@ -1156,6 +1271,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         }
         WM_LBUTTONUP => {
             let (x, y) = coordinate(l);
+            if let Some(drag) = state(hwnd).and_then(|st| st.picture_drag.take()) {
+                ReleaseCapture();
+                if x != drag.start.0 || y != drag.start.1 {
+                    super::native::grid_move_picture(
+                        drag.id,
+                        (x - drag.start.0) as f64,
+                        (y - drag.start.1) as f64,
+                    );
+                }
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let (drag, selecting, selection) = if let Some(st) = state(hwnd) {
                 let d = st.drag.take();
                 let active = st.selecting;
@@ -1183,6 +1310,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         }
         WM_CAPTURECHANGED => {
             if let Some(st) = state(hwnd) {
+                st.picture_drag = None;
                 st.drag = None;
                 st.selecting = false;
                 st.preview_selection = None
@@ -1191,6 +1319,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
             0
         }
         WM_LBUTTONDBLCLK => {
+            if super::native::grid_picture_command(false) {
+                return 0;
+            }
             let (x, y) = coordinate(l);
             if let Some(((r, c), pane)) = hit(hwnd, x, y) {
                 if let Some(st) = state(hwnd) {
@@ -1221,6 +1352,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         WM_GETDLGCODE => DLGC_WANTARROWS as isize | DLGC_WANTCHARS as isize | DLGC_WANTTAB as isize,
         WM_KEYDOWN => {
             let key = w as u16;
+            if key == VK_ESCAPE {
+                if let Some(st) = state(hwnd) {
+                    st.picture_drag = None;
+                }
+                ReleaseCapture();
+                super::native::grid_select_picture(None);
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let control = GetKeyState(VK_CONTROL as i32) < 0;
             let shift = GetKeyState(VK_SHIFT as i32) < 0;
             if control {
@@ -1267,6 +1407,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                     0
                 }
                 VK_DELETE => {
+                    if super::native::grid_picture_command(true) {
+                        return 0;
+                    }
                     super::native::grid_commit(String::new());
                     0
                 }
