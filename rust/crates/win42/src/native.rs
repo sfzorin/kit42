@@ -65,6 +65,7 @@ enum AsyncOpenPhase {
 struct State {
     app: Box<dyn App>,
     calibrate_print: bool,
+    deferred_commands: Vec<(u16, u16)>,
     path: Option<PathBuf>,
     session: suite42_core::session::DocumentSession,
     async_open: Option<AsyncOpen>,
@@ -672,6 +673,7 @@ unsafe fn refresh() {
     sync_presentation(hwnd);
     DrawMenuBar(hwnd);
     layout(hwnd);
+    flush_deferred_commands();
 }
 unsafe fn sync_presentation(hwnd: HWND) {
     let (presenting, active) = STATE.with(|s| {
@@ -1671,7 +1673,41 @@ unsafe fn mark_command(hwnd: HWND, id: u16) -> Result<(), String> {
     Ok(())
 }
 
+unsafe fn flush_deferred_commands() {
+    if REFRESHING.with(|refreshing| refreshing.get()) {
+        return;
+    }
+    let pending = STATE.with(|state| {
+        let mut state = state.try_borrow_mut().ok()?;
+        let state = state.as_mut()?;
+        Some((state.hwnd, std::mem::take(&mut state.deferred_commands)))
+    });
+    if let Some((hwnd, commands)) = pending {
+        for (id, notify) in commands {
+            PostMessageW(
+                hwnd,
+                WM_COMMAND,
+                usize::from(id) | (usize::from(notify) << 16),
+                0,
+            );
+        }
+    }
+}
 unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
+    if REFRESHING.with(|refreshing| refreshing.get()) {
+        // RichEdit/TSF can pump posted messages during a model refresh. Keep
+        // actual menu and toolbar clicks; ignore generated control notifications.
+        if id != EDIT as u16 && id != LIST as u16 && notify == 0 {
+            STATE.with(|state| {
+                if let Some(state) = state.borrow_mut().as_mut() {
+                    if state.deferred_commands.len() < 256 {
+                        state.deferred_commands.push((id, notify));
+                    }
+                }
+            });
+        }
+        return;
+    }
     if id == TOOLBAR_MORE {
         let (button, items) = STATE.with(|s| {
             let s = s.borrow();
@@ -1718,9 +1754,6 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 command(hwnd, selected as u16, 0);
             }
         }
-        return;
-    }
-    if REFRESHING.with(|x| x.get()) {
         return;
     }
     if id == TOGGLE_PROOFING {
@@ -1810,6 +1843,7 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 }
                 SendMessageW(list, LB_SETCURSEL, selected, 0);
                 REFRESHING.with(|x| x.set(false));
+                flush_deferred_commands();
             }
             update_caption()
         }
@@ -2369,6 +2403,7 @@ unsafe fn select_grid_cell(row: usize, col: Option<usize>) {
         let previous = REFRESHING.with(|x| x.replace(true));
         SetWindowTextW(edit, wide(&text).as_ptr());
         REFRESHING.with(|x| x.set(previous));
+        flush_deferred_commands();
         update_caption();
     }
 }
@@ -2433,6 +2468,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT
                 }
             }
             command(h, (w & 0xffff) as u16, (w >> 16) as u16);
+            flush_deferred_commands();
             0
         }
         WM_NOTIFY => {
@@ -2948,6 +2984,7 @@ pub fn run(app: Box<dyn App>) {
             *s.borrow_mut() = Some(State {
                 app,
                 calibrate_print: false,
+                deferred_commands: Vec::new(),
                 path: None,
                 session: Default::default(),
                 async_open: None,
@@ -3586,6 +3623,7 @@ unsafe fn update_table(table: HWND, rows: Option<&[Vec<String>]>) {
         }
     }
     REFRESHING.with(|x| x.set(was_refreshing));
+    flush_deferred_commands();
 }
 
 unsafe fn populate_table(table: HWND, rows: &[Vec<String>]) {

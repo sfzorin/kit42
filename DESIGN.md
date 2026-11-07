@@ -486,3 +486,8 @@ Label inputs are immutable source snapshots. Apps can enumerate named sources; t
 appears when there is a choice. DOC tables are explicitly named because the current linear selection
 API does not cover table cells. Label preferences separate tabular and text workflows, hash source
 headers before restoring mappings, and exclude document contents and barcode payloads.
+
+The Windows host defers real menu/toolbar commands received while refreshing native controls. RichEdit
+and TSF can pump messages inside a refresh; generated control notifications remain suppressed, while
+user commands are posted back in order after the refresh releases the model. Deferred commands are also
+flushed after smaller guarded control updates and normal command dispatch.
