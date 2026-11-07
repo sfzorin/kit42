@@ -122,7 +122,8 @@ toolbar actions, prompt labels and choices; Windows-specific strings without a m
 Document text, barcode values, filenames and formula syntax are not translated. Windows system dialogs follow
 Windows settings. Arabic prompt labels align right; document and grid coordinates retain their normal layout.
 Native File menus and technical prompts pass data-preservation checks in all twenty languages. Six prompt
-screenshots were inspected. Full string coverage and shared picker restart behavior remain separate checks.
+screenshots were inspected. The symbol/code dialog and its insertion/edit menus also have explicit Windows translations. Complete string
+coverage remains separate. The shared picker restart/next-app-language scenario is included in CI.
 
 ### Recent documents (development branch)
 

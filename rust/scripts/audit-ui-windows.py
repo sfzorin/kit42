@@ -603,6 +603,8 @@ def audit_language(binary, output, code, index):
         wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "localized file opening", process)
         catalogs = Path(__file__).resolve().parents[1] / "crates" / "win42" / "resources" / "translations"
         catalog = {} if code == "en" else json.loads((catalogs / (code + ".json")).read_text(encoding="utf-8"))
+        overrides = json.loads((catalogs.parent / "windows-translations.json").read_text(encoding="utf-8"))
+        catalog.update(overrides.get(code, {}))
         u.GetMenu.argtypes, u.GetMenu.restype = [w.HWND], w.HMENU
         u.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
         u.GetMenuState.argtypes = [w.HMENU, w.UINT, w.UINT]
@@ -616,6 +618,9 @@ def audit_language(binary, output, code, index):
         command(main, 65509)
         dialog = modal(process, native_class="Suite42InputDialog")
         assert text(u.GetDlgItem(dialog, 2)) == catalog.get("Cancel", "Cancel")
+        labels = [text(h) for h in windows_for_dialog(dialog) if classname(h).upper() == "STATIC"]
+        for key in ["Symbol or barcode format", "Barcode value", "Width (mm)", "Caption (yes/no)"]:
+            assert catalog.get(key, key) in labels, (code, key, labels)
         set_text(u.GetDlgItem(dialog, 101), "PCB-0007")
         set_text(u.GetDlgItem(dialog, 102), "20")
         # Leave the translated Yes choice selected: returning its stable original value is essential.
@@ -700,6 +705,116 @@ def audit_recents(binary, output):
             process.wait(timeout=5)
 
 
+
+class OwnedChildProcess:
+    """Handle only the new process displaying this test's unique document path."""
+    def __init__(self, pid):
+        self.pid = pid
+        self.kernel = c.WinDLL("kernel32", use_last_error=True)
+        self.kernel.OpenProcess.argtypes, self.kernel.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+        self.kernel.GetExitCodeProcess.argtypes = [w.HANDLE, c.POINTER(w.DWORD)]
+        self.kernel.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+        self.kernel.CloseHandle.argtypes = [w.HANDLE]
+        self.handle = self.kernel.OpenProcess(0x1000 | 0x0001, False, pid)
+        assert self.handle
+    def poll(self):
+        status = w.DWORD()
+        assert self.kernel.GetExitCodeProcess(self.handle, c.byref(status))
+        return None if status.value == 259 else status.value
+    def terminate(self):
+        assert self.kernel.TerminateProcess(self.handle, 1)
+    def wait(self, timeout):
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            if self.poll() is not None:
+                return self.poll()
+            time.sleep(0.05)
+        raise subprocess.TimeoutExpired("owned language child", timeout)
+    def close_handle(self):
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+
+
+def audit_language_picker(bin_dir, output):
+    root = output / "language-picker-settings"
+    root.mkdir(exist_ok=True)
+    environment = os.environ.copy()
+    environment["LOCALAPPDATA"] = str(root)
+    source = output / ("language-picker-" + uuid.uuid4().hex + ".rtf")
+    source.write_bytes(br"{\rtf1\ansi Language seed}")
+    process = subprocess.Popen([str(bin_dir / "DOC42.exe"), "--language", "en", "--", str(source)], env=environment)
+    child = None
+    result = {"scenario": "shared language picker", "checks": []}
+    try:
+        main = modal(process, native_class="Suite42Native")
+        wait_for(lambda: source.name in text(main), "language source opened", process)
+        set_text(u.GetDlgItem(main, 101), "unsaved own text")
+        wait_for(lambda: " * - DOC42" in text(main), "language source dirty", process)
+        preferences = root / "off42" / "Preferences" / "language.json"
+        command(main, 64008)  # Native Russian entry in View > Language.
+        confirmation = modal(process, native_class="#32770")
+        click(confirmation, 2)
+        wait_for(lambda: u.IsWindowEnabled(main), "language switch cancelled", process)
+        assert not preferences.exists() and text(u.GetDlgItem(main, 101)) == "unsaved own text"
+        result["checks"].append("Cancel retains unsaved text, original process and original shared language")
+        command(main, 64008)
+        confirmation = modal(process, native_class="#32770")
+        click(confirmation, 7)
+        # The app deliberately starts a new process. Identify it by the unique test-owned filename.
+        until = time.monotonic() + 25
+        replacement = []
+        @c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+        def collect(hwnd, _):
+            if u.IsWindowVisible(hwnd) and classname(hwnd) == "Suite42Native" and source.name in text(hwnd):
+                pid = w.DWORD()
+                u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+                if pid.value != process.pid:
+                    replacement.append((hwnd, pid.value))
+            return True
+        while time.monotonic() < until and not replacement:
+            u.EnumWindows(collect, 0)
+            time.sleep(0.05)
+        assert len(replacement) == 1, "Language switch did not reopen the saved test document"
+        process.wait(timeout=5)
+        child = OwnedChildProcess(replacement[0][1])
+        main = replacement[0][0]
+        wait_for(lambda: text(u.GetDlgItem(main, 101)) == "Language seed", "replacement process opens saved document", child)
+        assert json.loads(preferences.read_text(encoding="utf-8")) == {"version": 1, "language": "ru"}
+        assert u.GetMenuState(u.GetMenu(main), 64008, 0) & 8
+        result["checks"].append("Discard restarts into selected language and reopens unchanged saved source")
+        u.PostMessageW(main, WM_CLOSE, 0, 0)
+        child.wait(timeout=5)
+        child.close_handle()
+        child = None
+        for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
+            next_process = subprocess.Popen([str(bin_dir / (app + ".exe"))], env=environment)
+            try:
+                main = modal(next_process, native_class="Suite42Native")
+                wait_for(lambda: bool(u.GetMenuState(u.GetMenu(main), 64008, 0) & 8), "shared language read on next app launch", next_process)
+                label = c.create_unicode_buffer(256)
+                assert u.GetMenuStringW(u.GetMenu(main), 0, label, len(label), 0x400)
+                assert label.value.replace("&", "") == "Файл", (app, label.value)
+                u.PostMessageW(main, WM_CLOSE, 0, 0)
+                next_process.wait(timeout=5)
+            finally:
+                if next_process.poll() is None:
+                    next_process.terminate()
+                    next_process.wait(timeout=5)
+        result["checks"].append("all six apps read the shared saved language on their next launch")
+        assert source.read_bytes() == br"{\rtf1\ansi Language seed}"
+        return result
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        if child is not None:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
+            child.close_handle()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -732,6 +847,13 @@ def main():
             except Exception as error:
                 results.append({"language": code, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
+        (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if args.languages:
+        try:
+            results.append(audit_language_picker(args.bin_dir, args.output))
+        except Exception as error:
+            results.append({"scenario": "shared language picker", "error": str(error), "traceback": traceback.format_exc()})
+        print(json.dumps(results[-1]), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     if args.recents:
         try:

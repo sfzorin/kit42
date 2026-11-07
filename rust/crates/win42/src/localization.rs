@@ -274,8 +274,17 @@ fn catalog(language: Language) -> Option<&'static Catalog> {
         .position(|candidate| *candidate == language)?
         .checked_sub(1)?;
     Some(CATALOGS[index].get_or_init(|| {
-        let values: BTreeMap<String, String> = serde_json::from_str(catalog_data(language.code))
-            .expect("bundled UI catalog must be valid JSON");
+        let mut values: BTreeMap<String, String> =
+            serde_json::from_str(catalog_data(language.code))
+                .expect("bundled UI catalog must be valid JSON");
+        static WINDOWS: LazyLock<BTreeMap<String, BTreeMap<String, String>>> =
+            LazyLock::new(|| {
+                serde_json::from_str(include_str!("../resources/windows-translations.json"))
+                    .expect("bundled Windows UI catalog must be valid JSON")
+            });
+        if let Some(additions) = WINDOWS.get(language.code) {
+            values.extend(additions.clone());
+        }
         let normalized = values
             .keys()
             .map(|key| (normalized(key), key.clone()))
@@ -375,6 +384,26 @@ pub fn choice_value(originals: &[String], value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_specific_labels_cover_every_language_without_changing_payloads() {
+        for language in LANGUAGES.into_iter().skip(1) {
+            for key in [
+                "Symbol or Code",
+                "Symbol or barcode format",
+                "Barcode value",
+                "Width (mm)",
+                "Caption (yes/no)",
+                "Insert Symbol or Code…",
+                "Edit Symbol or Code…",
+                "Create Symbol or Code…",
+                "No Recent Documents",
+                "Check Spelling as You Type",
+            ] {
+                assert_ne!(translate_in(language, key), key, "{}: {key}", language.code);
+            }
+            assert_eq!(translate_in(language, "PCB-0007"), "PCB-0007");
+        }
+    }
     #[test]
     fn language_order_tags_catalogs_and_literal_data_are_preserved() {
         assert_eq!(LANGUAGES.len(), 20);

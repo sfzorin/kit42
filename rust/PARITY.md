@@ -6,7 +6,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
-| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu | Verify native recents, drag/drop, multiple windows, recovery and associations |
+| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu | Verify drag/drop, multiple windows, recovery and associations |
 | Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify shared language switching, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
@@ -67,3 +67,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   All twenty DOC42 language launches pass translated File menu/current-language checks, prompt actions,
   translated choice identity and unchanged document/code data. Six real prompt screenshots were inspected;
   special Windows labels still often use English fallback. This is not complete UI translation coverage.
+
+- Run 42350595478 passed all six apps, twenty language scenarios and the recent-document lifecycle audit.
+  The latter checks ordering, deduplication, actual Cancel/Discard handling with unsaved text, process restart,
+  Clear Menu persistence and byte-for-byte source preservation using isolated preferences.
