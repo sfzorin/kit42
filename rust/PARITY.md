@@ -7,14 +7,14 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
 | Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu; verified independent New/New Window sessions in all six apps | Verify drag/drop, recovery reference behavior and associations |
-| Localization and appearance | Twenty bundled catalogs, verified shared picker/restart and process language override; prompt label measurement | Complete Windows-specific translations, dark mode, panel visibility and remembered layout |
-| Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
+| Localization and appearance | Twenty bundled catalogs, verified shared picker/restart and process language override; prompt label measurement and verified outer window placement | Complete Windows-specific translations, dark mode, panel visibility/splits and multi-display DPI |
+| Text proofing | System Rich Edit proofing integration in DOC42/PPT42; native flags verified | Actual suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Full technical-object selection/placement controls and richer label artwork sources |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
 | PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, four text-export formats, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
-| DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
+| DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC, structured literal Find/Replace and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, table/image caret mapping and word-count coverage, picture geometry and rich page decorations |
 | XLS42 | Grid editing, engineering/text/math formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
 | IMG42 | Image decoding, transforms, adjustments, selections, text, metadata and batch output | Full markup selection/editing, smart lasso, live text, background removal, viewing panels and additional supported system codecs |
@@ -166,3 +166,15 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - Rich native Find uses the actual Rich Edit projection/ranges instead of the incomplete plain document projection.
   Portable workspace: 370 passed, one OCR fixture ignored; GNU tests compile. Native table/image/surrogate Find,
   wraparound, Replace All, complete saved history and dirty/discard/reopen checks await a compatible build.
+
+- Final optimized run [42360592434](https://github.com/sfzorin/off42/actions/runs/42360592434) succeeded on
+  `6e4c55bdc5d9a4015428267a924800e162c17b6c`: **377 MSVC tests passed**, none failed, one OCR fixture ignored.
+  **All 30 native result groups passed**, including structured DOC Find/Replace, all six independent-window and
+  placement lifecycles, twenty languages, PDF exports and math/text XLSX dirty/discard/reopen checks.
+- The downloaded ZIP passes CRC checks and its seven binary hashes match the runtime import report. It contains
+  all six optimized apps, PDFium, licenses and the exact build identity. Size: 61,197,732 bytes; SHA-256:
+  `ede6e36ba0dc3a81673ed79680d988e129fe307838db202d3a09cd8a3cbeac7c`.
+  It is a development artifact; public preview.3, main and the site remain unchanged.
+- Latest portable workspace: **372 passed**, none failed, one OCR fixture ignored. All GNU Windows targets compile.
+  The source archive passes CRC/membership checks and includes static-CRT configuration while excluding local
+  instructions/status and build outputs. A passing development build does not close the remaining gaps above.

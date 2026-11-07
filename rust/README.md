@@ -258,3 +258,13 @@ matches covering note markers and matched revision/field anchors remain guarded.
 ODT import also retains surrounding body bookmarks when a paragraph contains an inline footnote/endnote. Portable
 regressions reopen project, DOCX and ODT output and verify bookmark destinations plus tables, pictures, comments and
 notes. Replacement output is capped at 16 MB and 100000 occurrences before document mutation.
+
+
+### Verified development build
+
+[Windows validation run 42360592434](https://github.com/sfzorin/off42/actions/runs/42360592434) builds source
+`6e4c55bdc5d9a4015428267a924800e162c17b6c` with release optimization: 377 MSVC tests passed (one OCR fixture ignored),
+all 30 native result groups passed, and packaged binary dependency checks passed. The `off42-windows-x64` workflow
+artifact contains the six apps, PDFium and licenses. ZIP SHA-256:
+`ede6e36ba0dc3a81673ed79680d988e129fe307838db202d3a09cd8a3cbeac7c` (61,197,732 bytes).
+This is a development artifact, separate from the public preview.3 download; it is not a full parity claim.
