@@ -710,6 +710,13 @@ impl Ppt {
     }
 }
 impl win42::App for Ppt {
+    fn supports_new(&self) -> bool {
+        true
+    }
+    fn new_document(&mut self) -> Result<(), String> {
+        *self = Self::new(Presentation::new());
+        Ok(())
+    }
     fn supports_technical_elements(&self) -> bool {
         true
     }

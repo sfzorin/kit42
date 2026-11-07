@@ -6,7 +6,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
-| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu | Verify drag/drop, multiple windows, recovery and associations |
+| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu; separate New/New Window sessions | Verify drag/drop, independent window lifecycle, recovery reference behavior and associations |
 | Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify shared language switching, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
@@ -137,3 +137,10 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   Domain/arity/overflow and large-finite-number regressions pass, along with every supported math reference case
   and independent XLSX/ODS recalculation. Workspace: 366 portable passes, one OCR fixture ignored; GNU tests compile.
   Native numeric/error cache and reopen scenarios are extended for the next compatible build.
+
+- Full optimized run 42357299879 passed all workspace MSVC tests, runtime imports and the native suite on 5334878,
+  including the added text-formula cache/reopen rows. Incremental run 42357757678 also passed on 25fcb16, including
+  math/text numeric/error/text cache types and discard/reopen. These are development artifacts, not public releases.
+- New/New Window now starts an independent document/viewer process, retains current unsaved work and forwards the
+  language override. PPT exposes New. All six native window lifecycles and dirty DOC parent/child history/save/
+  closure are covered by a new audit pending its first compatible build. No autosave/association claim is added.

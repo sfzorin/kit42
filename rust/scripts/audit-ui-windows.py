@@ -1135,6 +1135,90 @@ class OwnedChildProcess:
             self.handle = None
 
 
+def child_processes(parent, executable):
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    class Entry(c.Structure):
+        _fields_ = [("dwSize",w.DWORD),("cntUsage",w.DWORD),("th32ProcessID",w.DWORD),
+            ("th32DefaultHeapID",c.c_size_t),("th32ModuleID",w.DWORD),("cntThreads",w.DWORD),
+            ("th32ParentProcessID",w.DWORD),("pcPriClassBase",w.LONG),("dwFlags",w.DWORD),("szExeFile",w.WCHAR*260)]
+    kernel.CreateToolhelp32Snapshot.argtypes, kernel.CreateToolhelp32Snapshot.restype = [w.DWORD,w.DWORD],w.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [w.HANDLE,c.POINTER(Entry)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    snapshot = kernel.CreateToolhelp32Snapshot(2,0)
+    assert snapshot and snapshot != w.HANDLE(-1).value
+    found = []
+    try:
+        entry = Entry(); entry.dwSize = c.sizeof(entry)
+        valid = kernel.Process32FirstW(snapshot,c.byref(entry))
+        while valid:
+            if entry.th32ParentProcessID == parent and entry.szExeFile.casefold() == executable.casefold():
+                found.append(entry.th32ProcessID)
+            valid = kernel.Process32NextW(snapshot,c.byref(entry))
+    finally:
+        kernel.CloseHandle(snapshot)
+    return found
+
+
+def audit_multiple_windows(bin_dir, output):
+    root = output / "multiwindow-settings"
+    root.mkdir(exist_ok=True)
+    environment = os.environ.copy(); environment["LOCALAPPDATA"] = str(root)
+    result = {"scenario":"independent document windows", "checks":[]}
+    for app in ["DOC42","XLS42","PPT42","SCN42","PDF42","IMG42"]:
+        binary = bin_dir / (app + ".exe")
+        source = output / ("new-window-" + uuid.uuid4().hex + ".rtf")
+        if app == "DOC42": source.write_bytes(br"{\rtf1\ansi Parent source}")
+        process = subprocess.Popen([str(binary),"--language","de","--"] + ([str(source)] if app=="DOC42" else []),env=environment)
+        owned = []
+        try:
+            main = modal(process,native_class="Suite42Native")
+            if app == "DOC42":
+                wait_for(lambda: source.name in text(main),"parent source opened",process)
+                replace_editor_text(u.GetDlgItem(main,101),"parent unsaved text")
+                wait_for(lambda: " * - " in text(main),"parent remains dirty",process)
+            caption = text(main)
+            for identifier in ([9,65506] if app=="DOC42" else [65506] if app in {"PDF42","IMG42"} else [9]):
+                command(main,identifier)
+                pid = wait_for(lambda: next(iter(child_processes(process.pid,binary.name)),None),"owned child for " + app,process)
+                child = OwnedChildProcess(pid); owned.append(child)
+                window = modal(child,native_class="Suite42Native")
+                assert u.GetMenuState(u.GetMenu(window),64009,0)&8,"Child did not inherit the current German language override"
+                assert u.IsWindowEnabled(main) and text(main)==caption and process.poll() is None
+                if app=="DOC42":
+                    edit=u.GetDlgItem(window,101)
+                    wait_for(lambda: text(edit)=="","new document starts empty",child)
+                    replace_editor_text(edit,"child window text")
+                    command(window,4)
+                    wait_for(lambda: text(edit)=="","child history is independent",child)
+                    command(window,5)
+                    wait_for(lambda: text(edit)=="child window text","child redo",child)
+                    target=output/f"new-window-{identifier}.doc42"
+                    save_as(window); choose_file(child,target)
+                    output_ready(child,window,target,b"{")
+                    assert b"child window text" in target.read_bytes()
+                    assert text(u.GetDlgItem(main,101))=="parent unsaved text" and text(main)==caption
+                    assert source.read_bytes()==br"{\rtf1\ansi Parent source}"
+                if app=="PDF42":
+                    u.PostMessageW(main,WM_CLOSE,0,0); process.wait(timeout=5)
+                    assert child.poll() is None and u.IsWindowVisible(window)
+                    command(window,6)
+                    about=modal(child,native_class="#32770"); click(about,1)
+                    wait_for(lambda: u.IsWindowEnabled(window),"child still works after parent close",child)
+                u.PostMessageW(window,WM_CLOSE,0,0); child.wait(timeout=5); child.close_handle(); owned.remove(child)
+                if app!="PDF42": assert process.poll() is None and text(main)==caption
+            result["checks"].append(app + ": New/New Window opens an independent native session, inherits language and leaves the parent open")
+        finally:
+            for pid in child_processes(process.pid,binary.name):
+                if all(child.pid!=pid for child in owned): owned.append(OwnedChildProcess(pid))
+            for child in owned:
+                if child.poll() is None: child.terminate()
+                child.close_handle()
+            if process.poll() is None: process.terminate(); process.wait(timeout=5)
+    result["checks"].append("Closing the PDF parent leaves its child usable; closing other children leaves their parents usable")
+    result["checks"].append("Dirty DOC parent text/source stay intact while both New commands create editable child documents with independent Undo/Redo/save/close")
+    return result
+
+
 def audit_language_picker(bin_dir, output):
     root = output / "language-picker-settings"
     root.mkdir(exist_ok=True)
@@ -1224,6 +1308,7 @@ def main():
     parser.add_argument("--label-sources", action="store_true")
     parser.add_argument("--languages", action="store_true")
     parser.add_argument("--recents", action="store_true")
+    parser.add_argument("--multiwindow", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
@@ -1266,6 +1351,13 @@ def main():
             results.append({"scenario": "recent documents", "error": str(error), "traceback": traceback.format_exc()})
         print(json.dumps(results[-1]), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if args.multiwindow:
+        try:
+            results.append(audit_multiple_windows(args.bin_dir,args.output))
+        except Exception as error:
+            results.append({"scenario":"independent document windows", "error":str(error), "traceback":traceback.format_exc()})
+        print(json.dumps(results[-1]),flush=True)
+        (args.output / "results.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
     assert all("error" not in result for result in results), results
 
 

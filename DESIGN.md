@@ -591,3 +591,13 @@ values and the original argument count. This keeps range filtering intact while 
 when ranges contain no numbers. GCD/LCM use bounded exact integers and checked products; combinatorial loops stop
 when no finite f64 result is possible. Stable reciprocal/asymptotic forms avoid needless overflow for ACOTH and
 SQRTPI. Calculation never substitutes NaN/Inf for a visible formula error.
+
+
+## Independent native windows
+
+The Windows host keeps one document session per process. File → New opens a blank sibling process for apps that
+create documents, matching the macOS document model; it does not replace the current session, ask to discard it
+or cancel its asynchronous open. File → New Window (Ctrl+Shift+N) is available in all six apps, including viewers.
+Both blank windows and additional dropped/opened documents use the same spawn helper, forwarding the current
+language override and a `--` path separator. Save paths, histories and native handles remain process-local. Shared
+library/preferences/recents retain their established local-file behavior.

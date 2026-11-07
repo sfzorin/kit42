@@ -221,3 +221,11 @@ The reference report now matches 176 fixed examples, with 316 differing and the 
 This remains far short of complete formula parity. FACTDOUBLE rejects negative inputs according to the documented
 Excel domain; the macOS reference currently permits -1 and needs a separate correction, like the previously recorded
 foot-pound unit constant. External XLSX/ODS regressions change input values before asserting recalculation.
+
+
+### Document windows (development branch)
+
+**File → New** opens another blank document in DOC42, XLS42, PPT42 and SCN42, retaining the existing document.
+**File → New Window** (`Ctrl+Shift+N`) opens another window in all six apps. Each window has an independent process,
+file session and Undo/Redo history; it inherits the current interface language. Windows can be saved and closed
+independently. This does not add document recovery autosave or change file associations.

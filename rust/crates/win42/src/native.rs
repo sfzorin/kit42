@@ -52,6 +52,7 @@ const CALIBRATION_SHEET: u16 = 65511;
 const TOGGLE_PROOFING: u16 = 65510;
 const INSERT_TECHNICAL: u16 = 65509;
 const EDIT_TECHNICAL: u16 = 65508;
+const NEW_WINDOW: u16 = 65506;
 const LANGUAGE_FIRST: u16 = 64000;
 const RECENT_FIRST: u16 = 62000;
 const CLEAR_RECENTS: u16 = RECENT_FIRST + crate::recents::LIMIT as u16;
@@ -1156,6 +1157,21 @@ unsafe fn remember_current_document() {
     }
 }
 
+fn spawn_document_window(path: Option<&Path>) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut process = std::process::Command::new(executable);
+    process
+        .arg("--language")
+        .arg(crate::localization::current().code)
+        .arg("--");
+    if let Some(path) = path {
+        process.arg(path);
+    }
+    process
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
 unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
     let first_add = paths.first().is_some_and(|path| {
         STATE.with(|state| state.borrow().as_ref().unwrap().app.opens_as_import(path))
@@ -1168,17 +1184,7 @@ unsafe fn open_paths(hwnd: HWND, paths: Vec<PathBuf>) {
         let result = if index == 0 || add {
             open_document_path(path)
         } else {
-            std::env::current_exe()
-                .and_then(|exe| {
-                    std::process::Command::new(exe)
-                        .arg("--language")
-                        .arg(crate::localization::current().code)
-                        .arg("--")
-                        .arg(path)
-                        .spawn()
-                })
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            spawn_document_window(Some(&path))
         };
         if let Err(error) = result {
             msg(hwnd, &error, MB_OK | MB_ICONERROR);
@@ -1971,6 +1977,15 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         refresh();
         return;
     }
+    if matches!(id, NEW | NEW_WINDOW) {
+        if id == NEW && !STATE.with(|s| s.borrow().as_ref().unwrap().app.supports_new()) {
+            return;
+        }
+        if let Err(error) = spawn_document_window(None) {
+            msg(hwnd, &error, MB_OK | MB_ICONERROR);
+        }
+        return;
+    }
     if id != LIST as u16 && (id != EDIT as u16 || notify == EN_CHANGE as u16) {
         cancel_pending_open();
     }
@@ -2054,24 +2069,6 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
         return;
     }
     match id {
-        NEW => {
-            if !STATE.with(|s| s.borrow().as_ref().unwrap().app.supports_new()) || !confirm(hwnd) {
-                return;
-            }
-            let r = STATE.with(|s| {
-                let mut s = s.borrow_mut();
-                let s = s.as_mut().unwrap();
-                let result = s.app.new_document();
-                if result.is_ok() {
-                    s.path = None;
-                    s.session = Default::default();
-                }
-                result
-            });
-            if let Err(e) = r {
-                msg(hwnd, &e, MB_OK | MB_ICONERROR);
-            }
-        }
         OPEN => {
             let (e, f, pattern) = STATE.with(|s| {
                 let s = s.borrow();
@@ -3110,6 +3107,7 @@ pub fn run(app: Box<dyn App>) {
         if app.supports_new() {
             item(file, NEW, "&New\tCtrl+N");
         }
+        item(file, NEW_WINDOW, "New &Window\tCtrl+Shift+N");
         item(file, OPEN, "&Open...\tCtrl+O");
         let recent_menu = CreatePopupMenu();
         AppendMenuW(
@@ -3475,6 +3473,11 @@ pub fn run(app: Box<dyn App>) {
                 fVirt: FVIRTKEY | FCONTROL,
                 key: b'N' as u16,
                 cmd: NEW,
+            },
+            ACCEL {
+                fVirt: FVIRTKEY | FCONTROL | FSHIFT,
+                key: b'N' as u16,
+                cmd: NEW_WINDOW,
             },
             ACCEL {
                 fVirt: FVIRTKEY | FCONTROL,
