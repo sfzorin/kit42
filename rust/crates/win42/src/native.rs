@@ -2169,19 +2169,32 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
             if let Some(values) = crate::prompt::show(hwnd, &req) {
                 if id == FIND {
                     let edit = STATE.with(|s| s.borrow().as_ref().unwrap().edit);
-                    let mut end: u32 = 0;
-                    SendMessageW(edit, EM_GETSEL, 0, &mut end as *mut _ as isize);
-                    let result = STATE.with(|s| {
-                        s.borrow()
-                            .as_ref()
-                            .unwrap()
-                            .app
-                            .find_next(&values[0], end as usize)
-                    });
+                    let rich = STATE.with(|s| s.borrow().as_ref().unwrap().app.uses_rich_edit());
+                    let result = if rich {
+                        crate::rich_edit::find_next(
+                            edit,
+                            &values[0],
+                            crate::rich_edit::selection(edit).1,
+                        )
+                    } else {
+                        let mut end: u32 = 0;
+                        SendMessageW(edit, EM_GETSEL, 0, &mut end as *mut _ as isize);
+                        STATE.with(|s| {
+                            s.borrow()
+                                .as_ref()
+                                .unwrap()
+                                .app
+                                .find_next(&values[0], end as usize)
+                        })
+                    };
                     match result {
                         Ok(Some((start, end))) => {
                             SetFocus(edit);
-                            SendMessageW(edit, EM_SETSEL, start, end as isize);
+                            if rich {
+                                crate::rich_edit::set_selection(edit, (start, end));
+                            } else {
+                                SendMessageW(edit, EM_SETSEL, start, end as isize);
+                            }
                             SendMessageW(edit, EM_SCROLLCARET, 0, 0);
                         }
                         Ok(None) => {

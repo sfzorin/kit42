@@ -609,3 +609,18 @@ coordinates. Windows relocates entirely offscreen rectangles after display chang
 save their pre-fullscreen placement; minimized state is never restored. Preferences are validated and published
 atomically only after close is confirmed, and preference failures do not block document closure. No document path
 or text is stored in layout files.
+
+
+## Rich document search and anchored replacement
+
+Native Rich Edit Find searches its actual projection through EM_FINDTEXTEXW, using native character ranges and
+wraparound. A plain model projection cannot represent table/image offsets. The host retains the existing app
+adapter for plain editors and uses Rich Edit selection APIs for rich results. This fixes literal search through
+structured documents without claiming new regex/whole-word behavior.
+
+Literal body replacement is isolated in DOC42's search module. It plans bounded nonoverlapping matches before
+mutating a disposable transaction, includes table paragraphs and skips images/section separators, indexes run
+boundaries to retain formatting/links without rescanning all runs per match, and remaps bookmarks/comments/notes
+from right to left. Covered note anchors follow the same removal rule as ordinary text edits. Revision/field
+anchors and cached TOC content remain guarded. One history entry contains the entire operation; invalid/oversized
+results commit nothing. The ODT reader isolates outer bookmark markers while parsing inline note paragraphs.

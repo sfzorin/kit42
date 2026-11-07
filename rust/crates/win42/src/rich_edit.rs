@@ -96,6 +96,48 @@ pub unsafe fn set_selection(hwnd: HWND, selection: (usize, usize)) {
     };
     SendMessageW(hwnd, EM_EXSETSEL, 0, &range as *const _ as LPARAM);
 }
+/// Search the actual native text projection, including tables and object offsets.
+pub unsafe fn find_next(
+    hwnd: HWND,
+    query: &str,
+    start: usize,
+) -> Result<Option<(usize, usize)>, String> {
+    if query.is_empty() {
+        return Ok(None);
+    }
+    if query.contains('\0') || query.encode_utf16().count() > 32768 {
+        return Err("Find text exceeds the supported limit".into());
+    }
+    #[repr(C, packed(4))]
+    struct FindText {
+        range: CharRange,
+        query: *const u16,
+        found: CharRange,
+    }
+    let query = crate::wide(query);
+    for offset in [start, 0] {
+        let mut request = FindText {
+            range: CharRange {
+                min: offset.min(i32::MAX as usize) as i32,
+                max: -1,
+            },
+            query: query.as_ptr(),
+            found: CharRange { min: -1, max: -1 },
+        };
+        let result = SendMessageW(hwnd, WM_USER + 124, 1 | 4, &mut request as *mut _ as LPARAM); // EM_FINDTEXTEXW, FR_DOWN | FR_MATCHCASE
+        if result >= 0 {
+            let (min, max) = (request.found.min, request.found.max);
+            if min < 0 || max <= min {
+                return Err("Invalid native text search result".into());
+            }
+            return Ok(Some((min as usize, max as usize)));
+        }
+        if offset == 0 {
+            break;
+        }
+    }
+    Ok(None)
+}
 pub unsafe fn load(hwnd: HWND, bytes: &[u8]) -> Result<(), String> {
     let mut reader = Reader { bytes, offset: 0 };
     let mut stream = EditStream {

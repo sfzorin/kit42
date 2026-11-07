@@ -245,3 +245,16 @@ and Poppler, run `python3 rust/scripts/audit-barcodes.py /path/to/fixtures`. It 
 Poppler PDF renders, checking both format and exact payload. These are optional developer tools, not app runtime
 requirements. The 26-output check passes for ASCII, Cyrillic, mixed CJK/Arabic/emoji and longer payloads; Code 128
 cases use printable ASCII. This does not replace checking actual printed labels at their final physical size.
+
+
+### Find and Replace in structured documents (development branch)
+
+DOC42's literal **Find next** uses actual native Rich Edit offsets, so table cells, pictures and surrogate pairs
+no longer break selection or wraparound. **Replace all** includes body/table paragraphs while preserving picture
+bytes/geometry, run formatting and hyperlinks. Bookmarks, comments and note anchors follow the changed text;
+Undo/Redo covers the whole operation. Replacements across rich paragraph boundaries, cached TOC content and
+matched revision/field anchors remain guarded. It does not add regex or whole-word options.
+
+ODT import also retains surrounding body bookmarks when a paragraph contains an inline footnote/endnote. Portable
+regressions reopen project, DOCX and ODT output and verify bookmark destinations plus tables, pictures, comments and
+notes. Replacement output is capped at 16 MB and 100000 occurrences before document mutation.

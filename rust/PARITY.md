@@ -156,3 +156,13 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   formats, Cyrillic, mixed CJK/Arabic/emoji and longer payloads (Code 128 remains ASCII). All values and actual
   decoder formats match. Eleven additional earlier vector/native-dialog output files also decode independently.
   The optional QA tools are not dependencies of installed apps; physical printer/scanner behavior remains separate.
+
+- Native run 42358688773 passed 211659c, including all six normal/maximized frame restore paths and relocation
+  from a synthetic offscreen saved position. This does not establish real multi-monitor DPI behavior.
+- DOC literal replacement now includes table paragraphs, preserves images/styles/links and remaps bookmark,
+  comment and note anchors in one bounded transaction. It fixes a reproduced stale bookmark-offset case.
+  A generated ODT round trip exposed outer bookmark markers being consumed by inline note parsing; the reader
+  now saves/restores that context, with both independent external ODT and structured round-trip regressions.
+- Rich native Find uses the actual Rich Edit projection/ranges instead of the incomplete plain document projection.
+  Portable workspace: 370 passed, one OCR fixture ignored; GNU tests compile. Native table/image/surrogate Find,
+  wraparound, Replace All, complete saved history and dirty/discard/reopen checks await a compatible build.

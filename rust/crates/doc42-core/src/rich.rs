@@ -11,6 +11,7 @@ mod rtf_field;
 mod rtf_lists;
 mod rtf_picture;
 mod rtf_read;
+mod search;
 mod table_edit;
 mod toc;
 use serde::{Deserialize, Serialize};
@@ -1862,95 +1863,6 @@ impl RichDocument {
     }
 }
 
-impl RichDocument {
-    /// Replace literal occurrences across paragraphs as one transaction, retaining run formatting.
-    pub fn replace_all_text(&mut self, query: &str, replacement: &str) -> Result<usize, Error> {
-        if query.is_empty() {
-            return Ok(0);
-        }
-        if query.contains(['\r', '\n']) || replacement.contains(['\r', '\n']) {
-            if !self.can_edit_plain() {
-                return Err(Error::Unsupported(
-                    "replacement across rich paragraphs".into(),
-                ));
-            }
-            let text = self.editor_text()?.replace("\r\n", "\n");
-            let query = query.replace("\r\n", "\n");
-            let replacement = replacement.replace("\r\n", "\n");
-            let count = text.matches(&query).count();
-            if count > 0 {
-                self.set_plain_editor_text(&text.replace(&query, &replacement))?;
-            }
-            return Ok(count);
-        }
-        let mut count = 0;
-        self.transact(|s| {
-            if !s.comments.is_empty()
-                || !s.footnotes.is_empty()
-                || !s.revisions.is_empty()
-                || !s.fields.is_empty()
-            {
-                return Err(Error::Unsupported(
-                    "replacement requires annotation remapping".into(),
-                ));
-            }
-            for block in &mut s.blocks {
-                let Block::Paragraph(p) = block else {
-                    return Err(Error::Unsupported("replacement in non-text blocks".into()));
-                };
-                let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
-                let matches: Vec<usize> = text.match_indices(query).map(|(i, _)| i).collect();
-                if matches.is_empty() {
-                    continue;
-                }
-                count += matches.len();
-                let mut output = Vec::new();
-                let mut cursor = 0;
-                for start in matches {
-                    append_run_slice(&p.runs, cursor..start, &mut output);
-                    if !replacement.is_empty() {
-                        let mut pos = 0;
-                        let template = p
-                            .runs
-                            .iter()
-                            .find(|r| {
-                                let end = pos + r.text.len();
-                                let hit = start >= pos && start < end;
-                                pos = end;
-                                hit
-                            })
-                            .ok_or_else(|| Error::Invalid("replace position".into()))?;
-                        let mut run = template.clone();
-                        run.text = replacement.into();
-                        output.push(run);
-                    }
-                    cursor = start + query.len();
-                }
-                append_run_slice(&p.runs, cursor..text.len(), &mut output);
-                p.runs = output;
-            }
-            if count > 0 {
-                s.selection = Selection::default();
-            }
-            Ok(())
-        })?;
-        Ok(count)
-    }
-}
-fn append_run_slice(runs: &[Run], range: std::ops::Range<usize>, out: &mut Vec<Run>) {
-    let mut start = 0;
-    for r in runs {
-        let end = start + r.text.len();
-        let a = range.start.max(start);
-        let b = range.end.min(end);
-        if a < b {
-            let mut part = r.clone();
-            part.text = r.text[a - start..b - start].into();
-            out.push(part);
-        }
-        start = end;
-    }
-}
 
 fn restore_run_metadata(old: &[Run], new: &mut Vec<Run>) -> Result<(), Error> {
     let old_text: String = old.iter().map(|r| r.text.as_str()).collect();

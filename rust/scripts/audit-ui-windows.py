@@ -728,6 +728,94 @@ def audit_pdf_text_exports(process, main, binary, output, results):
     results["checks"].append("native TXT/RTF/HTML/DOCX exports use current unsaved pages in requested order, retain page boundaries, cancel without changes and preserve PDF source/history")
 
 
+def copied_selection(edit):
+    u.SendMessageW(edit,0x301,0,0)  # WM_COPY operates inside the actual Rich Edit process.
+    u.OpenClipboard.argtypes=[w.HWND]
+    u.GetClipboardData.argtypes,u.GetClipboardData.restype=[w.UINT],w.HANDLE
+    kernel=c.WinDLL("kernel32",use_last_error=True)
+    kernel.GlobalLock.argtypes,kernel.GlobalLock.restype=[w.HANDLE],c.c_void_p
+    kernel.GlobalUnlock.argtypes=[w.HANDLE]
+    kernel.GlobalSize.argtypes,kernel.GlobalSize.restype=[w.HANDLE],c.c_size_t
+    if not u.OpenClipboard(None):return None
+    try:
+        data=u.GetClipboardData(13)
+        if not data:return None
+        size=kernel.GlobalSize(data)
+        assert 0<size<=65536
+        pointer=kernel.GlobalLock(data)
+        if not pointer:return None
+        try:
+            value=c.string_at(pointer,size)
+            return value.decode("utf-16-le").split("\0",1)[0]
+        finally:kernel.GlobalUnlock(data)
+    finally:u.CloseClipboard()
+
+
+def audit_rich_search(process,main,binary,output,results):
+    picture=output/"search-picture.png"
+    write_png(picture,2,2,bytes([20,40,60,255])*4)
+    original_picture=picture.read_bytes()
+    source=output/"rich-search-source.rtf"
+    body=br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}\pard Before \u-10179?\u-8704? TARGET\par "
+    body+=br"\trowd\cellx2000\cellx4000\pard\intbl Table TARGET\cell Other cell\cell\row "
+    body+=br"\pard {\pict\pngblip\picw2\pich2\picwgoal240\pichgoal240 "+original_picture.hex().encode("ascii")+br"}\par After TARGET\par}"
+    source.write_bytes(body);original=source.read_bytes()
+    command(main,1);choose_file(process,source)
+    wait_for(lambda:source.name in text(main)and u.IsWindowEnabled(main),"rich table/picture source opened",process)
+    edit=u.GetDlgItem(main,101)
+    u.SendMessageW(edit,0xB1,0,0)
+    def selection():
+        packed=u.SendMessageW(edit,0xB0,0,0)
+        return packed&0xffff,(packed>>16)&0xffff
+    positions=[]
+    for index in range(4):
+        previous=selection()
+        fill_prompt(process,main,7,"Find next",["TARGET"])
+        expected=positions[0] if index==3 else None
+        wait_for(lambda:u.IsWindowEnabled(main)and selection()!=previous and (expected is None or selection()==expected),"find body/table/after-picture wrap",process)
+        assert copied_selection(edit)=="TARGET"
+        positions.append(selection())
+    assert positions[0][0]<positions[1][0]<positions[2][0] and positions[3]==positions[0],positions
+    assert " * - " not in text(main) and source.read_bytes()==original
+    def saved(name):
+        target=output/name
+        save_as(main);choose_file(process,target,format_name="DOC42 project")
+        output_ready(process,main,target,b"{")
+        return json.loads(target.read_text(encoding="utf-8"))
+    baseline=saved("rich-search-before.doc42")
+    fill_prompt(process,main,8,"Replace all",["TARGET","REPLACED"])
+    confirmation=wait_for(lambda:next((h for h in windows(process.pid)if classname(h)=="#32770"and u.IsWindowEnabled(h)and "Replaced 3"in" ".join(text(c)for c in windows_for_dialog(h))),None),"three body/table replacements",process)
+    click(confirmation,1)
+    modified=saved("rich-search-after.doc42")
+    blocks=modified["state"]["blocks"]
+    paragraphs=[]
+    for block in blocks:
+        if "Paragraph"in block:paragraphs.append(block["Paragraph"])
+        if "Table"in block:
+            for row in block["Table"]["rows"]:
+                for cell in row:paragraphs.extend(cell["paragraphs"])
+    visible="\n".join("".join(run["text"]for run in p["runs"])for p in paragraphs)
+    assert visible.count("REPLACED")==3 and "TARGET"not in visible
+    assert sum("Table"in block for block in blocks)==1
+    pictures=[block["Image"]for block in blocks if "Image"in block]
+    assert len(pictures)==1 and bytes(pictures[0]["data"])==original_picture
+    assert pictures==[block["Image"]for block in baseline["state"]["blocks"]if "Image"in block]
+    command(main,4)
+    assert saved("rich-search-undo.doc42")["state"]["blocks"]==baseline["state"]["blocks"]
+    command(main,5)
+    assert saved("rich-search-redo.doc42")["state"]["blocks"]==blocks
+    command(main,4)
+    command(main,1);choose_file(process,output/"rich-search-after.doc42")
+    confirmation=wait_for(lambda:next((h for h in windows(process.pid)if classname(h)=="#32770"and u.IsWindowEnabled(h)and all(u.GetDlgItem(h,i)for i in (2,6,7))),None),"discard rich replacement undo",process)
+    click(confirmation,7)
+    wait_for(lambda:"rich-search-after.doc42"in text(main)and" * - "not in text(main),"rich replacement reopened",process)
+    u.SendMessageW(edit,0xB1,0,0)
+    fill_prompt(process,main,7,"Find next",["REPLACED"])
+    wait_for(lambda:selection()[1]-selection()[0]==8,"reopened rich text search",process)
+    assert copied_selection(edit)=="REPLACED" and source.read_bytes()==original
+    results["checks"].append("native rich Find traverses body/table/image offsets and wraps; Replace All retains table/image bytes, complete Undo/Redo/save and dirty/discard/reopen")
+
+
 def audit_engineering_formulas(process, main, binary, output, results, include_extended=False):
     source = output / "engineering-formulas.csv"
     records = [
@@ -814,7 +902,7 @@ def audit_engineering_formulas(process, main, binary, output, results, include_e
         results["checks"].append("native XLSX math/text functions, numeric/error/text cache types, explicit numeric separators, Unicode and blank range slots survive discard/reopen")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False):
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False, rich_search=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -933,6 +1021,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_technical_objects(process, main, binary, output, results)
         if labels and binary.stem.lower() == "doc42":
             audit_table_labels(process, main, binary, output, results)
+        if rich_search and binary.stem.lower() == "doc42":
+            audit_rich_search(process, main, binary, output, results)
         if engineering and binary.stem.lower() == "xls42":
             audit_engineering_formulas(process, main, binary, output, results, include_extended=extended_formulas)
         if host_commands and binary.stem.lower() == "pdf42":
@@ -1363,6 +1453,7 @@ def main():
     parser.add_argument("--recents", action="store_true")
     parser.add_argument("--multiwindow", action="store_true")
     parser.add_argument("--window-layout", action="store_true")
+    parser.add_argument("--rich-search", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
@@ -1376,7 +1467,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas, args.rich_search))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
