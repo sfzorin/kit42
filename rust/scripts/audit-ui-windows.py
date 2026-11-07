@@ -29,6 +29,7 @@ u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
 u.GetDlgItem.argtypes = [w.HWND, c.c_int]
 u.GetDlgItem.restype = w.HWND
 u.GetDlgCtrlID.argtypes = [w.HWND]
+u.GetParent.argtypes, u.GetParent.restype = [w.HWND], w.HWND
 u.GetMenu.argtypes, u.GetMenu.restype = [w.HWND], w.HMENU
 u.GetMenuState.argtypes, u.GetMenuState.restype = [w.HMENU, w.UINT, w.UINT], w.UINT
 u.IsWindowVisible.argtypes = [w.HWND]
@@ -162,11 +163,13 @@ def choose_file(process, path, format_name=None):
                         return combo, index
             return None
         selector, index = wait_for(format_selector, "save format " + format_name, process)
-        # Real key handling emits the parent notifications required by the modern picker.
-        for key in [0x24] + [0x28] * index:  # Home, then Down to the requested named option.
-            u.SendMessageW(selector, 0x100, key, 1)
-            u.SendMessageW(selector, 0x101, key, 0xC0000001)
-        assert u.SendMessageW(selector, 0x147, 0, 0) == index  # CB_GETCURSEL
+        # CB_SETCURSEL does not emit CBN_* notifications itself. Notify the
+        # actual parent so the shell updates the extension and selected filter.
+        assert u.SendMessageW(selector, 0x14E, index, 0) == index
+        parent, identifier = u.GetParent(selector), u.GetDlgCtrlID(selector)
+        for notification in (1, 9):  # CBN_SELCHANGE, CBN_SELENDOK
+            u.SendMessageW(parent, WM_COMMAND, identifier | (notification << 16), selector)
+        assert u.SendMessageW(selector, 0x147, 0, 0) == index, (text(selector), index)
         dialog, control = wait_for(filename_control, "filename field after format selection", process)
     set_text(control, str(path))
     click(dialog, 1)
