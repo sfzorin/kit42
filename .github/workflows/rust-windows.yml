@@ -12,6 +12,10 @@ on:
         description: Build debug apps for fast native UI feedback; never publishes a release
         type: boolean
         default: false
+      audit_languages:
+        description: Verify the twenty interface languages on a compatible build
+        type: boolean
+        default: false
       audit_only:
         description: Run native GUI audits against the current Windows preview
         type: boolean
@@ -103,7 +107,7 @@ jobs:
           "Commit: $env:GITHUB_SHA`nProfile: $profile`nWorkflow: $env:GITHUB_RUN_ID" | Out-File -Encoding utf8 build/off42/BUILD-IDENTITY.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -185,6 +189,7 @@ jobs:
           AUDIT_PICTURES: ${{ inputs.audit_pictures }}
           AUDIT_TECHNICAL: ${{ inputs.audit_technical }}
           AUDIT_LABELS: ${{ inputs.audit_labels }}
+          AUDIT_LANGUAGES: ${{ inputs.audit_languages }}
         shell: pwsh
         run: |
           $extra = @()
@@ -192,6 +197,7 @@ jobs:
           if ($env:AUDIT_PICTURES -eq 'true') { $extra += '--pictures' }
           if ($env:AUDIT_TECHNICAL -eq 'true') { $extra += '--technical-objects' }
           if ($env:AUDIT_LABELS -eq 'true') { $extra += '--label-sources' }
+          if ($env:AUDIT_LANGUAGES -eq 'true') { $extra += '--languages' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()

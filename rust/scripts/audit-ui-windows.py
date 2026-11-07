@@ -548,6 +548,93 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
                 process.wait(timeout=5)
 
 
+
+def capture_window(hwnd, path):
+    """Capture the actual test-owned native window as a standalone BMP."""
+    gdi = c.WinDLL("gdi32", use_last_error=True)
+    u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+    u.GetWindowDC.argtypes, u.GetWindowDC.restype = [w.HWND], w.HDC
+    u.ReleaseDC.argtypes = [w.HWND, w.HDC]
+    gdi.CreateCompatibleDC.argtypes, gdi.CreateCompatibleDC.restype = [w.HDC], w.HDC
+    gdi.CreateCompatibleBitmap.argtypes, gdi.CreateCompatibleBitmap.restype = [w.HDC, c.c_int, c.c_int], w.HBITMAP
+    gdi.SelectObject.argtypes, gdi.SelectObject.restype = [w.HDC, w.HANDLE], w.HANDLE
+    gdi.BitBlt.argtypes = [w.HDC, c.c_int, c.c_int, c.c_int, c.c_int, w.HDC, c.c_int, c.c_int, w.DWORD]
+    gdi.GetDIBits.argtypes = [w.HDC, w.HBITMAP, w.UINT, w.UINT, c.c_void_p, c.c_void_p, w.UINT]
+    gdi.DeleteObject.argtypes, gdi.DeleteDC.argtypes = [w.HANDLE], [w.HDC]
+    rect = w.RECT()
+    assert u.GetWindowRect(hwnd, c.byref(rect))
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    assert 0 < width < 5000 and 0 < height < 5000
+    dc = u.GetWindowDC(hwnd)
+    target = gdi.CreateCompatibleDC(dc)
+    bitmap = gdi.CreateCompatibleBitmap(dc, width, height)
+    previous = gdi.SelectObject(target, bitmap)
+    try:
+        assert gdi.BitBlt(target, 0, 0, width, height, dc, 0, 0, 0x00CC0020)
+        gdi.SelectObject(target, previous)
+        info = struct.pack("<IiiHHIIiiII", 40, width, height, 1, 32, 0, width * height * 4, 0, 0, 0, 0)
+        header = c.create_string_buffer(info)
+        pixels = c.create_string_buffer(width * height * 4)
+        assert gdi.GetDIBits(dc, bitmap, 0, height, pixels, header, 0) == height
+        path.write_bytes(struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54) + info + pixels.raw)
+    finally:
+        gdi.SelectObject(target, previous)
+        gdi.DeleteObject(bitmap)
+        gdi.DeleteDC(target)
+        u.ReleaseDC(hwnd, dc)
+
+
+def audit_language(binary, output, code, index):
+    source = output / "language-source.rtf"
+    source.write_bytes(br"{\rtf1\ansi Board 0007}")
+    environment = os.environ.copy()
+    environment["OFF42_UI_TRACE_FILE"] = str(output / f"language-{code}-commands.log")
+    process = subprocess.Popen([str(binary), "--language", code, "--", str(source)], env=environment)
+    result = {"language": code, "checks": []}
+    try:
+        main = modal(process, native_class="Suite42Native")
+        wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "localized file opening", process)
+        catalogs = Path(__file__).resolve().parents[1] / "crates" / "win42" / "resources" / "translations"
+        catalog = {} if code == "en" else json.loads((catalogs / (code + ".json")).read_text(encoding="utf-8"))
+        u.GetMenu.argtypes, u.GetMenu.restype = [w.HWND], w.HMENU
+        u.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
+        u.GetMenuState.argtypes = [w.HMENU, w.UINT, w.UINT]
+        menu = u.GetMenu(main)
+        label = c.create_unicode_buffer(512)
+        assert u.GetMenuStringW(menu, 0, label, len(label), 0x400)
+        assert label.value.replace("&", "") == catalog.get("File", "File"), (code, label.value)
+        assert u.GetMenuState(menu, 64000 + index, 0) & 8, (code, "language not checked")
+        assert text(u.GetDlgItem(main, 101)) == "Board 0007", (code, "document text changed")
+        result["checks"].append("translated File menu, checked language and unchanged document text")
+        command(main, 65509)
+        dialog = modal(process, native_class="Suite42InputDialog")
+        assert text(u.GetDlgItem(dialog, 2)) == catalog.get("Cancel", "Cancel")
+        set_text(u.GetDlgItem(dialog, 101), "PCB-0007")
+        set_text(u.GetDlgItem(dialog, 102), "20")
+        # Leave the translated Yes choice selected: returning its stable original value is essential.
+        if code in {"ru", "ar", "zh-Hans", "zh-Hant", "de", "ja"}:
+            u.SetForegroundWindow(dialog)
+            time.sleep(0.15)
+            capture_window(dialog, output / f"language-{code}.bmp")
+        click(dialog, 1)
+        wait_for(lambda: u.IsWindowEnabled(main), "localized technical insertion", process)
+        command(main, 65508)
+        dialog = modal(process, native_class="Suite42InputDialog")
+        assert text(u.GetDlgItem(dialog, 101)) == "PCB-0007", (code, "barcode value changed")
+        yes = next((value for key, value in catalog.items() if key.lower() == "yes"), "yes")
+        assert text(u.GetDlgItem(dialog, 103)) == yes, (code, "choice lost its value")
+        click(dialog, 2)
+        wait_for(lambda: u.IsWindowEnabled(main), "localized Cancel", process)
+        command(main, 4)
+        wait_for(lambda: text(u.GetDlgItem(main, 101)) == "Board 0007", "localized Undo preserves text", process)
+        result["checks"].append("translated prompt actions and choice survive insertion/edit; barcode payload and text preserved")
+        return result
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -556,6 +643,7 @@ def main():
     parser.add_argument("--pictures", action="store_true")
     parser.add_argument("--technical-objects", action="store_true")
     parser.add_argument("--label-sources", action="store_true")
+    parser.add_argument("--languages", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -569,6 +657,15 @@ def main():
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
     finally:
+        (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    if args.languages:
+        languages = ["en", "zh-Hans", "zh-Hant", "es", "ar", "fr", "pt", "id", "ru", "de", "ja", "vi", "tr", "fil", "ko", "th", "it", "pl", "ms", "hu"]
+        for index, code in enumerate(languages):
+            try:
+                results.append(audit_language(args.bin_dir / "DOC42.exe", args.output, code, index))
+            except Exception as error:
+                results.append({"language": code, "error": str(error), "traceback": traceback.format_exc()})
+            print(json.dumps(results[-1]), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     assert all("error" not in result for result in results), results
 
