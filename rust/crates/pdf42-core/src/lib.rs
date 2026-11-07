@@ -1,4 +1,5 @@
 //! Structural PDF operations. No renderer or signature preservation.
+pub mod decorations;
 mod page_export;
 mod page_labels;
 pub use page_labels::PageLabelStyle;
@@ -33,6 +34,7 @@ struct State {
     imported_acroforms: Vec<ObjectId>,
     compress_streams: bool,
     page_labels: Option<HashMap<ObjectId, lopdf::Dictionary>>,
+    decorations: Vec<decorations::Decoration>,
 }
 impl PartialEq for State {
     fn eq(&self, other: &Self) -> bool {
@@ -53,6 +55,7 @@ impl PartialEq for State {
             && self.imported_acroforms == other.imported_acroforms
             && self.compress_streams == other.compress_streams
             && self.page_labels == other.page_labels
+            && self.decorations == other.decorations
     }
 }
 pub struct FlattenedPage {
@@ -1183,6 +1186,7 @@ impl PdfDocument {
                     imported_acroforms: Vec::new(),
                     compress_streams: false,
                     page_labels: None,
+                    decorations: Vec::new(),
                 },
                 20,
             ),
@@ -2833,6 +2837,7 @@ impl PdfDocument {
                 page_height: ph,
             },
         );
+        state.decorations.retain(|d| d.page != page);
         state.crops.remove(&page);
         state.rotations.remove(&page);
         let candidate = Self {
@@ -4161,6 +4166,7 @@ impl PdfDocument {
                 .map_err(|e| e.to_string())?
                 .set("Names", names);
         }
+        self.bake_decorations(&mut doc, state)?;
         if state.compress_streams {
             for object in doc.objects.values_mut() {
                 if let Object::Stream(stream) = object {

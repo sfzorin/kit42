@@ -639,3 +639,13 @@ then applies the existing object transform. Yellow handles edit a temporary drag
 one model history step and cancellation drops the preview. Text uses the preset's evaluated text rectangle.
 Preset identity and adjustment values remain editable across project/PPTX/ODP output. Generated MPL data
 ships with source, notice and license in the Windows archive.
+
+### Windows PDF page decorations
+
+PDF decorations live in the PDF snapshot history and are keyed by stable page identity. A selection is validated
+before committing a single multi-page operation. Header/footer and Bates tokens resolve in document order at insertion;
+future page reorder retains the assigned text. Rendering and export use the current crop/quarter-turn transform.
+Save snapshots add isolated Form XObjects, preserve inherited/shared page resources, and wrap original content state.
+Repeated watermark forms/images and font character sets are shared. Watermarks use glyph outlines; headers and numbers
+carry embedded Unicode text. Reopening leaves baked page content. Filename tokens follow only successful save callbacks.
+The shared configured file action validates image-watermark settings before showing its PNG/JPEG picker.

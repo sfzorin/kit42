@@ -13,7 +13,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Full technical-object selection/placement controls and richer label artwork sources |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
-| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, four text-export formats, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
+| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, four text-export formats, watermarks/numbering/header-footer tokens, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge/Bates workflows, decoration font choices, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC, structured literal Find/Replace and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, table/image caret mapping and word-count coverage, picture geometry and rich page decorations |
 | XLS42 | Grid editing, engineering/text/math formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, 187 preset geometries with adjustment controls, grouping/transforms, basic transitions, PPTX/ODP and printing | Custom geometry editing, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
@@ -183,4 +183,15 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   yellow adjustment handles, type/adjustment controls and atomic history. The actual Swift engine generated
   620 checked-in reference cases; Windows geometry agrees for paths, fills, frames and handle positions.
   Portable regressions cover full-catalog project/PPTX/ODP output and preset/size/rotation source overlays.
-  The native handle/pixel/dirty-discard-reopen scenario awaits the first compatible Windows run.
+  Native run 42366299902 passed all 30 groups and 263 targeted MSVC tests on efe85f7, including
+  the handle/pixel/dirty-discard-reopen scenario. This is a development build, not a public release.
+
+- PDF decorations add text/image watermarks, page numbers, six header/footer slots and shared Bates/date/file/page
+  tokens. Multi-page actions and removals commit one history step; watermarks use paths rather than searchable text.
+  Portable regressions cover source/inherited-resource preservation, four crop/rotation transforms, image alpha and
+  shared form/image resources, token order, bounds, cancellation/settings and successful Save As filename tracking.
+  Poppler independently confirms all four rotated/cropped pages retain body/Unicode/token text and exclude the watermark.
+- Independent LibreOffice rendering exposed ODP page size falling back to 28 cm. Adding the missing office:styles
+  section fixes physical slide size; the Office audit checks 16 pages and all 187 preset labels in both formats.
+- Portable workspace: 387 passes, zero failures, one OCR fixture ignored. GNU all-targets compilation passes.
+  Native PDF decoration controls/pixels/history/reopen verification is pending the next compatible Windows build.

@@ -40,7 +40,7 @@ Windows runtime behavior. The Windows CI workflow also builds with MSVC.
 | --- | --- | --- |
 | DOC42 | Rich text, lists, images and tables with merge/split, sizing and formatting; comments, notes, links, range bookmarks and linked TOC; DOCX, RTF, ODT, HTML and Markdown subsets; ruler, preview and print | Office adapters are bounded; individual table-edge styles and revisions are incomplete. TOC requires explicit refresh, which invalidates cached page numbers; unsupported annotation or TOC exports refuse fidelity loss. The editing canvas is not fully paginated. Markdown image sidecar saves are not OS-atomic. |
 | XLS42 | Native grid with sizing, frozen/hidden rows and columns, merged cells, selection, typed clipboard and inline editing; sheets, formulas, tables, styles, validation, charts, filters and paginated print; XLSX and ODS adapters | Pivot summaries are materialized, not interactive Excel pivots. Dynamic arrays, complex imported tables and structured references are incomplete; complex ODS changes and active filter/print export are guarded. |
-| PPT42 | Mixed-run in-place text editing, native objects, multi-selection, grouping and rotation, slides, timed cut/fade/push-left slideshow transitions and printing; PPTX/ODP adapters | Complex source text and existing source-group structural edits are guarded. Complex source transforms and rotated source groups may be preserved without rendering. ODP transition duration is limited to 250/500/1000 ms. Object animation, full master/theme semantics, charts and media playback are incomplete. |
+| PPT42 | Mixed-run in-place text editing, 187 preset shapes with adjustment handles, native objects, multi-selection, grouping and rotation, slides, timed cut/fade/push-left slideshow transitions and printing; PPTX/ODP adapters | Complex source text and existing source-group structural edits are guarded. Complex source transforms and rotated source groups may be preserved without rendering. ODP transition duration is limited to 250/500/1000 ms. Object animation, full master/theme semantics, charts and media playback are incomplete. |
 | PDF42 | WinRT rendering; PDFium search, selection and supported top-level text-object edits; annotations, forms, nested bookmarks, attachments, password-prompted PDF open and AES-128 copy, compression, printing, image export and raster redaction | Complex text, forms and navigation remain guarded. Protected files use conservative permissions; new AES-128 passwords require 1–32 printable ASCII characters, and original permissions and encryption are not preserved. Encrypted interoperability is unverified. Redaction removes metadata, attachments, forms and navigation. Trusted digital signatures and PDF/A conformance are not supported. |
 | IMG42 | Transforms, tone, text, masks and lasso; directory navigation, GIF/WebP frames, multipage TIFF, PDF and bounded SVG import; standard EXIF fields, DPI/ICC, folder batch export and printing | Proprietary MakerNote, TIFF EXIF subdirectories, palette/CMYK and floating-point TIFF remain limited. TIFF and PNG support 16-bit edits; other 16-bit sources may require conversion. Some PNG metadata requires a converted copy; profile conversion is not color-managed. Batch PNG/JPEG exports the first frame; TIFF exports all frames, with explicit 8-bit white flattening. |
 | SCN42 | Asynchronous WIA acquisition, PDF import and WIC processing; v4 projects with stable page IDs, DPI, OCR language and geometry; batch Tesseract or Windows OCR, Unicode searchable PDF, deskew, perspective correction, cleanup, compression, image/TIFF export and printing | Tesseract and its language data are external; Windows OCR requires installed languages. Windows OCR and physical devices have not been exercised. |
@@ -79,6 +79,22 @@ XLSX/ODS packages can be moved or deleted, and new pictures can be added while p
 parts. Cropped/rotated drawings and unsupported image formats remain opaque. CSV export rejects pictures.
 Technical PNG files retain the same editable recipe and physical width used by the macOS apps.
 
+## PDF watermarks, numbering and headers
+
+PDF42 adds text or PNG/JPEG image watermarks, with opacity, rotation and selected pages. Text watermarks
+become vector outlines and do not enter search/copy results. Page Numbers supports six positions, custom
+starting numbers, skipping the first selected page and three formats. Header & Footer provides six text
+slots with `<<page>>`, `<<pages>>`, `<<label>>`, `<<date>>`, `<<file>>` and `<<bates>>` tokens. Bates settings
+include prefix, suffix, zero padding, starting number and date text; numbering continues from the next value.
+Tokens resolve in document order. `<<file>>` uses the current successful document destination.
+
+A multi-page addition or removal is one Undo step. Live decorations follow the crop box and page rotation.
+Saving adds isolated content and preserves existing page resources. After reopening, decorations are ordinary
+page content. Headers and numbers use embedded Noto Sans; unsupported glyphs are refused. Other fonts and
+automated Bates processing of other files remain parity work. Independent Poppler checks cover four rotations,
+nonzero crop origins, source text, Unicode tokens and exclusion of watermarks from extracted text.
+The new native `--pdf-decorations` dialog/pixel/save/reopen audit awaits its first compatible Windows run.
+
 ## Presentation shapes
 
 PPT42 offers the same 187 OOXML preset definitions as macOS through **Insert Shape**.
@@ -93,8 +109,8 @@ Mirrored/custom guide formulas outside this subset remain preserved opaque conte
 The geometry oracle is regenerated with `python3 rust/scripts/export-shape-cases.py` on macOS.
 It compares 620 actual Swift-engine cases across all 187 presets, two aspect ratios and changed adjustments.
 The MPL-2.0 data source, notice and license are included in Windows archives under `licenses/drawingml-presets`.
-Native Windows insertion/render/handle/history/reopen checks are part of `--preset-shapes`; their next build
-result must be recorded separately from portable geometry and file-format tests.
+Native Windows insertion/render/handle/history/reopen checks passed in run 42366299902 on source `efe85f7`.
+The independent Office audit also checks all 187 catalog labels and physical slide size in both formats.
 
 ## Native text proofing
 

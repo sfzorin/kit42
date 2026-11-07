@@ -304,3 +304,71 @@ mod tests {
         assert!(face.glyph_bounding_box(unused).is_none());
     }
 }
+
+/// A literal vector outline for decorative text that must not enter copy/search results.
+/// Coordinates are PDF points with a baseline at zero; the width uses the same font metrics as encoding.
+pub fn text_outline(text: &str, points: f64) -> Result<(String, f64), String> {
+    use std::fmt::Write;
+    if text.len() > 4096 || !points.is_finite() || !(1.0..=512.0).contains(&points) {
+        return Err("Invalid decorative text size".into());
+    }
+    struct Outline {
+        data: String,
+        current: (f32, f32),
+    }
+    impl ttf_parser::OutlineBuilder for Outline {
+        fn move_to(&mut self, x: f32, y: f32) {
+            let _ = write!(self.data, "{x} {y} m ");
+            self.current = (x, y);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            let _ = write!(self.data, "{x} {y} l ");
+            self.current = (x, y);
+        }
+        fn quad_to(&mut self, x: f32, y: f32, x1: f32, y1: f32) {
+            let (a, b) = self.current;
+            self.curve_to(
+                a + (x - a) * 2.0 / 3.0,
+                b + (y - b) * 2.0 / 3.0,
+                x1 + (x - x1) * 2.0 / 3.0,
+                y1 + (y - y1) * 2.0 / 3.0,
+                x1,
+                y1,
+            );
+        }
+        fn curve_to(&mut self, a: f32, b: f32, c: f32, d: f32, x: f32, y: f32) {
+            let _ = write!(self.data, "{a} {b} {c} {d} {x} {y} c ");
+            self.current = (x, y);
+        }
+        fn close(&mut self) {
+            self.data.push_str("h ");
+        }
+    }
+    let data = include_bytes!("../../doc42-layout-probe/fixtures/NotoSans.ttf");
+    let face =
+        ttf_parser::Face::parse(data, 0).map_err(|e| format!("Invalid bundled font: {e:?}"))?;
+    let scale = points / f64::from(face.units_per_em());
+    let mut advance = 0.0;
+    let mut result = String::new();
+    for ch in text.chars() {
+        let glyph = face
+            .glyph_index(ch)
+            .ok_or_else(|| format!("Bundled font lacks character {ch:?}"))?;
+        let mut outline = Outline {
+            data: String::new(),
+            current: (0.0, 0.0),
+        };
+        face.outline_glyph(glyph, &mut outline);
+        write!(
+            result,
+            "q {scale} 0 0 {scale} {advance} 0 cm {} f Q ",
+            outline.data
+        )
+        .unwrap();
+        advance += f64::from(face.glyph_hor_advance(glyph).unwrap_or(face.units_per_em())) * scale;
+        if result.len() > 8 * 1024 * 1024 {
+            return Err("Decorative text outline exceeds limits".into());
+        }
+    }
+    Ok((result, advance))
+}

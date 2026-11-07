@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod decorations;
 mod page_export;
 mod text_export;
 use pdf42_core::PdfDocument;
@@ -67,6 +68,8 @@ fn open_attempt(
 #[derive(Default)]
 struct Pdf {
     pending: Option<(u64, u64, pdf42_core::SaveState, bool)>,
+    decorations: decorations::Settings,
+    source_file_name: String,
     protected_original: Option<std::path::PathBuf>,
     protected_session: bool,
     encrypted_session: bool,
@@ -523,6 +526,7 @@ impl win42::App for Pdf {
         self.saved_epoch = 0;
         self.next_epoch = 0;
         self.pending = None;
+        self.source_file_name = self.opening_path.as_ref().and_then(|p|p.file_name()).map(|s|s.to_string_lossy().into_owned()).unwrap_or_default();
         self.protected_original = if self.protected_session {
             self.opening_path.take()
         } else {
@@ -1076,6 +1080,9 @@ impl win42::App for Pdf {
         id == 76
     }
     fn input_choices(&self, id: u16) -> Vec<(usize, Vec<String>)> {
+        if id == 91 {
+            return self.decoration_choices(id);
+        }
         if id == 86 {
             return vec![(
                 1,
@@ -1110,6 +1117,9 @@ impl win42::App for Pdf {
         }
     }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if (90..=93).contains(&id) {
+            return self.decoration_request(id);
+        }
         if id == 83 {
             let doc = self.doc.as_ref()?;
             return Some(win42::InputRequest {
@@ -1339,6 +1349,13 @@ impl win42::App for Pdf {
         })
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if let Some(result) = self.decoration_action(id, values) {
+            if result? {
+                self.branch();
+                return self.request_render();
+            }
+            return Ok(());
+        }
         if id == 83 {
             let [first, last, style, prefix, start] = values else {
                 return Err("Invalid page-label settings".into());
@@ -1637,6 +1654,9 @@ impl win42::App for Pdf {
         Some(74)
     }
     fn file_input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 94 {
+            return self.decoration_request(id);
+        }
         let doc = self.doc.as_ref()?;
         if id == 86 {
             return Some(win42::InputRequest {
@@ -1674,6 +1694,9 @@ impl win42::App for Pdf {
         id: u16,
         values: &[String],
     ) -> Result<win42::FileAction, String> {
+        if id == 94 {
+            self.validate_image_watermark(values)?;
+        }
         if id != 86 {
             return self
                 .file_actions()
@@ -1709,6 +1732,9 @@ impl win42::App for Pdf {
         path: &Path,
         values: &[String],
     ) -> Result<(), String> {
+        if id == 94 {
+            return self.add_image_watermark(path, values);
+        }
         if id == 86 {
             #[cfg(windows)]
             {
@@ -1758,6 +1784,14 @@ impl win42::App for Pdf {
     }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[
+            win42::FileAction {
+                id: 94,
+                title: "Image Watermark…",
+                save: false,
+                extension: "png",
+                format: "PNG or JPEG image",
+                pattern: "*.png;*.jpg;*.jpeg",
+            },
             win42::FileAction {
                 id: 86,
                 title: "Export Text…",
@@ -2052,6 +2086,15 @@ impl win42::App for Pdf {
                     self.protected_readonly = false;
                     self.protected_original = None;
                     self.encrypted_session = encrypted;
+                    if epoch == self.current_epoch {
+                        if let Some(name) = self
+                            .pending_destination
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                        {
+                            self.source_file_name = name.to_string_lossy().into_owned();
+                        }
+                    }
                     self.encrypted_current = if encrypted {
                         self.pending_destination.take()
                     } else {
@@ -2074,6 +2117,12 @@ impl win42::App for Pdf {
     }
     fn actions(&self) -> &'static [(u16, &'static str)] {
         &[
+            (90, "Text Watermark…"),
+            (91, "Page Numbers…"),
+            (92, "Header & Footer…"),
+            (93, "Bates Numbering Settings…"),
+            (95, "Remove Live Watermarks and Page Numbers"),
+            (96, "Remove Live Headers and Footers"),
             (87, "Cancel PDF Text Export"),
             (82, "Cancel PDF Page Export"),
             (83, "Page Labels…"),
@@ -2267,17 +2316,32 @@ impl win42::App for Pdf {
         let n = d.page_count();
         let index = d.current();
         match id {
+            95 => {
+                d.has_decorations(pdf42_core::decorations::DecorationKind::Watermark)
+                    || d.has_decorations(pdf42_core::decorations::DecorationKind::PageNumber)
+            }
+            96 => d.has_decorations(pdf42_core::decorations::DecorationKind::HeaderFooter),
             86 => {
                 #[cfg(windows)]
-                { self.text_export.is_none() && self.object_edit.is_none() && self.flatten_pending.is_none() }
+                {
+                    self.text_export.is_none()
+                        && self.object_edit.is_none()
+                        && self.flatten_pending.is_none()
+                }
                 #[cfg(not(windows))]
-                { false }
+                {
+                    false
+                }
             }
             87 => {
                 #[cfg(windows)]
-                { self.text_export.is_some() }
+                {
+                    self.text_export.is_some()
+                }
                 #[cfg(not(windows))]
-                { false }
+                {
+                    false
+                }
             }
             10 => index < n,
             11 => d.can_reorder() && n > 1 && index < n,
@@ -2380,6 +2444,10 @@ impl win42::App for Pdf {
     }
     fn open(&mut self, p: &Path) -> Result<(), String> {
         let doc = PdfDocument::open(p)?;
+        self.source_file_name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         self.cancel_async_open();
         self.doc = Some(doc);
         self.protected_session = false;
@@ -2444,8 +2512,15 @@ impl win42::App for Pdf {
         }
         if id == 87 {
             #[cfg(windows)]
-            if let Some(worker) = &self.text_export { worker.cancel.store(true, std::sync::atomic::Ordering::Relaxed); }
+            if let Some(worker) = &self.text_export {
+                worker
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             return Ok(());
+        }
+        if id == 95 || id == 96 {
+            return self.remove_live_decorations(id);
         }
         if id == 85 {
             self.doc
@@ -2457,7 +2532,9 @@ impl win42::App for Pdf {
         }
         if id == 82 {
             if let Some(worker) = &self.page_export {
-                worker.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                worker
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             return Ok(());
         }

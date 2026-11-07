@@ -989,7 +989,105 @@ def audit_preset_shapes(process,main,output,results):
     results["checks"].append("187-shape picker, actual curved/compound fill pixels, handle drag, one-step Undo/Redo, radius/type edits, PPTX/ODP output, dirty/discard/reopen and editable ODP overlay")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False, rich_search=False, preset_shapes=False):
+def pdf_pixels(dll_path,path,index=0):
+    """Render the saved PDF independently of the app's WinRT canvas/cache."""
+    pdf=c.WinDLL(str(dll_path))
+    pdf.FPDF_LoadDocument.argtypes,pdf.FPDF_LoadDocument.restype=[c.c_char_p,c.c_char_p],c.c_void_p
+    pdf.FPDF_LoadPage.argtypes,pdf.FPDF_LoadPage.restype=[c.c_void_p,c.c_int],c.c_void_p
+    pdf.FPDF_GetPageWidth.argtypes,pdf.FPDF_GetPageWidth.restype=[c.c_void_p],c.c_double
+    pdf.FPDF_GetPageHeight.argtypes,pdf.FPDF_GetPageHeight.restype=[c.c_void_p],c.c_double
+    pdf.FPDFBitmap_Create.argtypes,pdf.FPDFBitmap_Create.restype=[c.c_int,c.c_int,c.c_int],c.c_void_p
+    pdf.FPDFBitmap_FillRect.argtypes=[c.c_void_p,c.c_int,c.c_int,c.c_int,c.c_int,w.DWORD]
+    pdf.FPDF_RenderPageBitmap.argtypes=[c.c_void_p,c.c_void_p,c.c_int,c.c_int,c.c_int,c.c_int,c.c_int,c.c_int]
+    pdf.FPDFBitmap_GetBuffer.argtypes,pdf.FPDFBitmap_GetBuffer.restype=[c.c_void_p],c.c_void_p
+    pdf.FPDFBitmap_GetStride.argtypes,pdf.FPDFBitmap_GetStride.restype=[c.c_void_p],c.c_int
+    for name in ("FPDF_ClosePage","FPDF_CloseDocument","FPDFBitmap_Destroy"):getattr(pdf,name).argtypes=[c.c_void_p]
+    pdf.FPDF_InitLibrary();document=pdf.FPDF_LoadDocument(str(path).encode(),None);assert document
+    page=None;bitmap=None
+    try:
+        page=pdf.FPDF_LoadPage(document,index);assert page
+        width,height=round(pdf.FPDF_GetPageWidth(page)),round(pdf.FPDF_GetPageHeight(page))
+        assert 0<width*height<=4_000_000
+        bitmap=pdf.FPDFBitmap_Create(width,height,1);assert bitmap
+        pdf.FPDFBitmap_FillRect(bitmap,0,0,width,height,0xFFFFFFFF)
+        pdf.FPDF_RenderPageBitmap(bitmap,page,0,0,width,height,0,0)
+        stride=pdf.FPDFBitmap_GetStride(bitmap)
+        pixels=c.string_at(pdf.FPDFBitmap_GetBuffer(bitmap),stride*height)
+        return width,height,pixels
+    finally:
+        if bitmap:pdf.FPDFBitmap_Destroy(bitmap)
+        if page:pdf.FPDF_ClosePage(page)
+        pdf.FPDF_CloseDocument(document)
+
+
+def audit_pdf_decorations(process,main,binary,output,results):
+    source=output/"decorations-source.pdf"
+    minimal_pdf(source,["BODY-ONE","BODY-TWO","BODY-THREE"]);original=source.read_bytes()
+    def open_file(path):
+        command(main,1);choose_file(process,path)
+        def state():
+            if path.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main):return (True,None)
+            prompt=next((h for h in windows(process.pid)if classname(h)=="#32770" and u.IsWindowEnabled(h) and all(u.GetDlgItem(h,i)for i in (2,6,7))),None)
+            return (False,prompt) if prompt else None
+        opened,prompt=wait_for(state,"PDF decoration open/discard",process)
+        if not opened:
+            click(prompt,7)
+            wait_for(lambda:path.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main),"PDF decoration committed open",process)
+    open_file(source)
+    command(main,10)
+    def save(name):
+        path=output/("decorations-"+name+".pdf")
+        save_as(main);choose_file(process,path,format_name="PDF document");output_ready(process,main,path,b"%PDF-")
+        return path
+    baseline=save("baseline")
+    fill_prompt(process,main,90,"Text Watermark",["AUDIT-WATERMARK","36","70","0","#D21923","1,3"])
+    wait_for(lambda:u.IsWindowEnabled(main),"watermark added",process)
+    marked=save("watermarked")
+    assert "AUDIT-WATERMARK" not in pdf_text(binary.parent/"pdfium.dll",marked)
+    def red(path,index=0):
+        _,_,pixels=pdf_pixels(binary.parent/"pdfium.dll",path,index)
+        return sum(pixels[i+2]>pixels[i+1]+30 and pixels[i+2]>pixels[i]+30 for i in range(0,len(pixels),4))
+    assert red(baseline)==0 and red(marked)>100
+    assert red(marked,1)==0 and red(marked,2)>100
+    command(main,4);undone=save("watermark-undo");assert red(undone)==0 and red(undone,2)==0
+    command(main,5);redone=save("watermark-redo");assert pdf_pixels(binary.parent/"pdfium.dll",redone)==pdf_pixels(binary.parent/"pdfium.dll",marked)
+    fill_prompt(process,main,91,"Page Numbers",["Bottom center","Page n of total","5","Yes","10","28","3-1"])
+    wait_for(lambda:u.IsWindowEnabled(main),"numbered selected pages",process)
+    caption=text(main)
+    fill_prompt(process,main,93,"Bates Numbering Settings",["PCB-","-X","6","7","2026-11-07"])
+    wait_for(lambda:u.IsWindowEnabled(main),"Bates settings changed",process);assert text(main)==caption
+    fill_prompt(process,main,92,"Header & Footer",["FILE <<file>>","Sheet <<label>> <<page>>/<<pages>>","<<date>>","<<bates>>","Проверено","END","10","28","36","3-1"])
+    wait_for(lambda:u.IsWindowEnabled(main),"header/footer added",process)
+    numbered=save("headers")
+    pages=pdf_text(binary.parent/"pdfium.dll",numbered,by_page=True)
+    for i,page in enumerate(pages):
+        assert "PCB-00000"+str(i+7)+"-X" in page and "Проверено" in page and "2026-11-07" in page and redone.name in page,(i,page)
+        assert ["BODY-ONE","BODY-TWO","BODY-THREE"][i] in page
+    assert "Page 5 of 6" not in pages[0] and "Page 5 of 6" in pages[1] and "Page 6 of 6" in pages[2]
+    command(main,96);removed=save("headers-removed");assert "PCB-" not in pdf_text(binary.parent/"pdfium.dll",removed)
+    command(main,4);restored=save("headers-undo");assert pdf_text(binary.parent/"pdfium.dll",restored,by_page=True)==pages
+    command(main,95);without=save("watermarks-removed");texts=pdf_text(binary.parent/"pdfium.dll",without,by_page=True)
+    assert red(without)==0 and all("Page 5 of 6" not in page and "Page 6 of 6" not in page for page in texts)
+    assert all("PCB-" in page for page in texts)
+    command(main,4)
+    image=output/"watermark-own-image.png";write_png(image,2,1,bytes([0,0,255,128,0,0,255,0]))
+    fill_prompt(process,main,94,"Image Watermark",["80","0","2"]);choose_file(process,image)
+    wait_for(lambda:u.IsWindowEnabled(main),"image watermark added",process)
+    image_saved=save("image")
+    _,_,pixels=pdf_pixels(binary.parent/"pdfium.dll",image_saved,1)
+    assert sum(pixels[i]>pixels[i+1]+20 and pixels[i]>pixels[i+2]+20 for i in range(0,len(pixels),4))>1000
+    fill_prompt(process,main,90,"Text Watermark",["UNSAVED","20","50","0","#D21923","1"])
+    wait_for(lambda:u.IsWindowEnabled(main),"unsaved decoration edit",process)
+    open_file(numbered)
+    assert u.GetMenuState(u.GetMenu(main),95,0)&3, "Baked marks are page content after reopen"
+    reopened=save("reopened")
+    assert pdf_text(binary.parent/"pdfium.dll",reopened,by_page=True)==pages
+    assert pdf_pixels(binary.parent/"pdfium.dll",reopened)==pdf_pixels(binary.parent/"pdfium.dll",numbered)
+    assert source.read_bytes()==original
+    results["checks"].append("text/image watermarks with opacity, selected-page pixels/rotation, searchable Unicode headers/Bates/date/file tokens, ordered numbering, atomic Undo/Redo/removal and saved PDFium text/pixels")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False, rich_search=False, preset_shapes=False, pdf_decorations=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -1120,6 +1218,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_pdf_page_exports(process, main, binary, output, results)
         if text_exports and binary.stem.lower() == "pdf42":
             audit_pdf_text_exports(process, main, binary, output, results)
+        if pdf_decorations and binary.stem.lower()=="pdf42":
+            audit_pdf_decorations(process,main,binary,output,results)
         return results
     finally:
         if process.poll() is None:
@@ -1544,6 +1644,7 @@ def main():
     parser.add_argument("--window-layout", action="store_true")
     parser.add_argument("--rich-search", action="store_true")
     parser.add_argument("--preset-shapes", action="store_true")
+    parser.add_argument("--pdf-decorations", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
@@ -1557,7 +1658,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas, args.rich_search, args.preset_shapes))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas, args.rich_search, args.preset_shapes, args.pdf_decorations))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
