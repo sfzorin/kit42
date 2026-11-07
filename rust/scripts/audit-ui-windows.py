@@ -362,7 +362,7 @@ def audit(binary, output, extended, pictures=False, technical=False):
             minimal_pdf(startup)
         elif binary.stem.lower() == "xls42":
             startup = output / "startup.csv"
-            startup.write_text("Name,Code\nBoard 0007,PCB-0007\nBoard 0008,PCB-0008\n", encoding="utf-8")
+            startup.write_text("Name,Code,,,,,,\nBoard 0007,PCB-0007,,,,,,\nBoard 0008,PCB-0008,,,,,,\n", encoding="utf-8")
         elif binary.stem.lower() in {"img42", "scn42"}:
             startup = output / (binary.stem + "-canvas.png")
             write_png(startup, 64, 64, bytes([255] * (64 * 64 * 4)))
