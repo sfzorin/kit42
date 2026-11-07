@@ -123,6 +123,15 @@ def set_text(hwnd, value):
     assert text(hwnd) == value, (classname(hwnd), u.GetDlgCtrlID(hwnd), text(hwnd), value)
 
 
+def replace_editor_text(hwnd, value):
+    # WM_SETTEXT does not send EN_CHANGE for a multiline standard EDIT.
+    # Replace the selection through the same editing path as typed/pasted text.
+    data = c.create_unicode_buffer(value)
+    u.SendMessageW(hwnd, 0xB1, 0, -1)  # EM_SETSEL
+    u.SendMessageW(hwnd, 0xC2, 1, c.cast(data, c.c_void_p).value)  # EM_REPLACESEL
+    assert text(hwnd) == value
+
+
 def fill_prompt(process, main, identifier, title, values):
     command(main, identifier)
     dialog = modal(process, title=title, native_class="Suite42InputDialog")
@@ -679,8 +688,9 @@ def audit_engineering_formulas(process, main, binary, output, results):
     choose_file(process, source)
     wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "engineering source opened", process)
     fill_prompt(process, main, 25, "Range (1-based)", ["1", "2", "1", "2"])
+    wait_for(lambda: any("R1 C2" in text(h) for h in windows(process.pid, main)), "B1 selected", process)
     edit = u.GetDlgItem(main, 101)
-    set_text(edit, "=DEC2HEX($A$1,4)")
+    replace_editor_text(edit, "=DEC2HEX($A$1,4)")
     def save(name):
         target = output / name
         save_as(main)
@@ -702,7 +712,7 @@ def audit_engineering_formulas(process, main, binary, output, results):
     wait_for(lambda: text(edit) == "", "Undo typed engineering formula", process)
     command(main, 5)
     wait_for(lambda: text(edit) == "=DEC2HEX($A$1,4)", "Redo engineering formula", process)
-    set_text(edit, "=DEC2HEX($A$1,2)")
+    replace_editor_text(edit, "=DEC2HEX($A$1,2)")
     command(main, 1)
     choose_file(process, saved)
     confirmation = wait_for(lambda: next((h for h in windows(process.pid)
