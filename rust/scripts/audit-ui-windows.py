@@ -87,6 +87,10 @@ def command(hwnd, identifier):
 
 def click(dialog, identifier):
     button = u.GetDlgItem(dialog, identifier)
+    if not button and identifier == 1:
+        matches = [h for h in windows_for_dialog(dialog) if classname(h).lower() == "button" and text(h).replace("&", "").lower() in {"ok", "save", "open"}]
+        if len(matches) == 1:
+            button = matches[0]
     assert button, [(classname(h), u.GetDlgCtrlID(h), text(h)) for h in windows_for_dialog(dialog)]
     u.SetForegroundWindow(dialog)
     assert u.PostMessageW(button, 0xF5, 0, 0)  # BM_CLICK
