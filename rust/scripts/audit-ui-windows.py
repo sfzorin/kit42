@@ -13,6 +13,7 @@ import time
 import traceback
 import uuid
 import zlib
+import zipfile
 
 if os.name != "nt":
     raise SystemExit("Run this audit on Windows.")
@@ -143,9 +144,19 @@ def output_ready(process, main, path, signature):
     assert path.read_bytes().startswith(signature), path
 
 
-def minimal_pdf(path):
-    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>", b"<< /Length 0 >>\nstream\n\nendstream"]
+def minimal_pdf(path, labels=None):
+    if labels is None:
+        objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>", b"<< /Length 0 >>\nstream\n\nendstream"]
+    else:
+        kids = " ".join(f"{3 + i * 2} 0 R" for i in range(len(labels)))
+        objects = [b"<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Kids [{kids}] /Count {len(labels)} >>".encode()]
+        font = 3 + len(labels) * 2
+        for index, label in enumerate(labels):
+            assert label.isascii() and not any(char in label for char in "()\\")
+            content = f"BT /F1 18 Tf 40 760 Td ({label}) Tj ET".encode()
+            objects.extend([f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 {font} 0 R >> >> /Contents {4 + index * 2} 0 R >>".encode(), f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"\nendstream"])
+        objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
     data = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, obj in enumerate(objects, 1):
@@ -356,7 +367,7 @@ def audit_technical_objects(process, main, binary, output, results):
     results["checks"].append("technical object insertion, recipe editing, Undo/Redo and edit after saved-document reopen")
 
 
-def pdf_text(dll_path, path):
+def pdf_text(dll_path, path, by_page=False):
     pdf = c.WinDLL(str(dll_path))
     pdf.FPDF_LoadDocument.argtypes, pdf.FPDF_LoadDocument.restype = [c.c_char_p, c.c_char_p], c.c_void_p
     pdf.FPDF_GetPageCount.argtypes = [c.c_void_p]
@@ -386,7 +397,7 @@ def pdf_text(dll_path, path):
             finally:
                 pdf.FPDFText_ClosePage(text_page)
                 pdf.FPDF_ClosePage(page)
-        return "\n".join(output)
+        return output if by_page else "\n".join(output)
     finally:
         pdf.FPDF_CloseDocument(document)
         pdf.FPDF_DestroyLibrary()
@@ -425,7 +436,51 @@ def audit_table_labels(process, main, binary, output, results):
     results["checks"].append("DOC table label source, mapped text/code/copies, skipped header, PDFium text, unchanged source and restored preferences")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False):
+
+def audit_pdf_page_exports(process, main, binary, output, results):
+    source = output / "page-export-source.pdf"
+    minimal_pdf(source, ["PAGE-ONE", "PAGE-TWO", "PAGE-THREE"])
+    original = source.read_bytes()
+    command(main, 1)
+    choose_file(process, source)
+    wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "three-page source opened", process)
+    caption = text(main)
+    command(main, 80)
+    settings = modal(process, title="Extract PDF Pages", native_class="Suite42InputDialog")
+    click(settings, 2)
+    wait_for(lambda: u.IsWindowEnabled(main), "page settings cancelled", process)
+    assert text(main) == caption
+    fill_prompt(process, main, 80, "Extract PDF Pages", ["3,1"])
+    target = output / "chosen-pages.pdf"
+    choose_file(process, target)
+    output_ready(process, main, target, b"%PDF-")
+    wait_for(lambda: any("exported successfully" in text(h) for h in windows(process.pid, main)), "page export completed", process)
+    extracted = pdf_text(binary.parent / "pdfium.dll", target, by_page=True)
+    assert [page.strip() for page in extracted] == ["PAGE-THREE", "PAGE-ONE"], extracted
+    fill_prompt(process, main, 81, "Split PDF Pages to ZIP", ["3-1"])
+    archive = output / "split-pages.zip"
+    choose_file(process, archive)
+    output_ready(process, main, archive, b"PK")
+    wait_for(lambda: any("exported successfully" in text(h) for h in windows(process.pid, main)), "split export completed", process)
+    with zipfile.ZipFile(archive) as zip_file:
+        expected = [("0001-page-0003.pdf", "PAGE-THREE"), ("0002-page-0002.pdf", "PAGE-TWO"), ("0003-page-0001.pdf", "PAGE-ONE")]
+        assert zip_file.namelist() == [name for name, _ in expected]
+        for name, label in expected:
+            path = output / name
+            path.write_bytes(zip_file.read(name))
+            assert [page.strip() for page in pdf_text(binary.parent / "pdfium.dll", path, by_page=True)] == [label]
+    invalid = output / "invalid-selection.pdf"
+    fill_prompt(process, main, 80, "Extract PDF Pages", ["1-2,2"])
+    choose_file(process, invalid)
+    error = modal(process, native_class="#32770")
+    assert "only once" in " ".join(text(h) for h in windows_for_dialog(error))
+    click(error, 1)
+    wait_for(lambda: u.IsWindowEnabled(main), "invalid page range refused", process)
+    assert not invalid.exists() and source.read_bytes() == original and text(main) == caption
+    results["checks"].append("native page-list extraction/split ZIP, reverse ordering, independent PDFium text, settings Cancel and overlapping-range refusal preserve the source")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -542,6 +597,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_technical_objects(process, main, binary, output, results)
         if labels and binary.stem.lower() == "doc42":
             audit_table_labels(process, main, binary, output, results)
+        if pages and binary.stem.lower() == "pdf42":
+            audit_pdf_page_exports(process, main, binary, output, results)
         return results
     finally:
         if process.poll() is None:
@@ -825,6 +882,7 @@ def main():
     parser.add_argument("--label-sources", action="store_true")
     parser.add_argument("--languages", action="store_true")
     parser.add_argument("--recents", action="store_true")
+    parser.add_argument("--page-exports", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -833,7 +891,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

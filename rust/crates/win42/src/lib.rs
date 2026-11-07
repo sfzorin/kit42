@@ -265,6 +265,19 @@ pub trait App {
     fn mark_file_action(&self) -> Option<u16> {
         None
     }
+    /// Optional export settings collected without changing the document. Both
+    /// this prompt and the file picker must succeed before dispatch with values.
+    fn file_input_request(&self, _id: u16) -> Option<InputRequest> {
+        None
+    }
+    fn file_action_with_input(
+        &mut self,
+        _id: u16,
+        _path: &Path,
+        _values: &[String],
+    ) -> Result<(), String> {
+        Err("Unsupported file action settings".into())
+    }
     fn file_action(&mut self, _id: u16, _path: &Path) -> Result<(), String> {
         Err("Unsupported file action".into())
     }

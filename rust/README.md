@@ -131,3 +131,13 @@ File → Open Recent lists the ten most recently opened or saved documents for e
 normal document open path and unsaved-work confirmation. Clear Menu removes only this local list; files remain
 unchanged. Paths are kept in `%LOCALAPPDATA%/off42/Recent Documents/`; missing files report the normal open error.
 Failed opens and uncommitted asynchronous imports are not recorded. Native interaction checks are included in CI.
+
+### PDF page export (development branch)
+
+PDF42 File → Extract PDF Pages accepts a list such as `1, 3-5` and descending ranges such as `5-3`.
+Split PDF Pages to ZIP creates one PDF per chosen page with ordered filenames. Overlapping selections are rejected.
+Export works on a captured snapshot in a background worker; Cancel PDF Page Export requests cancellation between
+pages. Files publish only after completion and never replace an existing destination. Export does not change the
+source or mark it saved. Current export bounds are 1,000 pages, 256 MB per PDF and 512 MB total split PDF data.
+Page labels, supported bookmarks, forms and annotations follow retained page references. Tagged-document page
+removal and unresolved references are refused rather than discarded. Native menu/output checks are included in CI.

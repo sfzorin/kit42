@@ -1,4 +1,6 @@
 //! Structural PDF operations. No renderer or signature preservation.
+mod page_export;
+pub use page_export::PageExtraction;
 use lopdf::{Document, LoadOptions, Object, ObjectId};
 use std::{
     collections::{HashMap, HashSet},
@@ -3282,55 +3284,7 @@ impl PdfDocument {
         Ok(())
     }
     pub fn extract_page(&self, index: usize, path: &Path) -> Result<(), String> {
-        self.ensure_position_safe()?;
-        if index >= self.page_count() {
-            return Err("page index out of range".into());
-        }
-        let (bytes, _) = self.save_snapshot()?;
-        let options = LoadOptions {
-            max_decompressed_size: Some(32 * 1024 * 1024),
-            ..Default::default()
-        };
-        let mut doc =
-            Document::load_mem_with_options(&bytes, options).map_err(|e| e.to_string())?;
-        let pages: Vec<_> = doc.get_pages().values().copied().collect();
-        let root = doc
-            .catalog()
-            .map_err(|e| e.to_string())?
-            .get(b"Pages")
-            .map_err(|e| e.to_string())?
-            .as_reference()
-            .map_err(|e| e.to_string())?;
-        flatten_pages(&mut doc, root, &[pages[index]])?;
-        if let Some(labels) = self.page_label_rules()? {
-            let rule = labels
-                .get(&self.history.current().pages[index])
-                .cloned()
-                .unwrap_or_else(|| lopdf::dictionary! {"S"=>"D","St"=>(index+1) as i64});
-            let tree = doc.add_object(
-                lopdf::dictionary! {"Nums"=>vec![Object::Integer(0),Object::Dictionary(rule)]},
-            );
-            doc.catalog_mut()
-                .map_err(|e| e.to_string())?
-                .set("PageLabels", tree);
-        }
-        let removed: HashSet<_> = pages
-            .iter()
-            .copied()
-            .filter(|id| *id != pages[index])
-            .collect();
-        prune_page_references(&mut doc, &[pages[index]], &removed)?;
-        doc.prune_objects();
-        if pages
-            .iter()
-            .enumerate()
-            .any(|(i, id)| i != index && doc.objects.contains_key(id))
-        {
-            return Err("Other pages remain referenced; cannot safely extract".into());
-        }
-        let mut out = Vec::new();
-        doc.save_to(&mut out).map_err(|e| e.to_string())?;
-        write_new(path, &out).map_err(|e| e.to_string())
+        self.extract_pages(&[index], path)
     }
     pub fn delete(&mut self, index: usize) -> Result<(), String> {
         self.ensure_position_safe()?;
@@ -5169,6 +5123,45 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn extract_page_list_preserves_order_labels_annotations_and_source() {
+        let directory = std::env::temp_dir().join(format!("pdf42-extract-list-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let input = directory.join("input.pdf");
+        sample(&input, false);
+        let mut external = Document::load(&input).unwrap();
+        let labels = external.add_object(lopdf::dictionary! {"Nums" => vec![0.into(), Object::Dictionary(lopdf::dictionary! {"S"=>"D", "P"=>Object::string_literal("PCB-"), "St"=>7})]});
+        external.catalog_mut().unwrap().set("PageLabels", labels);
+        external.save(&input).unwrap();
+        let source = fs::read(&input).unwrap();
+        let mut document = PdfDocument::open(&input).unwrap();
+        document.rotate(2, 90).unwrap();
+        document.add_annotation(2, AnnotationKind::Note, [20., 20., 50., 50.], "retained note").unwrap();
+        let before = document.save_snapshot().unwrap().0;
+        let prepared = document.prepare_page_extraction().unwrap();
+        assert_eq!(prepared.page_count(), 3);
+        let bytes = prepared.extract(&[2, 0]).unwrap();
+        let extracted = Document::load_mem(&bytes).unwrap();
+        let pages: Vec<_> = extracted.get_pages().values().copied().collect();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(extracted.get_dictionary(pages[0]).unwrap().get(b"Rotate").unwrap().as_i64().unwrap(), document.rotation(2).unwrap());
+        assert_eq!(extracted.get_dictionary(pages[0]).unwrap().get(b"Annots").unwrap().as_array().unwrap().len(), 1);
+        let (_, label_tree) = extracted.dereference(extracted.catalog().unwrap().get(b"PageLabels").unwrap()).unwrap();
+        let nums = label_tree.as_dict().unwrap().get(b"Nums").unwrap().as_array().unwrap();
+        assert_eq!(nums[1].as_dict().unwrap().get(b"St").unwrap().as_i64().unwrap(), 9);
+        assert_eq!(nums[3].as_dict().unwrap().get(b"St").unwrap().as_i64().unwrap(), 7);
+        assert!(prepared.extract(&[]).is_err());
+        assert!(prepared.extract(&[0, 0]).is_err());
+        assert!(prepared.extract(&[3]).is_err());
+        let output = directory.join("chosen.pdf");
+        document.extract_pages(&[1, 2], &output).unwrap();
+        let saved = fs::read(&output).unwrap();
+        assert!(document.extract_pages(&[0], &output).is_err());
+        assert_eq!(fs::read(&output).unwrap(), saved);
+        assert_eq!(document.save_snapshot().unwrap().0, before);
+        assert_eq!(fs::read(&input).unwrap(), source);
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn reordered_pages_retain_their_effective_labels() {
         let dir = std::env::temp_dir().join(format!("pdf42-labels-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -5405,6 +5398,13 @@ mod tests {
         assert_eq!(r.form_fields()[0].0, "Name");
         r.select_bookmark(0).unwrap();
         assert_eq!(r.current(), 0);
+        let reordered = dir.join("reordered.pdf");
+        p.extract_pages(&[2, 0], &reordered).unwrap();
+        let mut reordered = PdfDocument::open(&reordered).unwrap();
+        assert_eq!(reordered.page_count(), 2);
+        assert_eq!(reordered.form_fields()[0].0, "Name");
+        reordered.select_bookmark(0).unwrap();
+        assert_eq!(reordered.current(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

@@ -4,7 +4,7 @@ off42 has native macOS and Windows implementations of PDF42, DOC42, XLS42, IMG42
 The Swift/macOS apps share **Kit42** (`Sources/Kit42`); the Rust/Windows apps share native Windows infrastructure.
 The Kit42, AppKit and Swift contracts below describe macOS; the Windows workspace has its own implementation
 and feature scope. Shared product names do not imply identical capabilities.
-This describes the source as of 2026-11-06. [README.md](README.md#regression-checks) documents verification commands
+This describes the source as of 2026-11-07. [README.md](README.md#regression-checks) documents verification commands
 and scope; detailed build logs, executable identities and installation history are retained with each local audit.
 
 ## Principles
@@ -510,3 +510,12 @@ normal session opens and saved snapshots update it. Asynchronous opens enter the
 and commit. File → Open Recent uses stable command IDs and the same `open_paths`/unsaved confirmation as Open.
 Menu display escapes filename mnemonics and never translates paths. Clear Menu changes preferences only.
 There is no document content in this file and no cloud synchronization. Import-only scan sources are excluded.
+
+## Windows exports with settings
+
+`App::file_input_request` optionally collects export settings before the file picker. Neither Cancel invokes the app.
+`file_action_with_input` receives both confirmed values and destination, leaving ordinary `file_action` unchanged.
+File action menu states now use the same app availability checks as their dispatch. PDF42 page export captures
+`PageExtraction` once; each worker output clones/prunes its committed graph and remaps effective page labels.
+Source state/history stay untouched. Split outputs stream into one temporary ZIP, with bounded total data,
+progress, cancellation and final no-clobber publication. No partial destination is exposed.

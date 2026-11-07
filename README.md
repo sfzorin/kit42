@@ -44,7 +44,7 @@ See [Windows scope and limits](rust/README.md#implemented-scope-and-limits) for 
 
 ## Current status
 
-This README describes the source as of **2026-11-06**. [Regression checks](#regression-checks) lists reproducible
+This README describes the source as of **2026-11-07**. [Regression checks](#regression-checks) lists reproducible
 commands and coverage limits. Publishing source on GitHub does not update an installed app or imply a notarized
 binary release. Match verification results to the recorded revision and executable identity; detailed logs and
 local installation history are retained separately.
@@ -68,7 +68,8 @@ and current limitations are described in [rust/README.md](rust/README.md). Nativ
 run on Windows CI; their scope and failures are recorded in [the parity tracker](rust/PARITY.md). Printer drivers,
 scanner hardware and full macOS feature parity remain unverified. The development branch adds a shared language
 picker and bundled catalogs; menu/prompt checks pass on twenty languages in Windows CI. Successful-file recents
-are also implemented. These changes have not yet shipped in the downloadable Windows preview.
+are also implemented. PDF page-list extraction and per-page ZIP exports are also implemented on the development branch. These changes
+have not yet shipped in the downloadable Windows preview.
 
 <a id="install"></a>
 

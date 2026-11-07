@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod page_export;
 use pdf42_core::PdfDocument;
 use std::path::Path;
 #[cfg(windows)]
@@ -103,6 +104,7 @@ struct Pdf {
         std::sync::Arc<std::sync::atomic::AtomicBool>,
     )>,
     operation_error: Option<String>,
+    page_export: Option<page_export::Worker>,
     #[cfg(windows)]
     print_pending: Option<(
         std::sync::mpsc::Receiver<Result<win42::PrintJob, String>>,
@@ -565,9 +567,21 @@ impl win42::App for Pdf {
         self.opening_path = None;
     }
     fn poll_background(&mut self) -> bool {
+        let mut page_changed = self
+            .page_export
+            .as_mut()
+            .is_some_and(|worker| worker.progress_changed());
+        if let Some(result) = self.page_export.as_ref().and_then(|worker| worker.poll()) {
+            self.page_export = None;
+            self.operation_error = Some(match result {
+                Ok(()) => "PDF pages exported successfully".into(),
+                Err(error) => error,
+            });
+            page_changed = true;
+        }
         #[cfg(windows)]
         {
-            let mut changed = false;
+            let mut changed = page_changed;
             if let Some((rx, _, _, _)) = &self.object_inspect {
                 if let Ok(result) = rx.try_recv() {
                     let (_, source, generation, _) = self.object_inspect.take().unwrap();
@@ -689,7 +703,7 @@ impl win42::App for Pdf {
         }
         #[cfg(not(windows))]
         {
-            false
+            page_changed
         }
     }
     fn take_pending_print_job(&mut self) -> Option<Result<win42::PrintJob, String>> {
@@ -1497,8 +1511,61 @@ impl win42::App for Pdf {
     fn mark_file_action(&self) -> Option<u16> {
         Some(74)
     }
+    fn file_input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        let doc = self.doc.as_ref()?;
+        if id != 80 && id != 81 {
+            return None;
+        }
+        Some(win42::InputRequest {
+            title: if id == 80 {
+                "Extract PDF Pages"
+            } else {
+                "Split PDF Pages to ZIP"
+            },
+            fields: vec![(
+                "Pages (for example: 1, 3-5; reverse order: 5-3)",
+                if id == 80 {
+                    (doc.current() + 1).to_string()
+                } else {
+                    format!("1-{}", doc.page_count())
+                },
+            )],
+        })
+    }
+    fn file_action_with_input(&mut self, id: u16, path: &Path, values: &[String]) -> Result<(), String> {
+        if !matches!(id, 80 | 81) || self.page_export.is_some() {
+            return Err("Page export unavailable".into());
+        }
+        let [pages] = values else {
+            return Err("Invalid page export settings".into());
+        };
+        let doc = self.doc.as_ref().ok_or("Open a PDF first")?;
+        let indices = page_export::parse_pages(pages, doc.page_count())?;
+        let prepared = doc.prepare_page_extraction()?;
+        self.page_export = Some(page_export::Worker::start(
+            prepared, indices, path.to_owned(), id == 81,
+        )?);
+        self.operation_error = None;
+        Ok(())
+    }
     fn file_actions(&self) -> &'static [win42::FileAction] {
         &[
+            win42::FileAction {
+                id: 80,
+                title: "Extract PDF Pages…",
+                save: true,
+                extension: "pdf",
+                format: "PDF document",
+                pattern: "*.pdf",
+            },
+            win42::FileAction {
+                id: 81,
+                title: "Split PDF Pages to ZIP…",
+                save: true,
+                extension: "zip",
+                format: "ZIP archive",
+                pattern: "*.zip",
+            },
             win42::FileAction {
                 id: 74,
                 title: "Choose Image Stamp…",
@@ -1791,6 +1858,7 @@ impl win42::App for Pdf {
     }
     fn actions(&self) -> &'static [(u16, &'static str)] {
         &[
+            (82, "Cancel PDF Page Export"),
             (10, "Rotate &Right"),
             (11, "&Delete Page"),
             (12, "Move Page &Up"),
@@ -1870,6 +1938,13 @@ impl win42::App for Pdf {
         "Open a PDF document.".into()
     }
     fn status(&self) -> String {
+        if let Some(worker) = &self.page_export {
+            return format!(
+                "Exporting PDF pages: {} of {}",
+                worker.progress.load(std::sync::atomic::Ordering::Relaxed),
+                worker.total
+            );
+        }
         if let Some(error) = &self.operation_error {
             return error.clone();
         }
@@ -1963,6 +2038,8 @@ impl win42::App for Pdf {
             28 | 31 => self.selected_annotation.is_some(),
             32 | 35 => d.can_reorder(),
             33 => d.can_reorder(),
+            80 | 81 => d.can_reorder() && self.page_export.is_none(),
+            82 => self.page_export.is_some(),
             38 => true,
             34 => !d.form_fields().is_empty(),
             78 => self.signature_asset.is_some(),
@@ -2115,6 +2192,12 @@ impl win42::App for Pdf {
     fn action(&mut self, id: u16) -> Result<(), String> {
         if id >= 10 && !self.enabled(id) {
             return Err("Command unavailable".into());
+        }
+        if id == 82 {
+            if let Some(worker) = &self.page_export {
+                worker.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return Ok(());
         }
         if id == 37 {
             #[cfg(windows)]

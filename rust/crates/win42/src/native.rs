@@ -521,6 +521,11 @@ unsafe fn refresh() {
                 .chain(a.view_actions().iter())
                 .map(|&(id, _)| (id, a.command_state(id)))
                 .chain(
+                    a.file_actions()
+                        .iter()
+                        .map(|action| (action.id, a.command_state(action.id))),
+                )
+                .chain(
                     a.command_specs()
                         .into_iter()
                         .map(|c| (c.id, a.command_state(c.id))),
@@ -2216,6 +2221,16 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                 return;
             }
             if let Some(a) = file_action {
+                let settings =
+                    STATE.with(|s| s.borrow().as_ref().unwrap().app.file_input_request(id));
+                let settings = if let Some(request) = settings {
+                    match crate::prompt::show(hwnd, &request) {
+                        Some(values) => Some(values),
+                        None => return,
+                    }
+                } else {
+                    None
+                };
                 if let Some(p) = dialog(hwnd, a.save, a.extension, a.format, a.pattern) {
                     let problem = if !a.save {
                         None
@@ -2234,8 +2249,15 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                         msg(hwnd, &problem, MB_OK | MB_ICONWARNING);
                         return;
                     }
-                    let r =
-                        STATE.with(|s| s.borrow_mut().as_mut().unwrap().app.file_action(id, &p));
+                    let r = STATE.with(|s| {
+                        let mut state = s.borrow_mut();
+                        let app = &mut state.as_mut().unwrap().app;
+                        if let Some(values) = &settings {
+                            app.file_action_with_input(id, &p, values)
+                        } else {
+                            app.file_action(id, &p)
+                        }
+                    });
                     if let Err(e) = r {
                         msg(hwnd, &e, MB_OK | MB_ICONERROR);
                     }
@@ -2503,6 +2525,12 @@ unsafe fn update_caption() {
                 .iter()
                 .chain(s.app.view_actions().iter())
                 .map(|&(id, _)| (id, s.app.command_state(id)))
+                .chain(
+                    s.app
+                        .file_actions()
+                        .iter()
+                        .map(|action| (action.id, s.app.command_state(action.id))),
+                )
                 .chain(
                     s.app
                         .command_specs()

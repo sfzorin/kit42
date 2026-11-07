@@ -16,6 +16,10 @@ on:
         description: Verify the twenty interface languages on a compatible build
         type: boolean
         default: false
+      audit_pages:
+        description: Verify PDF extraction and split exports on a compatible build
+        type: boolean
+        default: false
       audit_only:
         description: Run native GUI audits against the current Windows preview
         type: boolean
@@ -106,8 +110,16 @@ jobs:
           Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/off42/licenses/NotoSans-OFL.txt
           "Commit: $env:GITHUB_SHA`nProfile: $profile`nWorkflow: $env:GITHUB_RUN_ID" | Out-File -Encoding utf8 build/off42/BUILD-IDENTITY.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
+      - name: Test shared host and PDF/spreadsheet changes in quick builds
+        if: inputs.quick_ui == true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/debug/deps | Out-Null
+          Copy-Item build/off42/pdfium.dll target/debug/deps/pdfium.dll
+          cargo test --locked -p win42 -p pdf42-core -p pdf42 -p xls42-core
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents --page-exports
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -190,6 +202,7 @@ jobs:
           AUDIT_TECHNICAL: ${{ inputs.audit_technical }}
           AUDIT_LABELS: ${{ inputs.audit_labels }}
           AUDIT_LANGUAGES: ${{ inputs.audit_languages }}
+          AUDIT_PAGES: ${{ inputs.audit_pages }}
         shell: pwsh
         run: |
           $extra = @()
@@ -198,6 +211,7 @@ jobs:
           if ($env:AUDIT_TECHNICAL -eq 'true') { $extra += '--technical-objects' }
           if ($env:AUDIT_LABELS -eq 'true') { $extra += '--label-sources' }
           if ($env:AUDIT_LANGUAGES -eq 'true') { $extra += '--languages' }
+          if ($env:AUDIT_PAGES -eq 'true') { $extra += '--page-exports' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()
