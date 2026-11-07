@@ -73,7 +73,7 @@ def wait_for(predicate, description, process, timeout=25):
         if process.poll() is not None:
             raise AssertionError(f"App exited while waiting for {description}, code {process.returncode}")
         time.sleep(0.05)
-    snapshot = [(classname(h), text(h)) for h in windows(process.pid)]
+    snapshot = [(classname(h), text(h), [(classname(c), text(c)) for c in windows_for_dialog(h)]) for h in windows(process.pid)]
     raise AssertionError(f"Timed out waiting for {description}. Windows: {snapshot}")
 
 

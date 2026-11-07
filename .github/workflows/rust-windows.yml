@@ -68,6 +68,7 @@ jobs:
           name: native-windows-ui-built
           path: rust/build/native-ui
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Suite42-windows-x64
           path: rust/build/Suite42-windows-x64.zip

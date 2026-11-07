@@ -917,6 +917,12 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
             }
             b'}' => {
                 r.flush()?;
+                // RTF permits the final body paragraph to end at the root brace.
+                // Finish it while its destination and text style are still active.
+                if r.groups.len() == 1 && !r.in_table
+                    && (!r.runs.is_empty() || r.image_pending || r.blocks.is_empty()) {
+                    r.paragraph()?;
+                }
                 let ended = r.groups.pop().ok_or_else(|| fail("unbalanced RTF"))?;
                 if ended.font_table && r.groups.last().is_some_and(|g| !g.font_table) {
                     if let Some(font) = r.fonts.get(&r.default_font) {
@@ -1049,6 +1055,17 @@ fn decode_inner(bytes: &[u8], projection: bool) -> Result<State, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_body_paragraph_does_not_require_par_control() {
+        for body in [br"{\rtf1\ansi Board 0007}".as_slice(), br"{\rtf1\ansi First\par Second}", br"{\rtf1\ansi}"] {
+            let doc = RichDocument::decode(body, Format::Rtf).unwrap();
+            let reopened = RichDocument::decode(&doc.encode(Format::Rtf).unwrap(), Format::Rtf).unwrap();
+            assert_eq!(doc.state().blocks, reopened.state().blocks);
+        }
+        let doc = RichDocument::decode(br"{\rtf1\ansi Board 0007}", Format::Rtf).unwrap();
+        let Block::Paragraph(paragraph) = &doc.state().blocks[0] else { panic!("paragraph expected"); };
+        assert_eq!(paragraph.runs.iter().map(|run| run.text.as_str()).collect::<String>(), "Board 0007");
+    }
     #[test]
     fn font_charsets_decode_bytes_like_richedit_keyboard_layouts() {
         // RichEdit output after typing with Russian, English and Chinese layouts.
