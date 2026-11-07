@@ -27,7 +27,8 @@ use windows_sys::Win32::{
 };
 const OPEN: u16 = 1;
 const SAVE: u16 = 2;
-const SAVE_AS: u16 = 18;
+// Host-only IDs stay outside the applications’ 10+ command range.
+const SAVE_AS: u16 = 65507;
 const EXIT: u16 = 3;
 const UNDO: u16 = 4;
 const REDO: u16 = 5;
@@ -3594,6 +3595,12 @@ pub fn run(app: Box<dyn App>) {
 }
 
 unsafe extern "system" fn canvas_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    // Current tools update pointer state only during a captured gesture. Idle
+    // movement must not repaint or reset the caption: synthesized mouse moves
+    // can otherwise keep the queue busy ahead of low-priority background timers.
+    if m == WM_MOUSEMOVE && !DRAGGING.with(|dragging| dragging.get()) {
+        return 0;
+    }
     if m == WM_CAPTURECHANGED || m == WM_CANCELMODE {
         if DRAGGING.with(|d| d.replace(false)) {
             let _ = STATE.with(|s| {

@@ -28,6 +28,8 @@ u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
 u.GetDlgItem.argtypes = [w.HWND, c.c_int]
 u.GetDlgItem.restype = w.HWND
 u.GetDlgCtrlID.argtypes = [w.HWND]
+u.GetMenu.argtypes, u.GetMenu.restype = [w.HWND], w.HMENU
+u.GetMenuState.argtypes, u.GetMenuState.restype = [w.HMENU, w.UINT, w.UINT], w.UINT
 u.IsWindowVisible.argtypes = [w.HWND]
 u.IsWindowEnabled.argtypes = [w.HWND]
 u.SetForegroundWindow.argtypes = [w.HWND]
@@ -88,6 +90,12 @@ def modal(process, title=None, native_class=None):
 
 def command(hwnd, identifier):
     assert u.PostMessageW(hwnd, WM_COMMAND, identifier, 0)
+
+
+def save_as(main):
+    # Older downloadable previews used 18, which collided with image crop/PDF tools.
+    identifier = 65507 if u.GetMenuState(u.GetMenu(main), 65507, 0) != 0xFFFFFFFF else 18
+    command(main, identifier)
 
 
 def click(dialog, identifier):
@@ -246,7 +254,10 @@ def audit_marks(process, main, binary, output, results):
         wait_for(lambda: u.IsWindowEnabled(main), "mark placed", process)
         def export(name):
             path = output / f"{binary.stem}-{name}.png"
-            command(main, 31 if binary.stem.lower() == "scn42" else 18)
+            if binary.stem.lower() == "scn42":
+                command(main, 31)
+            else:
+                save_as(main)
             choose_file(process, path)
             output_ready(process, main, path, b"\x89PNG\r\n\x1a\n")
             return png_pixels(path)
@@ -265,7 +276,7 @@ def audit_marks(process, main, binary, output, results):
         assert export("redo") == marked
         if binary.stem.lower() == "scn42":
             project = output / "marked.scn42"
-            command(main, 18)
+            save_as(main)
             choose_file(process, project)
             wait_for(lambda: project.is_file() and u.IsWindowEnabled(main), "scan project saved", process)
             command(main, 1)
@@ -287,7 +298,7 @@ def audit_sheet_pictures(process, main, output, results):
     fill_prompt(process, main, 77, "Picture Position and Size", ["2", "2", "6", "6", "30", "15"])
     wait_for(lambda: u.IsWindowEnabled(main), "picture geometry applied", process)
     project = output / "pictures.xls42"
-    command(main, 18)
+    save_as(main)
     choose_file(process, project)
     output_ready(process, main, project, b"{")
     def picture():
@@ -346,23 +357,26 @@ def audit_technical_objects(process, main, binary, output, results):
         actual = text(u.GetDlgItem(dialog, 101))
         assert actual == expected, {"expected": expected, "actual": actual, "saved": text(main)}
         if change:
-            set_text(u.GetDlgItem(dialog, 101), "PCB-0008")
+            set_text(u.GetDlgItem(dialog, 101), "PCB-0008" if change is True else change)
             set_text(u.GetDlgItem(dialog, 102), "25")
         click(dialog, 1 if change else 2)
         wait_for(lambda: u.IsWindowEnabled(main), "technical editor closed", process)
     editor_value("PCB-0007", True)
     extension = {"doc42": "doc42", "xls42": "xls42", "pdf42": "pdf", "ppt42": "json"}[binary.stem.lower()]
     saved = output / f"{binary.stem}-technical.{extension}"
-    command(main, 18)
+    save_as(main)
     choose_file(process, saved)
     output_ready(process, main, saved, b"%PDF-" if extension == "pdf" else b"{")
     command(main, 4)
     editor_value("PCB-0007")
     command(main, 5)
     editor_value("PCB-0008")
+    editor_value("PCB-0008", "PCB-UNSAVED")
     command(main, 1)
     choose_file(process, saved)
-    wait_for(lambda: saved.name in text(main) and u.IsWindowEnabled(main), "technical document reopened", process)
+    confirmation = modal(process, native_class="#32770")
+    click(confirmation, 7)
+    wait_for(lambda: saved.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main), "technical document reopened from saved bytes", process)
     editor_value("PCB-0008")
     results["checks"].append("technical object insertion, recipe editing, Undo/Redo and edit after saved-document reopen")
 
@@ -470,7 +484,7 @@ def audit_page_labels(process, main, binary, output, results):
     fill_prompt(process, main, 83, "Page Labels", ["1", "3", "a, b, c", "Плата-", "27"])
     def save(name):
         path = output / name
-        command(main, 18)
+        save_as(main)
         choose_file(process, path)
         output_ready(process, main, path, b"%PDF-")
         return pdf_page_labels(binary.parent / "pdfium.dll", path)
@@ -537,7 +551,84 @@ def audit_pdf_page_exports(process, main, binary, output, results):
     audit_page_labels(process, main, binary, output, results)
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False):
+
+def audit_crop_command(process, main, binary, output, results):
+    def export(suffix):
+        path = output / f"{binary.stem}-crop-{suffix}.png"
+        if binary.stem.lower() == "scn42":
+            command(main, 31)
+        else:
+            save_as(main)
+        choose_file(process, path)
+        output_ready(process, main, path, b"\x89PNG\r\n\x1a\n")
+        return png_pixels(path)
+    baseline = export("baseline")
+    assert baseline[:2] == (64, 64)
+    title = "Crop page" if binary.stem.lower() == "scn42" else "Crop rectangle"
+    fill_prompt(process, main, 18, title, ["4", "8", "32", "32"])
+    wait_for(lambda: u.IsWindowEnabled(main), "native crop applied", process)
+    cropped = export("applied")
+    expected = b"".join(baseline[2][(y * 64 + 4) * 4:(y * 64 + 36) * 4] for y in range(8, 40))
+    assert cropped == (32, 32, expected)
+    command(main, 4)
+    assert export("undo") == baseline
+    command(main, 5)
+    assert export("redo") == cropped
+    results["checks"].append("crop has its own native command, exact pixel bounds and full Undo/Redo; Save As remains separate")
+
+
+def pdf_annotation_counts(dll_path, path):
+    pdf = c.WinDLL(str(dll_path))
+    pdf.FPDF_LoadDocument.argtypes, pdf.FPDF_LoadDocument.restype = [c.c_char_p, c.c_char_p], c.c_void_p
+    pdf.FPDF_GetPageCount.argtypes = [c.c_void_p]
+    pdf.FPDF_LoadPage.argtypes, pdf.FPDF_LoadPage.restype = [c.c_void_p, c.c_int], c.c_void_p
+    pdf.FPDFPage_GetAnnotCount.argtypes = [c.c_void_p]
+    pdf.FPDF_ClosePage.argtypes, pdf.FPDF_CloseDocument.argtypes = [c.c_void_p], [c.c_void_p]
+    pdf.FPDF_InitLibrary()
+    document = pdf.FPDF_LoadDocument(str(path).encode("utf-8"), None)
+    assert document
+    try:
+        counts = []
+        for index in range(pdf.FPDF_GetPageCount(document)):
+            page = pdf.FPDF_LoadPage(document, index)
+            assert page
+            try:
+                count = pdf.FPDFPage_GetAnnotCount(page)
+                assert count >= 0
+                counts.append(count)
+            finally:
+                pdf.FPDF_ClosePage(page)
+        return counts
+    finally:
+        pdf.FPDF_CloseDocument(document)
+
+
+def audit_rectangle_command(process, main, binary, output, results):
+    def save(suffix):
+        path = output / f"rectangle-{suffix}.pdf"
+        save_as(main)
+        choose_file(process, path)
+        output_ready(process, main, path, b"%PDF-")
+        return path, pdf_annotation_counts(binary.parent / "pdfium.dll", path)
+    _, baseline = save("baseline")
+    command(main, 18)
+    wait_for(lambda: any("Tool: Rectangle" in text(h) for h in windows(process.pid, main)), "rectangle tool command", process)
+    canvas = wait_for(lambda: next((h for h in windows(process.pid, main) if classname(h) == "Suite42Canvas"), None), "rendered PDF canvas", process)
+    u.SendMessageW(canvas, 0x201, 1, (80 << 16) | 80)
+    u.SendMessageW(canvas, 0x200, 1, (160 << 16) | 180)
+    u.SendMessageW(canvas, 0x202, 0, (160 << 16) | 180)
+    marked_path, marked = save("applied")
+    assert sum(marked) == sum(baseline) + 1
+    import re
+    assert re.search(rb"/Subtype\s*/Square", marked_path.read_bytes())
+    command(main, 4)
+    assert save("undo")[1] == baseline
+    command(main, 5)
+    assert save("redo")[1] == marked
+    results["checks"].append("rectangle command is separate from Save As; native mouse drawing, PDFium annotation count and Undo/Redo output")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -589,6 +680,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             results["checks"].append("native inline proofing flags follow the menu toggle")
         if extended and binary.stem.lower() in {"img42", "scn42"}:
             audit_marks(process, main, binary, output, results)
+            if host_commands:
+                audit_crop_command(process, main, binary, output, results)
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
             if technical and binary.stem.lower() == "ppt42":
                 audit_technical_objects(process, main, binary, output, results)
@@ -654,6 +747,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
             audit_technical_objects(process, main, binary, output, results)
         if labels and binary.stem.lower() == "doc42":
             audit_table_labels(process, main, binary, output, results)
+        if host_commands and binary.stem.lower() == "pdf42":
+            audit_rectangle_command(process, main, binary, output, results)
         if pages and binary.stem.lower() == "pdf42":
             audit_pdf_page_exports(process, main, binary, output, results)
         return results
@@ -940,6 +1035,7 @@ def main():
     parser.add_argument("--languages", action="store_true")
     parser.add_argument("--recents", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
+    parser.add_argument("--host-commands", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -948,7 +1044,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

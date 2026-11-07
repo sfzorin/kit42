@@ -20,6 +20,10 @@ on:
         description: Verify PDF extraction and split exports on a compatible build
         type: boolean
         default: false
+      audit_host_commands:
+        description: Verify crop and drawing commands are separate from Save As
+        type: boolean
+        default: false
       audit_only:
         description: Run native GUI audits against the current Windows preview
         type: boolean
@@ -119,7 +123,7 @@ jobs:
           cargo test --locked -p win42 -p pdf42-core -p pdf42 -p xls42-core
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents --page-exports
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources --languages --recents --page-exports --host-commands
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -203,6 +207,7 @@ jobs:
           AUDIT_LABELS: ${{ inputs.audit_labels }}
           AUDIT_LANGUAGES: ${{ inputs.audit_languages }}
           AUDIT_PAGES: ${{ inputs.audit_pages }}
+          AUDIT_HOST_COMMANDS: ${{ inputs.audit_host_commands }}
         shell: pwsh
         run: |
           $extra = @()
@@ -212,6 +217,7 @@ jobs:
           if ($env:AUDIT_LABELS -eq 'true') { $extra += '--label-sources' }
           if ($env:AUDIT_LANGUAGES -eq 'true') { $extra += '--languages' }
           if ($env:AUDIT_PAGES -eq 'true') { $extra += '--page-exports' }
+          if ($env:AUDIT_HOST_COMMANDS -eq 'true') { $extra += '--host-commands' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()

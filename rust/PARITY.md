@@ -87,3 +87,11 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - Editable page-label ranges, numbering styles, prefixes, clear/Undo and navigation by logical label are now
   implemented. Source/export/history regressions pass in the portable suite (351 passed, one OCR test ignored).
   Native label edits, PDFium label extraction and navigation after reopen are added for the next build.
+
+- A command-ID review found that host Save As (18) intercepted IMG/SCN Crop and PDF Draw Rectangle. Save As
+  moved to 65507; native pixel/annotation/history regressions are added. Idle canvas mouse moves no longer
+  trigger caption/repaint work; current tools need pointer motion only during gestures.
+- The technical reopen audit now first makes an unsaved payload change, explicitly discards it while opening
+  the saved file, and checks clean saved state. Earlier same-filename waits could read the existing model;
+  earlier results do not establish asynchronous PDF reopen. Open-phase tracing in 42352293454 shows no
+  later polling after the initial document commit. The updated host awaits native verification.

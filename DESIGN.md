@@ -525,3 +525,10 @@ its effective rules and commits one history transaction; unaffected labels retai
 empty override to remove the catalog tree. Saving, reordering and extraction rebuild rules in the current page order.
 Roman/letter display matches the macOS bounded implementation. `App::input_choices` supplies stable underlying
 values for translated native choice controls, reused by page-label numbering styles.
+
+Windows Save As uses a host-only ID outside application tool IDs. Earlier ID 18 collided with IMG/SCN crop and PDF
+rectangle tools; those app tool IDs remain stable, while Save As now uses 65507. The audit detects old/new Save As
+IDs so it can still inspect older downloadable previews. Canvas pointer moves update tools/redraw only during a
+captured gesture; current tools have no passive-hover state. This keeps idle synthesized moves out of caption/
+paint updates and lets background timers run. Native regressions check full crop pixels/history and drawn PDF
+annotations, alongside the pending asynchronous-open scenario.
