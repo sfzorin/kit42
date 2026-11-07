@@ -548,3 +548,11 @@ digest. The patch retains formula XML, other cell attributes and unrelated ZIP e
 preserve literal `_xHHHH_` text and encode invalid XML characters. ODS gets typed scalar values directly; error
 cache display is textual because that writer has no error variant. External imports are tested after changing an
 input, ensuring recomputation cannot pass solely through a saved cached result.
+
+## Windows runtime dependency gate
+
+The explicit MSVC target uses `+crt-static`; Cargo host tools/proc macros remain separate. CI stages binaries from
+the target-specific output directory and tests with PDFium beside target-specific test executables. A bounded Python
+PE reader examines import and delay-import tables, requires x64 PE32+ images and rejects redistributable C++ runtimes
+and unknown libraries. OS/API-set imports and bundled PDFium are allowed. Reports record each binary's SHA-256.
+The archive is created only after this gate passes. The source handoff includes the target configuration.

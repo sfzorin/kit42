@@ -11,17 +11,17 @@ workload and Windows SDK, and Python 3. In a Developer PowerShell from the repos
 
 ```powershell
 cd rust
-cargo test --locked --workspace
+cargo test --locked --workspace --target x86_64-pc-windows-msvc
 Push-Location scripts
 rc.exe /fo windows-app.res windows-app.rc
 Pop-Location
-$env:RUSTFLAGS = "-C link-arg=$((Resolve-Path scripts/windows-app.res).Path)"
-cargo build --locked --release -p img42 -p doc42 -p xls42 -p ppt42 -p pdf42 -p scn42
-python scripts/fetch-pdfium.py target/release
-.\target\release\pdf42.exe
+$env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=$((Resolve-Path scripts/windows-app.res).Path)"
+cargo build --locked --release --target x86_64-pc-windows-msvc -p img42 -p doc42 -p xls42 -p ppt42 -p pdf42 -p scn42
+python scripts/fetch-pdfium.py target/x86_64-pc-windows-msvc/release
+.\target\x86_64-pc-windows-msvc\release\pdf42.exe
 ```
 
-Run the other apps from `target/release` similarly. The resource embeds common controls v6 and PerMonitorV2
+Run the other apps from `target/x86_64-pc-windows-msvc/release` similarly. The resource embeds common controls v6 and PerMonitorV2
 settings. PDF42 uses the adjacent `pdfium.dll` for text search and selection; the fetch script supplies a pinned
 runtime and licenses. `PDFIUM_ARCHIVE` can select a local pinned archive. A custom `PDFIUM_DLL` also requires
 `PDFIUM_DLL_SHA256` and `PDFIUM_LICENSE_DIR`. SCN42 OCR requires a separately installed Tesseract executable and
@@ -29,7 +29,7 @@ language data; select its path and available languages in the app.
 
 For a GNU cross-build on macOS or Linux, install the `x86_64-pc-windows-gnu` Rust target, MinGW-w64 tools and
 Python 3, then run `rust/scripts/package-windows.sh` from the repository root. It creates
-`build/rust-port-windows/Suite42-windows-x64.zip` with PDFium and licenses. `rust/scripts/package-source.sh` creates
+`build/rust-port-windows/off42-windows-x64.zip` with PDFium and licenses. `rust/scripts/package-source.sh` creates
 the source archive and excludes build outputs and local `AGENTS.md` and `STATUS.md`. Cross-building does not verify
 Windows runtime behavior. The Windows CI workflow also builds with MSVC.
 
@@ -168,3 +168,11 @@ The macOS source correction is separate from this Windows branch.
 Generated XLSX keeps formula text results as strings, including numeric-looking identifiers with leading zeroes.
 Cached Boolean, number and standard error values keep their corresponding types. ODS stores scalar text/Boolean/
 number caches; cached error display remains textual because the ODS writer has no distinct error value type.
+
+### Windows runtime packaging (development branch)
+
+New MSVC builds use a static C runtime, configured for the explicit Windows target. Host build scripts and procedural
+macros keep their host flags. Release resource flags also retain `+crt-static`. Before packaging, CI inspects ordinary
+and delayed PE imports for all six apps and PDFium; non-system dependencies other than bundled PDFium fail the build.
+The import report includes binary hashes. This gate is checked before ZIP creation. The existing public preview.3
+still uses a separate VC++ runtime as described in its release notes; source configuration does not replace that asset.
