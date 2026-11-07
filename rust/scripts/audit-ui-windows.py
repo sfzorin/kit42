@@ -374,7 +374,10 @@ def audit_technical_objects(process, main, binary, output, results):
     editor_value("PCB-0008", "PCB-UNSAVED")
     command(main, 1)
     choose_file(process, saved)
-    confirmation = modal(process, native_class="#32770")
+    confirmation = wait_for(lambda: next((h for h in windows(process.pid)
+        if classname(h) == "#32770" and u.IsWindowEnabled(h)
+        and all(u.GetDlgItem(h, identifier) for identifier in (2, 6, 7))), None),
+        "unsaved document Save/Discard/Cancel confirmation", process)
     click(confirmation, 7)
     wait_for(lambda: saved.name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main), "technical document reopened from saved bytes", process)
     editor_value("PCB-0008")
