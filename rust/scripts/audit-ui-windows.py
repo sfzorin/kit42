@@ -16,7 +16,7 @@ if os.name != "nt":
 
 u = c.WinDLL("user32", use_last_error=True)
 u.EnumWindows.argtypes = [c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM), w.LPARAM]
-u.EnumChildWindows.argtypes = u.EnumWindows.argtypes
+u.EnumChildWindows.argtypes = [w.HWND] + u.EnumWindows.argtypes
 u.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
 u.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
 u.GetWindowTextLengthW.argtypes = [w.HWND]
