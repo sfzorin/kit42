@@ -476,3 +476,8 @@ Office pictures retain provenance so only the corresponding original drawing nod
 Shared Windows technical-object commands pass an immutable rendered object to an app adapter. Each
 adapter inserts or replaces the object in one document-history transaction and retains the portable
 recipe. Object choice uses current document identities; PDF recipes share the macOS annotation key.
+
+PDF technical appearances contain only bounded path operators, with glyph outlines and independent
+physical bounds. The core validates the operator allowlist and graphics-state balance before recording
+a vector stamp. Raster pixels are transient for vector placement and are not retained in its history
+or emitted as an image resource. Standard image signatures continue to use their alpha image appearance.

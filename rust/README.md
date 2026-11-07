@@ -100,5 +100,6 @@ the saved value, format, caption and width in millimetres. Choose an object if s
 PDF42 lists the current page. Insertion and replacement each form one Undo step.
 PNG recipes survive DOCX/ODT/RTF, XLSX/ODS and PPTX/ODP exports for the supported image objects. PDF42
 uses the same `/Suite42TechnicalElement` annotation key as the macOS implementation and restores the
-editor after reopening. Document insertion currently uses a raster appearance; vector insertion remains
-a parity item. **Create Symbol or Code** exports a reusable PNG without changing the document.
+editor after reopening. PDF42 stores resource-free vector paths, including outlined captions; Office
+formats retain PNG pictures with recipes. **Create Symbol or Code** exports PNG, SVG or an editable
+vector PDF without changing the current document.

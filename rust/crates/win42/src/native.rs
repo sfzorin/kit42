@@ -1339,19 +1339,49 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
     else {
         return Ok(());
     };
+    if id == EXPORT_TECHNICAL {
+        let element = production::technical_element(&fields)?;
+        let formats = [
+            crate::FileFormat {
+                id: "png",
+                title: "PNG symbol or code",
+                extensions: &["png"],
+            },
+            crate::FileFormat {
+                id: "svg",
+                title: "SVG vector symbol or code",
+                extensions: &["svg"],
+            },
+            crate::FileFormat {
+                id: "pdf",
+                title: "PDF vector symbol or code",
+                extensions: &["pdf"],
+            },
+        ];
+        if let Some((path, index)) = format_dialog(hwnd, &formats, true) {
+            let extension = formats[index].extensions[0];
+            if !path
+                .extension()
+                .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+            {
+                return Err(format!("Choose a file name ending in .{extension}."));
+            }
+            let output = match extension {
+                "svg" => element.svg()?.into_bytes(),
+                "pdf" => element.pdf()?,
+                _ => element.png()?,
+            };
+            suite42_core::write_new(&path, &output)
+                .map_err(|error| format!("Could not save the technical object: {error}"))?;
+        }
+        return Ok(());
+    }
     let (output, ext, name, pattern) = if is_sheet {
         (
             production::sheet_output(source, &fields)?,
             "pdf",
             "PDF label sheet",
             "*.pdf",
-        )
-    } else if id == EXPORT_TECHNICAL {
-        (
-            production::technical_element(&fields)?.png()?,
-            "png",
-            "PNG symbol or code",
-            "*.png",
         )
     } else {
         (

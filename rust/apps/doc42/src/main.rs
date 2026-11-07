@@ -967,6 +967,16 @@ impl App for Doc {
         .collect()
     }
     fn command_state(&self, id: u16) -> CommandState {
+        if id == 4 || id == 5 {
+            return CommandState {
+                enabled: if id == 4 {
+                    self.doc.can_undo()
+                } else {
+                    self.doc.can_redo()
+                },
+                checked: false,
+            };
+        }
         if (346..=349).contains(&id) {
             let at = self.doc.position_from_utf16(self.selection.0).ok();
             return CommandState {
@@ -1069,7 +1079,7 @@ impl App for Doc {
             };
         }
         CommandState {
-            enabled: style.is_some(),
+            enabled: !(300..=304).contains(&id) || style.is_some(),
             checked: style.is_some_and(|s| match id {
                 300 => s.bold,
                 301 => s.italic,
@@ -3535,5 +3545,40 @@ mod technical_regression {
             );
             assert!((f64::from(image.width_twips) * 25.4 / 1440.0 - 25.0).abs() < 0.02);
         }
+    }
+}
+
+#[cfg(test)]
+mod command_dispatch_regression {
+    use super::*;
+    #[test]
+    fn collapsed_caret_does_not_disable_history_or_table_commands() {
+        let mut app = Doc::new();
+        let first = win42::TechnicalElement {
+            symbol_id: None,
+            code_type: win42::BarcodeFormat::Qr,
+            value: "PCB-0007".into(),
+            width_mm: 20.0,
+            caption: false,
+        };
+        app.apply_technical_element(None, win42::TechnicalRaster::render(first.clone()).unwrap())
+            .unwrap();
+        let id = app.technical_targets()[0].id;
+        let mut second = first.clone();
+        second.value = "PCB-0008".into();
+        app.apply_technical_element(Some(id), win42::TechnicalRaster::render(second).unwrap())
+            .unwrap();
+        let (revision, _) = app.save_snapshot("doc42").unwrap().unwrap();
+        app.saved_snapshot(revision);
+        assert_eq!(app.selection.0, app.selection.1);
+        assert!(app.command_state(4).enabled);
+        app.action(4).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0007");
+        assert!(app.command_state(5).enabled);
+        app.action(5).unwrap();
+        assert_eq!(app.technical_targets()[0].element.value, "PCB-0008");
+        assert!(!app.command_state(300).enabled);
+        assert!(app.command_state(329).enabled);
+        assert!(app.command_state(353).enabled);
     }
 }

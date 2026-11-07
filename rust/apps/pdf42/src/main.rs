@@ -349,6 +349,11 @@ impl win42::App for Pdf {
                 rgba: raster.rgba,
             },
             raster.element.description()?,
+            Some(pdf42_core::VectorStamp {
+                width: raster.vector.width_points,
+                height: raster.vector.height_points,
+                content: raster.vector.content.into(),
+            }),
         )?);
         #[cfg(windows)]
         self.search_hits.clear();
@@ -2646,6 +2651,53 @@ mod technical_regression {
         assert_eq!(app.technical_targets()[0].element.value, "PCB-0007");
         app.action(5).unwrap();
         app.doc.as_mut().unwrap().save_as(&output).unwrap();
+        let raw = lopdf::Document::load(&output).unwrap();
+        let page = *raw.get_pages().values().next().unwrap();
+        let annotations = raw
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Annots")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(annotations.len(), 1);
+        let annotation = raw
+            .get_dictionary(annotations[0].as_reference().unwrap())
+            .unwrap();
+        assert!(annotation.has(b"Suite42TechnicalElement"));
+        let appearance = raw
+            .get_object(
+                annotation
+                    .get(b"AP")
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"N")
+                    .unwrap()
+                    .as_reference()
+                    .unwrap(),
+            )
+            .unwrap()
+            .as_stream()
+            .unwrap();
+        assert!(appearance
+            .dict
+            .get(b"Resources")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"XObject")
+            .is_err());
+        let commands =
+            lopdf::content::Content::decode(&appearance.get_plain_content().unwrap()).unwrap();
+        assert!(commands
+            .operations
+            .iter()
+            .any(|command| command.operator == "m"));
+        assert!(!commands
+            .operations
+            .iter()
+            .any(|command| command.operator == "Do" || command.operator == "BI"));
         app.doc = Some(PdfDocument::open(&output).unwrap());
         let target = &app.technical_targets()[0];
         assert_eq!(target.element.value, "PCB-0008");

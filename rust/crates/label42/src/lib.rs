@@ -13,7 +13,9 @@ pub const MAX_LABELS: usize = 5000;
 mod calibration;
 pub use calibration::calibration_pdf;
 mod technical;
+mod vector;
 pub use technical::{symbols, TechnicalElement, TechnicalSymbol};
+pub use vector::TechnicalVector;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

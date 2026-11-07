@@ -31,15 +31,17 @@ pub struct TechnicalRaster {
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub rgba: std::sync::Arc<[u8]>,
+    pub vector: label42::TechnicalVector,
 }
 impl TechnicalRaster {
     pub fn render(element: TechnicalElement) -> Result<Self, String> {
+        let vector = element.vector()?;
         let png = element.png()?;
         let decoded = image::load_from_memory(&png)
             .map_err(|e| e.to_string())?
             .into_rgba8();
-        let width_points = element.width_mm * 72.0 / 25.4;
-        let height_points = width_points * f64::from(decoded.height()) / f64::from(decoded.width());
+        let width_points = vector.width_points;
+        let height_points = vector.height_points;
         Ok(Self {
             element,
             png,
@@ -48,6 +50,7 @@ impl TechnicalRaster {
             pixel_width: decoded.width(),
             pixel_height: decoded.height(),
             rgba: decoded.into_raw().into(),
+            vector,
         })
     }
 }

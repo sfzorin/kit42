@@ -101,13 +101,14 @@ impl TechnicalElement {
 
     pub fn svg(&self) -> Result<String, String> {
         self.validate()?;
+        let description = self.description()?;
         if let Some(id) = &self.symbol_id {
             let source = symbols().iter().find(|symbol| symbol.id == id).unwrap().svg;
             let tree = resvg::usvg::Tree::from_str(source, &resvg::usvg::Options::default())
                 .map_err(|error| error.to_string())?;
             let height_mm = self.width_mm * f64::from(tree.size().height() / tree.size().width());
             return Ok(format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}mm\" height=\"{height_mm}mm\" viewBox=\"0 0 {} {}\">{source}</svg>",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}mm\" height=\"{height_mm}mm\" viewBox=\"0 0 {} {}\"><desc>{description}</desc>{source}</svg>",
                 self.width_mm, tree.size().width(), tree.size().height(),
             ));
         }
@@ -119,7 +120,7 @@ impl TechnicalElement {
         let caption_height = if self.caption { 14.0 } else { 0.0 };
         let height = code_height + caption_height;
         let mut svg = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}mm\" height=\"{}mm\" viewBox=\"0 0 {width} {height}\"><rect width=\"{width}\" height=\"{height}\" fill=\"white\"/><g fill=\"black\">", self.width_mm, height / PT_PER_MM
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}mm\" height=\"{}mm\" viewBox=\"0 0 {width} {height}\"><desc>{description}</desc><rect width=\"{width}\" height=\"{height}\" fill=\"white\"/><g fill=\"black\">", self.width_mm, height / PT_PER_MM
         );
         let quiet = self.code_type.quiet_zone();
         barcode.runs(|x, y, length| {

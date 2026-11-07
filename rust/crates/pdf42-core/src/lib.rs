@@ -144,6 +144,12 @@ pub struct ImageStamp {
     pub rgba: std::sync::Arc<[u8]>,
 }
 #[derive(Clone, Debug, PartialEq)]
+pub struct VectorStamp {
+    pub width: f64,
+    pub height: f64,
+    pub content: std::sync::Arc<[u8]>,
+}
+#[derive(Clone, Debug, PartialEq)]
 struct Annotation {
     page: ObjectId,
     kind: AnnotationKind,
@@ -152,6 +158,7 @@ struct Annotation {
     points: Vec<[f64; 2]>,
     quads: Vec<[f64; 4]>,
     image: Option<ImageStamp>,
+    vector: Option<VectorStamp>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AnnotationKind {
@@ -1462,6 +1469,7 @@ impl PdfDocument {
             points: Vec::new(),
             quads: Vec::new(),
             image: None,
+            vector: None,
         });
         self.history.apply(state);
         Ok(())
@@ -1473,7 +1481,7 @@ impl PdfDocument {
         rect: [f64; 4],
         image: ImageStamp,
     ) -> Result<(), String> {
-        self.replace_technical_stamp(index, None, rect, image, String::new())
+        self.replace_technical_stamp(index, None, rect, image, String::new(), None)
             .map(|_| ())
     }
     /// Insert or replace one image annotation as a single history transaction.
@@ -1484,11 +1492,47 @@ impl PdfDocument {
         mut rect: [f64; 4],
         image: ImageStamp,
         recipe: String,
+        vector: Option<VectorStamp>,
     ) -> Result<AnnotationSelection, String> {
         if !recipe.is_empty()
             && (!recipe.starts_with("Suite42.TechnicalElement.v1:") || recipe.len() > 24_000)
         {
             return Err("Invalid technical object recipe".into());
+        }
+        if let Some(vector) = &vector {
+            if recipe.is_empty()
+                || !vector.width.is_finite()
+                || !vector.height.is_finite()
+                || !(0.01..=10000.0).contains(&vector.width)
+                || !(0.01..=10000.0).contains(&vector.height)
+                || vector.content.len() > 8 * 1024 * 1024
+                || std::str::from_utf8(&vector.content).is_err()
+            {
+                return Err("Invalid technical vector geometry".into());
+            }
+            let commands = lopdf::content::Content::decode(&vector.content)
+                .map_err(|_| "Invalid technical vector commands")?;
+            let mut depth = 0i32;
+            for command in commands.operations {
+                if !matches!(
+                    command.operator.as_str(),
+                    "q" | "Q" | "cm" | "rg" | "m" | "l" | "c" | "h" | "f" | "f*" | "W" | "W*" | "n"
+                ) {
+                    return Err("Technical vectors must contain resource-free paths".into());
+                }
+                if command.operator == "q" {
+                    depth += 1;
+                }
+                if command.operator == "Q" {
+                    depth -= 1;
+                }
+                if !(0..=64).contains(&depth) {
+                    return Err("Unbalanced technical vector state".into());
+                }
+            }
+            if depth != 0 {
+                return Err("Unbalanced technical vector state".into());
+            }
         }
         let page = *self
             .history
@@ -1549,7 +1593,8 @@ impl PdfDocument {
             contents: recipe,
             points: Vec::new(),
             quads: Vec::new(),
-            image: Some(image),
+            image: if vector.is_some() { None } else { Some(image) },
+            vector,
         });
         self.history.apply(state);
         Ok(target)
@@ -1640,6 +1685,7 @@ impl PdfDocument {
             points,
             quads: Vec::new(),
             image: None,
+            vector: None,
         });
         self.history.apply(state);
         Ok(())
@@ -1704,6 +1750,7 @@ impl PdfDocument {
             points: Vec::new(),
             quads: clean,
             image: None,
+            vector: None,
         });
         self.history.apply(state);
         Ok(())
@@ -3745,7 +3792,18 @@ impl PdfDocument {
             let [x1, y1, x2, y2] = annotation.rect;
             let (left, bottom, right, top) = (x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2));
             let (w, h) = (right - left, top - bottom);
-            let (subtype, drawing) = if !annotation.quads.is_empty() {
+            let (subtype, drawing) = if let Some(vector) = &annotation.vector {
+                let content = std::str::from_utf8(&vector.content)
+                    .map_err(|_| "Invalid technical vector encoding")?;
+                (
+                    "Stamp",
+                    format!(
+                        "q {} 0 0 {} 0 0 cm\n{content}\nQ",
+                        w / vector.width,
+                        h / vector.height
+                    ),
+                )
+            } else if !annotation.quads.is_empty() {
                 let mut drawing = match annotation.kind {
                     AnnotationKind::Highlight => String::from("/GS gs 1 1 0 rg "),
                     _ => String::from("1 0 0 RG 1 w "),
@@ -3865,7 +3923,11 @@ impl PdfDocument {
                 }
             };
             let mut resources = lopdf::dictionary! {"ExtGState"=>lopdf::dictionary!{"GS"=>lopdf::dictionary!{"Type"=>"ExtGState", "BM"=>"Multiply", "ca"=>0.35}}};
-            if let Some(image) = &annotation.image {
+            if let Some(image) = annotation
+                .image
+                .as_ref()
+                .filter(|_| annotation.vector.is_none())
+            {
                 let mut rgb = Vec::with_capacity(image.width as usize * image.height as usize * 3);
                 let mut alpha = Vec::with_capacity(image.width as usize * image.height as usize);
                 for p in image.rgba.chunks_exact(4) {

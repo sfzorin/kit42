@@ -10,7 +10,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Localization and appearance | English native host | Twenty interface languages, shared picker, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
-| Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Vector document appearance, IMG/SCN technical placement and native UI verification |
+| Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | Persisted mappings, DOC table sources, PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
 | PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, split/merge workflows, page labels, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
@@ -36,3 +36,13 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - The technical-object adapter regressions pass insertion, replacement as one history step, Undo/Redo,
   and reopen for PDF, DOCX/ODT/RTF, XLSX/ODS and PPTX/ODP. The full portable workspace passed 334 tests
   with one OCR test ignored; Windows GNU target compilation passed. Native technical-object checks await a build.
+
+- Native audit run 42345868618 passed all six apps on the built 8298357 executables, including actual
+  spreadsheet rendered pixels, mouse movement, Undo/Redo, deletion/save/reopen and IMG/SCN mark pixels.
+- Run 42346392111 verified technical recipe editing and save/reopen in PDF42, XLS42 and PPT42.
+  It found a DOC42 command-state defect: Undo/Redo was blocked with a collapsed caret despite the menu
+  being enabled. The dispatcher now checks history availability separately from text-format selection.
+- Vector QA covers fourteen symbols and four captioned code types: independent Poppler renders match
+  reference SVG/PNG ink geometry within one pixel. It found and fixed the text-subtree transform for
+  captions. PDF annotations and standalone PDF exports retain the macOS recipe key and have no raster
+  image resource in the technical appearance. The next Windows build must verify the updated dispatcher.
