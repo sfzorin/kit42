@@ -629,3 +629,13 @@ results commit nothing. The ODT reader isolates outer bookmark markers while par
 An additional preflight bounds matches multiplied by document annotation/field/revision/TOC contexts. The generic
 anchor remapper is deliberately reused for consistent gravity, and excessive aggregate work is refused before
 any rewrite. This prevents the independent match/document caps from multiplying into a long UI-blocking operation.
+
+### Windows vector paths
+
+`win42::SceneItem::VectorPath` carries compound Move/Line/Cubic/Close paths with independent optional fill
+and stroke. The GDI host uses an even-odd path at the destination resolution for canvas, show and printer
+output, with saved/restored DC state. PPT42 evaluates the shared preset catalog at the current shape size,
+then applies the existing object transform. Yellow handles edit a temporary drag object; pointer-up commits
+one model history step and cancellation drops the preview. Text uses the preset's evaluated text rectangle.
+Preset identity and adjustment values remain editable across project/PPTX/ODP output. Generated MPL data
+ships with source, notice and license in the Windows archive.

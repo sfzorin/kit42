@@ -16,7 +16,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, four text-export formats, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC, structured literal Find/Replace and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, table/image caret mapping and word-count coverage, picture geometry and rich page decorations |
 | XLS42 | Grid editing, engineering/text/math formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
-| PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
+| PPT42 | Native objects and text, 187 preset geometries with adjustment controls, grouping/transforms, basic transitions, PPTX/ODP and printing | Custom geometry editing, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
 | IMG42 | Image decoding, transforms, adjustments, selections, text, metadata and batch output | Full markup selection/editing, smart lasso, live text, background removal, viewing panels and additional supported system codecs |
 | SCN42 | WIA acquisition, image/PDF import, page processing, OCR and searchable output | Scan areas and rescan, device/preset controls, scan history, full export settings and physical-device checks |
 
@@ -178,3 +178,9 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - Latest portable workspace: **372 passed**, none failed, one OCR fixture ignored. All GNU Windows targets compile.
   The source archive passes CRC/membership checks and includes static-CRT configuration while excluding local
   instructions/status and build outputs. A passing development build does not close the remaining gaps above.
+
+- Preset shape work adds all 187 macOS definitions, vector curve/compound fill rendering, text frames,
+  yellow adjustment handles, type/adjustment controls and atomic history. The actual Swift engine generated
+  620 checked-in reference cases; Windows geometry agrees for paths, fills, frames and handle positions.
+  Portable regressions cover full-catalog project/PPTX/ODP output and preset/size/rotation source overlays.
+  The native handle/pixel/dirty-discard-reopen scenario awaits the first compatible Windows run.

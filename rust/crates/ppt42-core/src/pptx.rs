@@ -518,6 +518,7 @@ fn decoration(
         "rect" => ObjectKind::Rectangle,
         "ellipse" => ObjectKind::Ellipse,
         "line" => ObjectKind::Line,
+        name if crate::geometry::definition(name).is_some() => ObjectKind::Rectangle,
         _ => return None,
     };
     let fill = local(node, "solidFill").and_then(|n| resolved_color(n, palette, aliases))?;
@@ -533,6 +534,7 @@ fn decoration(
         height: h * t[1] / height * 405.0,
         rotation_degrees: 0.0,
         kind,
+        preset: read_preset(node).ok()?,
         fill,
         stroke,
         fill_visible: true,
@@ -794,9 +796,11 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
                     }
                     "ellipse" => ObjectKind::Ellipse,
                     "line" => ObjectKind::Line,
+                    name if crate::geometry::definition(name).is_some() => ObjectKind::Rectangle,
                     _ => continue,
                 }
             };
+            let parsed_preset = if matches!(kind, ObjectKind::Rectangle) { match read_preset(node) { Ok(p) => p, Err(_) => continue } } else { None };
             let media = if matches!(kind, ObjectKind::Picture) {
                 let Some(embed) = local(node, "blip").and_then(|n| attr(n, "embed")) else {
                     continue;
@@ -856,6 +860,7 @@ pub fn import(bytes: &[u8]) -> Result<(Presentation, Source), String> {
             object.width = w * transform[0] / width * 720.0;
             object.height = h * transform[1] / height * 405.0;
             object.rotation_degrees = rotation.rem_euclid(360.0);
+            object.preset = parsed_preset;
             let props = node
                 .children()
                 .find(|n| n.is_element() && n.tag_name().name() == "spPr");
@@ -1618,6 +1623,13 @@ pub fn export(deck: &Presentation, source: &Source) -> Result<Vec<u8>, String> {
             {
                 return Err("Saving this PPTX object formatting is not supported yet".into());
             }
+            if object.preset != item.original.preset {
+                let geom = local(node, "prstGeom").ok_or("PPTX preset geometry missing")?;
+                if item.inherited_geometry && (object.x != item.original.x || object.y != item.original.y || object.width != item.original.width || object.height != item.original.height || object.rotation_degrees != item.original.rotation_degrees) {
+                    return Err("Changing inherited transform and preset together is unsupported".into());
+                }
+                patches.push((geom.range(), geometry_xml(object.preset.as_ref(), "rect")));
+            }
             if object.cells != item.original.cells {
                 let table = local(node, "tbl").ok_or("PPTX table missing")?;
                 let rows = table
@@ -2350,6 +2362,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     height: 50.0,
                     rotation_degrees: 0.0,
                     kind: ObjectKind::Text,
+                    preset: None,
                     fill: [255, 255, 255],
                     stroke: [255, 255, 255],
                     fill_visible: false,
@@ -2401,6 +2414,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                         ObjectKind::Line => "line",
                         _ => "rect",
                     };
+                    let geometry = geometry_xml(o.preset.as_ref(), geom);
                     let body = if o.text.is_empty() && !matches!(o.kind, ObjectKind::Text) {
                         String::new()
                     } else {
@@ -2428,7 +2442,7 @@ pub fn export_new(deck: &Presentation) -> Result<Vec<u8>, String> {
                     } else {
                         "<a:ln><a:noFill/></a:ln>".into()
                     };
-                    target.push_str(&format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"Object {id}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{xfrm}<a:prstGeom prst=\"{geom}\"><a:avLst/></a:prstGeom>{fill_xml}{line_xml}</p:spPr>{body}</p:sp>"));
+                    target.push_str(&format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"Object {id}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>{xfrm}{geometry}{fill_xml}{line_xml}</p:spPr>{body}</p:sp>"));
                 }
                 ObjectKind::Picture => {
                     let (ext, _mime) = if o.media.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -2632,4 +2646,50 @@ fn appended_objects(
         fragments.push_str(&fragment);
     }
     Ok((fragments, relationships, media))
+}
+
+fn read_preset(node: roxmltree::Node<'_, '_>) -> Result<Option<crate::geometry::Preset>, String> {
+    let Some(geom) = local(node, "prstGeom") else {
+        return Ok(None);
+    };
+    let name = attr(geom, "prst").unwrap_or("rect");
+    if matches!(name, "rect" | "ellipse" | "line") {
+        return Ok(None);
+    }
+    let mut preset = crate::geometry::Preset::new(name)?;
+    if let Some(list) = geom
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "avLst")
+    {
+        for gd in list
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "gd")
+        {
+            let name = attr(gd, "name").ok_or("Missing adjustment name")?;
+            let f = attr(gd, "fmla")
+                .ok_or("Missing adjustment formula")?
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            if f.len() != 2 || f[0] != "val" {
+                return Err("Unsupported adjustment formula".into());
+            }
+            let value = f[1].parse().map_err(|_| "Invalid adjustment value")?;
+            if preset.adjustments.insert(name.into(), value).is_some() || !preset.valid() {
+                return Err("Invalid preset adjustments".into());
+            }
+        }
+    }
+    Ok(Some(preset))
+}
+fn geometry_xml(preset: Option<&crate::geometry::Preset>, fallback: &str) -> String {
+    let name = preset.map(|p| p.name.as_str()).unwrap_or(fallback);
+    let adjustments = preset
+        .map(|p| {
+            p.adjustments
+                .iter()
+                .map(|(name, v)| format!("<a:gd name=\"{name}\" fmla=\"val {v}\"/>"))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    format!("<a:prstGeom xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" prst=\"{name}\"><a:avLst>{adjustments}</a:avLst></a:prstGeom>")
 }

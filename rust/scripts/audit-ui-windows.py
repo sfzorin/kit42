@@ -902,7 +902,94 @@ def audit_engineering_formulas(process, main, binary, output, results, include_e
         results["checks"].append("native XLSX math/text functions, numeric/error/text cache types, explicit numeric separators, Unicode and blank range slots survive discard/reopen")
 
 
-def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False, rich_search=False):
+def audit_preset_shapes(process,main,output,results):
+    import xml.etree.ElementTree as ET
+    command(main,68)
+    picker=modal(process,title="Insert shape",native_class="Suite42InputDialog")
+    selector=u.GetDlgItem(picker,100)
+    assert classname(selector).lower()=="combobox" and u.SendMessageW(selector,0x146,0,0)==187
+    set_text(selector,"Round Rect")
+    click(picker,1)
+    wait_for(lambda:u.IsWindowEnabled(main),"preset inserted",process)
+    fill_prompt(process,main,26,"Object geometry",["300","150","180","90","0"])
+    wait_for(lambda:u.IsWindowEnabled(main),"preset positioned",process)
+    project=output/"preset-shapes.json"
+    save_as(main)
+    choose_file(process,project,format_name="off42 slides JSON")
+    output_ready(process,main,project,b"{")
+    def current():
+        objects=json.loads(project.read_text(encoding="utf-8"))["slides"][0]["objects"]
+        return next(o for o in objects if o.get("preset"))
+    original=current()
+    assert original["preset"]=={"name":"roundRect"}
+    canvas=wait_for(lambda:next((h for h in windows(process.pid,main) if classname(h)=="Suite42Canvas"),None),"PPT canvas",process)
+    gdi=c.WinDLL("gdi32",use_last_error=True)
+    gdi.GetPixel.argtypes=[w.HDC,c.c_int,c.c_int]
+    gdi.GetPixel.restype=w.DWORD
+    u.GetDC.argtypes,u.GetDC.restype=[w.HWND],w.HDC
+    u.ReleaseDC.argtypes=[w.HWND,w.HDC]
+    def pixel(x,y):
+        dc=u.GetDC(canvas)
+        try:return gdi.GetPixel(dc,x,y)
+        finally:u.ReleaseDC(canvas,dc)
+    fill=220|(230<<8)|(245<<16)
+    wait_for(lambda:pixel(390,195)==fill and pixel(303,153)==0xFFFFFF,"rounded shape filled curves",process)
+    assert pixel(320,153)==fill,hex(pixel(320,153))
+    def point(x,y):return (y<<16)|x
+    u.SendMessageW(canvas,0x201,1,point(315,150))
+    u.SendMessageW(canvas,0x200,1,point(330,150))
+    u.SendMessageW(canvas,0x202,0,point(330,150))
+    command(main,2)
+    wait_for(lambda:current()!=original,"handle drag persisted",process)
+    moved=current()
+    assert 33000<moved["preset"]["adjustments"]["adj"]<33700,moved
+    assert all(moved[k]==original[k] for k in ("id","x","y","width","height","rotation_degrees"))
+    command(main,4);command(main,2)
+    wait_for(lambda:current()==original,"handle Undo",process)
+    command(main,5);command(main,2)
+    wait_for(lambda:current()==moved,"handle Redo",process)
+    fill_prompt(process,main,70,"Shape adjustments",["40000"])
+    wait_for(lambda:u.IsWindowEnabled(main),"shape adjustment applied",process)
+    wait_for(lambda:pixel(320,153)==0xFFFFFF,"curve radius changes actual pixels",process)
+    fill_prompt(process,main,69,"Shape type",["Donut"])
+    wait_for(lambda:u.IsWindowEnabled(main),"shape type changed",process)
+    wait_for(lambda:pixel(390,195)==0xFFFFFF and pixel(310,195)==fill,"compound even-odd donut fill",process)
+    capture_window(main,output/"PPT42-preset-donut.bmp")
+    command(main,2)
+    wait_for(lambda:current()["preset"]["name"]=="donut","shape type persisted",process)
+    office=[]
+    for extension,format_name in [("pptx","PowerPoint presentation"),("odp","OpenDocument presentation")]:
+        path=output/("preset-shapes."+extension)
+        save_as(main);choose_file(process,path,format_name=format_name);output_ready(process,main,path,b"PK")
+        with zipfile.ZipFile(path) as archive:
+            if extension=="pptx":
+                root=ET.fromstring(archive.read("ppt/slides/slide1.xml"))
+                assert any(n.attrib.get("prst")=="donut" for n in root.iter() if n.tag.endswith("}prstGeom"))
+            else:
+                root=ET.fromstring(archive.read("content.xml"))
+                assert any(n.attrib.get("{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}type")=="ooxml-donut" for n in root.iter())
+        office.append(path)
+    fill_prompt(process,main,70,"Shape adjustments",["12000"])
+    wait_for(lambda:u.IsWindowEnabled(main),"unsaved shape change",process)
+    command(main,1);choose_file(process,office[-1])
+    confirmation=wait_for(lambda:next((h for h in windows(process.pid) if classname(h)=="#32770" and u.IsWindowEnabled(h) and all(u.GetDlgItem(h,i) for i in (2,6,7))),None),"discard unsaved preset",process)
+    click(confirmation,7)
+    wait_for(lambda:office[-1].name in text(main) and " * - " not in text(main) and u.IsWindowEnabled(main),"ODP preset reopened",process)
+    wait_for(lambda:pixel(390,195)==0xFFFFFF and pixel(310,195)==fill,"reopened preset actual pixels",process)
+    u.SendMessageW(canvas,0x201,1,point(310,195));u.SendMessageW(canvas,0x202,0,point(310,195))
+    fill_prompt(process,main,70,"Shape adjustments",["35000"])
+    wait_for(lambda:u.IsWindowEnabled(main),"reopened preset editable",process)
+    overlay=output/"preset-overlay.odp"
+    save_as(main);choose_file(process,overlay,format_name="OpenDocument presentation");output_ready(process,main,overlay,b"PK")
+    with zipfile.ZipFile(overlay) as archive:
+        root=ET.fromstring(archive.read("content.xml"))
+        geometries=[n for n in root.iter() if n.attrib.get("{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}type")=="ooxml-donut"]
+        assert len(geometries)==1
+        assert geometries[0].attrib["{urn:sfzorin:ppt42}adjust"]=="adj=35000"
+    results["checks"].append("187-shape picker, actual curved/compound fill pixels, handle drag, one-step Undo/Redo, radius/type edits, PPTX/ODP output, dirty/discard/reopen and editable ODP overlay")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False, host_commands=False, engineering=False, text_exports=False, extended_formulas=False, rich_search=False, preset_shapes=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -959,6 +1046,8 @@ def audit(binary, output, extended, pictures=False, technical=False, labels=Fals
         if binary.stem.lower() not in {"doc42", "pdf42", "xls42"}:
             if technical and binary.stem.lower() == "ppt42":
                 audit_technical_objects(process, main, binary, output, results)
+            if preset_shapes and binary.stem.lower() == "ppt42":
+                audit_preset_shapes(process,main,output,results)
             return results
         if binary.stem.lower() == "pdf42" and not startup:
             source = output / "input.pdf"
@@ -1454,6 +1543,7 @@ def main():
     parser.add_argument("--multiwindow", action="store_true")
     parser.add_argument("--window-layout", action="store_true")
     parser.add_argument("--rich-search", action="store_true")
+    parser.add_argument("--preset-shapes", action="store_true")
     parser.add_argument("--page-exports", action="store_true")
     parser.add_argument("--host-commands", action="store_true")
     parser.add_argument("--engineering", action="store_true")
@@ -1467,7 +1557,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas, args.rich_search))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources, args.page_exports, args.host_commands, args.engineering, args.text_exports, args.extended_formulas, args.rich_search, args.preset_shapes))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

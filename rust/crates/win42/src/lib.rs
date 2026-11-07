@@ -855,6 +855,11 @@ pub enum SceneItem {
         height: f64,
         paragraphs: Vec<SceneParagraph>,
     },
+    VectorPath {
+        segments: Vec<PathSegment>,
+        fill: Option<[u8; 3]>,
+        stroke: Option<[u8; 3]>,
+    },
     Path {
         points: Vec<Point>,
         color: [u8; 3],
@@ -877,6 +882,27 @@ pub enum SceneItem {
         pixel_height: u32,
         rgba: Vec<u8>,
     },
+}
+/// Curves remain vectors at screen and printer resolution. Compound paths use even-odd filling.
+#[derive(Clone, Debug)]
+pub enum PathSegment {
+    Move(Point),
+    Line(Point),
+    Cubic(Point, Point, Point),
+    Close,
+}
+impl PathSegment {
+    pub fn map_points(&mut self, mut f: impl FnMut(Point) -> Point) {
+        match self {
+            Self::Move(p) | Self::Line(p) => *p = f(*p),
+            Self::Cubic(a, b, c) => {
+                *a = f(*a);
+                *b = f(*b);
+                *c = f(*c);
+            }
+            Self::Close => {}
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct SceneFont {

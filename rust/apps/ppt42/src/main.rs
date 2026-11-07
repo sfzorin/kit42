@@ -44,6 +44,20 @@ fn resize_object(o: &mut ppt42_core::SlideObject, start: win42::Point, end: win4
     o.width = width;
     o.height = height;
 }
+fn adjust_shape_handle(object: &mut ppt42_core::SlideObject, index: usize, point: win42::Point) {
+    let point = object_local_point(object, point);
+    if let Some(preset) = &object.preset {
+        object.preset = Some(preset.drag_handle(
+            index,
+            ppt42_core::geometry::Point {
+                x: point.x - object.x,
+                y: point.y - object.y,
+            },
+            object.width,
+            object.height,
+        ));
+    }
+}
 struct Ppt {
     pending: Option<(u64, ppt42_core::SaveState)>,
     next_save: u64,
@@ -69,6 +83,7 @@ struct Show {
 enum Drag {
     Move(win42::Point, Vec<ppt42_core::SlideObject>),
     Resize(win42::Point, ppt42_core::SlideObject),
+    ShapeHandle(usize, ppt42_core::SlideObject),
 }
 impl Ppt {
     fn rich_object(&self) -> Result<ppt42_core::SlideObject, String> {
@@ -317,6 +332,26 @@ impl Ppt {
             if let Some(object) = self.deck.slides()[self.deck.current()]
                 .objects
                 .iter()
+                .find(|o| o.id == selected[0])
+            {
+                if let Some(preset) = &object.preset {
+                    if let Some(index) = preset
+                        .handles(object.width, object.height)
+                        .iter()
+                        .position(|h| {
+                            let q = object_point(object, object.x + h.x, object.y + h.y);
+                            (p.x - q.x).abs() <= 7.0 && (p.y - q.y).abs() <= 7.0
+                        })
+                    {
+                        self.drag = Some(Drag::ShapeHandle(index, object.clone()));
+                        self.rubber_band = None;
+                        return;
+                    }
+                }
+            }
+            if let Some(object) = self.deck.slides()[self.deck.current()]
+                .objects
+                .iter()
                 .find(|o| {
                     o.id == selected[0] && {
                         let handle = object_point(o, o.x + o.width, o.y + o.height);
@@ -454,7 +489,11 @@ impl Ppt {
                 .filter(|_| editable && show_selection && index == self.deck.current())
                 .and_then(|drag| match drag {
                     Drag::Move(_, objects) => objects.iter().find(|o| o.id == original.id),
-                    Drag::Resize(_, object) if object.id == original.id => Some(object),
+                    Drag::Resize(_, object) | Drag::ShapeHandle(_, object)
+                        if object.id == original.id =>
+                    {
+                        Some(object)
+                    }
                     _ => None,
                 })
                 .unwrap_or(original);
@@ -464,83 +503,75 @@ impl Ppt {
                 o.stroke
             };
             let object_start = items.len();
-            match o.kind {
-                ppt42_core::ObjectKind::Rectangle | ppt42_core::ObjectKind::Text => {
-                    if o.fill_visible {
-                        items.push(SceneItem::Rect {
-                            x: o.x,
-                            y: o.y,
-                            width: o.width,
-                            height: o.height,
-                            fill: o.fill,
-                            stroke: if o.stroke_visible
-                                || (editable && show_selection && self.selection().contains(&o.id))
-                            {
-                                stroke
-                            } else {
-                                o.fill
-                            },
-                        })
-                    } else if o.stroke_visible
-                        || (editable && show_selection && self.selection().contains(&o.id))
-                    {
-                        items.push(SceneItem::Path {
-                            points: vec![
-                                Point { x: o.x, y: o.y },
-                                Point {
-                                    x: o.x + o.width,
-                                    y: o.y,
-                                },
-                                Point {
-                                    x: o.x + o.width,
-                                    y: o.y + o.height,
-                                },
-                                Point {
-                                    x: o.x,
-                                    y: o.y + o.height,
-                                },
-                            ],
-                            color: stroke,
-                            closed: true,
-                        });
+            if let Some(preset) = &o.preset {
+                let subpaths = preset.paths(o.width, o.height);
+                for fill_pass in [true, false] {
+                    for sub in &subpaths {
+                        let fill = if fill_pass && o.fill_visible {
+                            sub.fill.color(o.fill)
+                        } else {
+                            None
+                        };
+                        let stroke = (!fill_pass
+                            && sub.stroke
+                            && (o.stroke_visible
+                                || (editable
+                                    && show_selection
+                                    && self.selection().contains(&o.id))))
+                        .then_some(stroke);
+                        if fill.is_some() || stroke.is_some() {
+                            let p = |p: ppt42_core::geometry::Point| Point {
+                                x: o.x + p.x,
+                                y: o.y + p.y,
+                            };
+                            items.push(SceneItem::VectorPath {
+                                segments: sub
+                                    .segments
+                                    .iter()
+                                    .map(|s| match *s {
+                                        ppt42_core::geometry::Segment::Move(a) => {
+                                            win42::PathSegment::Move(p(a))
+                                        }
+                                        ppt42_core::geometry::Segment::Line(a) => {
+                                            win42::PathSegment::Line(p(a))
+                                        }
+                                        ppt42_core::geometry::Segment::Cubic(a, b, c) => {
+                                            win42::PathSegment::Cubic(p(a), p(b), p(c))
+                                        }
+                                        ppt42_core::geometry::Segment::Close => {
+                                            win42::PathSegment::Close
+                                        }
+                                    })
+                                    .collect(),
+                                fill,
+                                stroke,
+                            });
+                        }
                     }
                 }
-                ppt42_core::ObjectKind::Line => items.push(SceneItem::Path {
-                    points: vec![
-                        Point { x: o.x, y: o.y },
-                        Point {
-                            x: o.x + o.width,
-                            y: o.y + o.height,
-                        },
-                    ],
-                    color: stroke,
-                    closed: false,
-                }),
-                ppt42_core::ObjectKind::Ellipse => {
-                    items.push(SceneItem::Ellipse {
-                        x: o.x,
-                        y: o.y,
-                        width: o.width,
-                        height: o.height,
-                        fill: o.fill_visible.then_some(o.fill),
-                        stroke: (o.stroke_visible
-                            || (editable && show_selection && self.selection().contains(&o.id)))
-                        .then_some(stroke),
-                    });
-                }
-                ppt42_core::ObjectKind::Picture => {
-                    if let Ok(image) = decode_image(&o.media) {
-                        let pixels = image.to_rgba8();
-                        items.push(SceneItem::ImageScaled {
-                            x: o.x,
-                            y: o.y,
-                            width: o.width,
-                            height: o.height,
-                            pixel_width: pixels.width(),
-                            pixel_height: pixels.height(),
-                            rgba: pixels.into_raw(),
-                        });
-                        if editable && show_selection && self.selection().contains(&o.id) {
+            } else {
+                match o.kind {
+                    ppt42_core::ObjectKind::Rectangle | ppt42_core::ObjectKind::Text => {
+                        if o.fill_visible {
+                            items.push(SceneItem::Rect {
+                                x: o.x,
+                                y: o.y,
+                                width: o.width,
+                                height: o.height,
+                                fill: o.fill,
+                                stroke: if o.stroke_visible
+                                    || (editable
+                                        && show_selection
+                                        && self.selection().contains(&o.id))
+                                {
+                                    stroke
+                                } else {
+                                    o.fill
+                                },
+                            })
+                        } else if o.stroke_visible
+                            || (editable && show_selection && self.selection().contains(&o.id))
+                        {
                             items.push(SceneItem::Path {
                                 points: vec![
                                     Point { x: o.x, y: o.y },
@@ -562,55 +593,120 @@ impl Ppt {
                             });
                         }
                     }
-                }
-                ppt42_core::ObjectKind::Table => {
-                    let rows = o.cells.len();
-                    let cols = o.cells.first().map_or(0, Vec::len);
-                    if rows > 0 && cols > 0 {
-                        let w = o.width / cols as f64;
-                        let h = o.height / rows as f64;
-                        for (r, row) in o.cells.iter().enumerate() {
-                            for (c, value) in row.iter().enumerate() {
-                                let x = o.x + c as f64 * w;
-                                let y = o.y + r as f64 * h;
-                                items.push(SceneItem::Rect {
-                                    x,
-                                    y,
-                                    width: w,
-                                    height: h,
-                                    fill: o.fill,
-                                    stroke,
+                    ppt42_core::ObjectKind::Line => items.push(SceneItem::Path {
+                        points: vec![
+                            Point { x: o.x, y: o.y },
+                            Point {
+                                x: o.x + o.width,
+                                y: o.y + o.height,
+                            },
+                        ],
+                        color: stroke,
+                        closed: false,
+                    }),
+                    ppt42_core::ObjectKind::Ellipse => {
+                        items.push(SceneItem::Ellipse {
+                            x: o.x,
+                            y: o.y,
+                            width: o.width,
+                            height: o.height,
+                            fill: o.fill_visible.then_some(o.fill),
+                            stroke: (o.stroke_visible
+                                || (editable
+                                    && show_selection
+                                    && self.selection().contains(&o.id)))
+                            .then_some(stroke),
+                        });
+                    }
+                    ppt42_core::ObjectKind::Picture => {
+                        if let Ok(image) = decode_image(&o.media) {
+                            let pixels = image.to_rgba8();
+                            items.push(SceneItem::ImageScaled {
+                                x: o.x,
+                                y: o.y,
+                                width: o.width,
+                                height: o.height,
+                                pixel_width: pixels.width(),
+                                pixel_height: pixels.height(),
+                                rgba: pixels.into_raw(),
+                            });
+                            if editable && show_selection && self.selection().contains(&o.id) {
+                                items.push(SceneItem::Path {
+                                    points: vec![
+                                        Point { x: o.x, y: o.y },
+                                        Point {
+                                            x: o.x + o.width,
+                                            y: o.y,
+                                        },
+                                        Point {
+                                            x: o.x + o.width,
+                                            y: o.y + o.height,
+                                        },
+                                        Point {
+                                            x: o.x,
+                                            y: o.y + o.height,
+                                        },
+                                    ],
+                                    color: stroke,
+                                    closed: true,
                                 });
-                                items.push(SceneItem::TextBox {
-                                    x: x + 4.0,
-                                    y: y + 4.0,
-                                    width: (w - 8.0).max(1.0),
-                                    height: (h - 8.0).max(1.0),
-                                    text: value.clone(),
-                                    color: [0, 0, 0],
-                                    font: win42::SceneFont {
-                                        family: "Arial".into(),
-                                        points: 12.0,
-                                        bold: false,
-                                        italic: false,
-                                        underline: false,
-                                    },
-                                    align: win42::TextAlign::Left,
-                                    wrap: true,
-                                });
+                            }
+                        }
+                    }
+                    ppt42_core::ObjectKind::Table => {
+                        let rows = o.cells.len();
+                        let cols = o.cells.first().map_or(0, Vec::len);
+                        if rows > 0 && cols > 0 {
+                            let w = o.width / cols as f64;
+                            let h = o.height / rows as f64;
+                            for (r, row) in o.cells.iter().enumerate() {
+                                for (c, value) in row.iter().enumerate() {
+                                    let x = o.x + c as f64 * w;
+                                    let y = o.y + r as f64 * h;
+                                    items.push(SceneItem::Rect {
+                                        x,
+                                        y,
+                                        width: w,
+                                        height: h,
+                                        fill: o.fill,
+                                        stroke,
+                                    });
+                                    items.push(SceneItem::TextBox {
+                                        x: x + 4.0,
+                                        y: y + 4.0,
+                                        width: (w - 8.0).max(1.0),
+                                        height: (h - 8.0).max(1.0),
+                                        text: value.clone(),
+                                        color: [0, 0, 0],
+                                        font: win42::SceneFont {
+                                            family: "Arial".into(),
+                                            points: 12.0,
+                                            bold: false,
+                                            italic: false,
+                                            underline: false,
+                                        },
+                                        align: win42::TextAlign::Left,
+                                        wrap: true,
+                                    });
+                                }
                             }
                         }
                     }
                 }
             }
             if !o.text.is_empty() {
+                let rect = o
+                    .preset
+                    .as_ref()
+                    .map(|p| p.text_rect(o.width, o.height))
+                    .unwrap_or([0.0, 0.0, o.width, o.height]);
                 let style = &o.text_style;
                 if o.paragraphs.is_empty() {
                     items.push(SceneItem::TextBox {
-                        x: o.x + 5.0,
-                        y: o.y + 5.0,
-                        width: (o.width - 10.0).max(1.0),
-                        height: (o.height - 10.0).max(1.0),
+                        x: o.x + rect[0] + 5.0,
+                        y: o.y + rect[1] + 5.0,
+                        width: (rect[2] - 10.0).max(1.0),
+                        height: (rect[3] - 10.0).max(1.0),
                         text: o.text.clone(),
                         color: style.color,
                         font: win42::SceneFont {
@@ -629,10 +725,10 @@ impl Ppt {
                     });
                 } else {
                     items.push(SceneItem::RichText {
-                        x: o.x + 5.0,
-                        y: o.y + 5.0,
-                        width: (o.width - 10.0).max(1.0),
-                        height: (o.height - 10.0).max(1.0),
+                        x: o.x + rect[0] + 5.0,
+                        y: o.y + rect[1] + 5.0,
+                        width: (rect[2] - 10.0).max(1.0),
+                        height: (rect[3] - 10.0).max(1.0),
                         paragraphs: o
                             .paragraphs
                             .iter()
@@ -668,6 +764,18 @@ impl Ppt {
                 && self.selection().len() == 1
                 && self.selection().contains(&o.id)
             {
+                if let Some(preset) = &o.preset {
+                    for h in preset.handles(o.width, o.height) {
+                        items.push(SceneItem::Ellipse {
+                            x: o.x + h.x - 4.0,
+                            y: o.y + h.y - 4.0,
+                            width: 8.0,
+                            height: 8.0,
+                            fill: Some([255, 210, 0]),
+                            stroke: Some([130, 90, 0]),
+                        });
+                    }
+                }
                 items.push(SceneItem::Rect {
                     x: o.x + o.width - 4.0,
                     y: o.y + o.height - 4.0,
@@ -959,6 +1067,14 @@ impl win42::App for Ppt {
                                 }
                             }
                         }
+                        win42::SceneItem::VectorPath { segments, .. } => {
+                            for segment in segments {
+                                segment.map_points(|p| win42::Point {
+                                    x: p.x * sx,
+                                    y: p.y * sy,
+                                });
+                            }
+                        }
                         win42::SceneItem::Path { points, .. } => {
                             for p in points {
                                 p.x *= sx;
@@ -1106,6 +1222,39 @@ impl win42::App for Ppt {
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
         let slide = &self.deck.slides()[self.deck.current()];
         match id {
+            68 | 69 => Some(win42::InputRequest {
+                title: if id == 68 {
+                    "Insert shape"
+                } else {
+                    "Shape type"
+                },
+                fields: vec![(
+                    "Shape",
+                    self.selected_object
+                        .and_then(|id| slide.objects.iter().find(|o| o.id == id))
+                        .and_then(|o| o.preset.as_ref())
+                        .map(|p| shape_label(&p.name))
+                        .unwrap_or_else(|| shape_label("roundRect")),
+                )],
+            }),
+            70 => self
+                .selected_object
+                .and_then(|id| slide.objects.iter().find(|o| o.id == id))
+                .and_then(|o| o.preset.as_ref())
+                .and_then(|p| {
+                    let def = ppt42_core::geometry::definition(&p.name)?;
+                    let values = def.adjustment_values(p);
+                    Some(win42::InputRequest {
+                        title: "Shape adjustments",
+                        fields: def
+                            .adjustments
+                            .iter()
+                            .zip(values)
+                            .enumerate()
+                            .map(|(i, (_, v))| (ADJUSTMENT_LABELS[i], format!("{v:.0}")))
+                            .collect(),
+                    })
+                }),
             66 => Some(win42::InputRequest {
                 title: "Slide timing and transition",
                 fields: vec![
@@ -1183,8 +1332,71 @@ impl win42::App for Ppt {
             _ => None,
         }
     }
+    fn input_choices(&self, id: u16) -> Vec<(usize, Vec<String>)> {
+        if matches!(id, 68 | 69) {
+            vec![(
+                0,
+                ppt42_core::geometry::catalog()
+                    .iter()
+                    .map(|d| shape_label(&d.name))
+                    .collect(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
         match id {
+            68 | 69 if values.len() == 1 => {
+                let name = &ppt42_core::geometry::catalog()
+                    .iter()
+                    .find(|d| shape_label(&d.name) == values[0] || d.name == values[0])
+                    .ok_or("Choose a shape")?
+                    .name;
+                let preset = ppt42_core::geometry::Preset::new(name)?;
+                if id == 68 {
+                    self.selected_object = Some(self.deck.insert_preset(preset)?);
+                    self.selected_objects.clear();
+                    Ok(())
+                } else {
+                    let id = self.selected_object.ok_or("Select a shape")?;
+                    let mut object = self.deck.slides()[self.deck.current()]
+                        .objects
+                        .iter()
+                        .find(|o| o.id == id && o.preset.is_some())
+                        .cloned()
+                        .ok_or("Select a preset shape")?;
+                    object.preset = Some(preset);
+                    self.deck.update_object(object)
+                }
+            }
+            70 => {
+                let id = self.selected_object.ok_or("Select a shape")?;
+                let mut object = self.deck.slides()[self.deck.current()]
+                    .objects
+                    .iter()
+                    .find(|o| o.id == id)
+                    .cloned()
+                    .ok_or("Select a shape")?;
+                let preset = object.preset.as_mut().ok_or("Select a preset shape")?;
+                let def = ppt42_core::geometry::definition(&preset.name).ok_or("Unknown shape")?;
+                if values.len() != def.adjustments.len() {
+                    return Err("Invalid adjustment count".into());
+                }
+                let values = values
+                    .iter()
+                    .map(|s| {
+                        s.trim()
+                            .parse::<i32>()
+                            .map_err(|_| "Invalid shape adjustment")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                preset.adjustments.clear();
+                for ((name, _), value) in def.adjustments.iter().zip(values) {
+                    preset.adjustments.insert(name.clone(), value);
+                }
+                self.deck.update_object(object)
+            }
             66 if values.len() == 3 => {
                 let advance_ms = if values[0].trim().is_empty() {
                     None
@@ -1482,6 +1694,7 @@ impl win42::App for Ppt {
                             resize_object(object, *start, p);
                             *start = p;
                         }
+                        Drag::ShapeHandle(index, object) => adjust_shape_handle(object, *index, p),
                     }
                 }
                 if let Some((_, ref mut current, _)) = self.rubber_band {
@@ -1500,6 +1713,10 @@ impl win42::App for Ppt {
                         }
                         Drag::Resize(start, mut object) => {
                             resize_object(&mut object, start, p);
+                            self.deck.update_object(object)?;
+                        }
+                        Drag::ShapeHandle(index, mut object) => {
+                            adjust_shape_handle(&mut object, index, p);
                             self.deck.update_object(object)?;
                         }
                     }
@@ -1648,6 +1865,9 @@ impl win42::App for Ppt {
             (12, "Move Slide &Up"),
             (13, "Move Slide D&own"),
             (14, "D&uplicate Slide"),
+            (68, "Insert Shape…"),
+            (69, "Shape Type…"),
+            (70, "Shape Adjustments…"),
             (20, "Insert Rectangle"),
             (21, "Insert Ellipse"),
             (22, "Insert Line"),
@@ -1912,6 +2132,16 @@ impl win42::App for Ppt {
             return false;
         }
         match id {
+            69 | 70 => self.selected_object.is_some_and(|object_id| {
+                self.deck.slides()[i].objects.iter().any(|o| {
+                    o.id == object_id
+                        && o.preset.as_ref().is_some_and(|p| {
+                            id == 69
+                                || ppt42_core::geometry::definition(&p.name)
+                                    .is_some_and(|d| !d.adjustments.is_empty())
+                        })
+                })
+            }),
             66 => {
                 self.pptx_source
                     .as_ref()
@@ -2175,6 +2405,32 @@ impl win42::App for Ppt {
             _ => Ok(()),
         }
     }
+}
+const ADJUSTMENT_LABELS: [&str; 10] = [
+    "Adjustment 1",
+    "Adjustment 2",
+    "Adjustment 3",
+    "Adjustment 4",
+    "Adjustment 5",
+    "Adjustment 6",
+    "Adjustment 7",
+    "Adjustment 8",
+    "Adjustment 9",
+    "Adjustment 10",
+];
+fn shape_label(name: &str) -> String {
+    let mut label = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i > 0 && (c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            label.push(' ');
+        }
+        if i == 0 {
+            label.extend(c.to_uppercase());
+        } else {
+            label.push(c);
+        }
+    }
+    label
 }
 fn main() {
     win42::run(Box::new(Ppt::new(Presentation::new())))
@@ -2753,5 +3009,104 @@ mod technical_regression {
             // Office geometry is quantized to integral EMUs (1/914400 inch).
             assert!((actual.width_mm - second.width_mm).abs() < 0.0001);
         }
+    }
+}
+
+#[cfg(test)]
+mod preset_ui_tests {
+    use super::*;
+    use win42::{App, CanvasEvent, Point};
+    #[test]
+    fn preset_picker_handle_drag_cancel_history_and_rotation() {
+        let mut app = Ppt::new(Presentation::new());
+        let choices = app.input_choices(68);
+        assert_eq!(choices[0].1.len(), 187);
+        app.input_action(68, &["Round Rect".into()]).unwrap();
+        assert!(app.enabled(69) && app.enabled(70));
+        assert_eq!(app.deck.slides()[0].objects.len(), 1);
+        assert!(app.deck.undo());
+        assert!(app.deck.slides()[0].objects.is_empty());
+        assert!(app.deck.redo());
+        let original = app.deck.slides()[0].objects[0].clone();
+        let p = original.preset.as_ref().unwrap();
+        let handle = p.handles(original.width, original.height)[0];
+        let start = Point {
+            x: original.x + handle.x,
+            y: original.y + handle.y,
+        };
+        let end = Point {
+            x: original.x + 30.0,
+            y: original.y,
+        };
+        app.canvas_event(CanvasEvent::PointerDown(start)).unwrap();
+        assert!(matches!(app.drag, Some(Drag::ShapeHandle(0, _))));
+        app.canvas_event(CanvasEvent::PointerMove(end)).unwrap();
+        assert_eq!(
+            app.deck.slides()[0].objects[0],
+            original,
+            "drag preview must not create history"
+        );
+        app.canvas_event(CanvasEvent::Cancel).unwrap();
+        assert_eq!(app.deck.slides()[0].objects[0], original);
+        app.canvas_event(CanvasEvent::PointerDown(start)).unwrap();
+        app.canvas_event(CanvasEvent::PointerUp(end)).unwrap();
+        let changed = app.deck.slides()[0].objects[0].clone();
+        assert_ne!(changed.preset, original.preset);
+        assert_eq!(
+            (changed.x, changed.y, changed.width, changed.height),
+            (original.x, original.y, original.width, original.height)
+        );
+        app.action(4).unwrap();
+        assert_eq!(app.deck.slides()[0].objects[0], original);
+        app.action(5).unwrap();
+        assert_eq!(app.deck.slides()[0].objects[0], changed);
+        let mut rotated = changed.clone();
+        rotated.rotation_degrees = 37.0;
+        app.deck.update_object(rotated.clone()).unwrap();
+        let h = rotated
+            .preset
+            .as_ref()
+            .unwrap()
+            .handles(rotated.width, rotated.height)[0];
+        let start = object_point(&rotated, rotated.x + h.x, rotated.y + h.y);
+        let end = object_point(&rotated, rotated.x + 15.0, rotated.y);
+        app.canvas_event(CanvasEvent::PointerDown(start)).unwrap();
+        assert!(matches!(app.drag, Some(Drag::ShapeHandle(0, _))));
+        app.canvas_event(CanvasEvent::PointerUp(end)).unwrap();
+        let actual = &app.deck.slides()[0].objects[0];
+        assert_eq!(actual.rotation_degrees, 37.0);
+        assert_ne!(actual.preset, rotated.preset);
+        let before = app.deck.save_snapshot().unwrap().0;
+        assert!(app.input_action(70, &["invalid".into()]).is_err());
+        assert_eq!(app.deck.save_snapshot().unwrap().0, before);
+    }
+    #[test]
+    fn screen_and_print_keep_filled_curves_and_shape_text_frame() {
+        let mut app = Ppt::new(Presentation::new());
+        app.input_action(68, &["Round Rect".into()]).unwrap();
+        app.input_action(25, &["Rounded shape".into()]).unwrap();
+        let scene = app.canvas_scene().unwrap();
+        let curved=scene.items.iter().filter(|i|matches!(i,win42::SceneItem::VectorPath{segments,..} if segments.iter().any(|s|matches!(s,win42::PathSegment::Cubic(..))))).count();
+        assert!(curved >= 2);
+        assert!(scene.items.iter().any(|i| matches!(
+            i,
+            win42::SceneItem::VectorPath {
+                fill: Some(_),
+                stroke: None,
+                ..
+            }
+        )));
+        let win42::PrintJob::Scenes(pages) = app.print_job(40).unwrap() else {
+            panic!("Expected vector print pages")
+        };
+        let print = &pages[0].scene;
+        assert!(print
+            .items
+            .iter()
+            .any(|i| matches!(i, win42::SceneItem::VectorPath { fill: Some(_), .. })));
+        assert!(!print.items.iter().any(|i| matches!(
+            i,
+            win42::SceneItem::Image { .. } | win42::SceneItem::ImageScaled { .. }
+        )));
     }
 }

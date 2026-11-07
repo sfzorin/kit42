@@ -4275,6 +4275,69 @@ unsafe fn draw_scene_items(dc: HDC, viewport: crate::Viewport, items: &[crate::S
                 });
                 draw_rich_scene(dc, a, b, viewport.zoom, paragraphs);
             }
+            SceneItem::VectorPath {
+                segments,
+                fill,
+                stroke,
+            } => {
+                if segments.is_empty() || (fill.is_none() && stroke.is_none()) {
+                    continue;
+                }
+                let saved = SaveDC(dc);
+                if saved == 0 {
+                    continue;
+                }
+                let brush = fill.map(|c| CreateSolidBrush(rgb(c)));
+                let pen = stroke.map(|c| CreatePen(PS_SOLID, 1, rgb(c)));
+                SelectObject(dc, brush.unwrap_or_else(|| GetStockObject(NULL_BRUSH)) as _);
+                SelectObject(dc, pen.unwrap_or_else(|| GetStockObject(NULL_PEN)) as _);
+                SetPolyFillMode(dc, ALTERNATE);
+                if BeginPath(dc) != 0 {
+                    for segment in segments {
+                        match segment {
+                            crate::PathSegment::Move(p) => {
+                                let p = cv(*p);
+                                MoveToEx(dc, p.x as i32, p.y as i32, null_mut());
+                            }
+                            crate::PathSegment::Line(p) => {
+                                let p = cv(*p);
+                                LineTo(dc, p.x as i32, p.y as i32);
+                            }
+                            crate::PathSegment::Cubic(a, b, c) => {
+                                let points = [*a, *b, *c].map(|p| {
+                                    let p = cv(p);
+                                    POINT {
+                                        x: p.x as i32,
+                                        y: p.y as i32,
+                                    }
+                                });
+                                PolyBezierTo(dc, points.as_ptr(), 3);
+                            }
+                            crate::PathSegment::Close => {
+                                CloseFigure(dc);
+                            }
+                        }
+                    }
+                    if EndPath(dc) != 0 {
+                        if fill.is_some() && stroke.is_some() {
+                            StrokeAndFillPath(dc);
+                        } else if fill.is_some() {
+                            FillPath(dc);
+                        } else {
+                            StrokePath(dc);
+                        }
+                    } else {
+                        AbortPath(dc);
+                    }
+                }
+                RestoreDC(dc, saved);
+                if let Some(brush) = brush {
+                    DeleteObject(brush as _);
+                }
+                if let Some(pen) = pen {
+                    DeleteObject(pen as _);
+                }
+            }
             SceneItem::Path {
                 points,
                 color,

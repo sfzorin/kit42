@@ -620,8 +620,9 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 continue;
             }
             let name = node.tag_name().name();
+            let preset = if name == "custom-shape" { match read_preset(node) { Ok(Some(p)) => Some(p), _ => continue } } else { None };
             let (kind, media, cells) = match name {
-                "rect" => (ObjectKind::Rectangle, Vec::new(), Vec::new()),
+                "rect" | "custom-shape" => (ObjectKind::Rectangle, Vec::new(), Vec::new()),
                 "ellipse" => (ObjectKind::Ellipse, Vec::new(), Vec::new()),
                 "line" => (ObjectKind::Line, Vec::new(), Vec::new()),
                 "frame" => {
@@ -741,6 +742,7 @@ pub fn import_with_source(bytes: &[u8]) -> Result<(Presentation, Source), String
                 let id = *group_ids.entry(group.range().start).or_insert(object.id);
                 object.group_id = Some(id);
             }
+            object.preset = preset;
             object.x = x;
             object.y = y;
             object.width = width;
@@ -971,6 +973,10 @@ pub fn export(deck: &Presentation) -> Result<Vec<u8>, String> {
             let geo = format!("draw:style-name=\"{name}\" {}", geometry_attrs(o));
             match o.kind {
                 ObjectKind::Rectangle | ObjectKind::Ellipse => {
+                    if let Some(preset) = &o.preset {
+                        target.push_str(&format!("<draw:custom-shape {geo}>{object_text}{}</draw:custom-shape>", preset_xml(preset, o.width, o.height)));
+                        continue;
+                    }
                     let tag = if o.kind == ObjectKind::Rectangle {
                         "rect"
                     } else {
@@ -1613,6 +1619,11 @@ pub fn export_overlay(deck: &Presentation, source: &Source) -> Result<Vec<u8>, S
             {
                 return Err("Saving this ODP object formatting is not supported yet".into());
             }
+            if object.preset != item.original.preset || (object.preset.is_some() && (object.width != item.original.width || object.height != item.original.height)) {
+                let geom = node.children().find(|n| n.is_element() && n.tag_name().name() == "enhanced-geometry").ok_or("ODP preset geometry missing")?;
+                let preset = object.preset.as_ref().ok_or("Cannot remove an ODP preset geometry")?;
+                patches.push((geom.range(), preset_xml(preset, object.width, object.height)));
+            }
             if matches!(object.kind, ObjectKind::Line) {
                 let transformed = attr(node, "transform").is_some();
                 let wants_transform =
@@ -2043,6 +2054,9 @@ fn appended_object(
     let geo = format!("{ns} draw:style-name=\"{name}\" {}", geometry_attrs(o));
     Ok(match o.kind {
         ObjectKind::Rectangle | ObjectKind::Ellipse => {
+            if let Some(preset) = &o.preset {
+                return Ok(format!("<draw:custom-shape {geo}>{object_text}{}</draw:custom-shape>", preset_xml(preset, o.width, o.height)));
+            }
             let tag = if o.kind == ObjectKind::Rectangle {
                 "rect"
             } else {
@@ -2094,4 +2108,83 @@ fn appended_object(
             result
         }
     })
+}
+
+fn read_preset(node: roxmltree::Node<'_, '_>) -> Result<Option<geometry::Preset>, String> {
+    let Some(geo) = node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "enhanced-geometry")
+    else {
+        return Ok(None);
+    };
+    let kind = attr(geo, "type").unwrap_or("");
+    let Some(name) = kind.strip_prefix("ooxml-") else {
+        return Ok(None);
+    };
+    if ["mirror-horizontal", "mirror-vertical"]
+        .iter()
+        .any(|key| matches!(attr(geo, key), Some("true" | "1")))
+    {
+        return Err("Mirrored preset unsupported".into());
+    }
+    let mut preset = geometry::Preset::new(name)?;
+    if let Some(exact) = geo.attribute(("urn:sfzorin:ppt42", "adjust")) {
+        for kv in exact.split(';').filter(|s| !s.is_empty()) {
+            let (name, v) = kv.split_once('=').ok_or("Invalid preset adjustment")?;
+            let value = v.parse().map_err(|_| "Invalid preset adjustment value")?;
+            if preset.adjustments.insert(name.into(), value).is_some() || !preset.valid() {
+                return Err("Invalid preset adjustments".into());
+            }
+        }
+    } else if let Some(mods) = attr(geo, "modifiers") {
+        let def = geometry::definition(name).ok_or("Unknown preset")?;
+        let values = mods.split_whitespace().collect::<Vec<_>>();
+        if values.len() > def.adjustments.len() {
+            return Err("Too many preset modifiers".into());
+        }
+        for ((name, _), value) in def.adjustments.iter().zip(values) {
+            let value: f64 = value.parse().map_err(|_| "Invalid preset modifier")?;
+            if !value.is_finite() || value < i32::MIN as f64 || value > i32::MAX as f64 {
+                return Err("Invalid preset modifier".into());
+            }
+            preset.adjustments.insert(name.clone(), value as i32);
+        }
+    }
+    Ok(Some(preset))
+}
+fn preset_xml(preset: &geometry::Preset, width: f64, height: f64) -> String {
+    use geometry::Segment;
+    let mut path = String::new();
+    let point = |p: geometry::Point| format!("{:.3} {:.3}", p.x * 100.0, p.y * 100.0);
+    for sub in preset.paths(width, height) {
+        for s in sub.segments {
+            path.push_str(&match s {
+                Segment::Move(p) => format!("M {} ", point(p)),
+                Segment::Line(p) => format!("L {} ", point(p)),
+                Segment::Cubic(a, b, c) => format!("C {} {} {} ", point(a), point(b), point(c)),
+                Segment::Close => "Z ".into(),
+            });
+        }
+        if sub.fill == geometry::Fill::None {
+            path.push_str("F ");
+        }
+        if !sub.stroke {
+            path.push_str("S ");
+        }
+        path.push_str("N ");
+    }
+    let def = geometry::definition(&preset.name).expect("Validated preset");
+    let modifiers = def
+        .adjustment_values(preset)
+        .iter()
+        .map(|v| format!("{v:.0}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let exact = preset
+        .adjustments
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("<draw:enhanced-geometry xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" xmlns:ppt42=\"urn:sfzorin:ppt42\" svg:viewBox=\"0 0 {:.3} {:.3}\" draw:type=\"ooxml-{}\" draw:modifiers=\"{modifiers}\" ppt42:prst=\"{}\" ppt42:adjust=\"{exact}\" draw:enhanced-path=\"{path}\"/>", width * 100.0, height * 100.0, preset.name, preset.name)
 }

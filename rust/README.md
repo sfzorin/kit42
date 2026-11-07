@@ -79,6 +79,23 @@ XLSX/ODS packages can be moved or deleted, and new pictures can be added while p
 parts. Cropped/rotated drawings and unsupported image formats remain opaque. CSV export rejects pictures.
 Technical PNG files retain the same editable recipe and physical width used by the macOS apps.
 
+## Presentation shapes
+
+PPT42 offers the same 187 OOXML preset definitions as macOS through **Insert Shape**.
+Selected presets have yellow adjustment handles and **Shape Type / Shape Adjustments** commands.
+Curves, compound holes, shaded subpaths and text frames are evaluated at the current aspect ratio;
+canvas, slide show and printing keep vector paths. Dragging a handle commits one Undo/Redo step.
+Projects retain preset identity and adjustments. PPTX writes standard `prstGeom`/`avLst`; ODP writes
+OOXML preset types, ordered modifiers and a literal enhanced path. Supported preset changes and resizing
+can be saved back into imported PPTX/ODP packages while preserving unrelated package parts.
+Mirrored/custom guide formulas outside this subset remain preserved opaque content.
+
+The geometry oracle is regenerated with `python3 rust/scripts/export-shape-cases.py` on macOS.
+It compares 620 actual Swift-engine cases across all 187 presets, two aspect ratios and changed adjustments.
+The MPL-2.0 data source, notice and license are included in Windows archives under `licenses/drawingml-presets`.
+Native Windows insertion/render/handle/history/reopen checks are part of `--preset-shapes`; their next build
+result must be recorded separately from portable geometry and file-format tests.
+
 ## Native text proofing
 
 DOC42 and PPT42 enable inline spelling through Windows Rich Edit and TSF. The Edit menu toggles it.

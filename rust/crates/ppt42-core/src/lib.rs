@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 use suite42_core::{write_new, SnapshotHistory, TextValue};
+pub mod geometry;
 pub mod odp;
 pub mod pptx;
 const MAX_SLIDES: usize = 200;
@@ -71,6 +72,8 @@ pub struct SlideObject {
     #[serde(default)]
     pub rotation_degrees: f64,
     pub kind: ObjectKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<geometry::Preset>,
     pub fill: [u8; 3],
     pub stroke: [u8; 3],
     #[serde(default = "enabled", skip_serializing_if = "is_enabled")]
@@ -226,6 +229,7 @@ impl Deck {
                                 o.id > 0
                                     && o.id < s.next_object_id
                                     && object_ids.insert(o.id)
+                                    && o.preset.as_ref().is_none_or(|p| matches!(o.kind, ObjectKind::Rectangle) && p.valid())
                                     && o.x.is_finite()
                                     && o.y.is_finite()
                                     && o.width.is_finite()
@@ -436,6 +440,30 @@ impl Presentation {
         cells: Vec<Vec<String>>,
         size: [f64; 2],
     ) -> Result<u64, String> {
+        self.insert_content_geometry(kind, text, media, cells, size, None)
+    }
+    pub fn insert_preset(&mut self, preset: geometry::Preset) -> Result<u64, String> {
+        if !preset.valid() {
+            return Err("Invalid preset shape".into());
+        }
+        self.insert_content_geometry(
+            ObjectKind::Rectangle,
+            String::new(),
+            Vec::new(),
+            Vec::new(),
+            [180.0, 90.0],
+            Some(preset),
+        )
+    }
+    fn insert_content_geometry(
+        &mut self,
+        kind: ObjectKind,
+        text: String,
+        media: Vec<u8>,
+        cells: Vec<Vec<String>>,
+        size: [f64; 2],
+        preset: Option<geometry::Preset>,
+    ) -> Result<u64, String> {
         let mut state = self.history.current().clone();
         let slide = &mut state.deck.slides[self.current()];
         let id = slide.next_object_id;
@@ -449,6 +477,7 @@ impl Presentation {
             height: size[1],
             rotation_degrees: 0.0,
             kind,
+            preset,
             fill: [220, 230, 245],
             stroke: [40, 70, 110],
             fill_visible: true,
@@ -1267,5 +1296,109 @@ mod tests {
         fs::remove_file(path).unwrap();
         assert!(p.delete().is_ok());
         assert!(p.delete().is_err());
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+    #[test]
+    fn preset_catalog_roundtrips_project_and_office_formats() {
+        let mut deck = Presentation::new();
+        for d in geometry::catalog() {
+            let mut preset = geometry::Preset::new(&d.name).unwrap();
+            for (name, value) in &d.adjustments {
+                preset
+                    .adjustments
+                    .insert(name.clone(), (*value as f64 * 0.8) as i32);
+            }
+            deck.insert_preset(preset).unwrap();
+        }
+        let (bytes, _) = deck.save_snapshot().unwrap();
+        // Project has exact identity and adjustment persistence.
+        let path =
+            std::env::temp_dir().join(format!("off42-preset-project-{}.json", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let reopened = Presentation::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(reopened.slides(), deck.slides());
+        for bytes in [
+            pptx::export_new(&deck).unwrap(),
+            odp::export(&deck).unwrap(),
+        ] {
+            let imported = if let Ok((d, _)) = pptx::import(&bytes) {
+                d
+            } else {
+                odp::import(&bytes).unwrap()
+            };
+            assert_eq!(imported.slides()[0].objects.len(), 187);
+            for (source, actual) in deck.slides()[0]
+                .objects
+                .iter()
+                .zip(&imported.slides()[0].objects)
+            {
+                let p = source.preset.as_ref().unwrap();
+                if matches!(p.name.as_str(), "rect" | "ellipse" | "line") && actual.preset.is_none()
+                {
+                    continue;
+                }
+                assert_eq!(source.preset, actual.preset, "{}", p.name);
+                assert!((source.width - actual.width).abs() < 0.001);
+                assert!((source.height - actual.height).abs() < 0.001);
+            }
+        }
+    }
+    #[test]
+    fn changed_preset_geometry_and_adjustments_survive_source_overlays() {
+        let mut deck = Presentation::new();
+        let id = deck
+            .insert_preset(geometry::Preset::new("roundRect").unwrap())
+            .unwrap();
+        for (pptx_format, bytes) in [
+            (true, pptx::export_new(&deck).unwrap()),
+            (false, odp::export(&deck).unwrap()),
+        ] {
+            let (mut doc, pptx_source, odp_source) = if pptx_format {
+                let (d, s) = pptx::import(&bytes).unwrap();
+                (d, Some(s), None)
+            } else {
+                let (d, s) = odp::import_with_source(&bytes).unwrap();
+                (d, None, Some(s))
+            };
+            let old = doc.slides()[0].objects[0].clone();
+            let mut object = old.clone();
+            object.width = 90.0;
+            object.height = 180.0;
+            object.rotation_degrees = 25.0;
+            object.preset = Some(geometry::Preset::new("star5").unwrap());
+            object
+                .preset
+                .as_mut()
+                .unwrap()
+                .adjustments
+                .insert("adj".into(), 25000);
+            doc.update_object(object.clone()).unwrap();
+            assert!(doc.undo());
+            assert_eq!(doc.slides()[0].objects[0], old);
+            assert!(doc.redo());
+            let bytes = if let Some(s) = &pptx_source {
+                pptx::export(&doc, s).unwrap()
+            } else {
+                odp::export_overlay(&doc, odp_source.as_ref().unwrap()).unwrap()
+            };
+            let actual = if pptx_format {
+                pptx::import(&bytes).unwrap().0
+            } else {
+                odp::import(&bytes).unwrap()
+            };
+            let actual = &actual.slides()[0].objects[0];
+            assert_eq!(actual.preset, object.preset);
+            assert!((actual.width - 90.0).abs() < 0.001);
+            assert!((actual.height - 180.0).abs() < 0.001);
+            assert!((actual.rotation_degrees - 25.0).abs() < 0.001);
+            assert!((actual.x - object.x).abs() < 0.001);
+            assert!((actual.y - object.y).abs() < 0.001);
+        }
+        assert_eq!(deck.slides()[0].objects[0].id, id);
     }
 }
