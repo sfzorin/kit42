@@ -124,12 +124,10 @@ def fill_prompt(process, main, identifier, title, values):
 
 def choose_file(process, path):
     dialog = modal(process, native_class="#32770")
-    children = windows(process.pid, dialog)
-    edits = [h for h in children if classname(h).lower() == "edit"]
-    control = next((h for h in edits if u.GetDlgCtrlID(h) in (1148, 1001)), None)
-    if control is None:
-        assert len(edits) == 1, [(classname(h), u.GetDlgCtrlID(h), text(h)) for h in children]
-        control = edits[0]
+    def filename_control():
+        edits = [h for h in windows(process.pid, dialog) if classname(h).lower() == "edit" and u.IsWindowVisible(h)]
+        return next((h for h in edits if u.GetDlgCtrlID(h) in (1148, 1001)), edits[0] if len(edits) == 1 else None)
+    control = wait_for(filename_control, "file dialog filename field", process)
     set_text(control, str(path))
     click(dialog, 1)
 
@@ -388,10 +386,14 @@ def main():
     results = []
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
-            results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended))
+            try:
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended))
+            except Exception as error:
+                results.append({"app": app, "error": str(error)})
             print(json.dumps(results[-1]), flush=True)
     finally:
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    assert all("error" not in result for result in results), results
 
 
 if __name__ == "__main__":

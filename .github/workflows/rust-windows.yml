@@ -12,6 +12,10 @@ on:
         description: Run native GUI audits against the current Windows preview
         type: boolean
         default: false
+      audit_run_id:
+        description: Optional build run ID for native audits; empty audits the public preview
+        type: string
+        default: ''
 jobs:
   windows:
     if: inputs.audit_only != true
@@ -120,12 +124,23 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          AUDIT_RUN_ID: ${{ inputs.audit_run_id }}
         run: |
-          gh release download v1.0.0-windows-preview.3 --repo $env:GITHUB_REPOSITORY --pattern '*-x64.zip' --dir build
+          if ($env:AUDIT_RUN_ID) {
+            gh run download $env:AUDIT_RUN_ID --repo $env:GITHUB_REPOSITORY --name Suite42-windows-x64 --dir build
+          } else {
+            gh release download v1.0.0-windows-preview.3 --repo $env:GITHUB_REPOSITORY --pattern '*-x64.zip' --dir build
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Expand-Archive build/*.zip -DestinationPath build/preview
       - name: Audit native commands and generated files
-        run: python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui
+        env:
+          AUDIT_RUN_ID: ${{ inputs.audit_run_id }}
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ($env:AUDIT_RUN_ID) { $extra += '--extended' }
+          python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()
         with:
