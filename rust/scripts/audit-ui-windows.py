@@ -10,6 +10,7 @@ from pathlib import Path
 import struct
 import subprocess
 import time
+import traceback
 import uuid
 import zlib
 
@@ -331,7 +332,8 @@ def audit_technical_objects(process, main, binary, output, results):
     def editor_value(expected, change=False):
         command(main, 65508)
         dialog = modal(process, title="Symbol or Code", native_class="Suite42InputDialog")
-        assert text(u.GetDlgItem(dialog, 101)) == expected
+        actual = text(u.GetDlgItem(dialog, 101))
+        assert actual == expected, {"expected": expected, "actual": actual, "saved": text(main)}
         if change:
             set_text(u.GetDlgItem(dialog, 101), "PCB-0008")
             set_text(u.GetDlgItem(dialog, 102), "25")
@@ -490,7 +492,7 @@ def main():
             try:
                 results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects))
             except Exception as error:
-                results.append({"app": app, "error": str(error)})
+                results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)
     finally:
         (args.output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
