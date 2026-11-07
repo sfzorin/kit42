@@ -88,7 +88,7 @@ impl Pdf {
                     ("Side margin (pt)", h.horizontal.to_string()),
                     ("Pages", pages),
                 ]);
-                win42::InputRequest{title:"Header & Footer — <<page>>, <<pages>>, <<label>>, <<date>>, <<file>>, <<bates>>",fields}
+                win42::InputRequest{title:"Header & Footer",fields}
             }
             93 => win42::InputRequest {
                 title: "Bates Numbering Settings",
@@ -334,6 +334,7 @@ mod tests {
         std::fs::write(&source, include_bytes!("../fixtures/page-export.pdf")).unwrap();
         let mut app = Pdf::default();
         app.open(&source).unwrap();
+        assert_eq!(app.input_request(92).unwrap().title,"Header & Footer");
         let original = app.doc.as_ref().unwrap().save_snapshot().unwrap().0;
         app.input_action(
             93,
