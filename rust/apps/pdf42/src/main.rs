@@ -1061,7 +1061,55 @@ impl win42::App for Pdf {
     fn password_input(&self, id: u16) -> bool {
         id == 76
     }
+    fn input_choices(&self, id: u16) -> Vec<(usize, Vec<String>)> {
+        if id == 83 {
+            vec![(
+                2,
+                [
+                    "1, 2, 3",
+                    "I, II, III",
+                    "i, ii, iii",
+                    "A, B, C",
+                    "a, b, c",
+                    "Prefix only",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            )]
+        } else {
+            vec![]
+        }
+    }
     fn input_request(&self, id: u16) -> Option<win42::InputRequest> {
+        if id == 83 {
+            let doc = self.doc.as_ref()?;
+            return Some(win42::InputRequest {
+                title: "Page Labels",
+                fields: vec![
+                    ("First page", "1".into()),
+                    ("Last page", doc.page_count().to_string()),
+                    ("Numbering style", "1, 2, 3".into()),
+                    ("Prefix", String::new()),
+                    ("Starting number", "1".into()),
+                ],
+            });
+        }
+        if id == 84 {
+            let doc = self.doc.as_ref()?;
+            let label = doc
+                .page_labels()
+                .ok()
+                .flatten()
+                .and_then(|labels| labels.get(doc.current()).cloned());
+            return Some(win42::InputRequest {
+                title: "Go to Page",
+                fields: vec![(
+                    "Page number or label",
+                    label.unwrap_or_else(|| (doc.current() + 1).to_string()),
+                )],
+            });
+        }
         if id == 76 && self.doc.is_some() {
             return Some(win42::InputRequest {
                 title: "Set password for encrypted PDF copy (AES-128)",
@@ -1263,6 +1311,55 @@ impl win42::App for Pdf {
         })
     }
     fn input_action(&mut self, id: u16, values: &[String]) -> Result<(), String> {
+        if id == 83 {
+            let [first, last, style, prefix, start] = values else {
+                return Err("Invalid page-label settings".into());
+            };
+            let page = |value: &str| {
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .ok_or("Page numbers start at 1")
+            };
+            let style = match style.as_str() {
+                "1, 2, 3" => pdf42_core::PageLabelStyle::Decimal,
+                "I, II, III" => pdf42_core::PageLabelStyle::UpperRoman,
+                "i, ii, iii" => pdf42_core::PageLabelStyle::LowerRoman,
+                "A, B, C" => pdf42_core::PageLabelStyle::UpperLetters,
+                "a, b, c" => pdf42_core::PageLabelStyle::LowerLetters,
+                "Prefix only" => pdf42_core::PageLabelStyle::PrefixOnly,
+                _ => return Err("Choose an available numbering style".into()),
+            };
+            let start = start
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "Enter a positive starting number")?;
+            self.doc
+                .as_mut()
+                .ok_or("Open a PDF first")?
+                .set_page_labels(page(first)?, page(last)?, style, prefix, start)?;
+            self.branch();
+            return self.request_render();
+        }
+        if id == 84 {
+            let [value] = values else {
+                return Err("Enter a page number or label".into());
+            };
+            let doc = self.doc.as_mut().ok_or("Open a PDF first")?;
+            let value = value.trim();
+            let label_index = doc.page_labels()?.and_then(|labels| {
+                labels
+                    .iter()
+                    .position(|label| label.to_lowercase() == value.to_lowercase())
+            });
+            let index = label_index
+                .or_else(|| value.parse::<usize>().ok().and_then(|n| n.checked_sub(1)))
+                .ok_or("No page matches this number or label")?;
+            doc.select(index)?;
+            return self.request_render();
+        }
         if id == 76 && values.len() == 1 {
             let password = &values[0];
             if password.is_empty()
@@ -1859,6 +1956,9 @@ impl win42::App for Pdf {
     fn actions(&self) -> &'static [(u16, &'static str)] {
         &[
             (82, "Cancel PDF Page Export"),
+            (83, "Page Labels…"),
+            (84, "Go to Page…"),
+            (85, "Clear Page Labels"),
             (10, "Rotate &Right"),
             (11, "&Delete Page"),
             (12, "Move Page &Up"),
@@ -1920,8 +2020,20 @@ impl win42::App for Pdf {
         self.doc
             .as_ref()
             .map(|d| {
+                let labels = d.page_labels().ok().flatten();
                 (0..d.page_count())
-                    .map(|i| format!("Page {} — {}°", i + 1, d.rotation(i).unwrap_or(0)))
+                    .map(|i| {
+                        if let Some(label) = labels.as_ref().and_then(|labels| labels.get(i)) {
+                            format!(
+                                "Page {} — {} — {}°",
+                                i + 1,
+                                label,
+                                d.rotation(i).unwrap_or(0)
+                            )
+                        } else {
+                            format!("Page {} — {}°", i + 1, d.rotation(i).unwrap_or(0))
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -2023,7 +2135,7 @@ impl win42::App for Pdf {
         if self.protected_readonly
             && !matches!(
                 id,
-                15 | 16 | 17 | 36 | 37 | 40 | 44 | 52 | 53 | 55 | 59 | 60 | 61 | 62 | 70
+                15 | 16 | 17 | 36 | 37 | 40 | 44 | 52 | 53 | 55 | 59 | 60 | 61 | 62 | 70 | 84
             )
         {
             return false;
@@ -2040,6 +2152,7 @@ impl win42::App for Pdf {
             33 => d.can_reorder(),
             80 | 81 => d.can_reorder() && self.page_export.is_none(),
             82 => self.page_export.is_some(),
+            85 => d.page_labels().is_ok_and(|labels| labels.is_some()),
             38 => true,
             34 => !d.form_fields().is_empty(),
             78 => self.signature_asset.is_some(),
@@ -2192,6 +2305,14 @@ impl win42::App for Pdf {
     fn action(&mut self, id: u16) -> Result<(), String> {
         if id >= 10 && !self.enabled(id) {
             return Err("Command unavailable".into());
+        }
+        if id == 85 {
+            self.doc
+                .as_mut()
+                .ok_or("Open a PDF first")?
+                .clear_page_labels();
+            self.branch();
+            return self.request_render();
         }
         if id == 82 {
             if let Some(worker) = &self.page_export {
@@ -2383,6 +2504,33 @@ fn main() {
 mod tests {
     use super::*;
     use win42::App;
+    #[test]
+    fn repeated_async_open_commits_three_text_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("text-pages.pdf");
+        std::fs::write(&source, include_bytes!("../fixtures/page-export.pdf")).unwrap();
+        let mut app = Pdf::default();
+        for _ in 0..3 {
+            assert!(app.begin_async_open(&source).unwrap());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(result) = app.take_async_open_result() {
+                    assert_eq!(
+                        result.unwrap(),
+                        suite42_core::session::FileIdentity::read(&source).unwrap()
+                    );
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "three-page opening did not complete"
+                );
+                std::thread::yield_now();
+            }
+            app.commit_async_open().unwrap();
+            assert_eq!(app.doc.as_ref().unwrap().page_count(), 3);
+        }
+    }
     #[test]
     fn normal_open_password_retry_cancel_and_source_identity() {
         fn wait_challenge(app: &mut Pdf) -> win42::InputRequest {

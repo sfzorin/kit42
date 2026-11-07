@@ -141,3 +141,10 @@ pages. Files publish only after completion and never replace an existing destina
 source or mark it saved. Current export bounds are 1,000 pages, 256 MB per PDF and 512 MB total split PDF data.
 Page labels, supported bookmarks, forms and annotations follow retained page references. Tagged-document page
 removal and unresolved references are refused rather than discarded. Native menu/output checks are included in CI.
+
+### PDF page labels (development branch)
+
+Page Labels edits an inclusive range with decimal, Roman, PDF letter numbering or prefix-only labels. Prefixes
+support Unicode. The page list displays logical labels, and Go to Page accepts a label or a physical page number.
+Clear Page Labels and changes to ranges support Undo/Redo. Labels stay with their pages after reordering and
+extraction and are written into the standard PDF page-label tree. Source extremes have bounded display formatting.

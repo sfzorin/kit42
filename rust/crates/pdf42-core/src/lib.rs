@@ -1,5 +1,7 @@
 //! Structural PDF operations. No renderer or signature preservation.
 mod page_export;
+mod page_labels;
+pub use page_labels::PageLabelStyle;
 pub use page_export::PageExtraction;
 use lopdf::{Document, LoadOptions, Object, ObjectId};
 use std::{
@@ -30,6 +32,7 @@ struct State {
     bookmarks: Option<Vec<Bookmark>>,
     imported_acroforms: Vec<ObjectId>,
     compress_streams: bool,
+    page_labels: Option<HashMap<ObjectId, lopdf::Dictionary>>,
 }
 impl PartialEq for State {
     fn eq(&self, other: &Self) -> bool {
@@ -49,6 +52,7 @@ impl PartialEq for State {
             && self.bookmarks == other.bookmarks
             && self.imported_acroforms == other.imported_acroforms
             && self.compress_streams == other.compress_streams
+            && self.page_labels == other.page_labels
     }
 }
 pub struct FlattenedPage {
@@ -1178,6 +1182,7 @@ impl PdfDocument {
                     bookmarks: None,
                     imported_acroforms: Vec::new(),
                     compress_streams: false,
+                    page_labels: None,
                 },
                 20,
             ),
@@ -2875,6 +2880,9 @@ impl PdfDocument {
         Ok(())
     }
     fn page_label_rules(&self) -> Result<Option<HashMap<ObjectId, lopdf::Dictionary>>, String> {
+        if let Some(labels) = &self.history.current().page_labels {
+            return Ok((!labels.is_empty()).then(|| labels.clone()));
+        }
         fn walk(
             doc: &Document,
             node: &Object,
@@ -3988,22 +3996,20 @@ impl PdfDocument {
         }
         if state.pages != self.original_pages || !state.raster_pages.is_empty() {
             flatten_pages(&mut doc, self.root, &state.pages)?;
-            if state.pages != self.original_pages {
-                if let Some(labels) = self.page_label_rules()? {
-                    let mut nums = Vec::new();
-                    for (i, id) in state.pages.iter().enumerate() {
-                        let rule = labels
-                            .get(id)
-                            .cloned()
-                            .unwrap_or_else(|| lopdf::dictionary! {"S"=>"D","St"=>(i+1) as i64});
-                        nums.push(Object::Integer(i as i64));
-                        nums.push(Object::Dictionary(rule));
-                    }
-                    let tree = doc.add_object(lopdf::dictionary! {"Nums"=>nums});
-                    doc.catalog_mut()
-                        .map_err(|e| e.to_string())?
-                        .set("PageLabels", tree);
+        }
+        if state.pages != self.original_pages || state.page_labels.is_some() {
+            if let Some(labels) = self.page_label_rules()? {
+                let mut nums = Vec::new();
+                for (index, id) in state.pages.iter().enumerate() {
+                    let rule = labels.get(id).cloned().unwrap_or_else(|| {
+                        lopdf::dictionary! {"S"=>"D", "St"=>(index+1) as i64}
+                    });
+                    nums.extend([Object::Integer(index as i64), Object::Dictionary(rule)]);
                 }
+                let tree = doc.add_object(lopdf::dictionary! {"Nums"=>nums});
+                doc.catalog_mut().map_err(|e| e.to_string())?.set("PageLabels", tree);
+            } else if state.page_labels.is_some() {
+                doc.catalog_mut().map_err(|e| e.to_string())?.remove(b"PageLabels");
             }
         }
         if let Some(bookmarks) = &state.bookmarks {
@@ -5121,6 +5127,71 @@ mod tests {
         };
         assert_eq!(actual, vec![128, 0]);
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn editing_page_labels_preserves_identity_history_and_independent_round_trip() {
+        let directory =
+            std::env::temp_dir().join(format!("pdf42-edit-labels-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.pdf");
+        sample(&source, false);
+        let mut doc = PdfDocument::open(&source).unwrap();
+        assert!(doc.page_labels().unwrap().is_none());
+        doc.set_page_labels(0, 2, PageLabelStyle::LowerLetters, "Плата-", 27)
+            .unwrap();
+        assert_eq!(
+            doc.page_labels().unwrap().unwrap(),
+            ["Плата-aa", "Плата-bb", "Плата-cc"]
+        );
+        assert!(doc.undo());
+        assert!(doc.page_labels().unwrap().is_none());
+        assert!(doc.redo());
+        doc.move_page(2, 0).unwrap();
+        assert_eq!(
+            doc.page_labels().unwrap().unwrap(),
+            ["Плата-cc", "Плата-aa", "Плата-bb"]
+        );
+        let saved = directory.join("labels.pdf");
+        doc.save_as(&saved).unwrap();
+        let mut reopened = PdfDocument::open(&saved).unwrap();
+        assert_eq!(reopened.page_labels().unwrap(), doc.page_labels().unwrap());
+        reopened
+            .set_page_labels(1, 1, PageLabelStyle::UpperRoman, "Appendix ", 4)
+            .unwrap();
+        assert_eq!(
+            reopened.page_labels().unwrap().unwrap(),
+            ["Плата-cc", "Appendix IV", "Плата-bb"]
+        );
+        reopened
+            .set_page_labels(0, 0, PageLabelStyle::PrefixOnly, "Cover", 1)
+            .unwrap();
+        assert_eq!(reopened.page_labels().unwrap().unwrap()[0], "Cover");
+        let before = reopened.page_labels().unwrap();
+        assert!(reopened
+            .set_page_labels(1, 2, PageLabelStyle::Decimal, "", i64::MAX)
+            .is_err());
+        assert_eq!(reopened.page_labels().unwrap(), before);
+        let extracted = directory.join("chosen.pdf");
+        reopened.extract_pages(&[2, 0], &extracted).unwrap();
+        assert_eq!(
+            PdfDocument::open(&extracted)
+                .unwrap()
+                .page_labels()
+                .unwrap()
+                .unwrap(),
+            ["Плата-bb", "Cover"]
+        );
+        reopened.clear_page_labels();
+        let cleared = directory.join("cleared.pdf");
+        reopened.save_as(&cleared).unwrap();
+        assert!(PdfDocument::open(&cleared)
+            .unwrap()
+            .page_labels()
+            .unwrap()
+            .is_none());
+        reopened.undo();
+        assert_eq!(reopened.page_labels().unwrap(), before);
+        fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn extract_page_list_preserves_order_labels_annotations_and_source() {

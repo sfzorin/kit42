@@ -519,3 +519,9 @@ File action menu states now use the same app availability checks as their dispat
 `PageExtraction` once; each worker output clones/prunes its committed graph and remaps effective page labels.
 Source state/history stay untouched. Split outputs stream into one temporary ZIP, with bounded total data,
 progress, cancellation and final no-clobber publication. No partial destination is exposed.
+
+PDF page-label overrides live in the core snapshot state, keyed by page object identity. A range edit expands only
+its effective rules and commits one history transaction; unaffected labels retain their values. Clear uses an explicit
+empty override to remove the catalog tree. Saving, reordering and extraction rebuild rules in the current page order.
+Roman/letter display matches the macOS bounded implementation. `App::input_choices` supplies stable underlying
+values for translated native choice controls, reused by page-label numbering styles.

@@ -1247,6 +1247,7 @@ unsafe fn poll_pending_open(hwnd: HWND) {
     };
     let result = match pending.phase {
         AsyncOpenPhase::Loading => {
+            trace_command("open_loading", OPEN, 0);
             let ready = STATE.with(|s| {
                 s.borrow_mut()
                     .as_mut()
@@ -1302,6 +1303,7 @@ unsafe fn poll_pending_open(hwnd: HWND) {
                 }
                 Some(Err(e)) => Err(e),
                 Some(Ok(expected)) => {
+                    trace_command("open_decoded", OPEN, 0);
                     let path = pending.path.clone();
                     let (sender, receiver) = mpsc::channel();
                     match std::thread::Builder::new()
@@ -1329,6 +1331,7 @@ unsafe fn poll_pending_open(hwnd: HWND) {
             Err(TryRecvError::Disconnected) => Err("Could not verify the opened file".into()),
             Ok(Err(e)) => Err(e.to_string()),
             Ok(Ok(actual)) => {
+                trace_command("open_verified", OPEN, 0);
                 if actual != expected
                     || !expected
                         .metadata_matches(&pending.path)
@@ -1351,7 +1354,9 @@ unsafe fn poll_pending_open(hwnd: HWND) {
                             .find(|f| f.extensions.iter().any(|e| e.eq_ignore_ascii_case(format)))
                             .map(|f| f.id.to_string())
                             .unwrap_or_else(|| format.to_ascii_lowercase());
+                        trace_command("open_commit_begin", OPEN, 0);
                         let revision = s.app.commit_async_open()?;
+                        trace_command("open_commit_end", OPEN, 0);
                         s.session = suite42_core::session::DocumentSession::opened_with_identity(
                             pending.path.clone(),
                             format,
@@ -2388,8 +2393,9 @@ unsafe fn command(hwnd: HWND, id: u16, notify: u16) {
                     let a = &s.as_ref().unwrap().app;
                     (a.multiline_input(id), a.password_input(id))
                 });
+                let choices = STATE.with(|s| s.borrow().as_ref().unwrap().app.input_choices(id));
                 if let Some(mut values) =
-                    crate::prompt::show_options(hwnd, &req, multiline, password)
+                    crate::prompt::show_choices(hwnd, &req, multiline, password, &choices)
                 {
                     let r = STATE.with(|s| {
                         s.borrow_mut()

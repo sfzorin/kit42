@@ -320,6 +320,10 @@ pub trait App {
     fn input_request(&self, _id: u16) -> Option<InputRequest> {
         None
     }
+    /// Stable original values for native translated choice fields.
+    fn input_choices(&self, _id: u16) -> Vec<(usize, Vec<String>)> {
+        vec![]
+    }
     fn input_action(&mut self, _id: u16, _values: &[String]) -> Result<(), String> {
         Err("Unsupported input action".into())
     }

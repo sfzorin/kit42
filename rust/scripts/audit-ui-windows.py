@@ -437,6 +437,62 @@ def audit_table_labels(process, main, binary, output, results):
 
 
 
+
+def pdf_page_labels(dll_path, path):
+    # FPDF_GetPageLabel returns UTF-16LE byte count including the terminator.
+    # https://pdfium.googlesource.com/pdfium/+/refs/heads/main/public/fpdf_doc.h
+    pdf = c.WinDLL(str(dll_path))
+    pdf.FPDF_LoadDocument.argtypes, pdf.FPDF_LoadDocument.restype = [c.c_char_p, c.c_char_p], c.c_void_p
+    pdf.FPDF_GetPageCount.argtypes = [c.c_void_p]
+    pdf.FPDF_GetPageLabel.argtypes, pdf.FPDF_GetPageLabel.restype = [c.c_void_p, c.c_int, c.c_void_p, c.c_ulong], c.c_ulong
+    pdf.FPDF_CloseDocument.argtypes = [c.c_void_p]
+    pdf.FPDF_InitLibrary()
+    document = pdf.FPDF_LoadDocument(str(path).encode("utf-8"), None)
+    assert document
+    try:
+        labels = []
+        for index in range(pdf.FPDF_GetPageCount(document)):
+            size = pdf.FPDF_GetPageLabel(document, index, None, 0)
+            assert size <= 65536 and size % 2 == 0
+            if size == 0:
+                labels.append(None)
+                continue
+            value = c.create_string_buffer(size)
+            assert pdf.FPDF_GetPageLabel(document, index, value, size) == size
+            labels.append(value.raw[:-2].decode("utf-16-le"))
+        return labels
+    finally:
+        pdf.FPDF_CloseDocument(document)
+
+
+def audit_page_labels(process, main, binary, output, results):
+    expected = ["Плата-aa", "Плата-bb", "Плата-cc"]
+    fill_prompt(process, main, 83, "Page Labels", ["1", "3", "a, b, c", "Плата-", "27"])
+    def save(name):
+        path = output / name
+        command(main, 18)
+        choose_file(process, path)
+        output_ready(process, main, path, b"%PDF-")
+        return pdf_page_labels(binary.parent / "pdfium.dll", path)
+    assert save("page-labels.pdf") == expected
+    command(main, 4)
+    assert save("page-labels-undo.pdf") == [None, None, None]
+    command(main, 5)
+    assert save("page-labels-redo.pdf") == expected
+    fill_prompt(process, main, 84, "Go to Page", ["Плата-bb"])
+    wait_for(lambda: u.SendMessageW(u.GetDlgItem(main, 100), 0x188, 0, 0) == 1, "navigation by custom page label", process)
+    command(main, 85)
+    assert save("page-labels-clear.pdf") == [None, None, None]
+    command(main, 4)
+    assert save("page-labels-restored.pdf") == expected
+    command(main, 1)
+    choose_file(process, output / "page-labels.pdf")
+    wait_for(lambda: "page-labels.pdf" in text(main) and u.IsWindowEnabled(main), "labelled document reopened", process)
+    fill_prompt(process, main, 84, "Go to Page", ["Плата-cc"])
+    wait_for(lambda: u.SendMessageW(u.GetDlgItem(main, 100), 0x188, 0, 0) == 2, "label navigation after reopen", process)
+    results["checks"].append("native PDF label range/style/prefix, full Undo/Redo, clearing, independent PDFium labels and navigation after reopen")
+
+
 def audit_pdf_page_exports(process, main, binary, output, results):
     source = output / "page-export-source.pdf"
     minimal_pdf(source, ["PAGE-ONE", "PAGE-TWO", "PAGE-THREE"])
@@ -478,6 +534,7 @@ def audit_pdf_page_exports(process, main, binary, output, results):
     wait_for(lambda: u.IsWindowEnabled(main), "invalid page range refused", process)
     assert not invalid.exists() and source.read_bytes() == original and text(main) == caption
     results["checks"].append("native page-list extraction/split ZIP, reverse ordering, independent PDFium text, settings Cancel and overlapping-range refusal preserve the source")
+    audit_page_labels(process, main, binary, output, results)
 
 
 def audit(binary, output, extended, pictures=False, technical=False, labels=False, pages=False):

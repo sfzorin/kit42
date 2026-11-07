@@ -13,7 +13,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
-| PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, editable page labels, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
+| PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
 | XLS42 | Grid editing, formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
@@ -77,3 +77,13 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   bookmarks/forms, overlapping ranges, source preservation, cancellation and existing destination safety.
   The portable workspace passed 348 tests (one OCR test ignored); Windows GNU compilation passed.
   Native page-export interaction and PDFium-output checks await a Windows build.
+
+- Full release validation run 42350889660 (84f2e3f) passed all six optimized apps, twenty language prompts,
+  shared-picker Cancel/Discard/restart and next-launch settings in all six apps, and recent-document lifecycle.
+- Run 42351585775 (689ee17 debug) passed shared/PDF/XLS targeted MSVC tests and the other app scenarios,
+  but the added PDF export scenario timed out opening its next three-page source. Poppler independently
+  confirms the fixture has three valid text pages. Native export verification is pending investigation;
+  no assertions were relaxed. Numeric open-phase tracing and a repeated-async-open regression were added.
+- Editable page-label ranges, numbering styles, prefixes, clear/Undo and navigation by logical label are now
+  implemented. Source/export/history regressions pass in the portable suite (351 passed, one OCR test ignored).
+  Native label edits, PDFium label extraction and navigation after reopen are added for the next build.
