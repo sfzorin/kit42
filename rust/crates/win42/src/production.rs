@@ -104,7 +104,7 @@ fn numbers<T: std::str::FromStr, const N: usize>(
         .map_err(|_| format!("Enter {N} comma-separated values for {label}."))
 }
 
-pub(crate) fn sheet_output(source: LabelSource, fields: &[String]) -> Result<Vec<u8>, String> {
+pub(crate) fn sheet_output(source: &LabelSource, fields: &[String]) -> Result<Vec<u8>, String> {
     let [first, second, format, size, print] = fields else {
         return Err("Invalid label settings.".into());
     };

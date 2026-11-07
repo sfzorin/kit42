@@ -481,3 +481,8 @@ PDF technical appearances contain only bounded path operators, with glyph outlin
 physical bounds. The core validates the operator allowlist and graphics-state balance before recording
 a vector stamp. Raster pixels are transient for vector placement and are not retained in its history
 or emitted as an image resource. Standard image signatures continue to use their alpha image appearance.
+
+Label inputs are immutable source snapshots. Apps can enumerate named sources; the source chooser only
+appears when there is a choice. DOC tables are explicitly named because the current linear selection
+API does not cover table cells. Label preferences separate tabular and text workflows, hash source
+headers before restoring mappings, and exclude document contents and barcode payloads.

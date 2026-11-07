@@ -11,7 +11,7 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | IMG/SCN technical placement, full selection controls and remaining native UI verification |
-| Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | Persisted mappings, DOC table sources, PDF artwork/region sources, preview and direct print |
+| Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview, direct print and native verification of DOC table sources/preferences |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
 | PDF42 | Reading, page edits, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, split/merge workflows, page labels, headers/footers, watermarks, richer forms, OCR, text exports, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
@@ -46,3 +46,8 @@ actual checks. A source build alone does not establish Windows runtime behavior.
   reference SVG/PNG ink geometry within one pixel. It found and fixed the text-subtree transform for
   captions. PDF annotations and standalone PDF exports retain the macOS recipe key and have no raster
   image resource in the technical appearance. The next Windows build must verify the updated dispatcher.
+
+- DOC label sources now enumerate explicit tables or custom/selected text. Layout and mapping profiles
+  remember only settings; header signatures guard restored mappings. Portable tests cover source
+  snapshots, merged covered slots, Undo, layout restoration and exclusion of document values from
+  preferences. A native DOC-table/PDFium-output/preferences audit is included for the next build.

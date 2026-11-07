@@ -239,6 +239,9 @@ pub trait App {
     ) -> Result<(), String> {
         Err("Technical elements are unavailable".into())
     }
+    fn label_sources(&self) -> Result<Vec<(String, LabelSource)>, String> {
+        Ok(vec![("Document".into(), self.label_source()?)])
+    }
     fn label_source(&self) -> Result<LabelSource, String> {
         Ok(LabelSource::Text(String::new()))
     }
@@ -464,6 +467,8 @@ mod grid;
 #[cfg(any(windows, test))]
 mod grid_geometry;
 #[cfg(any(windows, test))]
+mod label_preferences;
+#[cfg(any(windows, test))]
 mod marks;
 #[cfg(windows)]
 mod native;
@@ -471,7 +476,7 @@ mod native;
 mod note_pagination;
 #[cfg(any(windows, test))]
 mod print_calibration;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod production;
 #[cfg(windows)]
 mod prompt;

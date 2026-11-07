@@ -542,6 +542,61 @@ impl App for Doc {
     fn supports_production(&self) -> bool {
         true
     }
+    fn label_sources(&self) -> Result<Vec<(String, win42::LabelSource)>, String> {
+        let mut sources = Vec::new();
+        for table in self.doc.state().blocks.iter().filter_map(|block| {
+            if let Block::Table(table) = block {
+                Some(table)
+            } else {
+                None
+            }
+        }) {
+            if table.rows.len() > 5000 || table.rows.iter().any(|row| row.len() > 200) {
+                return Err("Use a table with up to 5,000 rows and 200 columns for labels".into());
+            }
+            let rows = table
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let values = row
+                        .iter()
+                        .map(|cell| {
+                            if cell.row_span == 0 || cell.col_span == 0 {
+                                return String::new();
+                            }
+                            cell.paragraphs
+                                .iter()
+                                .map(|paragraph| {
+                                    paragraph
+                                        .runs
+                                        .iter()
+                                        .map(|run| run.text.as_str())
+                                        .collect::<String>()
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .collect();
+                    (index + 1, values)
+                })
+                .collect();
+            sources.push((
+                format!("Table {}", sources.len() + 1),
+                win42::LabelSource::Rows(rows),
+            ));
+        }
+        sources.push((
+            if self.selection.0 != self.selection.1 {
+                "Selected Text"
+            } else {
+                "Custom Text"
+            }
+            .into(),
+            self.label_source()?,
+        ));
+        Ok(sources)
+    }
     fn label_source(&self) -> Result<win42::LabelSource, String> {
         let (start, end) = self.selection;
         let text = if end > start {
@@ -3580,5 +3635,65 @@ mod command_dispatch_regression {
         assert!(!app.command_state(300).enabled);
         assert!(app.command_state(329).enabled);
         assert!(app.command_state(353).enabled);
+    }
+}
+
+#[cfg(test)]
+mod table_label_regression {
+    use super::*;
+    #[test]
+    fn labels_snapshot_an_explicit_table_and_leave_covered_slots_empty() {
+        let mut app = Doc::new();
+        app.input_action(313, &["3".into(), "3".into()]).unwrap();
+        let mut table_id = 0;
+        app.doc
+            .transact(|state| {
+                let table = state
+                    .blocks
+                    .iter_mut()
+                    .find_map(|block| {
+                        if let Block::Table(table) = block {
+                            Some(table)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap();
+                table_id = table.id;
+                for (row, values) in [
+                    ["Name", "Code", "Copies"],
+                    ["Board α", "PCB-0007", "2"],
+                    ["Board β", "PCB-0008", "1"],
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for (col, value) in values.into_iter().enumerate() {
+                        table.rows[row][col].paragraphs[0].runs[0].text = value.into();
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let original = app.doc.snapshot();
+        let (_, win42::LabelSource::Rows(rows)) = app.label_sources().unwrap().remove(0) else {
+            panic!("table source expected");
+        };
+        assert_eq!(
+            rows[1],
+            (2, vec!["Board α".into(), "PCB-0007".into(), "2".into()])
+        );
+        assert_eq!(rows[2].1[1], "PCB-0008");
+        assert_eq!(app.doc.snapshot(), original);
+        app.doc.merge_table_cells(table_id, 1, 0, 2).unwrap();
+        let (_, win42::LabelSource::Rows(rows)) = app.label_sources().unwrap().remove(0) else {
+            panic!("table source expected");
+        };
+        assert!(rows[1].1[1].is_empty());
+        app.doc.undo();
+        let (_, win42::LabelSource::Rows(rows)) = app.label_sources().unwrap().remove(0) else {
+            panic!("table source expected");
+        };
+        assert_eq!(rows[1].1[1], "PCB-0007");
     }
 }

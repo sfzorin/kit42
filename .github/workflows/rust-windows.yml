@@ -24,6 +24,10 @@ on:
         description: Include technical object insertion and editing checks on a compatible build artifact
         type: boolean
         default: false
+      audit_labels:
+        description: Include DOC table labels and remembered label settings on a compatible build
+        type: boolean
+        default: false
 jobs:
   windows:
     if: inputs.audit_only != true
@@ -73,7 +77,7 @@ jobs:
           Copy-Item crates/doc42-layout-probe/fixtures/OFL.txt build/off42/licenses/NotoSans-OFL.txt
           Compress-Archive -Path build/off42 -DestinationPath build/Suite42-windows-x64.zip
       - name: Audit native commands in the packaged apps
-        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects
+        run: python scripts/audit-ui-windows.py --bin-dir build/off42 --output build/native-ui --extended --pictures --technical-objects --label-sources
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -146,12 +150,14 @@ jobs:
           AUDIT_RUN_ID: ${{ inputs.audit_run_id }}
           AUDIT_PICTURES: ${{ inputs.audit_pictures }}
           AUDIT_TECHNICAL: ${{ inputs.audit_technical }}
+          AUDIT_LABELS: ${{ inputs.audit_labels }}
         shell: pwsh
         run: |
           $extra = @()
           if ($env:AUDIT_RUN_ID) { $extra += '--extended' }
           if ($env:AUDIT_PICTURES -eq 'true') { $extra += '--pictures' }
           if ($env:AUDIT_TECHNICAL -eq 'true') { $extra += '--technical-objects' }
+          if ($env:AUDIT_LABELS -eq 'true') { $extra += '--label-sources' }
           python rust/scripts/audit-ui-windows.py --bin-dir build/preview/off42 --output build/native-ui @extra
       - uses: actions/upload-artifact@v4
         if: always()

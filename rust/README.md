@@ -103,3 +103,12 @@ uses the same `/Suite42TechnicalElement` annotation key as the macOS implementat
 editor after reopening. PDF42 stores resource-free vector paths, including outlined captions; Office
 formats retain PNG pictures with recipes. **Create Symbol or Code** exports PNG, SVG or an editable
 vector PDF without changing the current document.
+
+## Label data sources and remembered options
+
+DOC42 can use a document table for labels. When tables are present, choose the table or custom/selected
+text before setting the text, code and copy-count columns. Covered merged cells remain empty in the
+data snapshot. Export does not edit the document.
+Label dialogs remember their layout, stock, code format and copy/start settings in local preferences.
+Column mappings are restored only when the source header signature matches; document text and code
+payloads are never stored in these preferences. Text labels and tabular sources have separate profiles.

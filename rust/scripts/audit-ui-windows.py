@@ -356,7 +356,76 @@ def audit_technical_objects(process, main, binary, output, results):
     results["checks"].append("technical object insertion, recipe editing, Undo/Redo and edit after saved-document reopen")
 
 
-def audit(binary, output, extended, pictures=False, technical=False):
+def pdf_text(dll_path, path):
+    pdf = c.WinDLL(str(dll_path))
+    pdf.FPDF_LoadDocument.argtypes, pdf.FPDF_LoadDocument.restype = [c.c_char_p, c.c_char_p], c.c_void_p
+    pdf.FPDF_GetPageCount.argtypes = [c.c_void_p]
+    pdf.FPDF_LoadPage.argtypes, pdf.FPDF_LoadPage.restype = [c.c_void_p, c.c_int], c.c_void_p
+    pdf.FPDFText_LoadPage.argtypes, pdf.FPDFText_LoadPage.restype = [c.c_void_p], c.c_void_p
+    pdf.FPDFText_CountChars.argtypes = [c.c_void_p]
+    pdf.FPDFText_GetText.argtypes = [c.c_void_p, c.c_int, c.c_int, c.POINTER(c.c_ushort)]
+    for name in ("FPDF_CloseDocument", "FPDF_ClosePage", "FPDFText_ClosePage"):
+        getattr(pdf, name).argtypes = [c.c_void_p]
+    pdf.FPDF_InitLibrary()
+    document = pdf.FPDF_LoadDocument(str(path).encode("utf-8"), None)
+    assert document, str(path)
+    try:
+        output = []
+        assert 0 < pdf.FPDF_GetPageCount(document) <= 1000
+        for index in range(pdf.FPDF_GetPageCount(document)):
+            page = pdf.FPDF_LoadPage(document, index)
+            assert page
+            text_page = pdf.FPDFText_LoadPage(page)
+            assert text_page
+            try:
+                count = pdf.FPDFText_CountChars(text_page)
+                assert 0 <= count <= 500_000
+                data = (c.c_ushort * (count + 1))()
+                length = pdf.FPDFText_GetText(text_page, 0, count, data)
+                output.append(bytes(data)[:max(0, length - 1) * 2].decode("utf-16-le"))
+            finally:
+                pdf.FPDFText_ClosePage(text_page)
+                pdf.FPDF_ClosePage(page)
+        return "\n".join(output)
+    finally:
+        pdf.FPDF_CloseDocument(document)
+        pdf.FPDF_DestroyLibrary()
+
+
+def audit_table_labels(process, main, binary, output, results):
+    source = output / "table-label-source.rtf"
+    body = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}"
+    for row in [("Name", "Code", "Copies"), ("Board 0007", "PCB-0007", "2"), ("Board 0008", "PCB-0008", "1")]:
+        body += br"\trowd\cellx1600\cellx3200\cellx4000\pard\intbl "
+        body += b"\\cell ".join(value.encode("ascii") for value in row) + br"\cell\row "
+    body += br"\pard\par}"
+    source.write_bytes(body)
+    command(main, 1)
+    choose_file(process, source)
+    wait_for(lambda: source.name in text(main) and u.IsWindowEnabled(main), "table document opened", process)
+    command(main, 65518)
+    finish_prompt(process, "Label Source", ["Table 1"])
+    fields = ["1", "2, 3, 1", "QR", "70, 37, 0, 0", "1, 1"]
+    finish_prompt(process, "Create Label Sheet", fields)
+    target = output / "table-labels.pdf"
+    choose_file(process, target)
+    output_ready(process, main, target, b"%PDF-")
+    actual = pdf_text(binary.parent / "pdfium.dll", target)
+    assert actual.count("Board 0007") == 2, actual
+    assert actual.count("Board 0008") == 1, actual
+    assert "Name" not in actual and "Copies" not in actual, actual
+    assert source.read_bytes() == body and "*" not in text(main)
+    command(main, 65518)
+    finish_prompt(process, "Label Source", ["Table 1"])
+    dialog = modal(process, title="Create Label Sheet", native_class="Suite42InputDialog")
+    actual_fields = [text(u.GetDlgItem(dialog, 100 + index)) for index in range(5)]
+    assert actual_fields == fields, actual_fields
+    click(dialog, 2)
+    wait_for(lambda: u.IsWindowEnabled(main), "remembered label settings dismissed", process)
+    results["checks"].append("DOC table label source, mapped text/code/copies, skipped header, PDFium text, unchanged source and restored preferences")
+
+
+def audit(binary, output, extended, pictures=False, technical=False, labels=False):
     startup = None
     if extended:
         if binary.stem.lower() == "pdf42":
@@ -462,6 +531,8 @@ def audit(binary, output, extended, pictures=False, technical=False):
             audit_sheet_pictures(process, main, output, results)
         if technical:
             audit_technical_objects(process, main, binary, output, results)
+        if labels and binary.stem.lower() == "doc42":
+            audit_table_labels(process, main, binary, output, results)
         return results
     finally:
         if process.poll() is None:
@@ -482,6 +553,7 @@ def main():
     parser.add_argument("--extended", action="store_true")
     parser.add_argument("--pictures", action="store_true")
     parser.add_argument("--technical-objects", action="store_true")
+    parser.add_argument("--label-sources", action="store_true")
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
     args.output = args.output.resolve()
@@ -490,7 +562,7 @@ def main():
     try:
         for app in ["DOC42", "XLS42", "PDF42", "IMG42", "PPT42", "SCN42"]:
             try:
-                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects))
+                results.append(audit(args.bin_dir / (app + ".exe"), args.output, args.extended, args.pictures, args.technical_objects, args.label_sources))
             except Exception as error:
                 results.append({"app": app, "error": str(error), "traceback": traceback.format_exc()})
             print(json.dumps(results[-1]), flush=True)

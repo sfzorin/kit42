@@ -1316,17 +1316,50 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
     use crate::{production, LabelSource};
     let is_sheet = id == CREATE_LABEL_SHEET;
     let source = if is_sheet {
-        STATE.with(|state| state.borrow().as_ref().unwrap().app.label_source())?
+        let mut sources =
+            STATE.with(|state| state.borrow().as_ref().unwrap().app.label_sources())?;
+        if sources.is_empty() {
+            return Err("There are no label sources in this document".into());
+        }
+        let index = if sources.len() == 1 {
+            0
+        } else {
+            let choices = sources
+                .iter()
+                .map(|(title, _)| title.clone())
+                .collect::<Vec<_>>();
+            let request = crate::InputRequest {
+                title: "Label Source",
+                fields: vec![("Source", choices[0].clone())],
+            };
+            let Some(values) =
+                crate::prompt::show_choices(hwnd, &request, false, false, &[(0, choices.clone())])
+            else {
+                return Ok(());
+            };
+            choices
+                .iter()
+                .position(|choice| choice == &values[0])
+                .ok_or("Choose a label source")?
+        };
+        sources.remove(index).1
     } else {
         LabelSource::Text(String::new())
     };
-    let request = if is_sheet {
+    let mut request = if is_sheet {
         production::sheet_request(&source)
     } else if id == EXPORT_TECHNICAL {
         production::technical_request()
     } else {
         production::barcode_request(String::new())
     };
+    let app_name = STATE.with(|state| state.borrow().as_ref().unwrap().app.name());
+    let preferences = crate::label_preferences::directory();
+    if is_sheet {
+        if let Some(directory) = &preferences {
+            let _ = crate::label_preferences::restore(directory, app_name, &source, &mut request);
+        }
+    }
     let multiline = is_sheet && matches!(&source, LabelSource::Text(_));
     let choices = if is_sheet {
         production::sheet_choices()?
@@ -1378,7 +1411,7 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
     }
     let (output, ext, name, pattern) = if is_sheet {
         (
-            production::sheet_output(source, &fields)?,
+            production::sheet_output(&source, &fields)?,
             "pdf",
             "PDF label sheet",
             "*.pdf",
@@ -1405,6 +1438,11 @@ unsafe fn production_command(hwnd: HWND, id: u16) -> Result<(), String> {
                 format!("Could not save the file: {error}")
             }
         })?;
+        if is_sheet {
+            if let Some(directory) = &preferences {
+                let _ = crate::label_preferences::save(directory, app_name, &source, &fields);
+            }
+        }
     }
     Ok(())
 }
