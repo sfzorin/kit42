@@ -235,6 +235,50 @@ impl Worker {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    pub(super) fn redacted_snapshot() -> Vec<u8> {
+        let source = include_bytes!("../../fixtures/page-export.pdf");
+        let mut document = pdf42_core::PdfDocument::from_edited_snapshot(source, 0).unwrap();
+        // The stock fixture shares its font across pages. The core correctly
+        // refuses partial raster redaction of shared resources.
+        assert!(document
+            .redact_raster(0, 20, 20, &vec![255; 1600], [0, 0, 10, 10])
+            .is_err());
+        let mut source = lopdf::Document::load_mem(source).unwrap();
+        let first = source.get_pages()[&1];
+        let mut resources = source
+            .get_dictionary(first)
+            .unwrap()
+            .get(b"Resources")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .clone();
+        let mut fonts = resources.get(b"Font").unwrap().as_dict().unwrap().clone();
+        let font = fonts.get(b"F1").unwrap().as_reference().unwrap();
+        let independent_font = source.add_object(source.get_object(font).unwrap().clone());
+        fonts.set("F1", independent_font);
+        resources.set("Font", fonts);
+        source
+            .get_dictionary_mut(first)
+            .unwrap()
+            .set("Resources", resources);
+        let mut bytes = vec![];
+        source.save_to(&mut bytes).unwrap();
+        let mut document = pdf42_core::PdfDocument::from_edited_snapshot(&bytes, 0).unwrap();
+        document
+            .redact_raster(0, 20, 20, &vec![255; 1600], [0, 0, 10, 10])
+            .unwrap();
+        document.delete(1).unwrap();
+        document.save_snapshot().unwrap().0
+    }
+    #[test]
+    fn current_snapshot_removes_redacted_and_deleted_page_text() {
+        let snapshot = redacted_snapshot();
+        let document = lopdf::Document::load_mem(&snapshot).unwrap();
+        let text = document.extract_text(&[1, 2]).unwrap();
+        assert!(text.contains("PAGE-THREE"));
+        assert!(!text.contains("PAGE-ONE") && !text.contains("PAGE-TWO"));
+    }
     #[test]
     fn settings_resolve_the_picker_filter_without_changing_the_document() {
         use win42::App;

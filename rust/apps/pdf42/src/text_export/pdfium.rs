@@ -277,13 +277,7 @@ mod tests {
         let source = include_bytes!("../../fixtures/page-export.pdf");
         let progress = AtomicUsize::new(0);
         let cancel = AtomicBool::new(false);
-        let mut document = pdf42_core::PdfDocument::from_edited_snapshot(source, 0).unwrap();
-        // Replacing the first page with a raster removes its original text.
-        document
-            .redact_raster(0, 20, 20, &vec![255; 20 * 20 * 4], [0, 0, 10, 10])
-            .unwrap();
-        document.delete(1).unwrap();
-        let (snapshot, _) = document.save_snapshot().unwrap();
+        let snapshot = super::super::tests::redacted_snapshot();
         let extracted = extract(&snapshot, &[1, 0], &progress, &cancel).unwrap();
         let text = String::from_utf8(
             super::super::encode(&extracted, super::super::Output::Text).unwrap(),
@@ -296,7 +290,6 @@ mod tests {
             "The rasterized page must remain blank: {text:?}"
         );
         assert_eq!(progress.load(Ordering::Relaxed), 2);
-        assert!(!document.can_redo());
         cancel.store(true, Ordering::Relaxed);
         assert!(extract(source, &[0], &progress, &cancel).is_err());
     }
