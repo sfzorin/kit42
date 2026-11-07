@@ -235,3 +235,13 @@ The apps remember their normal window rectangle and maximized state when a windo
 that app restores the saved placement; Windows relocates a completely offscreen frame onto a current display.
 Settings live under `%LOCALAPPDATA%/off42/Window Layout`. Corrupt/unsupported preferences use the normal default
 window. This covers outer placement only; panel visibility, split positions and cross-display DPI still need work.
+
+
+### Independent barcode QA
+
+`cargo run --manifest-path rust/Cargo.toml -p label42 --example barcode-fixtures -- /path/to/fixtures`
+creates thirteen PNG/PDF pairs and a case manifest. In a separate QA environment with Pillow, `zxing-cpp==2.3.0`
+and Poppler, run `python3 rust/scripts/audit-barcodes.py /path/to/fixtures`. It independently decodes the PNGs and
+Poppler PDF renders, checking both format and exact payload. These are optional developer tools, not app runtime
+requirements. The 26-output check passes for ASCII, Cyrillic, mixed CJK/Arabic/emoji and longer payloads; Code 128
+cases use printable ASCII. This does not replace checking actual printed labels at their final physical size.

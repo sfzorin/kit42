@@ -6,16 +6,16 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 
 | Area | Current Windows coverage | Remaining work |
 | --- | --- | --- |
-| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu; separate New/New Window sessions | Verify drag/drop, independent window lifecycle, recovery reference behavior and associations |
-| Localization and appearance | Twenty bundled catalogs, shared menu picker and process language override; prompt label measurement | Verify shared language switching, complete Windows-specific translations, dark mode, panel visibility and remembered layout |
+| Files and document lifecycle | Open/save snapshots, conflict detection, Undo/Redo, successful-file recents with clear menu; verified independent New/New Window sessions in all six apps | Verify drag/drop, recovery reference behavior and associations |
+| Localization and appearance | Twenty bundled catalogs, verified shared picker/restart and process language override; prompt label measurement | Complete Windows-specific translations, dark mode, panel visibility and remembered layout |
 | Text proofing | System Rich Edit spelling in DOC42/PPT42 | Verify suggestions and installed-language behavior; full grammar and other editors |
 | Signatures and stamps | Shared PNG/JPEG library in all six apps; optional white-paper removal; Undo/Redo for placement | Generators, sample learning and full geometry parity |
 | Technical objects | Four barcode encoders, fourteen symbols, reusable PNG recipes, insertion/editing in PDF/DOC/XLS/PPT and document round trips | Full technical-object selection/placement controls and richer label artwork sources |
 | Label production | A4 custom grids, 559 stock templates, row mappings, copies, first slot, serial identifiers | PDF artwork/region sources, preview and direct print |
 | Printing | Native dialogs, actual-size PDF scene path, optional per-printer calibration and measurement sheet | Native print-to-file output and physical driver checks |
-| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
+| PDF42 | Reading, page edits/labels, selected-page extraction/split ZIP, four text-export formats, bounded text edits, annotations, simple forms, links, outlines, attachments, password copies, raster redaction | Comparison, batch merge workflows, headers/footers, watermarks, richer forms, OCR, certificate signing and validation, remote signing and CryptoPro integration |
 | DOC42 | Rich text, tables, images, comments, notes, hyperlinks, bookmarks, TOC and several format adapters | Complete page canvas, full sections/columns, fields, tracked changes, style management, navigator, text search options, picture geometry and rich page decorations |
-| XLS42 | Grid editing, formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
+| XLS42 | Grid editing, engineering/text/math formulas, styles, charts, summaries, tables, filtering, print layout | Formula coverage and dynamic arrays, full floating-object editing, advanced filtering/sorting, validation controls, outlines/subtotals, goal seek/solver, split panes, per-cell/password protection and fuller format fidelity |
 | PPT42 | Native objects and text, grouping/transforms, basic transitions, PPTX/ODP and printing | Preset geometries, charts/SmartArt, master/layout editing, themes/templates, comments, media and animation playback, show tools and export workflows |
 | IMG42 | Image decoding, transforms, adjustments, selections, text, metadata and batch output | Full markup selection/editing, smart lasso, live text, background removal, viewing panels and additional supported system codecs |
 | SCN42 | WIA acquisition, image/PDF import, page processing, OCR and searchable output | Scan areas and rescan, device/preset controls, scan history, full export settings and physical-device checks |
@@ -151,3 +151,8 @@ actual checks. A source build alone does not establish Windows runtime behavior.
 - All six hosts now persist normal/maximized outer placement with validated atomic preferences and paired native
   placement APIs. Fullscreen PPT preserves its original frame. Portable preference corruption/bounds/atomicity
   tests pass; GNU tests compile. Native resize/maximize/restart and synthetic offscreen relocation await a build.
+
+- Independent ZXing-C++ 2.3.0 QA decoded 26 generated PNG/Poppler-rendered PDF outputs, covering all four barcode
+  formats, Cyrillic, mixed CJK/Arabic/emoji and longer payloads (Code 128 remains ASCII). All values and actual
+  decoder formats match. Eleven additional earlier vector/native-dialog output files also decode independently.
+  The optional QA tools are not dependencies of installed apps; physical printer/scanner behavior remains separate.
