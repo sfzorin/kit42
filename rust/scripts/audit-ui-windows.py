@@ -545,7 +545,10 @@ def audit_pdf_page_exports(process, main, binary, output, results):
     invalid = output / "invalid-selection.pdf"
     fill_prompt(process, main, 80, "Extract PDF Pages", ["1-2,2"])
     choose_file(process, invalid)
-    error = modal(process, native_class="#32770")
+    error = wait_for(lambda: next((h for h in windows(process.pid)
+        if classname(h) == "#32770" and u.IsWindowEnabled(h)
+        and "only once" in " ".join(text(control) for control in windows_for_dialog(h))), None),
+        "overlapping page selection error", process)
     assert "only once" in " ".join(text(h) for h in windows_for_dialog(error))
     click(error, 1)
     wait_for(lambda: u.IsWindowEnabled(main), "invalid page range refused", process)
